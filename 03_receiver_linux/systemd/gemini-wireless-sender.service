@@ -1,0 +1,23 @@
+[Unit]
+Description=Gemini Wireless Video Sender
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=berry
+Group=berry
+WorkingDirectory=/home/berry/orbbec/pyorbbecsdk-main/gemini_wireless_video
+EnvironmentFile=/home/berry/orbbec/pyorbbecsdk-main/gemini_wireless_video/systemd/gemini-wireless-sender.env
+ExecStart=/bin/bash -lc 'source /home/berry/miniconda3/etc/profile.d/conda.sh && conda activate orbbec_env && exec python /home/berry/orbbec/pyorbbecsdk-main/gemini_wireless_video/run_sender.py --config ${SENDER_CONFIG}'
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

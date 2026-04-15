@@ -1,0 +1,11 @@
+{
+    "pids":  [
+                 18708,
+                 20320
+             ],
+    "started_at":  "2026-04-15T15:16:42.0014391+08:00",
+    "config":  "E:\\Win10\\Desktop\\wireless_video_delivery\\06_configs\\receiver.windows.default.json",
+    "python":  "E:\\Win10\\Desktop\\wireless_video_delivery\\02_receiver_windows\\.venv\\Scripts\\python.exe",
+    "stdout_log":  "E:\\Win10\\Desktop\\wireless_video_delivery\\02_receiver_windows\\Log\\receiver_stdout.log",
+    "stderr_log":  "E:\\Win10\\Desktop\\wireless_video_delivery\\02_receiver_windows\\Log\\receiver_stderr.log"
+}

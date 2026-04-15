@@ -1,0 +1,16 @@
+# Linux接收端启动
+bash 05_tools/check_and_start_receiver_linux.sh
+
+# Linux发送端启动（目标接收端IP）
+bash 05_tools/check_and_start_sender.sh 192.168.1.105
+
+# 状态查看
+bash 05_tools/status_receiver_linux.sh
+bash 05_tools/status_sender.sh
+
+# 停止
+bash 05_tools/stop_sender.sh
+bash 05_tools/stop_receiver_linux.sh
+
+# 网络检查
+bash 05_tools/network_check.sh 192.168.1.105

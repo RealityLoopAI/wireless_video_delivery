@@ -1,0 +1,29 @@
+{
+  "network": {
+    "listen_ip": "0.0.0.0",
+    "listen_port": 5600,
+    "jitter_ms": 150,
+    "reorder_window_frames": 10,
+    "depacketizer_timeout_ms": 1500,
+    "depacketizer_max_frames": 512,
+    "depacketizer_max_fus": 512,
+    "socket_buffer_bytes": 4194304
+  },
+  "runtime": {
+    "queue_size": 8,
+    "recv_timeout_ms": 150,
+    "watchdog_interval_ms": 1000,
+    "degraded_threshold": 10,
+    "reconnect_backoff_ms": [
+      1000,
+      2000,
+      5000,
+      10000
+    ],
+    "log_interval_ms": 2000
+  },
+  "display": {
+    "window_name": "Gemini Receiver (WeakNet)",
+    "show_stats": true
+  }
+}

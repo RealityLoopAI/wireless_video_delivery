@@ -1,0 +1,25 @@
+Linux 最傻瓜命令（在本目录执行）:
+
+1) 启动接收端:
+bash start_receiver_linux.sh
+
+2) 启动发送端（把IP改成你的接收机IP）:
+bash start_sender.sh 192.168.1.105
+
+3) 查看运行状态:
+bash status.sh
+
+4) 停止:
+bash stop.sh
+
+不想记命令，直接:
+bash one_click.sh
+
+Windows 接收端:
+PowerShell 执行
+Set-ExecutionPolicy -Scope Process Bypass
+.\start_receiver_windows.ps1
+.\status_receiver_windows.ps1
+
+更傻瓜方式:
+双击 one_click_windows.cmd

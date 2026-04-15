@@ -1,0 +1,42 @@
+{
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "format_priority": [
+      "MJPG",
+      "RGB",
+      "YUYV",
+      "NV12"
+    ]
+  },
+  "codec": {
+    "codec": "h264",
+    "bitrate_kbps": 1200,
+    "gop": 15,
+    "max_b_frames": 0,
+    "preset": "ultrafast",
+    "tune": "zerolatency"
+  },
+  "network": {
+    "remote_ip": "192.168.1.116",
+    "remote_port": 5600,
+    "mtu": 1200,
+    "ttl": 64,
+    "socket_buffer_bytes": 4194304
+  },
+  "runtime": {
+    "queue_size": 4,
+    "camera_timeout_ms": 120,
+    "watchdog_interval_ms": 1000,
+    "degraded_threshold": 10,
+    "reconnect_backoff_ms": [
+      1000,
+      2000,
+      5000,
+      10000
+    ],
+    "log_interval_ms": 2000,
+    "drop_frame_divisor": 1
+  }
+}
