@@ -2,6 +2,8 @@ add_executable(gemini_receiver
     src/main.cpp
 )
 
+find_package(ZLIB REQUIRED)
+
 target_include_directories(gemini_receiver PRIVATE
     "${CMAKE_SOURCE_DIR}/03_common_core/include"
 )
@@ -15,6 +17,7 @@ target_compile_options(gemini_receiver PRIVATE
 )
 
 target_link_libraries(gemini_receiver PRIVATE
+    ZLIB::ZLIB
     pthread
 )
 

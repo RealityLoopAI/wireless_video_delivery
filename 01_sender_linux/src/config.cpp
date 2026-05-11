@@ -173,8 +173,8 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.codec != "h264") {
             throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");
         }
-        if(camera.depth_transport.compression != "none") {
-            throw std::runtime_error("only none depth compression is implemented in this sender build");
+        if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
+            throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
         }
     }
 }

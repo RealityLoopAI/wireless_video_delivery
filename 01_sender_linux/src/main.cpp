@@ -21,6 +21,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <zlib.h>
 
 namespace gwv3 {
 
@@ -317,6 +318,18 @@ bool h264_payload_has_idr(const std::vector<uint8_t> &payload) {
     return false;
 }
 
+std::vector<uint8_t> zlib_compress_payload(const void *data, size_t size) {
+    const auto bound = compressBound(static_cast<uLong>(size));
+    std::vector<uint8_t> out(bound);
+    uLongf out_size = bound;
+    const int rc = compress2(out.data(), &out_size, static_cast<const Bytef *>(data), static_cast<uLong>(size), Z_BEST_SPEED);
+    if(rc != Z_OK) {
+        throw std::runtime_error("zlib depth compression failed");
+    }
+    out.resize(static_cast<size_t>(out_size));
+    return out;
+}
+
 Json::Value sender_hello(const AppConfig &config) {
     Json::Value msg = base_message(config, "sender_hello");
     msg["sender_version"] = config.sender_version;
@@ -329,6 +342,7 @@ Json::Value sender_hello(const AppConfig &config) {
     capabilities["rgb_encoding"] = rgb;
     Json::Value depth(Json::arrayValue);
     depth.append("none");
+    depth.append("zlib");
     capabilities["depth_compression"] = depth;
     capabilities["local_preview"] = config.preview.enabled;
     capabilities["media_protocol"] = config.transport.media_protocol;
@@ -525,21 +539,29 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 if(camera->depth_scale == 0.0f) {
                     camera->depth_scale = depth->getValueScale();
                 }
+                std::vector<uint8_t> compressed_depth;
+                const void *depth_payload = depth->data();
+                size_t depth_payload_size = depth->dataSize();
+                if(camera->config.depth_transport.compression == "zlib") {
+                    compressed_depth = zlib_compress_payload(depth->data(), depth->dataSize());
+                    depth_payload = compressed_depth.data();
+                    depth_payload_size = compressed_depth.size();
+                }
                 MediaFrameMeta meta;
                 meta.stream_type = StreamType::depth_raw;
                 meta.flags = has_system_timestamp;
                 meta.sender_id = config.sender_id;
                 meta.camera_id = camera->config.camera_id;
-                meta.codec_or_compression = "none";
+                meta.codec_or_compression = camera->config.depth_transport.compression;
                 meta.frame_id = depth->index();
                 meta.timestamp_us = depth->timeStampUs();
                 meta.system_timestamp_us = depth->systemTimeStampUs();
                 meta.width = depth->width();
                 meta.height = depth->height();
                 meta.pixel_format = PixelFormat::depth_u16;
-                meta.payload_size = depth->dataSize();
+                meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
-                const auto packet = build_media_packet(meta, depth->data());
+                const auto packet = build_media_packet(meta, depth_payload);
                 if(!transport.send_media(packet)) {
                     camera->last_error = transport.last_error();
                 }

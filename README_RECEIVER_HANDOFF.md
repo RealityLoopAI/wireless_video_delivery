@@ -4,6 +4,8 @@ This package is for receiver-side integration with the current sender implementa
 
 2026-05-11 update: the sender H.264 pipeline now forces `NV12` before Rockchip `mpph264enc`. This fixes the issue where receivers only saw AUD/SPS/PPS header NALs without decodable picture frames. RGB packets now set `flags.bit0` when the payload contains an IDR frame.
 
+2026-05-11 depth update: sender and receiver now support optional `zlib` compression for Depth packets. Default sender config remains raw `none`; use `06_configs/sender_orangepi5pro-01_depth_zlib.json` only after the receiver has been updated to decode `codec_or_compression=zlib`.
+
 Read first:
 
 ```text

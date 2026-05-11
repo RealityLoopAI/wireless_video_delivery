@@ -34,6 +34,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <zlib.h>
 
 namespace gwv3 {
 namespace {
@@ -669,6 +670,36 @@ MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
     return packet;
 }
 
+std::vector<uint8_t> zlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload) {
+        throw std::runtime_error("invalid zlib uncompressed depth size");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size));
+    uLongf out_size = static_cast<uLongf>(out.size());
+    const int rc = uncompress(out.data(), &out_size, packet.payload.data(), static_cast<uLong>(packet.payload.size()));
+    if(rc != Z_OK || out_size != packet.uncompressed_size) {
+        throw std::runtime_error("zlib depth decompression failed");
+    }
+    return out;
+}
+
+MediaPacket normalized_depth_packet(const MediaPacket &packet) {
+    if(packet.stream_type != StreamType::depth_raw) {
+        return packet;
+    }
+    if(packet.codec_or_compression == "none") {
+        return packet;
+    }
+    if(packet.codec_or_compression == "zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    throw std::runtime_error("unsupported depth compression: " + packet.codec_or_compression);
+}
+
 class FfmpegPipe {
 public:
     FfmpegPipe() = default;
@@ -1239,9 +1270,20 @@ private:
             return;
         }
 
-        PreviewImage preview;
+        MediaPacket decoded_packet = packet;
         if(packet.stream_type == StreamType::depth_raw) {
-            preview = build_depth_preview_bmp(packet.payload, packet.width, packet.height);
+            try {
+                decoded_packet = normalized_depth_packet(packet);
+            }
+            catch(const std::exception &e) {
+                logger_.warn(std::string("depth packet ignored: ") + e.what());
+                return;
+            }
+        }
+
+        PreviewImage preview;
+        if(decoded_packet.stream_type == StreamType::depth_raw) {
+            preview = build_depth_preview_bmp(decoded_packet.payload, decoded_packet.width, decoded_packet.height);
         }
         const bool rgb_has_idr = packet.stream_type == StreamType::rgb &&
                                  (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
@@ -1267,7 +1309,7 @@ private:
         }
 
         if(recording_all_ || cam.recording_requested) {
-            cam.segment.write_packet(config_, packet, cam.sender_id, cam.camera_id, cam.last_announce_json, logger_);
+            cam.segment.write_packet(config_, decoded_packet, cam.sender_id, cam.camera_id, cam.last_announce_json, logger_);
         }
     }
 
