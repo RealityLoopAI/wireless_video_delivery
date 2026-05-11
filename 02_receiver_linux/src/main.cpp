@@ -43,7 +43,7 @@ namespace {
 constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
-constexpr uint32_t kRgbPreviewWidth = 320;
+constexpr uint32_t kRgbPreviewWidth = 640;
 
 std::atomic<bool> g_running{true};
 
@@ -608,7 +608,7 @@ public:
 
             const std::string scale = "fps=8,scale=" + std::to_string(kRgbPreviewWidth) + ":-2";
             execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
-                   "-flags", "low_delay", "-f", "h264", "-i", "pipe:0", "-vf", scale.c_str(), "-q:v", "5", "-f", "image2pipe",
+                   "-flags", "low_delay", "-f", "h264", "-i", "pipe:0", "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe",
                    "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
             _exit(127);
         }
