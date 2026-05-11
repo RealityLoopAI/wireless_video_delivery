@@ -74,7 +74,7 @@ def depth_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> R
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
-            media_type = resp.headers.get_content_type() or "image/bmp"
+            media_type = resp.headers.get_content_type() or "image/jpeg"
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"depth preview unavailable: {exc}") from exc

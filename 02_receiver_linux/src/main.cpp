@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -41,8 +42,8 @@ namespace {
 
 constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
-constexpr size_t kMaxRgbPreviewH264Bytes = 8ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
+constexpr uint32_t kRgbPreviewWidth = 320;
 
 std::atomic<bool> g_running{true};
 
@@ -454,37 +455,6 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32
     return build_bmp_from_rgb_pixels(rgb, image.width, image.height);
 }
 
-std::string safe_filename_component(const std::string &value) {
-    std::string out;
-    out.reserve(value.size());
-    for(unsigned char ch : value) {
-        if(std::isalnum(ch) || ch == '-' || ch == '_') {
-            out.push_back(static_cast<char>(ch));
-        }
-        else {
-            out.push_back('_');
-        }
-    }
-    return out.empty() ? "camera" : out;
-}
-
-bool write_binary_file(const std::filesystem::path &path, const std::vector<uint8_t> &bytes) {
-    std::ofstream output(path, std::ios::binary | std::ios::out | std::ios::trunc);
-    if(!output) {
-        return false;
-    }
-    output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    return static_cast<bool>(output);
-}
-
-std::vector<uint8_t> read_binary_file(const std::filesystem::path &path) {
-    std::ifstream input(path, std::ios::binary);
-    if(!input) {
-        return {};
-    }
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-}
-
 struct Config {
     std::string status_bind_ip = "0.0.0.0";
     uint16_t status_port = 50011;
@@ -564,44 +534,250 @@ private:
     std::mutex mutex_;
 };
 
-PreviewImage build_rgb_preview_bmp(const Config &cfg, const std::string &key, const std::vector<uint8_t> &h264,
-                                   uint32_t width, uint32_t height, Logger &logger) {
-    PreviewImage image;
-    if(h264.empty()) {
-        return image;
+ssize_t retrying_write(int fd, const uint8_t *data, size_t size) {
+    while(true) {
+        const ssize_t written = write(fd, data, size);
+        if(written < 0 && errno == EINTR) {
+            continue;
+        }
+        return written;
     }
-
-    const auto base = safe_filename_component(key) + "_" + std::to_string(getpid()) + "_" + std::to_string(now_us());
-    const auto input_path = std::filesystem::temp_directory_path() / ("gwv3_rgb_preview_" + base + ".h264");
-    const auto output_path = std::filesystem::temp_directory_path() / ("gwv3_rgb_preview_" + base + ".bmp");
-
-    if(!write_binary_file(input_path, h264)) {
-        logger.warn("rgb preview temp input write failed: " + input_path.string());
-        return image;
-    }
-
-    const std::string cmd = shell_quote(cfg.ffmpeg_path) +
-                            " -hide_banner -loglevel error -y -f h264 -i " + shell_quote(input_path.string()) +
-                            " -frames:v 1 -vf scale=320:-2 " + shell_quote(output_path.string()) + " >/dev/null 2>&1";
-    const int rc = std::system(cmd.c_str());
-    if(rc == 0) {
-        image.bytes = read_binary_file(output_path);
-        image.width = width > 0 ? std::min<uint32_t>(width, 320u) : 0;
-        image.height = height;
-    }
-    else {
-        logger.warn("rgb preview ffmpeg decode failed for " + key);
-    }
-
-    std::error_code ec;
-    std::filesystem::remove(input_path, ec);
-    std::filesystem::remove(output_path, ec);
-    if(image.bytes.empty()) {
-        image.width = 0;
-        image.height = 0;
-    }
-    return image;
 }
+
+std::optional<size_t> find_marker(const std::vector<uint8_t> &buffer, uint8_t a, uint8_t b, size_t start) {
+    if(buffer.size() < 2 || start >= buffer.size() - 1) {
+        return std::nullopt;
+    }
+    for(size_t i = start; i + 1 < buffer.size(); ++i) {
+        if(buffer[i] == a && buffer[i + 1] == b) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+class RgbPreviewDecoder {
+public:
+    RgbPreviewDecoder() = default;
+    RgbPreviewDecoder(const RgbPreviewDecoder &) = delete;
+    RgbPreviewDecoder &operator=(const RgbPreviewDecoder &) = delete;
+
+    ~RgbPreviewDecoder() {
+        stop();
+    }
+
+    bool start(const Config &cfg, const std::string &key, uint32_t width, uint32_t height, Logger &logger) {
+        stop();
+        key_ = key;
+        source_width_ = width;
+        source_height_ = height;
+        preview_width_ = width > 0 ? std::min<uint32_t>(width, kRgbPreviewWidth) : kRgbPreviewWidth;
+        preview_height_ = scaled_height(width, height, preview_width_);
+
+        int stdin_pipe[2] = {-1, -1};
+        int stdout_pipe[2] = {-1, -1};
+        if(pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
+            close_pipe(stdin_pipe);
+            close_pipe(stdout_pipe);
+            logger.warn("rgb preview decoder pipe creation failed: " + std::string(std::strerror(errno)));
+            return false;
+        }
+
+        const pid_t pid = fork();
+        if(pid < 0) {
+            close_pipe(stdin_pipe);
+            close_pipe(stdout_pipe);
+            logger.warn("rgb preview decoder fork failed: " + std::string(std::strerror(errno)));
+            return false;
+        }
+
+        if(pid == 0) {
+            dup2(stdin_pipe[0], STDIN_FILENO);
+            dup2(stdout_pipe[1], STDOUT_FILENO);
+            const int dev_null = open("/dev/null", O_WRONLY);
+            if(dev_null >= 0) {
+                dup2(dev_null, STDERR_FILENO);
+                close(dev_null);
+            }
+            close_pipe(stdin_pipe);
+            close_pipe(stdout_pipe);
+            const long max_fd = std::min<long>(sysconf(_SC_OPEN_MAX), 4096);
+            for(int fd = 3; fd < max_fd; ++fd) {
+                close(fd);
+            }
+
+            const std::string scale = "fps=8,scale=" + std::to_string(kRgbPreviewWidth) + ":-2";
+            execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
+                   "-flags", "low_delay", "-f", "h264", "-i", "pipe:0", "-vf", scale.c_str(), "-q:v", "5", "-f", "image2pipe",
+                   "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
+            _exit(127);
+        }
+
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+        stdin_fd_ = stdin_pipe[1];
+        stdout_fd_ = stdout_pipe[0];
+        pid_ = pid;
+        running_ = true;
+        reader_ = std::thread([this] { read_loop(); });
+        logger.info("rgb preview decoder started: " + key_);
+        return true;
+    }
+
+    bool active() const {
+        return running_ && stdin_fd_ >= 0;
+    }
+
+    void stop() {
+        int stdin_fd = -1;
+        {
+            std::lock_guard<std::mutex> lock(process_mutex_);
+            running_ = false;
+            stdin_fd = stdin_fd_;
+            stdin_fd_ = -1;
+        }
+        if(stdin_fd >= 0) {
+            close(stdin_fd);
+        }
+        if(reader_.joinable()) {
+            reader_.join();
+        }
+        if(stdout_fd_ >= 0) {
+            close(stdout_fd_);
+            stdout_fd_ = -1;
+        }
+        if(pid_ > 0) {
+            int status = 0;
+            waitpid(pid_, &status, 0);
+            pid_ = -1;
+        }
+    }
+
+    bool write_packet(const std::vector<uint8_t> &payload) {
+        if(payload.empty()) {
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(process_mutex_);
+        if(!running_ || stdin_fd_ < 0) {
+            return false;
+        }
+        size_t offset = 0;
+        while(offset < payload.size()) {
+            const ssize_t written = retrying_write(stdin_fd_, payload.data() + offset, payload.size() - offset);
+            if(written <= 0) {
+                running_ = false;
+                close(stdin_fd_);
+                stdin_fd_ = -1;
+                return false;
+            }
+            offset += static_cast<size_t>(written);
+        }
+        return true;
+    }
+
+    std::optional<std::vector<uint8_t>> latest_jpeg() const {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        if(latest_jpeg_.empty()) {
+            return std::nullopt;
+        }
+        return latest_jpeg_;
+    }
+
+    bool has_frame() const {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        return !latest_jpeg_.empty();
+    }
+
+    uint32_t preview_width() const {
+        return preview_width_;
+    }
+
+    uint32_t preview_height() const {
+        return preview_height_;
+    }
+
+    uint64_t frame_us() const {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        return latest_frame_us_;
+    }
+
+private:
+    static uint32_t scaled_height(uint32_t width, uint32_t height, uint32_t preview_width) {
+        if(width == 0 || height == 0 || preview_width == 0) {
+            return 0;
+        }
+        uint32_t scaled = static_cast<uint32_t>((static_cast<uint64_t>(height) * preview_width) / width);
+        if(scaled % 2u != 0u) {
+            ++scaled;
+        }
+        return scaled;
+    }
+
+    static void close_pipe(int fds[2]) {
+        if(fds[0] >= 0) {
+            close(fds[0]);
+        }
+        if(fds[1] >= 0) {
+            close(fds[1]);
+        }
+    }
+
+    void read_loop() {
+        std::vector<uint8_t> buffer;
+        buffer.reserve(512 * 1024);
+        std::vector<uint8_t> chunk(32 * 1024);
+        while(true) {
+            const ssize_t got = read(stdout_fd_, chunk.data(), chunk.size());
+            if(got <= 0) {
+                break;
+            }
+            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + got);
+            consume_jpegs(buffer);
+            if(buffer.size() > 4ull * 1024ull * 1024ull) {
+                buffer.erase(buffer.begin(), buffer.end() - 1024);
+            }
+        }
+    }
+
+    void consume_jpegs(std::vector<uint8_t> &buffer) {
+        while(true) {
+            const auto start = find_marker(buffer, 0xff, 0xd8, 0);
+            if(!start) {
+                buffer.clear();
+                return;
+            }
+            if(*start > 0) {
+                buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(*start));
+            }
+            const auto end = find_marker(buffer, 0xff, 0xd9, 2);
+            if(!end) {
+                return;
+            }
+            std::vector<uint8_t> jpeg(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(*end + 2));
+            {
+                std::lock_guard<std::mutex> lock(frame_mutex_);
+                latest_jpeg_ = std::move(jpeg);
+                latest_frame_us_ = now_us();
+            }
+            buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(*end + 2));
+        }
+    }
+
+    std::string key_;
+    uint32_t source_width_ = 0;
+    uint32_t source_height_ = 0;
+    uint32_t preview_width_ = 0;
+    uint32_t preview_height_ = 0;
+    mutable std::mutex process_mutex_;
+    mutable std::mutex frame_mutex_;
+    std::atomic<bool> running_{false};
+    pid_t pid_ = -1;
+    int stdin_fd_ = -1;
+    int stdout_fd_ = -1;
+    std::thread reader_;
+    std::vector<uint8_t> latest_jpeg_;
+    uint64_t latest_frame_us_ = 0;
+};
 
 struct MediaPacket {
     StreamType stream_type = StreamType::rgb;
@@ -1002,8 +1178,8 @@ struct CameraState {
     uint64_t rgb_preview_us = 0;
     uint32_t rgb_preview_width = 0;
     uint32_t rgb_preview_height = 0;
-    std::vector<uint8_t> rgb_preview_h264;
     std::vector<uint8_t> rgb_preview_prefix_h264;
+    std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t depth_preview_us = 0;
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
@@ -1040,6 +1216,9 @@ public:
         }
         std::lock_guard<std::mutex> lock(mutex_);
         for(auto &item : cameras_) {
+            if(item.second->rgb_decoder) {
+                item.second->rgb_decoder->stop();
+            }
             item.second->segment.close(item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
         }
         logger_.info("receiver stopped");
@@ -1077,7 +1256,7 @@ public:
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
-            out << "\"rgb_preview_available\":" << (!cam.rgb_preview_h264.empty() ? "true" : "false") << ',';
+            out << "\"rgb_preview_available\":" << (cam.rgb_decoder && cam.rgb_decoder->has_frame() ? "true" : "false") << ',';
             out << "\"rgb_preview_width\":" << cam.rgb_preview_width << ',';
             out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
             out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
@@ -1166,27 +1345,13 @@ public:
     }
 
     std::optional<std::vector<uint8_t>> rgb_preview(const std::string &sender_id, const std::string &camera_id) {
-        std::string key;
-        std::vector<uint8_t> h264;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            key = camera_key(sender_id, camera_id);
-            auto it = cameras_.find(key);
-            if(it == cameras_.end() || it->second->rgb_preview_h264.empty()) {
-                return std::nullopt;
-            }
-            h264 = it->second->rgb_preview_h264;
-            width = it->second->rgb_preview_width;
-            height = it->second->rgb_preview_height;
-        }
-
-        auto preview = build_rgb_preview_bmp(config_, key, h264, width, height, logger_);
-        if(preview.bytes.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto key = camera_key(sender_id, camera_id);
+        auto it = cameras_.find(key);
+        if(it == cameras_.end() || !it->second->rgb_decoder) {
             return std::nullopt;
         }
-        return preview.bytes;
+        return it->second->rgb_decoder->latest_jpeg();
     }
 
 private:
@@ -1243,25 +1408,26 @@ private:
             return;
         }
 
-        if(has_idr) {
-            cam.rgb_preview_h264.clear();
+        if(has_idr && (!cam.rgb_decoder || !cam.rgb_decoder->active())) {
+            if(!cam.rgb_decoder) {
+                cam.rgb_decoder = std::make_unique<RgbPreviewDecoder>();
+            }
+            cam.rgb_decoder->start(config_, cam.key, packet.width, packet.height, logger_);
             if(!cam.rgb_preview_prefix_h264.empty()) {
-                cam.rgb_preview_h264.insert(cam.rgb_preview_h264.end(), cam.rgb_preview_prefix_h264.begin(), cam.rgb_preview_prefix_h264.end());
+                cam.rgb_decoder->write_packet(cam.rgb_preview_prefix_h264);
             }
         }
-        else if(cam.rgb_preview_h264.empty()) {
+        else if(!cam.rgb_decoder || !cam.rgb_decoder->active()) {
             return;
         }
 
-        if(cam.rgb_preview_h264.size() + packet.payload.size() > kMaxRgbPreviewH264Bytes) {
-            cam.rgb_preview_h264.clear();
+        if(!cam.rgb_decoder->write_packet(packet.payload)) {
+            cam.rgb_decoder.reset();
             return;
         }
-
-        cam.rgb_preview_h264.insert(cam.rgb_preview_h264.end(), packet.payload.begin(), packet.payload.end());
-        cam.rgb_preview_width = packet.width;
-        cam.rgb_preview_height = packet.height;
-        cam.rgb_preview_us = cam.last_media_us;
+        cam.rgb_preview_width = cam.rgb_decoder->preview_width();
+        cam.rgb_preview_height = cam.rgb_decoder->preview_height();
+        cam.rgb_preview_us = cam.rgb_decoder->frame_us();
     }
 
     void handle_media_packet(const MediaPacket &packet) {
@@ -1499,7 +1665,7 @@ private:
             const auto preview = rgb_preview(args.count("sender_id") ? args.at("sender_id") : "",
                                              args.count("camera_id") ? args.at("camera_id") : "");
             if(preview) {
-                content_type = "image/bmp";
+                content_type = "image/jpeg";
                 body.assign(reinterpret_cast<const char *>(preview->data()), preview->size());
             }
             else {
@@ -1558,6 +1724,7 @@ Args parse_args(int argc, char **argv) {
 int main(int argc, char **argv) {
     std::signal(SIGINT, gwv3::handle_signal);
     std::signal(SIGTERM, gwv3::handle_signal);
+    std::signal(SIGPIPE, SIG_IGN);
 
     try {
         const auto args = gwv3::parse_args(argc, argv);

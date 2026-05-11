@@ -224,6 +224,8 @@
       const card = ensureCard(c);
       card.dataset.senderId = c.sender_id;
       card.dataset.cameraId = c.camera_id;
+      card.dataset.rgbAvailable = c.rgb_preview_available ? '1' : '0';
+      card.dataset.depthAvailable = c.depth_preview_available ? '1' : '0';
       setPills(card, c);
       setText(card, 'camera_key', c.camera_key);
       setText(card, 'segment_dir', c.segment_dir || '未开启切片');
@@ -236,11 +238,18 @@
       setText(card, 'last_media_us', c.last_media_us);
       setText(card, 'last_error', c.last_error || '');
 
-      const stamp = Date.now();
-      refreshPreview(card, 'rgb', c.rgb_preview_available,
-        `/api/preview/rgb?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${stamp}`);
-      refreshPreview(card, 'depth', c.depth_preview_available,
-        `/api/preview/depth?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${stamp}`);
+      refreshCardPreviews(card);
+    }
+    function previewUrl(card, kind) {
+      return `/api/preview/${kind}?sender_id=${encodeURIComponent(card.dataset.senderId)}&camera_id=${encodeURIComponent(card.dataset.cameraId)}&t=${Date.now()}`;
+    }
+    function refreshCardPreviews(card) {
+      if (!card.dataset.senderId || !card.dataset.cameraId) return;
+      refreshPreview(card, 'rgb', card.dataset.rgbAvailable === '1', previewUrl(card, 'rgb'));
+      refreshPreview(card, 'depth', card.dataset.depthAvailable === '1', previewUrl(card, 'depth'));
+    }
+    function refreshAllPreviews() {
+      document.querySelectorAll('.card[id^="camera-"]').forEach(refreshCardPreviews);
     }
     async function load() {
       const res = await fetch('/api/status');
@@ -265,6 +274,7 @@
     }
     load();
     setInterval(load, 1000);
+    setInterval(refreshAllPreviews, 200);
   </script>
 </body>
 </html>
