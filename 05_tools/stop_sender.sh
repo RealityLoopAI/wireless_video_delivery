@@ -1,35 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PID_FILE="$ROOT_DIR/12_build/sender.pid"
 
-RUNTIME_DIR="${DELIVERY_ROOT}/07_samples/runtime/sender"
-PID_FILE="${RUNTIME_DIR}/sender.pid"
-
-if [[ ! -f "${PID_FILE}" ]]; then
-  echo "[sender] 未找到PID文件，视为已停止"
+if [[ ! -f "$PID_FILE" ]]; then
+  echo "发送端未运行：没有 PID 文件"
   exit 0
 fi
 
-pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
-if ! is_pid_running "${pid}"; then
-  echo "[sender] 进程不存在，清理PID文件"
-  rm -f "${PID_FILE}"
-  exit 0
+PID="$(cat "$PID_FILE")"
+if kill -0 "$PID" 2>/dev/null; then
+  kill "$PID"
+  for _ in {1..20}; do
+    if ! kill -0 "$PID" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "发送端停止超时，尝试强制停止 PID=$PID"
+    kill -9 "$PID" 2>/dev/null || true
+  fi
+  echo "发送端已停止"
+else
+  echo "发送端未运行：PID=$PID 不存在"
 fi
 
-kill -INT "${pid}" >/dev/null 2>&1 || true
-sleep 2
-
-if is_pid_running "${pid}"; then
-  kill -TERM "${pid}" >/dev/null 2>&1 || true
-  sleep 1
-fi
-
-if is_pid_running "${pid}"; then
-  kill -KILL "${pid}" >/dev/null 2>&1 || true
-fi
-
-rm -f "${PID_FILE}"
-echo "[sender] 已停止 (PID=${pid})"
+rm -f "$PID_FILE"

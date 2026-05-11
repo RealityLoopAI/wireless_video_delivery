@@ -1,36 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PID_FILE="$ROOT_DIR/12_build/sender.pid"
+LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender.log"
 
-RUNTIME_DIR="${DELIVERY_ROOT}/07_samples/runtime/sender"
-PID_FILE="${RUNTIME_DIR}/sender.pid"
-STDERR_LOG="${RUNTIME_DIR}/sender_stderr.log"
-RUNTIME_CONFIG="${RUNTIME_DIR}/sender.runtime.json"
-
-pid=""
-if [[ -f "${PID_FILE}" ]]; then
-  pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
-fi
-
-if is_pid_running "${pid}"; then
-  echo "[sender] status: RUNNING (PID=${pid})"
+if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  echo "发送端运行中，PID=$(cat "$PID_FILE")"
 else
-  echo "[sender] status: STOPPED"
+  echo "发送端未运行"
 fi
 
-if [[ -f "${RUNTIME_CONFIG}" ]]; then
-  echo "[sender] runtime config: ${RUNTIME_CONFIG}"
-fi
-
-if [[ -f "${STDERR_LOG}" ]]; then
-  last_state="$(grep -E "state=" "${STDERR_LOG}" | tail -n 1 || true)"
-  if [[ -n "${last_state}" ]]; then
-    echo "[sender] last state: ${last_state}"
-  fi
-  echo "[sender] recent log:"
-  tail -n 8 "${STDERR_LOG}" || true
+if [[ -f "$LOG_FILE" ]]; then
+  echo "最近日志："
+  tail -n 20 "$LOG_FILE"
 else
-  echo "[sender] log: <missing>"
+  echo "暂无发送端日志"
 fi

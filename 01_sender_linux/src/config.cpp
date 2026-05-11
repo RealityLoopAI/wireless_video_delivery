@@ -1,0 +1,182 @@
+#include "gwv3_sender/config.hpp"
+
+#include <fstream>
+#include <regex>
+#include <stdexcept>
+
+#include <json/json.h>
+
+namespace gwv3 {
+
+namespace {
+
+std::string required_string(const Json::Value &node, const char *key) {
+    if(!node.isMember(key) || !node[key].isString()) {
+        throw std::runtime_error(std::string("missing or invalid string field: ") + key);
+    }
+    return node[key].asString();
+}
+
+std::string optional_string(const Json::Value &node, const char *key, const std::string &fallback) {
+    if(!node.isMember(key)) {
+        return fallback;
+    }
+    if(!node[key].isString()) {
+        throw std::runtime_error(std::string("invalid string field: ") + key);
+    }
+    return node[key].asString();
+}
+
+int optional_int(const Json::Value &node, const char *key, int fallback) {
+    if(!node.isMember(key)) {
+        return fallback;
+    }
+    if(!node[key].isInt()) {
+        throw std::runtime_error(std::string("invalid integer field: ") + key);
+    }
+    return node[key].asInt();
+}
+
+bool optional_bool(const Json::Value &node, const char *key, bool fallback) {
+    if(!node.isMember(key)) {
+        return fallback;
+    }
+    if(!node[key].isBool()) {
+        throw std::runtime_error(std::string("invalid boolean field: ") + key);
+    }
+    return node[key].asBool();
+}
+
+VideoProfileConfig load_profile(const Json::Value &node) {
+    VideoProfileConfig profile;
+    profile.width = optional_int(node, "width", 0);
+    profile.height = optional_int(node, "height", 0);
+    profile.fps = optional_int(node, "fps", 0);
+    profile.format = optional_string(node, "format", "");
+    return profile;
+}
+
+uint16_t parse_port(const Json::Value &node, const char *key, uint16_t fallback) {
+    int value = optional_int(node, key, fallback);
+    if(value <= 0 || value > 65535) {
+        throw std::runtime_error(std::string("invalid port field: ") + key);
+    }
+    return static_cast<uint16_t>(value);
+}
+
+}  // namespace
+
+bool is_valid_protocol_id(const std::string &value) {
+    static const std::regex pattern("^[A-Za-z0-9_-]{1,64}$");
+    return std::regex_match(value, pattern);
+}
+
+AppConfig load_config(const std::string &path) {
+    std::ifstream input(path);
+    if(!input) {
+        throw std::runtime_error("cannot open config file: " + path);
+    }
+
+    Json::CharReaderBuilder builder;
+    Json::Value root;
+    std::string errors;
+    if(!Json::parseFromStream(builder, input, &root, &errors)) {
+        throw std::runtime_error("config JSON parse failed: " + errors);
+    }
+
+    AppConfig config;
+    config.sender_id = required_string(root, "sender_id");
+    config.sender_version = optional_string(root, "sender_version", config.sender_version);
+    config.heartbeat_interval_ms = optional_int(root, "heartbeat_interval_ms", config.heartbeat_interval_ms);
+
+    const auto &receiver = root["receiver"];
+    config.receiver.ip = required_string(receiver, "ip");
+    config.receiver.media_port = parse_port(receiver, "media_port", config.receiver.media_port);
+    config.receiver.status_port = parse_port(receiver, "status_port", config.receiver.status_port);
+
+    const auto &transport = root["transport"];
+    if(!transport.isNull()) {
+        config.transport.enabled = optional_bool(transport, "enabled", config.transport.enabled);
+        config.transport.status_protocol = optional_string(transport, "status_protocol", config.transport.status_protocol);
+        config.transport.media_protocol = optional_string(transport, "media_protocol", config.transport.media_protocol);
+        config.transport.connect_timeout_ms = optional_int(transport, "connect_timeout_ms", config.transport.connect_timeout_ms);
+        config.transport.reconnect_interval_ms = optional_int(transport, "reconnect_interval_ms", config.transport.reconnect_interval_ms);
+    }
+
+    const auto &preview = root["preview"];
+    if(!preview.isNull()) {
+        config.preview.enabled = optional_bool(preview, "enabled", config.preview.enabled);
+        config.preview.fps = optional_int(preview, "fps", config.preview.fps);
+    }
+
+    const auto &logging = root["logging"];
+    if(!logging.isNull()) {
+        config.logging.directory = optional_string(logging, "directory", config.logging.directory);
+        config.logging.max_bytes = static_cast<size_t>(optional_int(logging, "max_bytes", static_cast<int>(config.logging.max_bytes)));
+    }
+
+    const auto &cameras = root["cameras"];
+    if(!cameras.isArray()) {
+        throw std::runtime_error("missing or invalid cameras array");
+    }
+    for(const auto &item : cameras) {
+        CameraConfig camera;
+        camera.camera_id = required_string(item, "camera_id");
+        camera.serial_number = optional_string(item, "serial_number", "");
+        camera.uid = optional_string(item, "uid", "");
+        camera.device_index = optional_int(item, "device_index", camera.device_index);
+        camera.rgb_profile = load_profile(item["rgb_profile"]);
+        camera.depth_profile = load_profile(item["depth_profile"]);
+
+        const auto &encoding = item["rgb_encoding"];
+        if(!encoding.isNull()) {
+            camera.rgb_encoding.codec = optional_string(encoding, "codec", camera.rgb_encoding.codec);
+            camera.rgb_encoding.mode = optional_string(encoding, "mode", camera.rgb_encoding.mode);
+            camera.rgb_encoding.gstreamer_encoder = optional_string(encoding, "gstreamer_encoder", camera.rgb_encoding.gstreamer_encoder);
+            camera.rgb_encoding.bitrate_bps = optional_int(encoding, "bitrate_bps", camera.rgb_encoding.bitrate_bps);
+        }
+
+        const auto &depth = item["depth_transport"];
+        if(!depth.isNull()) {
+            camera.depth_transport.compression = optional_string(depth, "compression", camera.depth_transport.compression);
+        }
+        config.cameras.push_back(camera);
+    }
+
+    validate_config(config);
+    return config;
+}
+
+void validate_config(const AppConfig &config) {
+    if(!is_valid_protocol_id(config.sender_id)) {
+        throw std::runtime_error("sender_id must be 1-64 ASCII letters/digits/_/-");
+    }
+    if(config.receiver.ip.empty()) {
+        throw std::runtime_error("receiver.ip is required");
+    }
+    if(config.heartbeat_interval_ms <= 0) {
+        throw std::runtime_error("heartbeat_interval_ms must be positive");
+    }
+    if(config.cameras.empty()) {
+        throw std::runtime_error("at least one camera is required");
+    }
+    if(config.transport.status_protocol != "udp") {
+        throw std::runtime_error("only udp status_protocol is implemented in this sender build");
+    }
+    if(config.transport.media_protocol != "tcp") {
+        throw std::runtime_error("only tcp media_protocol is implemented in this sender build");
+    }
+    for(const auto &camera : config.cameras) {
+        if(!is_valid_protocol_id(camera.camera_id)) {
+            throw std::runtime_error("camera_id must be 1-64 ASCII letters/digits/_/-");
+        }
+        if(camera.rgb_encoding.codec != "h264") {
+            throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");
+        }
+        if(camera.depth_transport.compression != "none") {
+            throw std::runtime_error("only none depth compression is implemented in this sender build");
+        }
+    }
+}
+
+}  // namespace gwv3

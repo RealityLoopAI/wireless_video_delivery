@@ -1,0 +1,18 @@
+{
+  "status_bind_ip": "0.0.0.0",
+  "status_port": 50011,
+  "media_bind_ip": "0.0.0.0",
+  "media_port": 50010,
+  "admin_bind_ip": "127.0.0.1",
+  "admin_port": 18080,
+  "web_bind_ip": "0.0.0.0",
+  "web_port": 8080,
+  "nas_root": "/home/fz/Desktop/nas",
+  "segment_seconds": 300,
+  "depth_fps": 30,
+  "ffmpeg_path": "ffmpeg",
+  "log_directory": "08_reports/receiver_logs",
+  "write_debug_h264": true,
+  "write_debug_depth_raw": true,
+  "max_payload_mb": 128
+}

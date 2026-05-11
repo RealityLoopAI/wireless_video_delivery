@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Gemini Sender
+Comment=Start Gemini wireless video sender
+Exec=/home/orangepi/Desktop/gemini_wireless_video_v3/05_tools/start_sender.sh
+Terminal=true
+Categories=Utility;

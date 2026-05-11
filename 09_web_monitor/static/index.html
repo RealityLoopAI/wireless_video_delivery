@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gemini Wireless Video v3</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --ink: #1c1a16;
+      --muted: #746b5f;
+      --panel: rgba(255, 252, 244, 0.86);
+      --line: #d7cab8;
+      --accent: #006c67;
+      --danger: #b2402a;
+      --ok: #27733f;
+      --warn: #b87900;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Aptos", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(0,108,103,.18), transparent 30rem),
+        radial-gradient(circle at 90% 5%, rgba(178,64,42,.16), transparent 26rem),
+        linear-gradient(135deg, #f9f3e5 0%, var(--bg) 55%, #e9dfce 100%);
+    }
+    header {
+      padding: 32px clamp(18px, 4vw, 56px) 18px;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-end;
+    }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 56px); letter-spacing: -0.06em; }
+    .sub { color: var(--muted); margin-top: 8px; }
+    main { padding: 0 clamp(18px, 4vw, 56px) 48px; }
+    .toolbar, .card, .strip {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 60px rgba(44, 33, 21, .10);
+      backdrop-filter: blur(12px);
+      border-radius: 24px;
+    }
+    .toolbar { padding: 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 18px; }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 17px;
+      color: white;
+      background: var(--accent);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.stop { background: var(--danger); }
+    button.secondary { background: #635a50; }
+    .strip { padding: 14px 18px; margin-bottom: 18px; display: flex; gap: 18px; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+    .card { padding: 20px; }
+    .key { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
+    .meta { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-all; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 18px; }
+    .preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+    .view {
+      min-height: 180px;
+      border-radius: 18px;
+      overflow: hidden;
+      background: #1c1a16;
+      border: 1px solid rgba(28,26,22,.2);
+      display: grid;
+      place-items: center;
+      position: relative;
+    }
+    .view img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .view span { color: #f9f3e5; padding: 14px; text-align: center; font-weight: 700; }
+    .view::before {
+      content: attr(data-title);
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      z-index: 1;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(0,0,0,.44);
+      padding: 5px 8px;
+      border-radius: 999px;
+    }
+    .stat { border-top: 1px solid var(--line); padding-top: 10px; }
+    .label { color: var(--muted); font-size: 12px; }
+    .value { font-size: 18px; font-weight: 800; }
+    .pill { display: inline-flex; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; margin-right: 6px; }
+    .pill.ok { background: rgba(39,115,63,.12); color: var(--ok); }
+    .pill.off { background: rgba(178,64,42,.12); color: var(--danger); }
+    .pill.warn { background: rgba(184,121,0,.14); color: var(--warn); }
+    pre { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Gemini v3 Monitor</h1>
+      <div class="sub">接收端实时状态、录制控制和 NAS 写入监控</div>
+    </div>
+    <div id="summary" class="sub">加载中...</div>
+  </header>
+  <main>
+    <section class="toolbar">
+      <button onclick="post('/api/record/start-all')">全局开始录制</button>
+      <button class="stop" onclick="post('/api/record/stop-all')">全局停止录制</button>
+      <button class="secondary" onclick="load()">刷新</button>
+    </section>
+    <section id="system" class="strip"></section>
+    <section id="cards" class="grid"></section>
+  </main>
+  <script>
+    const fmtBytes = (n) => {
+      if (!Number.isFinite(n)) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let value = n;
+      let idx = 0;
+      while (value >= 1024 && idx < units.length - 1) {
+        value /= 1024;
+        idx += 1;
+      }
+      return `${value.toFixed(idx ? 1 : 0)} ${units[idx]}`;
+    };
+    async function post(url) {
+      const res = await fetch(url, {method: 'POST'});
+      if (!res.ok) alert(await res.text());
+      await load();
+    }
+    async function postCamera(path, sender, camera) {
+      await post(`${path}?sender_id=${encodeURIComponent(sender)}&camera_id=${encodeURIComponent(camera)}`);
+    }
+    function cameraCard(c) {
+      const rec = c.recording ? '<span class="pill ok">RECORDING</span>' : '<span class="pill off">IDLE</span>';
+      const online = c.online ? '<span class="pill ok">ONLINE</span>' : '<span class="pill off">OFFLINE</span>';
+      const rgbWarn = c.rgb_packets > 0 && c.rgb_bytes / c.rgb_packets < 1000 ? '<span class="pill warn">RGB HEADER ONLY</span>' : '';
+      const previewUrl = `/api/preview/depth?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+      const depthView = c.depth_preview_available
+        ? `<img alt="Depth preview" src="${previewUrl}">`
+        : '<span>等待 Depth 预览帧</span>';
+      return `<article class="card">
+        <div>${online}${rec}${rgbWarn}</div>
+        <div class="key">${c.camera_key}</div>
+        <div class="meta">${c.segment_dir || '未开启切片'}</div>
+        <div class="preview">
+          <div class="view" data-title="RGB"><span>RGB 暂无有效画面<br>发送端当前只收到 H.264 头信息</span></div>
+          <div class="view" data-title="Depth 伪彩">${depthView}</div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="label">RGB packets</div><div class="value">${c.rgb_packets}</div></div>
+          <div class="stat"><div class="label">Depth packets</div><div class="value">${c.depth_packets}</div></div>
+          <div class="stat"><div class="label">RGB bytes</div><div class="value">${fmtBytes(c.rgb_bytes)}</div></div>
+          <div class="stat"><div class="label">Depth bytes</div><div class="value">${fmtBytes(c.depth_bytes)}</div></div>
+          <div class="stat"><div class="label">Depth preview</div><div class="value">${c.depth_preview_width || 0}x${c.depth_preview_height || 0}</div></div>
+          <div class="stat"><div class="label">Last media us</div><div class="value">${c.last_media_us}</div></div>
+        </div>
+        <p class="meta">${c.last_error || ''}</p>
+        <button onclick="postCamera('/api/record/start', '${c.sender_id}', '${c.camera_id}')">单路开始</button>
+        <button class="stop" onclick="postCamera('/api/record/stop', '${c.sender_id}', '${c.camera_id}')">单路停止</button>
+      </article>`;
+    }
+    async function load() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      document.getElementById('summary').textContent = `NAS: ${data.nas_root} | cameras: ${data.cameras.length} | all recording: ${data.recording_all}`;
+      document.getElementById('system').innerHTML = `
+        <div><b>媒体端口</b><div class="meta">TCP ${data.media_port}</div></div>
+        <div><b>状态端口</b><div class="meta">UDP ${data.status_port}</div></div>
+        <div><b>管理端口</b><div class="meta">HTTP ${data.admin_port}</div></div>
+        <div><b>NAS</b><div class="meta">${data.nas_root}</div></div>`;
+      document.getElementById('cards').innerHTML = data.cameras.length ? data.cameras.map(cameraCard).join('') : '<article class="card"><div class="key">暂无摄像头</div><pre>等待发送端 sender_hello / camera_announce / 媒体帧。</pre></article>';
+    }
+    load();
+    setInterval(load, 1000);
+  </script>
+</body>
+</html>

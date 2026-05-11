@@ -1,0 +1,5 @@
+12_build/
+08_reports/*_logs/
+09_web_monitor/.venv/
+__pycache__/
+*.pyc

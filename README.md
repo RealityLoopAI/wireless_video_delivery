@@ -1,342 +1,212 @@
-# Wireless Video Delivery 产品手册
+# Gemini Wireless Video v3
 
-本工程是一套面向交付与现场部署的无线视频传输方案，用于将奥比中光 Gemini 相机的实时 RGB 画面从 Linux 发送端，通过 Wi-Fi 局域网传输到 Linux 或 Windows 接收端，并在接收端完成解码与显示。
+## 1. 项目定位
 
-当前交付目标是：**单路无线视频稳定传输、跨平台接收、支持一键检查与启动、便于现场实施与运维。**
+本目录是无线 RGBD 采集与录制系统 3.0 的工程骨架。
+3.0 目标是使用 C++ 重构发送端和接收端，实现全 Linux 环境下的多路 Gemini RGB + Depth 采集、传输、网页预览和 NAS 录制。
 
-链路流程如下：
+当前目录主要用于需求拆分和分工交付，还不是可编译运行版本。
 
-`Gemini 相机 -> Linux 发送端采集/编码 -> RTP/UDP -> Wi-Fi 网络 -> Linux/Windows 接收端解码 -> 实时显示`
+## 2. 当前状态
 
-## 1. 产品定位
+已完成：
 
-这套工程适合以下场景：
+1. v3 工程目录分类。
+2. 需求 3.0 总文档。
+3. 发送端需求文档。
+4. 接收端需求文档。
+5. 中间传输数据格式文档。
+6. 第三方 SDK 放置说明。
+7. 香橙派 5 Pro 发送端首版 C++ 实现。
+8. Ubuntu 接收端 C++ 核心接收与录制服务。
+9. FastAPI Web/REST 监控服务。
+10. 接收端 CLI 控制工具。
+11. 发送端和接收端一键启动、停止、状态脚本。
 
-- 将 Gemini 相机画面从边缘设备无线传回接收主机
-- 在同一局域网内快速搭建单路低延迟视频链路
-- 现场演示、设备联调、轻量化视频回传
-- 作为后续多路接入、硬件解码、平台化接入的基础版本
+暂未内置：
 
-当前版本的核心特点：
+1. Orbbec SDK 实体库文件。
+2. 长时间稳定性测试报告。
+3. 接收端历史回放、文件下载、权限体系。
+4. 发送端软件编码 fallback 的实测验证。
 
-- 单路实时优先，队列满时主动丢旧帧，优先保证画面“跟得上”
-- 发送端支持状态统计、异常检测与自动重连
-- 接收端支持 Linux 与 Windows 两种部署路径
-- 已提供交付包级别的启动、停止、状态检查与配置基线
+## 3. 目录说明
 
-## 2. 支持的部署形态
+```text
+01_sender_linux/
+```
 
-### 方案 A：Linux 发送端 -> Linux 接收端
+发送端工程目录。后续放树莓派 5、香橙派上运行的 C++ 采集和发送程序。
 
-适合研发联调、实验室压测、同构环境部署。
+```text
+02_receiver_linux/
+```
 
-### 方案 B：Linux 发送端 -> Windows 接收端
+接收端 C++ 工程目录。负责 UDP/TCP 接收、录制控制、本地管理 HTTP 和 NAS 写入。
 
-适合现场落地、普通 PC 接收显示、交付演示。
+```text
+03_common_core/
+```
 
-## 3. 交付内容
+公共核心目录。后续放发送端和接收端共用的数据结构、协议定义、配置读取、日志、时间戳等代码。
 
-仓库目录说明如下：
+```text
+04_docs/
+```
 
-- `01_sender_linux/`: Linux 发送端工程，负责相机采集、H.264 编码、RTP/UDP 发送
-- `02_receiver_windows/`: Windows 接收端工程，负责接收、解码、显示，并提供 PowerShell 启停脚本
-- `03_receiver_linux/`: Linux 接收端工程，负责接收、解码、显示
-- `04_docs/`: 补充文档，包括产品手册、快速开始、技术路线、部署与运维说明
-- `05_tools/`: 一键检查、启动、停止、状态查看脚本
-- `06_configs/`: 交付配置基线
-- `07_samples/`: Linux 侧运行时配置、PID、日志输出目录
-- `08_reports/`: 测试验收、容量边界、交接说明
-- 根目录脚本: 面向交付使用的快捷入口，屏蔽底层工程细节
+项目文档目录。当前最重要的需求和分工文档都在这里。
 
-推荐的阅读顺序：
+```text
+05_tools/
+```
 
-1. 先看本 `README.md`
-2. 需要快速上手时看 [04_docs/02_quick_start.md](04_docs/02_quick_start.md)
-3. 需要做现场部署或排障时看 [04_docs/03_deploy_ops_manual.md](04_docs/03_deploy_ops_manual.md)
-4. 需要了解实现路线时看 [04_docs/04_technical_route.md](04_docs/04_technical_route.md)
+工具目录。后续放环境检查、网络检查、调试工具等。
 
-## 4. 系统能力概览
+```text
+06_configs/
+```
 
-当前版本已经具备以下能力：
+配置目录。后续放发送端和接收端 JSON 配置模板。
 
-- 单个 Gemini 相机 RGB 视频采集
-- H.264 低延迟编码
-- RTP over UDP 发送与接收
-- 接收端实时显示
-- 有界队列与丢旧帧策略
-- 运行状态统计
-- 基础异常检测与自动恢复
-- Linux 发送端 `systemd` 开机自启能力
+```text
+07_samples/
+```
 
-## 5. 环境要求
+样例目录。后续放录制目录样例、配置样例或小规模测试样例。
 
-### 发送端（Linux）
+```text
+08_reports/
+```
 
-- Ubuntu 24.04 或同类 Linux 环境
-- Python `3.9+`
-- 推荐 Conda 环境：`orbbec_env`
-- 相机 SDK：`pyorbbecsdk`
-- 依赖：`av`、`opencv-python`、`numpy`
-- 相机与发送端设备正确连接，并具备 USB 访问权限
+报告目录。后续放测试报告、联调记录、问题总结和验收记录。
 
-### 接收端（Linux）
+```text
+09_web_monitor/
+```
 
-- Python `3.9+`
-- 依赖：`av`、`opencv-python`、`numpy`
+网页监控目录。当前使用 FastAPI 提供 Web 页面和 REST 代理。
 
-### 接收端（Windows）
+```text
+10_tests/
+```
 
-- Windows PowerShell
-- Python 可用，或安装 `uv` 以自动创建 `.venv` 并安装依赖
-- 依赖：`av`、`opencv-python`、`numpy`
+测试目录。后续放单元测试、集成测试和功能验证脚本。
 
-### 网络要求
+```text
+11_third_party/
+```
 
-- 发送端与接收端位于同一局域网并互通
-- 默认使用 UDP 端口 `5600`
-- 推荐使用 5GHz Wi-Fi
+第三方依赖说明目录。Orbbec SDK、FFmpeg、GStreamer、WebRTC 等依赖的放置规则见该目录下的 README。
 
-## 6. 默认配置基线
+```text
+12_build/
+```
 
-当前交付基线位于 `06_configs/`：
+构建输出目录。后续 CMake 生成的临时文件和可执行文件可放这里。
 
-- `sender.default.json`: 发送端正式配置
-- `sender.usb2_stable.json`: USB2 或弱性能场景基线
-- `sender.weaknet.json`: 弱网调优基线
-- `receiver.linux.default.json`: Linux 接收端基线
-- `receiver.linux.weaknet.json`: Linux 接收端弱网基线
-- `receiver.windows.default.json`: Windows 接收端基线
+## 4. 关键文档
 
-当前默认发送端参数：
+建议按以下顺序阅读：
 
-- 分辨率：`1920x1080`
-- 目标帧率：`30 fps`
-- 编码：`H.264`
-- 目标码率：`5000 kbps`
-- 发送端口：`5600/UDP`
+1. `04_docs/需求3.0.md`
+2. `04_docs/01_发送端需求_v3.md`
+3. `04_docs/02_接收端需求_v3.md`
+4. `04_docs/03_中间传输数据格式_v3.md`
+5. `11_third_party/README.md`
+6. `04_docs/05_接收端落地说明_v3.md`
 
-常用关键字段：
+发送端开发人员重点阅读：
 
-- 发送端：`network.remote_ip`、`network.remote_port`
-- 接收端：`network.listen_ip`、`network.listen_port`
-- 抖动缓冲：`network.jitter_ms`
-- 编码参数：`codec.bitrate_kbps`、`codec.gop`
+1. `04_docs/01_发送端需求_v3.md`
+2. `04_docs/03_中间传输数据格式_v3.md`
+3. `11_third_party/README.md`
 
-## 7. 最短使用路径
+接收端开发人员重点阅读：
 
-### Linux 到 Linux
+1. `04_docs/02_接收端需求_v3.md`
+2. `04_docs/03_中间传输数据格式_v3.md`
+3. `11_third_party/README.md`
 
-在仓库根目录执行：
+双方共同对齐：
+
+1. `04_docs/03_中间传输数据格式_v3.md`
+
+## 5. Orbbec SDK 状态
+
+当前 v3 工程没有直接内置 Orbbec SDK 实体文件。
+
+已确认 Orbbec SDK v1.10.27 release 中有 Linux ARM64 包，可作为发送端候选 SDK：
+
+```text
+https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
+```
+
+本项目建议后续按架构分开放置：
+
+```text
+11_third_party/orbbec/linux_arm64/
+11_third_party/orbbec/linux_x64/
+```
+
+规则：
+
+1. `linux_arm64` 给树莓派 5 / 香橙派发送端使用。
+2. `linux_x64` 给 Ubuntu 24.04 x86_64 接收端或开发机参考使用。
+3. 不能把 x64 SDK 当作发送端 SDK。
+
+具体放置规则见：
+
+```text
+11_third_party/README.md
+```
+
+## 6. 打包交付说明
+
+如果当前阶段要把本目录发给其他开发人员，请至少包含：
+
+1. 本 README。
+2. `04_docs/` 全部文档。
+3. `11_third_party/README.md`。
+4. 当前一级目录结构。
+
+如果要连 SDK 一起打包，需要先确认是否允许分发 SDK 实体，并把 ARM64 和 x64 SDK 按架构分别放入 `11_third_party/orbbec/` 下。
+
+## 7. 接收端快速启动
+
+当前接收端默认写入：
+
+```text
+/home/fz/Desktop/nas
+```
+
+启动：
 
 ```bash
-bash start_receiver_linux.sh
-bash start_sender.sh 192.168.1.105
-bash status.sh
-bash stop.sh
+./05_tools/start_receiver.sh
 ```
 
-说明：
-
-- 先启动接收端，再启动发送端
-- `192.168.1.105` 替换为接收端设备的实际 IP
-- `status.sh` 会同时查看 Linux 接收端和发送端状态
-- `stop.sh` 会停止 Linux 接收端与发送端
-- 如果使用 Windows 接收端，请改用 `status_receiver_windows.ps1` 和 `stop_receiver_windows.ps1`
-
-### Linux 发送到 Windows 接收
-
-Windows 接收端在 PowerShell 中执行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\start_receiver_windows.ps1
-.\status_receiver_windows.ps1
-```
-
-或者直接使用一键菜单：
-
-```powershell
-.\one_click_windows.cmd
-```
-
-Linux 发送端执行：
+查看状态：
 
 ```bash
-bash start_sender.sh 192.168.1.105
+./05_tools/status_receiver.sh
 ```
 
-## 8. 一键脚本说明
-
-根目录脚本是交付入口，底层会调用 `05_tools/` 中的检查与启动逻辑。
-
-Linux 侧：
-
-- `bash start_receiver_linux.sh`: 检查 Linux 接收端环境并启动
-- `bash start_sender.sh <receiver_ip>`: 检查发送端环境并启动
-- `bash status.sh`: 查看 Linux 接收端和发送端状态
-- `bash stop.sh`: 停止 Linux 接收端和发送端
-- `bash one_click.sh`: Linux 一键菜单
-
-Windows 侧：
-
-- `.\start_receiver_windows.ps1`: 检查 Windows 接收端环境并启动
-- `.\status_receiver_windows.ps1`: 查看 Windows 接收端状态
-- `.\stop_receiver_windows.ps1`: 停止 Windows 接收端
-- `.\one_click_windows.cmd`: Windows 一键菜单入口
-
-## 9. 日常运行与运维
-
-### 接收端 IP 变化
-
-通常**不需要改接收端配置文件**，只需重新启动发送端并传入新的接收端 IP：
+停止：
 
 ```bash
-bash start_sender.sh <new_receiver_ip>
+./05_tools/stop_receiver.sh
 ```
 
-如需手工改配置，修改：
+Web 页面：
 
-`06_configs/sender.default.json` 中的 `network.remote_ip`
+```text
+http://127.0.0.1:8080
+```
 
-### 日志与运行状态
+命令行控制：
 
-Linux 发送端运行目录：
-
-- `07_samples/runtime/sender/`
-- 关键文件：`sender.runtime.json`、`sender.pid`、`sender_stdout.log`、`sender_stderr.log`
-
-Linux 接收端运行目录：
-
-- `07_samples/runtime/receiver_linux/`
-- 关键文件：`receiver.runtime.json`、`receiver.pid`、`receiver_stdout.log`、`receiver_stderr.log`
-
-Windows 接收端运行目录：
-
-- `02_receiver_windows/`
-- 关键文件：`receiver.runtime.json`、`receiver.pid`
-- 日志目录：`02_receiver_windows/Log/`
-
-状态查看命令：
-
-- `bash 05_tools/status_sender.sh`
-- `bash 05_tools/status_receiver_linux.sh`
-- `.\05_tools\status_receiver_windows.ps1`
-
-正常状态日志常见字段：
-
-- `state=RUNNING`: 当前链路处于运行状态
-- `fps_in`: 采集帧率
-- `fps_out`: 输出/显示帧率统计
-- `bitrate`: 当前估算码率
-- `latency`: 估算端到端延迟
-- `lost`: 累计丢包数
-- `reconnect`: 累计异常重连次数
-
-## 10. 验收结论与性能观察
-
-根据现有交付报告，当前版本已达到以下结果：
-
-- 发送端与接收端可稳定建立链路
-- 长时间运行场景下可持续工作
-- 支持 Linux / Windows 两种接收部署路径
-- 已具备进入发布与现场部署阶段的条件
-
-当前常用配置与观察结果：
-
-- 常用链路配置：`1920x1080@30`
-- 编码码率：约 `4~5 Mbps`
-- 已记录的本机回环平均延迟：约 `93ms ~ 100ms`
-- 在 5GHz 网络下，网络通常不是第一瓶颈
-
-需要注意：
-
-- 自动曝光场景下，帧率可能随曝光策略动态变化
-- 当前实测帧率可能受相机链路、USB 模式、CPU 负载等因素影响
-- 文档中曾记录过 `USB2.0` 链路下实际帧率低于目标帧率的情况
-
-## 11. 当前边界与已知限制
-
-当前版本边界如下：
-
-- 单发送实例仅支持 `1` 个 Gemini 相机
-- 多设备接入同一接收主机时，推荐稳定规划为 `5` 台并发
-- 可冲刺上限约 `6` 台，`7+` 台进入明显不稳定区间
-- 当前接收端核心为**软件解码**，不是硬件解码
-- 多路并发时，首要瓶颈通常在接收端解码与渲染能力
-
-## 12. 常见问题排查
-
-### 启动失败
-
-按下面顺序排查：
-
-1. 先执行对应环境检查脚本，确认依赖可以导入
-2. 查看 `stderr` 日志最后 50 行
-3. 确认配置文件存在，IP 正确，端口未被占用
-
-### 接收端黑屏或无画面
-
-优先检查：
-
-1. 接收端是否先于发送端启动
-2. 发送端目标 IP 是否填写正确
-3. 双方是否在同一网段
-4. 防火墙是否放行 UDP `5600`
-
-### 帧率偏低或偶发卡顿
-
-优先检查：
-
-1. `fps_in` 与 `fps_out` 是否明显不一致
-2. 相机是否工作在 `USB3.0` 而不是 `USB2.0`
-3. 发送端编码压力、接收端解码压力是否过大
-4. 无线网络是否存在抖动
-
-### 相机权限问题
-
-如果发送端报 USB 访问权限问题，可按发送端执行手册安装 udev 规则并重新插拔相机。详见：
-
-- [01_sender_linux/执行手册.md](01_sender_linux/执行手册.md)
-
-## 13. 进阶使用
-
-### 发送端 `systemd` 开机自启
-
-Linux 发送端支持 `systemd` 开机自启，相关文件位于：
-
-- `01_sender_linux/systemd/`
-
-典型安装方式详见：
-
-- [01_sender_linux/README.md](01_sender_linux/README.md)
-- [01_sender_linux/执行手册.md](01_sender_linux/执行手册.md)
-
-### 工程级运行入口
-
-如果不是走交付包根目录脚本，也可以分别进入工程目录手工执行：
-
-- 发送端入口：`01_sender_linux/run_sender.py`
-- Linux 接收端入口：`03_receiver_linux/run_receiver.py`
-- Windows 接收端入口：`02_receiver_windows/run_receiver.py`
-
-## 14. 补充文档
-
-- [04_docs/01_product_manual.md](04_docs/01_product_manual.md)
-- [04_docs/02_quick_start.md](04_docs/02_quick_start.md)
-- [04_docs/03_deploy_ops_manual.md](04_docs/03_deploy_ops_manual.md)
-- [04_docs/04_technical_route.md](04_docs/04_technical_route.md)
-- [06_configs/README.md](06_configs/README.md)
-- [08_reports/01_test_acceptance.md](08_reports/01_test_acceptance.md)
-- [08_reports/02_boundary_limits.md](08_reports/02_boundary_limits.md)
-- [08_reports/03_handoff.md](08_reports/03_handoff.md)
-
-## 15. 版本结论
-
-当前版本已经完成“**单路 Gemini 无线视频传输 + Linux/Windows 跨平台接收 + 交付级启动运维脚本**”这一阶段目标，适合作为现场部署版本与后续升级的基础版本。
-
-后续若继续演进，优先建议：
-
-1. 增加接收端硬件解码路径
-2. 统一 Linux/Windows 接收端代码分支
-3. 推进多相机架构与并发回归测试
-4. 增加 CI 自动检查与自动化验收
+```bash
+./05_tools/gwv3_receiver_cli.py status
+./05_tools/gwv3_receiver_cli.py start-all
+./05_tools/gwv3_receiver_cli.py stop-all
+```

@@ -1,0 +1,117 @@
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace gwv3 {
+
+constexpr const char *kProtocolVersion = "3.0";
+constexpr uint16_t kMediaHeaderVersion = 1;
+constexpr uint32_t kMediaMagic = 0x33565747;  // bytes: G W V 3
+
+enum class StreamType : uint8_t {
+    rgb = 1,
+    depth_raw = 2,
+};
+
+enum class PixelFormat : uint16_t {
+    encoded_video = 1,
+    depth_u16 = 2,
+};
+
+enum MediaFlags : uint32_t {
+    key_frame = 1u << 0,
+    dropped_before = 1u << 1,
+    end_of_segment_hint = 1u << 2,
+    has_system_timestamp = 1u << 3,
+};
+
+struct MediaFrameMeta {
+    StreamType stream_type;
+    uint32_t flags = 0;
+    std::string sender_id;
+    std::string camera_id;
+    std::string codec_or_compression;
+    uint64_t frame_id = 0;
+    uint64_t timestamp_us = 0;
+    uint64_t system_timestamp_us = 0;
+    uint64_t pair_id = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    PixelFormat pixel_format;
+    uint64_t payload_size = 0;
+    uint64_t uncompressed_size = 0;
+};
+
+inline void append_u8(std::vector<uint8_t> &out, uint8_t value) {
+    out.push_back(value);
+}
+
+inline void append_le16(std::vector<uint8_t> &out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+}
+
+inline void append_le32(std::vector<uint8_t> &out, uint32_t value) {
+    for(int i = 0; i < 4; ++i) {
+        out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xffu));
+    }
+}
+
+inline void append_le64(std::vector<uint8_t> &out, uint64_t value) {
+    for(int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xffu));
+    }
+}
+
+inline void append_bytes(std::vector<uint8_t> &out, const void *data, size_t size) {
+    const auto *begin = static_cast<const uint8_t *>(data);
+    out.insert(out.end(), begin, begin + size);
+}
+
+inline std::vector<uint8_t> build_media_packet(const MediaFrameMeta &meta, const void *payload) {
+    if(meta.sender_id.size() > UINT16_MAX || meta.camera_id.size() > UINT16_MAX || meta.codec_or_compression.size() > UINT16_MAX) {
+        throw std::runtime_error("media packet string field is too long");
+    }
+    if(meta.payload_size > 0 && payload == nullptr) {
+        throw std::runtime_error("media packet payload is null");
+    }
+
+    constexpr uint16_t fixed_header_size = 94;
+    std::vector<uint8_t> out;
+    out.reserve(fixed_header_size + meta.sender_id.size() + meta.camera_id.size() + meta.codec_or_compression.size()
+                + static_cast<size_t>(meta.payload_size));
+
+    append_le32(out, kMediaMagic);
+    append_le16(out, kMediaHeaderVersion);
+    append_le16(out, fixed_header_size);
+    append_u8(out, static_cast<uint8_t>(meta.stream_type));
+    append_u8(out, 0);  // reserved for fixed-header alignment/versioning
+    append_le32(out, meta.flags);
+    append_le16(out, static_cast<uint16_t>(meta.sender_id.size()));
+    append_le16(out, static_cast<uint16_t>(meta.camera_id.size()));
+    append_le16(out, static_cast<uint16_t>(meta.codec_or_compression.size()));
+    append_le64(out, meta.frame_id);
+    append_le64(out, meta.timestamp_us);
+    append_le64(out, meta.system_timestamp_us);
+    append_le64(out, meta.pair_id);
+    append_le32(out, meta.width);
+    append_le32(out, meta.height);
+    append_le16(out, static_cast<uint16_t>(meta.pixel_format));
+    append_le64(out, meta.payload_size);
+    append_le64(out, meta.uncompressed_size);
+    for(int i = 0; i < 16; ++i) {
+        append_u8(out, 0);
+    }
+
+    append_bytes(out, meta.sender_id.data(), meta.sender_id.size());
+    append_bytes(out, meta.camera_id.data(), meta.camera_id.size());
+    append_bytes(out, meta.codec_or_compression.data(), meta.codec_or_compression.size());
+    append_bytes(out, payload, static_cast<size_t>(meta.payload_size));
+    return out;
+}
+
+}  // namespace gwv3
