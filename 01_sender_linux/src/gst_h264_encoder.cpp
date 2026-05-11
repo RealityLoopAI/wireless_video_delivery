@@ -19,6 +19,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
         "caps=video/x-raw,format=BGR,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
         "! queue max-size-buffers=2 leaky=downstream "
         "! videoconvert "
+        "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
         "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
         "! h264parse "
         "! video/x-h264,stream-format=byte-stream,alignment=au "

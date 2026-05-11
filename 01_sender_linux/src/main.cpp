@@ -301,6 +301,22 @@ cv::Mat depth_to_color(const std::shared_ptr<ob::DepthFrame> &frame) {
     return color;
 }
 
+bool h264_payload_has_idr(const std::vector<uint8_t> &payload) {
+    for(size_t i = 0; i + 4 < payload.size(); ++i) {
+        size_t nal_offset = 0;
+        if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
+            nal_offset = i + 3;
+        }
+        else if(i + 5 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+            nal_offset = i + 4;
+        }
+        if(nal_offset > 0 && nal_offset < payload.size() && (payload[nal_offset] & 0x1fu) == 5u) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Json::Value sender_hello(const AppConfig &config) {
     Json::Value msg = base_message(config, "sender_hello");
     msg["sender_version"] = config.sender_version;
@@ -478,7 +494,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                         for(const auto &encoded : encoded_units) {
                             MediaFrameMeta meta;
                             meta.stream_type = StreamType::rgb;
-                            meta.flags = has_system_timestamp;
+                            meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded) ? key_frame : 0u);
                             meta.sender_id = config.sender_id;
                             meta.camera_id = camera->config.camera_id;
                             meta.codec_or_compression = "h264";

@@ -2,6 +2,8 @@
 
 This package is for receiver-side integration with the current sender implementation.
 
+2026-05-11 update: the sender H.264 pipeline now forces `NV12` before Rockchip `mpph264enc`. This fixes the issue where receivers only saw AUD/SPS/PPS header NALs without decodable picture frames. RGB packets now set `flags.bit0` when the payload contains an IDR frame.
+
 Read first:
 
 ```text
