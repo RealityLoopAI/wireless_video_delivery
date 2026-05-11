@@ -74,7 +74,20 @@ def depth_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> R
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
-            media_type = resp.headers.get_content_type() or "image/x-portable-pixmap"
+            media_type = resp.headers.get_content_type() or "image/bmp"
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"depth preview unavailable: {exc}") from exc
+
+
+@app.get("/api/preview/rgb")
+def rgb_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> Response:
+    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
+    url = ADMIN_BASE.rstrip("/") + f"/api/preview/rgb?{query}"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            media_type = resp.headers.get_content_type() or "image/bmp"
+            return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"rgb preview unavailable: {exc}") from exc

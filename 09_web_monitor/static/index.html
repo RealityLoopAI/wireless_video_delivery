@@ -139,16 +139,21 @@
       const rec = c.recording ? '<span class="pill ok">RECORDING</span>' : '<span class="pill off">IDLE</span>';
       const online = c.online ? '<span class="pill ok">ONLINE</span>' : '<span class="pill off">OFFLINE</span>';
       const rgbWarn = c.rgb_packets > 0 && c.rgb_bytes / c.rgb_packets < 1000 ? '<span class="pill warn">RGB HEADER ONLY</span>' : '';
-      const previewUrl = `/api/preview/depth?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+      const stamp = Date.now();
+      const rgbUrl = `/api/preview/rgb?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${stamp}`;
+      const depthUrl = `/api/preview/depth?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${stamp}`;
+      const rgbView = c.rgb_preview_available
+        ? `<img alt="RGB preview" src="${rgbUrl}">`
+        : '<span>等待 RGB 关键帧</span>';
       const depthView = c.depth_preview_available
-        ? `<img alt="Depth preview" src="${previewUrl}">`
+        ? `<img alt="Depth preview" src="${depthUrl}">`
         : '<span>等待 Depth 预览帧</span>';
       return `<article class="card">
         <div>${online}${rec}${rgbWarn}</div>
         <div class="key">${c.camera_key}</div>
         <div class="meta">${c.segment_dir || '未开启切片'}</div>
         <div class="preview">
-          <div class="view" data-title="RGB"><span>RGB 暂无有效画面<br>发送端当前只收到 H.264 头信息</span></div>
+          <div class="view" data-title="RGB">${rgbView}</div>
           <div class="view" data-title="Depth 伪彩">${depthView}</div>
         </div>
         <div class="stats">
@@ -156,6 +161,7 @@
           <div class="stat"><div class="label">Depth packets</div><div class="value">${c.depth_packets}</div></div>
           <div class="stat"><div class="label">RGB bytes</div><div class="value">${fmtBytes(c.rgb_bytes)}</div></div>
           <div class="stat"><div class="label">Depth bytes</div><div class="value">${fmtBytes(c.depth_bytes)}</div></div>
+          <div class="stat"><div class="label">RGB preview</div><div class="value">${c.rgb_preview_width || 0}x${c.rgb_preview_height || 0}</div></div>
           <div class="stat"><div class="label">Depth preview</div><div class="value">${c.depth_preview_width || 0}x${c.depth_preview_height || 0}</div></div>
           <div class="stat"><div class="label">Last media us</div><div class="value">${c.last_media_us}</div></div>
         </div>

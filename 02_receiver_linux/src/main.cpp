@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -39,6 +40,8 @@ namespace {
 
 constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
+constexpr size_t kMaxRgbPreviewH264Bytes = 8ull * 1024ull * 1024ull;
+constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 
 std::atomic<bool> g_running{true};
 
@@ -285,6 +288,25 @@ std::string camera_key(const std::string &sender_id, const std::string &camera_i
     return sender_id + "_" + camera_id;
 }
 
+bool h264_payload_has_nal_type(const std::vector<uint8_t> &payload, uint8_t expected_type) {
+    for(size_t i = 0; i + 4 < payload.size(); ++i) {
+        size_t nal_offset = std::string::npos;
+        if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
+            nal_offset = i + 3;
+        }
+        else if(i + 4 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+            nal_offset = i + 4;
+        }
+        if(nal_offset != std::string::npos && nal_offset < payload.size()) {
+            const uint8_t nal_type = payload[nal_offset] & 0x1fu;
+            if(nal_type == expected_type) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool h264_payload_has_vcl_nal(const std::vector<uint8_t> &payload) {
     for(size_t i = 0; i + 4 < payload.size(); ++i) {
         size_t nal_offset = std::string::npos;
@@ -336,7 +358,66 @@ void append_depth_color(std::vector<uint8_t> &out, uint16_t value, uint16_t max_
     out.push_back(channel(1.0));
 }
 
-PreviewImage build_depth_preview_ppm(const std::vector<uint8_t> &payload, uint32_t width, uint32_t height) {
+void append_u16_le(std::vector<uint8_t> &out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+}
+
+void append_u32_le(std::vector<uint8_t> &out, uint32_t value) {
+    for(int i = 0; i < 4; ++i) {
+        out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xffu));
+    }
+}
+
+PreviewImage build_bmp_from_rgb_pixels(const std::vector<uint8_t> &rgb, uint32_t width, uint32_t height) {
+    PreviewImage image;
+    if(width == 0 || height == 0 || rgb.size() < static_cast<size_t>(width) * height * 3ull) {
+        return image;
+    }
+
+    constexpr uint32_t file_header_size = 14;
+    constexpr uint32_t dib_header_size = 40;
+    const uint32_t row_stride = ((width * 3u + 3u) / 4u) * 4u;
+    const uint32_t image_size = row_stride * height;
+    const uint32_t file_size = file_header_size + dib_header_size + image_size;
+
+    image.width = width;
+    image.height = height;
+    image.bytes.reserve(file_size);
+    image.bytes.push_back('B');
+    image.bytes.push_back('M');
+    append_u32_le(image.bytes, file_size);
+    append_u16_le(image.bytes, 0);
+    append_u16_le(image.bytes, 0);
+    append_u32_le(image.bytes, file_header_size + dib_header_size);
+    append_u32_le(image.bytes, dib_header_size);
+    append_u32_le(image.bytes, width);
+    append_u32_le(image.bytes, height);
+    append_u16_le(image.bytes, 1);
+    append_u16_le(image.bytes, 24);
+    append_u32_le(image.bytes, 0);
+    append_u32_le(image.bytes, image_size);
+    append_u32_le(image.bytes, 2835);
+    append_u32_le(image.bytes, 2835);
+    append_u32_le(image.bytes, 0);
+    append_u32_le(image.bytes, 0);
+
+    std::vector<uint8_t> padding(row_stride - width * 3u, 0);
+    for(uint32_t row = 0; row < height; ++row) {
+        const uint32_t y = height - 1u - row;
+        for(uint32_t x = 0; x < width; ++x) {
+            const size_t offset = (static_cast<size_t>(y) * width + x) * 3ull;
+            image.bytes.push_back(rgb[offset + 2]);
+            image.bytes.push_back(rgb[offset + 1]);
+            image.bytes.push_back(rgb[offset + 0]);
+        }
+        image.bytes.insert(image.bytes.end(), padding.begin(), padding.end());
+    }
+
+    return image;
+}
+
+PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32_t width, uint32_t height) {
     PreviewImage image;
     if(width == 0 || height == 0 || payload.size() < static_cast<size_t>(width) * height * 2ull) {
         return image;
@@ -358,21 +439,49 @@ PreviewImage build_depth_preview_ppm(const std::vector<uint8_t> &payload, uint32
         }
     }
 
-    std::ostringstream header;
-    header << "P6\n" << image.width << " " << image.height << "\n255\n";
-    const auto header_text = header.str();
-    image.bytes.assign(header_text.begin(), header_text.end());
-    image.bytes.reserve(header_text.size() + static_cast<size_t>(image.width) * image.height * 3ull);
+    std::vector<uint8_t> rgb;
+    rgb.reserve(static_cast<size_t>(image.width) * image.height * 3ull);
 
     for(uint32_t y = 0; y < height && y / stride < image.height; y += stride) {
         for(uint32_t x = 0; x < width && x / stride < image.width; x += stride) {
             const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
             const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            append_depth_color(image.bytes, value, max_value);
+            append_depth_color(rgb, value, max_value);
         }
     }
 
-    return image;
+    return build_bmp_from_rgb_pixels(rgb, image.width, image.height);
+}
+
+std::string safe_filename_component(const std::string &value) {
+    std::string out;
+    out.reserve(value.size());
+    for(unsigned char ch : value) {
+        if(std::isalnum(ch) || ch == '-' || ch == '_') {
+            out.push_back(static_cast<char>(ch));
+        }
+        else {
+            out.push_back('_');
+        }
+    }
+    return out.empty() ? "camera" : out;
+}
+
+bool write_binary_file(const std::filesystem::path &path, const std::vector<uint8_t> &bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::out | std::ios::trunc);
+    if(!output) {
+        return false;
+    }
+    output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(output);
+}
+
+std::vector<uint8_t> read_binary_file(const std::filesystem::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    if(!input) {
+        return {};
+    }
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 }
 
 struct Config {
@@ -453,6 +562,45 @@ private:
     std::ofstream stream_;
     std::mutex mutex_;
 };
+
+PreviewImage build_rgb_preview_bmp(const Config &cfg, const std::string &key, const std::vector<uint8_t> &h264,
+                                   uint32_t width, uint32_t height, Logger &logger) {
+    PreviewImage image;
+    if(h264.empty()) {
+        return image;
+    }
+
+    const auto base = safe_filename_component(key) + "_" + std::to_string(getpid()) + "_" + std::to_string(now_us());
+    const auto input_path = std::filesystem::temp_directory_path() / ("gwv3_rgb_preview_" + base + ".h264");
+    const auto output_path = std::filesystem::temp_directory_path() / ("gwv3_rgb_preview_" + base + ".bmp");
+
+    if(!write_binary_file(input_path, h264)) {
+        logger.warn("rgb preview temp input write failed: " + input_path.string());
+        return image;
+    }
+
+    const std::string cmd = shell_quote(cfg.ffmpeg_path) +
+                            " -hide_banner -loglevel error -y -f h264 -i " + shell_quote(input_path.string()) +
+                            " -frames:v 1 -vf scale=320:-2 " + shell_quote(output_path.string()) + " >/dev/null 2>&1";
+    const int rc = std::system(cmd.c_str());
+    if(rc == 0) {
+        image.bytes = read_binary_file(output_path);
+        image.width = width > 0 ? std::min<uint32_t>(width, 320u) : 0;
+        image.height = height;
+    }
+    else {
+        logger.warn("rgb preview ffmpeg decode failed for " + key);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(input_path, ec);
+    std::filesystem::remove(output_path, ec);
+    if(image.bytes.empty()) {
+        image.width = 0;
+        image.height = 0;
+    }
+    return image;
+}
 
 struct MediaPacket {
     StreamType stream_type = StreamType::rgb;
@@ -820,6 +968,11 @@ struct CameraState {
     uint64_t depth_packets = 0;
     uint64_t rgb_bytes = 0;
     uint64_t depth_bytes = 0;
+    uint64_t rgb_preview_us = 0;
+    uint32_t rgb_preview_width = 0;
+    uint32_t rgb_preview_height = 0;
+    std::vector<uint8_t> rgb_preview_h264;
+    std::vector<uint8_t> rgb_preview_prefix_h264;
     uint64_t depth_preview_us = 0;
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
@@ -893,6 +1046,10 @@ public:
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
+            out << "\"rgb_preview_available\":" << (!cam.rgb_preview_h264.empty() ? "true" : "false") << ',';
+            out << "\"rgb_preview_width\":" << cam.rgb_preview_width << ',';
+            out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
+            out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
             out << "\"depth_preview_available\":" << (!cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
             out << "\"depth_preview_width\":" << cam.depth_preview_width << ',';
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
@@ -977,6 +1134,30 @@ public:
         return it->second->depth_preview_ppm;
     }
 
+    std::optional<std::vector<uint8_t>> rgb_preview(const std::string &sender_id, const std::string &camera_id) {
+        std::string key;
+        std::vector<uint8_t> h264;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end() || it->second->rgb_preview_h264.empty()) {
+                return std::nullopt;
+            }
+            h264 = it->second->rgb_preview_h264;
+            width = it->second->rgb_preview_width;
+            height = it->second->rgb_preview_height;
+        }
+
+        auto preview = build_rgb_preview_bmp(config_, key, h264, width, height, logger_);
+        if(preview.bytes.empty()) {
+            return std::nullopt;
+        }
+        return preview.bytes;
+    }
+
 private:
     CameraState &ensure_camera_locked(const std::string &sender_id, const std::string &camera_id) {
         const auto key = camera_key(sender_id, camera_id);
@@ -1018,6 +1199,40 @@ private:
         logger_.info("status " + type + " sender=" + sender_id + (camera_id.empty() ? "" : " camera=" + camera_id));
     }
 
+    void update_rgb_preview_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
+        if(packet.payload.empty()) {
+            return;
+        }
+
+        if(!has_vcl) {
+            if(cam.rgb_preview_prefix_h264.size() + packet.payload.size() > kMaxRgbPreviewPrefixBytes) {
+                cam.rgb_preview_prefix_h264.clear();
+            }
+            cam.rgb_preview_prefix_h264.insert(cam.rgb_preview_prefix_h264.end(), packet.payload.begin(), packet.payload.end());
+            return;
+        }
+
+        if(has_idr) {
+            cam.rgb_preview_h264.clear();
+            if(!cam.rgb_preview_prefix_h264.empty()) {
+                cam.rgb_preview_h264.insert(cam.rgb_preview_h264.end(), cam.rgb_preview_prefix_h264.begin(), cam.rgb_preview_prefix_h264.end());
+            }
+        }
+        else if(cam.rgb_preview_h264.empty()) {
+            return;
+        }
+
+        if(cam.rgb_preview_h264.size() + packet.payload.size() > kMaxRgbPreviewH264Bytes) {
+            cam.rgb_preview_h264.clear();
+            return;
+        }
+
+        cam.rgb_preview_h264.insert(cam.rgb_preview_h264.end(), packet.payload.begin(), packet.payload.end());
+        cam.rgb_preview_width = packet.width;
+        cam.rgb_preview_height = packet.height;
+        cam.rgb_preview_us = cam.last_media_us;
+    }
+
     void handle_media_packet(const MediaPacket &packet) {
         if(packet.sender_id.empty() || packet.camera_id.empty()) {
             logger_.warn("media packet with empty sender_id/camera_id ignored");
@@ -1026,8 +1241,11 @@ private:
 
         PreviewImage preview;
         if(packet.stream_type == StreamType::depth_raw) {
-            preview = build_depth_preview_ppm(packet.payload, packet.width, packet.height);
+            preview = build_depth_preview_bmp(packet.payload, packet.width, packet.height);
         }
+        const bool rgb_has_idr = packet.stream_type == StreamType::rgb &&
+                                 (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
+        const bool rgb_has_vcl = packet.stream_type == StreamType::rgb && h264_payload_has_vcl_nal(packet.payload);
 
         std::lock_guard<std::mutex> lock(mutex_);
         auto &cam = ensure_camera_locked(packet.sender_id, packet.camera_id);
@@ -1035,6 +1253,7 @@ private:
         if(packet.stream_type == StreamType::rgb) {
             cam.rgb_packets++;
             cam.rgb_bytes += packet.payload_size;
+            update_rgb_preview_locked(cam, packet, rgb_has_idr, rgb_has_vcl);
         }
         else if(packet.stream_type == StreamType::depth_raw) {
             cam.depth_packets++;
@@ -1226,12 +1445,24 @@ private:
             const auto preview = depth_preview(args.count("sender_id") ? args.at("sender_id") : "",
                                                args.count("camera_id") ? args.at("camera_id") : "");
             if(preview) {
-                content_type = "image/x-portable-pixmap";
+                content_type = "image/bmp";
                 body.assign(reinterpret_cast<const char *>(preview->data()), preview->size());
             }
             else {
                 status = 404;
                 body = "{\"ok\":false,\"error\":\"depth preview not found\"}";
+            }
+        }
+        else if(method == "GET" && path == "/api/preview/rgb") {
+            const auto preview = rgb_preview(args.count("sender_id") ? args.at("sender_id") : "",
+                                             args.count("camera_id") ? args.at("camera_id") : "");
+            if(preview) {
+                content_type = "image/bmp";
+                body.assign(reinterpret_cast<const char *>(preview->data()), preview->size());
+            }
+            else {
+                status = 404;
+                body = "{\"ok\":false,\"error\":\"rgb preview not found\"}";
             }
         }
         else {
