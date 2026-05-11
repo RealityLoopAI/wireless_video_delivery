@@ -28,8 +28,8 @@
       "serial_number": "AY2M54302ZH",
       "device_index": 0,
       "rgb_profile": {
-        "width": 640,
-        "height": 480,
+        "width": 1280,
+        "height": 720,
         "fps": 30,
         "format": "mjpg"
       },
@@ -43,7 +43,7 @@
         "codec": "h264",
         "mode": "hardware",
         "gstreamer_encoder": "mpph264enc",
-        "bitrate_bps": 2000000
+        "bitrate_bps": 6000000
       },
       "depth_transport": {
         "compression": "zlib"
