@@ -22,6 +22,7 @@
 9. FastAPI Web/REST 监控服务。
 10. 接收端 CLI 控制工具。
 11. 发送端和接收端一键启动、停止、状态脚本。
+12. 接收端 Orbbec 兼容交付导出工具。
 
 暂未内置：
 
@@ -108,12 +109,12 @@
 
 建议按以下顺序阅读：
 
-1. `04_docs/需求3.0.md`
-2. `04_docs/01_发送端需求_v3.md`
-3. `04_docs/02_接收端需求_v3.md`
-4. `04_docs/03_中间传输数据格式_v3.md`
-5. `11_third_party/README.md`
-6. `04_docs/05_接收端落地说明_v3.md`
+1. `04_docs/00_文档索引_v3.md`
+2. `04_docs/需求3.0.md`
+3. `04_docs/03_中间传输数据格式_v3.md`
+4. `04_docs/08_接收端运行使用手册_v3.md`
+5. `04_docs/06_接收端当前存储格式说明_v3.md`
+6. `04_docs/07_Orbbec交付导出说明_v3.md`
 7. `04_docs/06_发送端运行使用手册_v3.md`
 
 发送端开发人员重点阅读：
@@ -128,7 +129,9 @@
 
 1. `04_docs/02_接收端需求_v3.md`
 2. `04_docs/03_中间传输数据格式_v3.md`
-3. `11_third_party/README.md`
+3. `04_docs/08_接收端运行使用手册_v3.md`
+4. `04_docs/06_接收端当前存储格式说明_v3.md`
+5. `04_docs/07_Orbbec交付导出说明_v3.md`
 
 双方共同对齐：
 
@@ -260,4 +263,17 @@ http://127.0.0.1:8080
 ./05_tools/gwv3_receiver_cli.py status
 ./05_tools/gwv3_receiver_cli.py start-all
 ./05_tools/gwv3_receiver_cli.py stop-all
+```
+
+Orbbec 兼容交付导出：
+
+```bash
+./05_tools/export_orbbec_delivery.py <segment_dir> --overwrite
+```
+
+详细说明见：
+
+```text
+04_docs/08_接收端运行使用手册_v3.md
+04_docs/07_Orbbec交付导出说明_v3.md
 ```
