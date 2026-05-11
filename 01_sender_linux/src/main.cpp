@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -57,6 +58,8 @@ struct CameraRuntime {
     std::string last_error;
     float depth_scale = 0.0f;
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
+    cv::Mat latest_bgr;
+    cv::Mat latest_depth_color;
 };
 
 Args parse_args(int argc, char **argv) {
@@ -420,13 +423,20 @@ void preview_frame(const std::string &camera_id, const cv::Mat &bgr, const cv::M
     if(!preview_enabled || bgr.empty() || depth_color.empty()) {
         return;
     }
+    const std::string window_name = "Gemini Sender " + camera_id;
+    static std::set<std::string> initialized_windows;
+    if(initialized_windows.insert(window_name).second) {
+        cv::namedWindow(window_name, cv::WINDOW_NORMAL);
+        cv::resizeWindow(window_name, 960, 360);
+        cv::moveWindow(window_name, 80, 80);
+    }
     cv::Mat rgb_small;
     cv::Mat depth_small;
     cv::resize(bgr, rgb_small, cv::Size(480, 360));
     cv::resize(depth_color, depth_small, cv::Size(480, 360));
     cv::Mat wall;
     cv::hconcat(rgb_small, depth_small, wall);
-    cv::imshow("Gemini Sender " + camera_id, wall);
+    cv::imshow(window_name, wall);
     cv::waitKey(1);
 }
 
@@ -490,6 +500,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             cv::Mat bgr;
             if(color) {
                 bgr = color_to_bgr(color);
+                if(!bgr.empty()) {
+                    camera->latest_bgr = bgr;
+                }
                 if(!bgr.empty() && !camera->encoder) {
                     camera->encoder = std::make_unique<GstH264Encoder>(bgr.cols, bgr.rows, camera->color_profile->fps(),
                                                                         camera->config.rgb_encoding.bitrate_bps,
@@ -567,13 +580,16 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 }
                 camera->depth_frames++;
                 depth_color = depth_to_color(depth);
+                if(!depth_color.empty()) {
+                    camera->latest_depth_color = depth_color;
+                }
             }
 
             if(!camera->announced && depth && color) {
                 send_status(transport, logger, camera_announce(config, *camera));
                 camera->announced = true;
             }
-            preview_frame(camera->config.camera_id, bgr, depth_color, config.preview.enabled);
+            preview_frame(camera->config.camera_id, camera->latest_bgr, camera->latest_depth_color, config.preview.enabled);
         }
 
         const auto now = std::chrono::steady_clock::now();
