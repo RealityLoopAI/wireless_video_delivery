@@ -5,7 +5,7 @@
 本目录是无线 RGBD 采集与录制系统 3.0 的工程骨架。
 3.0 目标是使用 C++ 重构发送端和接收端，实现全 Linux 环境下的多路 Gemini RGB + Depth 采集、传输、网页预览和 NAS 录制。
 
-当前目录主要用于需求拆分和分工交付，还不是可编译运行版本。
+当前目录已包含发送端、接收端、Web 监控和控制脚本源码；发送端需要按 `11_third_party/README.md` 放置 Orbbec ARM64 SDK 后编译运行。
 
 ## 2. 当前状态
 
@@ -114,12 +114,15 @@
 4. `04_docs/03_中间传输数据格式_v3.md`
 5. `11_third_party/README.md`
 6. `04_docs/05_接收端落地说明_v3.md`
+7. `04_docs/06_发送端运行使用手册_v3.md`
 
 发送端开发人员重点阅读：
 
 1. `04_docs/01_发送端需求_v3.md`
 2. `04_docs/03_中间传输数据格式_v3.md`
-3. `11_third_party/README.md`
+3. `04_docs/04_发送端交付与接收端对接说明_v3.md`
+4. `04_docs/06_发送端运行使用手册_v3.md`
+5. `11_third_party/README.md`
 
 接收端开发人员重点阅读：
 
@@ -171,7 +174,55 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 
 如果要连 SDK 一起打包，需要先确认是否允许分发 SDK 实体，并把 ARM64 和 x64 SDK 按架构分别放入 `11_third_party/orbbec/` 下。
 
-## 7. 接收端快速启动
+## 7. 发送端快速启动
+
+当前发送端默认配置：
+
+```text
+06_configs/sender_orangepi5pro-01_depth_zlib.json
+```
+
+默认规格：
+
+```text
+sender_id: orangepi5pro-01
+camera_id: cam01
+receiver_ip: 192.168.1.107
+RGB: 1920x1080@30 H.264 12Mbps
+Depth: 640x400@30 zlib
+```
+
+启动：
+
+```bash
+./05_tools/start_sender.sh
+```
+
+带本地预览启动：
+
+```bash
+./05_tools/start_sender_preview.sh
+```
+
+查看状态：
+
+```bash
+./05_tools/status_sender.sh
+```
+
+停止：
+
+```bash
+./05_tools/stop_sender.sh
+```
+
+详细说明见：
+
+```text
+04_docs/06_发送端运行使用手册_v3.md
+```
+
+## 8. 接收端快速启动
 
 当前接收端默认写入：
 
