@@ -935,6 +935,7 @@ struct FrameInfo {
     bool valid = false;
     uint64_t frame_id = 0;
     uint64_t timestamp_us = 0;
+    uint64_t system_timestamp_us = 0;
 };
 
 struct CameraState;
@@ -963,7 +964,8 @@ public:
         std::filesystem::create_directories(directory_);
 
         frames_csv_.open(std::filesystem::path(directory_) / "frames.csv", std::ios::out | std::ios::trunc);
-        frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size\n";
+        frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
+                       "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us\n";
 
         if(cfg.write_debug_h264) {
             rgb_debug_.open(std::filesystem::path(directory_) / "rgb_debug.h264", std::ios::binary | std::ios::out | std::ios::trunc);
@@ -1031,7 +1033,7 @@ public:
                 rgb_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
             write_rgb_packet(cfg, packet, logger);
-            last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us};
+            last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
         }
         else if(packet.stream_type == StreamType::depth_raw) {
             if(depth_debug_) {
@@ -1039,7 +1041,7 @@ public:
             }
             ensure_depth_pipe(cfg, packet.width, packet.height, logger);
             depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
-            last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us};
+            last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
         }
 
         if(frames_csv_) {
@@ -1062,7 +1064,15 @@ public:
                                                                                       : last_depth_.timestamp_us - last_rgb_.timestamp_us;
                 frames_csv_ << static_cast<double>(delta) / 1000.0;
             }
-            frames_csv_ << ',' << packet.width << ',' << packet.height << ',' << packet.payload_size << '\n';
+            frames_csv_ << ',' << packet.width << ',' << packet.height << ',' << packet.payload_size << ',' << packet.system_timestamp_us << ',';
+            if(last_rgb_.valid) {
+                frames_csv_ << last_rgb_.system_timestamp_us;
+            }
+            frames_csv_ << ',';
+            if(last_depth_.valid) {
+                frames_csv_ << last_depth_.system_timestamp_us;
+            }
+            frames_csv_ << '\n';
         }
     }
 
