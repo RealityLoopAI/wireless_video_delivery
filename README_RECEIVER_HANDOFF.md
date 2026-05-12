@@ -10,6 +10,8 @@ This package is for receiver-side integration with the current sender implementa
 
 2026-05-12 startup update: sender startup/status scripts now print the active config, receiver endpoint, RGB/Depth profiles, encoder, Depth compression, preview mode, route, Wi-Fi link, and validation result before starting.
 
+2026-05-12 performance update: sender RGB now uses the camera MJPG payload directly through Rockchip `mppjpegdec` before `mpph264enc`, avoiding the old software JPEG decode path for transmission. On the current Orange Pi 5 Pro + Orbbec SV1301S_U3 unit, the requested RGB profile is still `1920x1080@30`, but measured RGB output is about `19-21fps` even in RGB-only probing; Depth remains about `30fps`. Receiver recording and preview should use measured sender frame cadence rather than assuming 30 RGB frames per second.
+
 Read first:
 
 ```text
