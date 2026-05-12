@@ -44,7 +44,7 @@ constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
-constexpr uint32_t kRgbPreviewFps = 15;
+constexpr uint32_t kRgbPreviewFps = 30;
 
 std::atomic<bool> g_running{true};
 
