@@ -44,6 +44,7 @@ constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
+constexpr uint32_t kRgbPreviewFps = 15;
 
 std::atomic<bool> g_running{true};
 
@@ -606,10 +607,10 @@ public:
                 close(fd);
             }
 
-            const std::string scale = "fps=8,scale=" + std::to_string(kRgbPreviewWidth) + ":-2";
+            const std::string scale = "fps=" + std::to_string(kRgbPreviewFps) + ",scale=" + std::to_string(kRgbPreviewWidth) + ":-2";
             execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
-                   "-flags", "low_delay", "-f", "h264", "-i", "pipe:0", "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe",
-                   "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
+                   "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
+                   "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
             _exit(127);
         }
 
