@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -42,6 +43,50 @@ struct Args {
     bool no_send = false;
 };
 
+struct CameraPerfStats {
+    uint64_t wait_calls = 0;
+    uint64_t wait_timeouts = 0;
+    uint64_t rgb_input_frames = 0;
+    uint64_t depth_input_frames = 0;
+    uint64_t rgb_sent_packets = 0;
+    uint64_t depth_sent_frames = 0;
+    uint64_t rgb_send_failures = 0;
+    uint64_t depth_send_failures = 0;
+    uint64_t rgb_bytes = 0;
+    uint64_t depth_bytes = 0;
+    bool rgb_frame_id_seen = false;
+    bool depth_frame_id_seen = false;
+    uint64_t rgb_first_frame_id = 0;
+    uint64_t rgb_last_frame_id = 0;
+    uint64_t depth_first_frame_id = 0;
+    uint64_t depth_last_frame_id = 0;
+    double wait_ms = 0.0;
+    double rgb_decode_ms = 0.0;
+    double rgb_encode_ms = 0.0;
+    double rgb_send_ms = 0.0;
+    double depth_compress_ms = 0.0;
+    double depth_send_ms = 0.0;
+    double depth_preview_ms = 0.0;
+    double preview_ms = 0.0;
+    std::chrono::steady_clock::time_point interval_started = std::chrono::steady_clock::now();
+
+    void note_rgb_frame_id(uint64_t frame_id) {
+        if(!rgb_frame_id_seen) {
+            rgb_first_frame_id = frame_id;
+            rgb_frame_id_seen = true;
+        }
+        rgb_last_frame_id = frame_id;
+    }
+
+    void note_depth_frame_id(uint64_t frame_id) {
+        if(!depth_frame_id_seen) {
+            depth_first_frame_id = frame_id;
+            depth_frame_id_seen = true;
+        }
+        depth_last_frame_id = frame_id;
+    }
+};
+
 struct CameraRuntime {
     CameraConfig config;
     std::shared_ptr<ob::Device> device;
@@ -60,6 +105,7 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
+    CameraPerfStats perf;
 };
 
 Args parse_args(int argc, char **argv) {
@@ -92,6 +138,59 @@ std::string json_to_string(const Json::Value &value) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
     return Json::writeString(builder, value);
+}
+
+double elapsed_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point ended) {
+    return std::chrono::duration<double, std::milli>(ended - started).count();
+}
+
+double avg_ms(double total_ms, uint64_t count) {
+    return count == 0 ? 0.0 : total_ms / static_cast<double>(count);
+}
+
+double rate_per_second(uint64_t count, double seconds) {
+    return seconds <= 0.0 ? 0.0 : static_cast<double>(count) / seconds;
+}
+
+void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::time_point now) {
+    auto &perf = camera.perf;
+    const double seconds = std::chrono::duration<double>(now - perf.interval_started).count();
+    if(seconds <= 0.0) {
+        return;
+    }
+
+    const uint64_t rgb_frame_id_delta =
+        perf.rgb_frame_id_seen && perf.rgb_last_frame_id >= perf.rgb_first_frame_id ? perf.rgb_last_frame_id - perf.rgb_first_frame_id : 0;
+    const uint64_t depth_frame_id_delta =
+        perf.depth_frame_id_seen && perf.depth_last_frame_id >= perf.depth_first_frame_id ? perf.depth_last_frame_id - perf.depth_first_frame_id : 0;
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "perf camera_id=" << camera.config.camera_id << " interval_s=" << seconds
+        << " rgb_input_fps=" << rate_per_second(perf.rgb_input_frames, seconds)
+        << " depth_input_fps=" << rate_per_second(perf.depth_input_frames, seconds)
+        << " rgb_sent_packets_s=" << rate_per_second(perf.rgb_sent_packets, seconds)
+        << " depth_sent_fps=" << rate_per_second(perf.depth_sent_frames, seconds)
+        << " rgb_frame_id_delta=" << rgb_frame_id_delta
+        << " depth_frame_id_delta=" << depth_frame_id_delta
+        << " rgb_mbps=" << (seconds > 0.0 ? static_cast<double>(perf.rgb_bytes) * 8.0 / seconds / 1000000.0 : 0.0)
+        << " depth_mbps=" << (seconds > 0.0 ? static_cast<double>(perf.depth_bytes) * 8.0 / seconds / 1000000.0 : 0.0)
+        << " wait_avg_ms=" << avg_ms(perf.wait_ms, perf.wait_calls)
+        << " wait_timeouts=" << perf.wait_timeouts
+        << " rgb_decode_avg_ms=" << avg_ms(perf.rgb_decode_ms, perf.rgb_input_frames)
+        << " rgb_encode_avg_ms=" << avg_ms(perf.rgb_encode_ms, perf.rgb_input_frames)
+        << " rgb_send_avg_ms=" << avg_ms(perf.rgb_send_ms, perf.rgb_sent_packets + perf.rgb_send_failures)
+        << " depth_compress_avg_ms=" << avg_ms(perf.depth_compress_ms, perf.depth_input_frames)
+        << " depth_send_avg_ms=" << avg_ms(perf.depth_send_ms, perf.depth_sent_frames + perf.depth_send_failures)
+        << " depth_preview_avg_ms=" << avg_ms(perf.depth_preview_ms, perf.depth_input_frames)
+        << " preview_avg_ms=" << avg_ms(perf.preview_ms, perf.wait_calls)
+        << " rgb_send_failures=" << perf.rgb_send_failures
+        << " depth_send_failures=" << perf.depth_send_failures;
+    logger.info(oss.str());
+
+    CameraPerfStats reset;
+    reset.interval_started = now;
+    perf = reset;
 }
 
 Json::Value base_message(const AppConfig &config, const std::string &type) {
@@ -486,12 +585,18 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     send_status(transport, logger, event_message(config, "info", "camera_connected", "camera pipeline started", cameras.front()->config.camera_id));
 
     auto next_heartbeat = std::chrono::steady_clock::now();
+    auto next_perf_log = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     const auto stop_at = args.run_seconds > 0 ? started + std::chrono::seconds(args.run_seconds) : std::chrono::steady_clock::time_point::max();
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
         for(auto &camera : cameras) {
+            const auto wait_started = std::chrono::steady_clock::now();
             auto frameset = camera->pipeline->waitForFrames(100);
+            const auto wait_ended = std::chrono::steady_clock::now();
+            camera->perf.wait_calls++;
+            camera->perf.wait_ms += elapsed_ms(wait_started, wait_ended);
             if(!frameset) {
+                camera->perf.wait_timeouts++;
                 continue;
             }
             auto color = frameset->colorFrame();
@@ -499,7 +604,11 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
             cv::Mat bgr;
             if(color) {
+                camera->perf.rgb_input_frames++;
+                camera->perf.note_rgb_frame_id(color->index());
+                const auto decode_started = std::chrono::steady_clock::now();
                 bgr = color_to_bgr(color);
+                camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
                 if(!bgr.empty()) {
                     camera->latest_bgr = bgr;
                 }
@@ -517,7 +626,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 }
                 if(camera->encoder && camera->encoder->ok() && !bgr.empty()) {
                     try {
+                        const auto encode_started = std::chrono::steady_clock::now();
                         const auto encoded_units = camera->encoder->encode_bgr(bgr, color->timeStampUs());
+                        camera->perf.rgb_encode_ms += elapsed_ms(encode_started, std::chrono::steady_clock::now());
                         for(const auto &encoded : encoded_units) {
                             MediaFrameMeta meta;
                             meta.stream_type = StreamType::rgb;
@@ -534,7 +645,15 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                             meta.payload_size = encoded.size();
                             meta.uncompressed_size = encoded.size();
                             const auto packet = build_media_packet(meta, encoded.data());
-                            if(!transport.send_media(packet)) {
+                            const auto send_started = std::chrono::steady_clock::now();
+                            const bool sent = transport.send_media(packet);
+                            camera->perf.rgb_send_ms += elapsed_ms(send_started, std::chrono::steady_clock::now());
+                            if(sent) {
+                                camera->perf.rgb_sent_packets++;
+                                camera->perf.rgb_bytes += packet.size();
+                            }
+                            else {
+                                camera->perf.rgb_send_failures++;
                                 camera->last_error = transport.last_error();
                             }
                         }
@@ -549,6 +668,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
             cv::Mat depth_color;
             if(depth) {
+                camera->perf.depth_input_frames++;
+                camera->perf.note_depth_frame_id(depth->index());
                 if(camera->depth_scale == 0.0f) {
                     camera->depth_scale = depth->getValueScale();
                 }
@@ -556,7 +677,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 const void *depth_payload = depth->data();
                 size_t depth_payload_size = depth->dataSize();
                 if(camera->config.depth_transport.compression == "zlib") {
+                    const auto compress_started = std::chrono::steady_clock::now();
                     compressed_depth = zlib_compress_payload(depth->data(), depth->dataSize());
+                    camera->perf.depth_compress_ms += elapsed_ms(compress_started, std::chrono::steady_clock::now());
                     depth_payload = compressed_depth.data();
                     depth_payload_size = compressed_depth.size();
                 }
@@ -575,11 +698,21 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
                 const auto packet = build_media_packet(meta, depth_payload);
-                if(!transport.send_media(packet)) {
+                const auto send_started = std::chrono::steady_clock::now();
+                const bool sent = transport.send_media(packet);
+                camera->perf.depth_send_ms += elapsed_ms(send_started, std::chrono::steady_clock::now());
+                if(sent) {
+                    camera->perf.depth_sent_frames++;
+                    camera->perf.depth_bytes += packet.size();
+                }
+                else {
+                    camera->perf.depth_send_failures++;
                     camera->last_error = transport.last_error();
                 }
                 camera->depth_frames++;
+                const auto depth_preview_started = std::chrono::steady_clock::now();
                 depth_color = depth_to_color(depth);
+                camera->perf.depth_preview_ms += elapsed_ms(depth_preview_started, std::chrono::steady_clock::now());
                 if(!depth_color.empty()) {
                     camera->latest_depth_color = depth_color;
                 }
@@ -589,13 +722,21 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 send_status(transport, logger, camera_announce(config, *camera));
                 camera->announced = true;
             }
+            const auto preview_started = std::chrono::steady_clock::now();
             preview_frame(camera->config.camera_id, camera->latest_bgr, camera->latest_depth_color, config.preview.enabled);
+            camera->perf.preview_ms += elapsed_ms(preview_started, std::chrono::steady_clock::now());
         }
 
         const auto now = std::chrono::steady_clock::now();
         if(now >= next_heartbeat) {
             send_status(transport, logger, heartbeat(config, cameras, started));
             next_heartbeat = now + std::chrono::milliseconds(config.heartbeat_interval_ms);
+        }
+        if(now >= next_perf_log) {
+            for(auto &camera : cameras) {
+                log_perf(*camera, logger, now);
+            }
+            next_perf_log = now + std::chrono::seconds(1);
         }
     }
 
