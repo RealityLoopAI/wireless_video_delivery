@@ -6,9 +6,10 @@
 2. TCP `50010` 接收媒体二进制 packet。
 3. `127.0.0.1:18080` 暴露本地管理 HTTP API。
 4. 录制时写入 NAS 根目录，默认 `/home/fz/Desktop/nas`。
-5. RGB 调用 `ffmpeg` 封装为 `rgb.mp4`，同时保留 `rgb_debug.h264`。
-6. Depth 调用 `ffmpeg` 封装为 `depth.mkv + FFV1`，同时保留 `depth_debug.raw`。
+5. RGB 调用 `ffmpeg` 按实测到达帧率封装为 `rgb.mp4`，同时保留 `rgb_debug.h264`。
+6. Depth 调用 `ffmpeg` 按实测到达帧率封装为 `depth.mkv + FFV1`，同时保留 `depth_debug.raw`。
 7. `frames.csv` 记录媒体包索引，并追加发送端 system timestamp 字段用于后续对齐。
+8. `meta.json` 记录 `rgb_record_fps` / `depth_record_fps`，用于确认封装帧率。
 
 构建：
 

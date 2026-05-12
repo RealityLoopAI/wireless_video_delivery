@@ -77,6 +77,17 @@ def read_rows(path: Path) -> list[dict[str, str]]:
         die(f"missing frames.csv: {path}")
 
 
+def read_meta(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def summarize_rows(rows: list[dict[str, str]], stream_type: str) -> dict[str, Any]:
     stream_rows = [row for row in rows if row.get("stream_type") == stream_type]
     result: dict[str, Any] = {
@@ -139,8 +150,10 @@ def media_summary(stream: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def print_stream(name: str, rows_summary: dict[str, Any], media: dict[str, Any]) -> None:
+def print_stream(name: str, rows_summary: dict[str, Any], media: dict[str, Any], record_fps: Any = None) -> None:
     print(f"{name}:")
+    if isinstance(record_fps, (int, float)) and record_fps > 0:
+        print(f"  record_fps: {record_fps:.2f}")
     if media:
         rate = media.get("avg_fps")
         rate_text = f"{rate:.2f}fps" if isinstance(rate, float) else "unknown"
@@ -172,8 +185,10 @@ def main() -> int:
 
     segment_dir = args.segment_dir.resolve()
     rows = read_rows(segment_dir / "frames.csv")
+    meta = read_meta(segment_dir / "meta.json")
     result = {
         "segment_dir": str(segment_dir),
+        "meta": meta,
         "rgb": summarize_rows(rows, "rgb"),
         "depth": summarize_rows(rows, "depth"),
         "rgb_media": media_summary(ffprobe_stream(args.ffprobe, segment_dir / "rgb.mp4")),
@@ -183,8 +198,8 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     print(f"segment: {segment_dir}")
-    print_stream("RGB", result["rgb"], result["rgb_media"])
-    print_stream("Depth", result["depth"], result["depth_media"])
+    print_stream("RGB", result["rgb"], result["rgb_media"], meta.get("rgb_record_fps"))
+    print_stream("Depth", result["depth"], result["depth_media"], meta.get("depth_record_fps"))
     return 0
 
 

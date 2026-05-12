@@ -1,6 +1,6 @@
 # Orbbec 兼容交付导出说明
 
-更新时间：2026-05-11
+更新时间：2026-05-12
 
 本文档说明如何把接收端现有 segment 导出成下游 Orbbec 多相机方案更容易读取的目录结构。
 
@@ -11,6 +11,7 @@
 - RGB 仍然保存为 `rgb.mp4`，接收端不重编码。
 - Depth 仍然保存为 `depth.mkv`，FFV1 / `gray16le` 无损。
 - `frames.csv` 和 `meta.json` 仍然作为接收端原始索引和元数据。
+- 导出文件名里的 fps 来自主文件探测结果，通常接近 `meta.json` 的 `rgb_record_fps` / `depth_record_fps`。
 
 新增的是离线交付层：
 
@@ -120,4 +121,3 @@ packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us
 ```
 
 旧字段顺序保持不变，老解析逻辑不会受到影响。新增字段用于后续更可靠地做 RGBD 时间线对齐。
-

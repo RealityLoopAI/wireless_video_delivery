@@ -45,6 +45,12 @@ constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
 constexpr uint32_t kRgbPreviewFps = 30;
+constexpr uint32_t kRecordFpsProbeFrames = 60;
+constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
+constexpr double kMinRecordFps = 5.0;
+constexpr double kMaxRecordFps = 60.0;
+constexpr size_t kMaxPendingRgbRecordBytes = 8ull * 1024ull * 1024ull;
+constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 
 std::atomic<bool> g_running{true};
 
@@ -939,6 +945,53 @@ struct FrameInfo {
     uint64_t system_timestamp_us = 0;
 };
 
+std::string format_fps(double fps) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << fps;
+    std::string value = out.str();
+    while(value.size() > 1 && value.back() == '0') {
+        value.pop_back();
+    }
+    if(!value.empty() && value.back() == '.') {
+        value.pop_back();
+    }
+    return value;
+}
+
+struct FpsProbe {
+    uint64_t first_us = 0;
+    uint64_t last_us = 0;
+    uint32_t frames = 0;
+
+    void add(uint64_t local_us) {
+        if(first_us == 0) {
+            first_us = local_us;
+        }
+        last_us = local_us;
+        ++frames;
+    }
+
+    bool ready(uint64_t local_us) const {
+        return frames >= kRecordFpsProbeFrames || (first_us > 0 && local_us > first_us && local_us - first_us >= kRecordFpsProbeMaxWaitUs);
+    }
+
+    double estimate(double fallback) const {
+        if(frames >= 2 && last_us > first_us) {
+            const double seconds = static_cast<double>(last_us - first_us) / 1'000'000.0;
+            if(seconds > 0.0) {
+                return std::clamp((static_cast<double>(frames - 1) / seconds), kMinRecordFps, kMaxRecordFps);
+            }
+        }
+        return std::clamp(fallback, kMinRecordFps, kMaxRecordFps);
+    }
+
+    void reset() {
+        first_us = 0;
+        last_us = 0;
+        frames = 0;
+    }
+};
+
 struct CameraState;
 
 class SegmentWriter {
@@ -957,7 +1010,7 @@ public:
 
     void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json,
                Logger &logger) {
-        close(sender_id, camera_id, announce_json, logger);
+        close(cfg, sender_id, camera_id, announce_json, logger);
         start_us_ = now_us();
         start_steady_ = std::chrono::steady_clock::now();
         const auto key = camera_key(sender_id, camera_id);
@@ -980,10 +1033,11 @@ public:
         logger.info("recording segment started: " + directory_);
     }
 
-    void close(const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, Logger &logger) {
+    void close(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, Logger &logger) {
         if(!active_) {
             return;
         }
+        flush_pending_media(cfg, logger);
         if(frames_csv_) {
             frames_csv_.flush();
             frames_csv_.close();
@@ -1012,6 +1066,13 @@ public:
         last_rgb_ = {};
         last_depth_ = {};
         rgb_pending_.clear();
+        rgb_pending_has_vcl_ = false;
+        depth_pending_.clear();
+        depth_pending_bytes_ = 0;
+        rgb_fps_probe_.reset();
+        depth_fps_probe_.reset();
+        rgb_record_fps_ = 0.0;
+        depth_record_fps_ = 0.0;
     }
 
     bool should_rotate(const Config &cfg) const {
@@ -1024,29 +1085,29 @@ public:
             start(cfg, sender_id, camera_id, announce_json, logger);
         }
         if(should_rotate(cfg)) {
-            close(sender_id, camera_id, announce_json, logger);
+            close(cfg, sender_id, camera_id, announce_json, logger);
             start(cfg, sender_id, camera_id, announce_json, logger);
         }
 
+        const uint64_t packet_local_us = now_us();
         const auto stream = packet.stream_type == StreamType::rgb ? std::string("rgb") : std::string("depth");
         if(packet.stream_type == StreamType::rgb) {
             if(rgb_debug_) {
                 rgb_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
-            write_rgb_packet(cfg, packet, logger);
+            write_rgb_packet(cfg, packet, packet_local_us, logger);
             last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
         }
         else if(packet.stream_type == StreamType::depth_raw) {
             if(depth_debug_) {
                 depth_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
-            ensure_depth_pipe(cfg, packet.width, packet.height, logger);
-            depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            write_depth_packet(cfg, packet, packet_local_us, logger);
             last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
         }
 
         if(frames_csv_) {
-            frames_csv_ << now_us() << ',' << stream << ',';
+            frames_csv_ << packet_local_us << ',' << stream << ',';
             if(last_rgb_.valid) {
                 frames_csv_ << last_rgb_.frame_id << ',' << last_rgb_.timestamp_us << ',';
             }
@@ -1078,7 +1139,7 @@ public:
     }
 
 private:
-    void ensure_depth_pipe(const Config &cfg, uint32_t width, uint32_t height, Logger &logger) {
+    void ensure_depth_pipe(const Config &cfg, uint32_t width, uint32_t height, double fps, Logger &logger) {
         if(depth_pipe_.active()) {
             return;
         }
@@ -1089,44 +1150,108 @@ private:
         std::ostringstream cmd;
         cmd << shell_quote(cfg.ffmpeg_path)
             << " -hide_banner -loglevel warning -y -f rawvideo -pixel_format gray16le -video_size " << width << "x" << height
-            << " -framerate " << cfg.depth_fps << " -i pipe:0 -c:v ffv1 -level 3 " << depth_mkv << " 2>>" << ffmpeg_log;
+            << " -framerate " << format_fps(fps) << " -i pipe:0 -c:v ffv1 -level 3 " << depth_mkv << " 2>>" << ffmpeg_log;
         depth_pipe_.open(cmd.str(), logger);
     }
 
-    void ensure_rgb_pipe(const Config &cfg, Logger &logger) {
+    void ensure_rgb_pipe(const Config &cfg, double fps, Logger &logger) {
         if(rgb_pipe_.active()) {
             return;
         }
         const auto ffmpeg_log = shell_quote((std::filesystem::path(directory_) / "ffmpeg.log").string());
         const auto rgb_mp4 = shell_quote((std::filesystem::path(directory_) / "rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
-                                    " -hide_banner -loglevel warning -y -r 30 -f h264 -i pipe:0 -c:v copy -movflags +faststart " +
+                                    " -hide_banner -loglevel warning -y -r " + format_fps(fps) + " -f h264 -i pipe:0 -c:v copy -movflags +faststart " +
                                     rgb_mp4 + " 2>>" + ffmpeg_log;
         rgb_pipe_.open(rgb_cmd, logger);
     }
 
-    void write_rgb_packet(const Config &cfg, const MediaPacket &packet, Logger &logger) {
+    void write_rgb_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
         if(rgb_pipe_.active()) {
             rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
             return;
         }
 
-        if(rgb_pending_.size() + packet.payload.size() <= 4ull * 1024ull * 1024ull) {
-            rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
+        if(rgb_pending_has_vcl_ && rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
+            flush_rgb_pending(cfg, logger);
         }
-        else {
+        if(rgb_pipe_.active()) {
+            rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            return;
+        }
+        if(rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
             rgb_pending_.clear();
-            rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
+            rgb_pending_has_vcl_ = false;
+            rgb_fps_probe_.reset();
+        }
+        rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
+
+        if(h264_payload_has_vcl_nal(packet.payload)) {
+            rgb_pending_has_vcl_ = true;
+            rgb_fps_probe_.add(packet_local_us);
         }
 
-        if(!h264_payload_has_vcl_nal(packet.payload)) {
+        if(rgb_pending_has_vcl_ && rgb_fps_probe_.ready(packet_local_us)) {
+            flush_rgb_pending(cfg, logger);
+        }
+    }
+
+    void write_depth_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
+        if(depth_pipe_.active()) {
+            depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            return;
+        }
+        if(depth_width_ == 0 || depth_height_ == 0) {
+            depth_width_ = packet.width;
+            depth_height_ = packet.height;
+        }
+        if(!depth_pending_.empty() && depth_pending_bytes_ + packet.payload.size() > kMaxPendingDepthRecordBytes) {
+            flush_depth_pending(cfg, logger);
+        }
+        if(depth_pipe_.active()) {
+            depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
             return;
         }
 
-        ensure_rgb_pipe(cfg, logger);
-        if(rgb_pipe_.active() && !rgb_pending_.empty()) {
+        depth_pending_.push_back(packet.payload);
+        depth_pending_bytes_ += packet.payload.size();
+        depth_fps_probe_.add(packet_local_us);
+        if(depth_fps_probe_.ready(packet_local_us)) {
+            flush_depth_pending(cfg, logger);
+        }
+    }
+
+    void flush_pending_media(const Config &cfg, Logger &logger) {
+        flush_rgb_pending(cfg, logger);
+        flush_depth_pending(cfg, logger);
+    }
+
+    void flush_rgb_pending(const Config &cfg, Logger &logger) {
+        if(rgb_pipe_.active() || rgb_pending_.empty() || !rgb_pending_has_vcl_) {
+            return;
+        }
+        rgb_record_fps_ = rgb_fps_probe_.estimate(30.0);
+        ensure_rgb_pipe(cfg, rgb_record_fps_, logger);
+        if(rgb_pipe_.active()) {
+            logger.info("rgb record fps estimated: " + format_fps(rgb_record_fps_));
             rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger);
             rgb_pending_.clear();
+        }
+    }
+
+    void flush_depth_pending(const Config &cfg, Logger &logger) {
+        if(depth_pipe_.active() || depth_pending_.empty()) {
+            return;
+        }
+        depth_record_fps_ = depth_fps_probe_.estimate(static_cast<double>(cfg.depth_fps));
+        ensure_depth_pipe(cfg, depth_width_, depth_height_, depth_record_fps_, logger);
+        if(depth_pipe_.active()) {
+            logger.info("depth record fps estimated: " + format_fps(depth_record_fps_));
+            for(const auto &payload : depth_pending_) {
+                depth_pipe_.write(payload.data(), payload.size(), logger);
+            }
+            depth_pending_.clear();
+            depth_pending_bytes_ = 0;
         }
     }
 
@@ -1150,6 +1275,8 @@ private:
         meta << "  \"depth_format\": \"ffv1_mkv_gray16le\",\n";
         meta << "  \"depth_width\": " << depth_width_ << ",\n";
         meta << "  \"depth_height\": " << depth_height_ << ",\n";
+        meta << "  \"rgb_record_fps\": " << format_fps(rgb_record_fps_) << ",\n";
+        meta << "  \"depth_record_fps\": " << format_fps(depth_record_fps_) << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
         meta << "}\n";
     }
@@ -1165,8 +1292,15 @@ private:
     FfmpegPipe rgb_pipe_;
     FfmpegPipe depth_pipe_;
     std::vector<uint8_t> rgb_pending_;
+    bool rgb_pending_has_vcl_ = false;
+    std::vector<std::vector<uint8_t>> depth_pending_;
+    size_t depth_pending_bytes_ = 0;
     uint32_t depth_width_ = 0;
     uint32_t depth_height_ = 0;
+    FpsProbe rgb_fps_probe_;
+    FpsProbe depth_fps_probe_;
+    double rgb_record_fps_ = 0.0;
+    double depth_record_fps_ = 0.0;
     FrameInfo last_rgb_;
     FrameInfo last_depth_;
 };
@@ -1230,7 +1364,7 @@ public:
             if(item.second->rgb_decoder) {
                 item.second->rgb_decoder->stop();
             }
-            item.second->segment.close(item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
+            item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
         }
         logger_.info("receiver stopped");
     }
@@ -1312,7 +1446,7 @@ public:
         recording_all_ = false;
         for(auto &item : cameras_) {
             item.second->recording_requested = false;
-            item.second->segment.close(item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
+            item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
         }
         logger_.info("recording stop-all requested");
         return "{\"ok\":true,\"recording_all\":false}";
@@ -1340,7 +1474,7 @@ public:
             return "{\"ok\":false,\"error\":\"camera not found\"}";
         }
         it->second->recording_requested = false;
-        it->second->segment.close(it->second->sender_id, it->second->camera_id, it->second->last_announce_json, logger_);
+        it->second->segment.close(config_, it->second->sender_id, it->second->camera_id, it->second->last_announce_json, logger_);
         logger_.info("recording stop requested: " + key);
         return "{\"ok\":true}";
     }
