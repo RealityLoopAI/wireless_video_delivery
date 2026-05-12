@@ -8,6 +8,8 @@ This package is for receiver-side integration with the current sender implementa
 
 2026-05-11 quality update: the sender default RGB profile is `1920x1080@30` with H.264 target bitrate `12000000` bps. Depth remains `640x400@30` with `zlib`.
 
+2026-05-12 startup update: sender startup/status scripts now print the active config, receiver endpoint, RGB/Depth profiles, encoder, Depth compression, preview mode, route, Wi-Fi link, and validation result before starting.
+
 Read first:
 
 ```text

@@ -2,13 +2,28 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${1:-$ROOT_DIR/06_configs/sender_orangepi5pro-01_depth_zlib.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender.log"
 
+"$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "状态查看" "config" || true
+echo
+
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  echo "发送端运行中，PID=$(cat "$PID_FILE")"
+  PID="$(cat "$PID_FILE")"
+  echo "发送端运行中，PID=$PID"
+  if [[ -r "/proc/$PID/cmdline" ]]; then
+    echo -n "启动命令："
+    tr '\0' ' ' < "/proc/$PID/cmdline"
+    echo
+  fi
 else
   echo "发送端未运行"
+fi
+
+if command -v ss >/dev/null 2>&1; then
+  echo "媒体连接："
+  ss -tnp 2>/dev/null | grep -E '(:50010|gemini_sender)' || echo "  未发现当前 TCP 媒体连接"
 fi
 
 if [[ -f "$LOG_FILE" ]]; then
