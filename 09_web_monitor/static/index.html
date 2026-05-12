@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Gemini Wireless Video v3</title>
+  <title>Gemini Monitor</title>
   <style>
     :root {
       --bg: #f3efe6;
       --ink: #1c1a16;
       --muted: #746b5f;
-      --panel: rgba(255, 252, 244, 0.86);
+      --panel: rgba(255, 252, 244, 0.9);
       --line: #d7cab8;
       --accent: #006c67;
       --danger: #b2402a;
@@ -23,49 +23,111 @@
       color: var(--ink);
       font-family: "Aptos", "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 15% 10%, rgba(0,108,103,.18), transparent 30rem),
-        radial-gradient(circle at 90% 5%, rgba(178,64,42,.16), transparent 26rem),
-        linear-gradient(135deg, #f9f3e5 0%, var(--bg) 55%, #e9dfce 100%);
+        radial-gradient(circle at 12% 8%, rgba(0,108,103,.16), transparent 30rem),
+        radial-gradient(circle at 88% 6%, rgba(178,64,42,.13), transparent 28rem),
+        linear-gradient(135deg, #f9f3e5 0%, var(--bg) 58%, #e9dfce 100%);
     }
     header {
-      padding: 32px clamp(18px, 4vw, 56px) 18px;
+      padding: 24px clamp(16px, 4vw, 48px) 14px;
       display: flex;
       justify-content: space-between;
-      gap: 20px;
+      gap: 18px;
       align-items: flex-end;
     }
-    h1 { margin: 0; font-size: clamp(30px, 5vw, 56px); letter-spacing: -0.06em; }
-    .sub { color: var(--muted); margin-top: 8px; }
-    main { padding: 0 clamp(18px, 4vw, 56px) 48px; }
-    .toolbar, .card, .strip {
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      letter-spacing: -0.06em;
+    }
+    .sub {
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    main {
+      padding: 0 clamp(16px, 4vw, 48px) 42px;
+    }
+    .toolbar, .card, .debug-panel {
       background: var(--panel);
       border: 1px solid var(--line);
       box-shadow: 0 18px 60px rgba(44, 33, 21, .10);
       backdrop-filter: blur(12px);
       border-radius: 24px;
     }
-    .toolbar { padding: 18px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 18px; }
+    .toolbar {
+      padding: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
     button {
       border: 0;
       border-radius: 999px;
       padding: 11px 17px;
       color: white;
       background: var(--accent);
-      font-weight: 700;
+      font-weight: 800;
       cursor: pointer;
     }
     button.stop { background: var(--danger); }
     button.secondary { background: #635a50; }
-    .strip { padding: 14px 18px; margin-bottom: 18px; display: flex; gap: 18px; flex-wrap: wrap; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
-    .card { padding: 20px; }
-    .key { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
-    .meta { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-all; }
-    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 18px; }
-    .preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
-    .view {
-      min-height: 180px;
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }
+    .card {
+      padding: clamp(14px, 2.5vw, 22px);
+    }
+    .camera-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .key {
+      margin-top: 7px;
+      font-size: clamp(20px, 2.5vw, 30px);
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+    .camera-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .save-path {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
       border-radius: 18px;
+      background: rgba(255,255,255,.42);
+      color: var(--muted);
+      word-break: break-all;
+    }
+    .save-path span {
+      display: block;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .save-path strong {
+      color: var(--ink);
+      font-size: 15px;
+    }
+    .preview {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .view {
+      min-height: min(42vh, 440px);
+      aspect-ratio: 16 / 9;
+      border-radius: 20px;
       overflow: hidden;
       background: #1c1a16;
       border: 1px solid rgba(28,26,22,.2);
@@ -73,47 +135,121 @@
       place-items: center;
       position: relative;
     }
-    .view img { width: 100%; height: 100%; object-fit: contain; display: block; }
-    .view span { color: #f9f3e5; padding: 14px; text-align: center; font-weight: 700; }
+    .view img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .view span {
+      color: #f9f3e5;
+      padding: 14px;
+      text-align: center;
+      font-weight: 800;
+    }
     .view::before {
       content: attr(data-title);
       position: absolute;
-      left: 10px;
-      top: 10px;
+      left: 12px;
+      top: 12px;
       z-index: 1;
       color: #fff;
       font-size: 12px;
-      font-weight: 800;
-      background: rgba(0,0,0,.44);
-      padding: 5px 8px;
+      font-weight: 900;
+      background: rgba(0,0,0,.48);
+      padding: 5px 9px;
       border-radius: 999px;
     }
-    .stat { border-top: 1px solid var(--line); padding-top: 10px; }
-    .label { color: var(--muted); font-size: 12px; }
-    .value { font-size: 18px; font-weight: 800; }
-    .pill { display: inline-flex; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; margin-right: 6px; }
+    .pill {
+      display: inline-flex;
+      padding: 6px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      margin-right: 6px;
+    }
     .pill.ok { background: rgba(39,115,63,.12); color: var(--ok); }
     .pill.off { background: rgba(178,64,42,.12); color: var(--danger); }
     .pill.warn { background: rgba(184,121,0,.14); color: var(--warn); }
-    pre { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+    .debug-panel {
+      margin-top: 16px;
+      padding: 12px 14px;
+    }
+    .card .debug-panel {
+      box-shadow: none;
+      background: rgba(255,255,255,.32);
+    }
+    summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 900;
+      user-select: none;
+    }
+    .debug-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .debug-item {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .value {
+      font-size: 16px;
+      font-weight: 850;
+      word-break: break-all;
+    }
+    .empty {
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+      font-weight: 800;
+    }
+    @media (max-width: 900px) {
+      header {
+        display: block;
+      }
+      .camera-head {
+        display: block;
+      }
+      .camera-actions {
+        justify-content: flex-start;
+        margin-top: 12px;
+      }
+      .preview {
+        grid-template-columns: 1fr;
+      }
+      .view {
+        min-height: 220px;
+      }
+    }
   </style>
 </head>
 <body>
   <header>
     <div>
-      <h1>Gemini v3 Monitor</h1>
-      <div class="sub">接收端实时状态、录制控制和 NAS 写入监控</div>
+      <h1>Gemini Monitor</h1>
+      <div class="sub">日常画面监控与录制控制</div>
     </div>
     <div id="summary" class="sub">加载中...</div>
   </header>
   <main>
     <section class="toolbar">
-      <button onclick="post('/api/record/start-all')">全局开始录制</button>
-      <button class="stop" onclick="post('/api/record/stop-all')">全局停止录制</button>
+      <button onclick="post('/api/record/start-all')">开始全部录制</button>
+      <button class="stop" onclick="post('/api/record/stop-all')">停止全部录制</button>
       <button class="secondary" onclick="load()">刷新</button>
     </section>
-    <section id="system" class="strip"></section>
     <section id="cards" class="grid"></section>
+    <details class="debug-panel">
+      <summary>高级状态</summary>
+      <section id="system" class="debug-grid"></section>
+    </details>
   </main>
   <script>
     const fmtBytes = (n) => {
@@ -127,6 +263,13 @@
       }
       return `${value.toFixed(idx ? 1 : 0)} ${units[idx]}`;
     };
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[ch]));
     async function post(url) {
       const res = await fetch(url, {method: 'POST'});
       if (!res.ok) alert(await res.text());
@@ -152,31 +295,43 @@
       card.className = 'card';
       card.id = id;
       card.innerHTML = `
-        <div data-field="pills"></div>
-        <div class="key" data-field="camera_key"></div>
-        <div class="meta" data-field="segment_dir"></div>
+        <div class="camera-head">
+          <div>
+            <div data-field="pills"></div>
+            <div class="key" data-field="camera_key"></div>
+          </div>
+          <div class="camera-actions">
+            <button data-action="start">单路开始</button>
+            <button class="stop" data-action="stop">单路停止</button>
+          </div>
+        </div>
+        <div class="save-path">
+          <span>当前保存目录</span>
+          <strong data-field="segment_dir"></strong>
+        </div>
         <div class="preview">
           <div class="view" data-title="RGB">
             <img alt="RGB preview" data-preview="rgb" style="display:none">
-            <span data-placeholder="rgb">等待 RGB 关键帧</span>
+            <span data-placeholder="rgb">等待 RGB 画面</span>
           </div>
           <div class="view" data-title="Depth 伪彩">
             <img alt="Depth preview" data-preview="depth" style="display:none">
-            <span data-placeholder="depth">等待 Depth 预览帧</span>
+            <span data-placeholder="depth">等待 Depth 画面</span>
           </div>
         </div>
-        <div class="stats">
-          <div class="stat"><div class="label">RGB packets</div><div class="value" data-field="rgb_packets"></div></div>
-          <div class="stat"><div class="label">Depth packets</div><div class="value" data-field="depth_packets"></div></div>
-          <div class="stat"><div class="label">RGB bytes</div><div class="value" data-field="rgb_bytes"></div></div>
-          <div class="stat"><div class="label">Depth bytes</div><div class="value" data-field="depth_bytes"></div></div>
-          <div class="stat"><div class="label">RGB preview</div><div class="value" data-field="rgb_preview"></div></div>
-          <div class="stat"><div class="label">Depth preview</div><div class="value" data-field="depth_preview"></div></div>
-          <div class="stat"><div class="label">Last media us</div><div class="value" data-field="last_media_us"></div></div>
-        </div>
-        <p class="meta" data-field="last_error"></p>
-        <button data-action="start">单路开始</button>
-        <button class="stop" data-action="stop">单路停止</button>`;
+        <details class="debug-panel">
+          <summary>高级状态</summary>
+          <div class="debug-grid">
+            <div class="debug-item"><div class="label">RGB packets</div><div class="value" data-field="rgb_packets"></div></div>
+            <div class="debug-item"><div class="label">Depth packets</div><div class="value" data-field="depth_packets"></div></div>
+            <div class="debug-item"><div class="label">RGB bytes</div><div class="value" data-field="rgb_bytes"></div></div>
+            <div class="debug-item"><div class="label">Depth bytes</div><div class="value" data-field="depth_bytes"></div></div>
+            <div class="debug-item"><div class="label">RGB preview</div><div class="value" data-field="rgb_preview"></div></div>
+            <div class="debug-item"><div class="label">Depth preview</div><div class="value" data-field="depth_preview"></div></div>
+            <div class="debug-item"><div class="label">Last media us</div><div class="value" data-field="last_media_us"></div></div>
+            <div class="debug-item"><div class="label">Last error</div><div class="value" data-field="last_error"></div></div>
+          </div>
+        </details>`;
       card.querySelector('[data-action="start"]').addEventListener('click', () => {
         postCamera('/api/record/start', card.dataset.senderId, card.dataset.cameraId);
       });
@@ -189,10 +344,10 @@
     function setPills(card, c) {
       const pills = card.querySelector('[data-field="pills"]');
       const rgbWarn = c.rgb_packets > 0 && c.rgb_bytes / c.rgb_packets < 1000
-        ? '<span class="pill warn">RGB HEADER ONLY</span>' : '';
+        ? '<span class="pill warn">RGB 异常</span>' : '';
       pills.innerHTML = `
-        <span class="pill ${c.online ? 'ok' : 'off'}">${c.online ? 'ONLINE' : 'OFFLINE'}</span>
-        <span class="pill ${c.recording ? 'ok' : 'off'}">${c.recording ? 'RECORDING' : 'IDLE'}</span>
+        <span class="pill ${c.online ? 'ok' : 'off'}">${c.online ? '在线' : '离线'}</span>
+        <span class="pill ${c.recording ? 'ok' : 'off'}">${c.recording ? '录制中' : '空闲'}</span>
         ${rgbWarn}`;
     }
     function refreshPreview(card, kind, available, url) {
@@ -228,7 +383,7 @@
       card.dataset.depthAvailable = c.depth_preview_available ? '1' : '0';
       setPills(card, c);
       setText(card, 'camera_key', c.camera_key);
-      setText(card, 'segment_dir', c.segment_dir || '未开启切片');
+      setText(card, 'segment_dir', c.segment_dir || '未开启录制');
       setText(card, 'rgb_packets', c.rgb_packets);
       setText(card, 'depth_packets', c.depth_packets);
       setText(card, 'rgb_bytes', fmtBytes(c.rgb_bytes));
@@ -236,7 +391,7 @@
       setText(card, 'rgb_preview', `${c.rgb_preview_width || 0}x${c.rgb_preview_height || 0}`);
       setText(card, 'depth_preview', `${c.depth_preview_width || 0}x${c.depth_preview_height || 0}`);
       setText(card, 'last_media_us', c.last_media_us);
-      setText(card, 'last_error', c.last_error || '');
+      setText(card, 'last_error', c.last_error || '无');
 
       refreshCardPreviews(card);
     }
@@ -254,12 +409,16 @@
     async function load() {
       const res = await fetch('/api/status');
       const data = await res.json();
-      document.getElementById('summary').textContent = `NAS: ${data.nas_root} | cameras: ${data.cameras.length} | all recording: ${data.recording_all}`;
+      const online = data.cameras.filter((c) => c.online).length;
+      const recording = data.cameras.filter((c) => c.recording).length;
+      document.getElementById('summary').textContent =
+        `${online}/${data.cameras.length} 在线 · ${recording ? `${recording} 路录制中` : '空闲'}`;
       document.getElementById('system').innerHTML = `
-        <div><b>媒体端口</b><div class="meta">TCP ${data.media_port}</div></div>
-        <div><b>状态端口</b><div class="meta">UDP ${data.status_port}</div></div>
-        <div><b>管理端口</b><div class="meta">HTTP ${data.admin_port}</div></div>
-        <div><b>NAS</b><div class="meta">${data.nas_root}</div></div>`;
+        <div class="debug-item"><div class="label">媒体端口</div><div class="value">TCP ${data.media_port}</div></div>
+        <div class="debug-item"><div class="label">状态端口</div><div class="value">UDP ${data.status_port}</div></div>
+        <div class="debug-item"><div class="label">管理端口</div><div class="value">HTTP ${data.admin_port}</div></div>
+        <div class="debug-item"><div class="label">NAS</div><div class="value">${escapeHtml(data.nas_root)}</div></div>
+        <div class="debug-item"><div class="label">全局录制</div><div class="value">${data.recording_all ? '开启' : '关闭'}</div></div>`;
       const cards = document.getElementById('cards');
       cards.querySelector('[data-empty="true"]')?.remove();
       const seen = new Set(data.cameras.map((c) => cardId(c.camera_key)));
@@ -269,7 +428,7 @@
       if (data.cameras.length) {
         data.cameras.forEach(updateCard);
       } else if (!cards.querySelector('[data-empty="true"]')) {
-        cards.innerHTML = '<article class="card" data-empty="true"><div class="key">暂无摄像头</div><pre>等待发送端 sender_hello / camera_announce / 媒体帧。</pre></article>';
+        cards.innerHTML = '<article class="card empty" data-empty="true">等待发送端连接</article>';
       }
     }
     load();
