@@ -4,6 +4,7 @@
 #include "gwv3_sender/logger.hpp"
 #include "gwv3_sender/transport.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -94,6 +95,7 @@ struct CameraRuntime {
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     std::unique_ptr<GstH264Encoder> encoder;
+    GstH264InputFormat encoder_input_format = GstH264InputFormat::Bgr;
     bool announced = false;
     bool hardware_encoder = false;
     uint64_t rgb_frames = 0;
@@ -103,6 +105,7 @@ struct CameraRuntime {
     std::string last_error;
     float depth_scale = 0.0f;
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_preview = std::chrono::steady_clock::now();
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
     CameraPerfStats perf;
@@ -578,6 +581,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     if(!display_available && !args.no_preview) {
         logger.warn("DISPLAY/WAYLAND_DISPLAY not set; local preview disabled for this run");
     }
+    const auto preview_interval =
+        std::chrono::milliseconds(config.preview.fps > 0 ? std::max(1, 1000 / config.preview.fps) : 100);
 
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
@@ -601,21 +606,36 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             }
             auto color = frameset->colorFrame();
             auto depth = frameset->depthFrame();
+            const auto frame_now = std::chrono::steady_clock::now();
+            const bool preview_due = config.preview.enabled && frame_now >= camera->next_preview;
 
             cv::Mat bgr;
             if(color) {
                 camera->perf.rgb_input_frames++;
                 camera->perf.note_rgb_frame_id(color->index());
-                const auto decode_started = std::chrono::steady_clock::now();
-                bgr = color_to_bgr(color);
-                camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
-                if(!bgr.empty()) {
+                const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
+                if(!color_is_mjpg || preview_due) {
+                    const auto decode_started = std::chrono::steady_clock::now();
+                    bgr = color_to_bgr(color);
+                    camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                }
+                if(preview_due && !bgr.empty()) {
                     camera->latest_bgr = bgr;
                 }
-                if(!bgr.empty() && !camera->encoder) {
-                    camera->encoder = std::make_unique<GstH264Encoder>(bgr.cols, bgr.rows, camera->color_profile->fps(),
+                if(!camera->encoder && (color_is_mjpg || !bgr.empty())) {
+                    camera->encoder_input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
+                    camera->encoder = std::make_unique<GstH264Encoder>(color->width(), color->height(), camera->color_profile->fps(),
                                                                         camera->config.rgb_encoding.bitrate_bps,
-                                                                        camera->config.rgb_encoding.gstreamer_encoder);
+                                                                        camera->config.rgb_encoding.gstreamer_encoder,
+                                                                        camera->encoder_input_format);
+                    if(!camera->encoder->ok() && color_is_mjpg) {
+                        logger.warn("mppjpegdec rgb path unavailable, falling back to BGR encode path: " + camera->encoder->error());
+                        camera->encoder_input_format = GstH264InputFormat::Bgr;
+                        camera->encoder = std::make_unique<GstH264Encoder>(color->width(), color->height(), camera->color_profile->fps(),
+                                                                            camera->config.rgb_encoding.bitrate_bps,
+                                                                            camera->config.rgb_encoding.gstreamer_encoder,
+                                                                            camera->encoder_input_format);
+                    }
                     camera->hardware_encoder = camera->encoder->ok();
                     if(!camera->hardware_encoder) {
                         camera->last_error = camera->encoder->error();
@@ -624,10 +644,23 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                                     event_message(config, "error", "encoder_init_failed", camera->last_error, camera->config.camera_id));
                     }
                 }
-                if(camera->encoder && camera->encoder->ok() && !bgr.empty()) {
+                if(camera->encoder && camera->encoder->ok()) {
                     try {
+                        if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                            const auto decode_started = std::chrono::steady_clock::now();
+                            bgr = color_to_bgr(color);
+                            camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                        }
+                        if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                            camera->last_error = "rgb decode produced empty frame";
+                            camera->rgb_dropped++;
+                            camera->rgb_frames++;
+                            continue;
+                        }
                         const auto encode_started = std::chrono::steady_clock::now();
-                        const auto encoded_units = camera->encoder->encode_bgr(bgr, color->timeStampUs());
+                        const auto encoded_units = camera->encoder_input_format == GstH264InputFormat::Jpeg
+                                                       ? camera->encoder->encode_jpeg(color->data(), color->dataSize(), color->timeStampUs())
+                                                       : camera->encoder->encode_bgr(bgr, color->timeStampUs());
                         camera->perf.rgb_encode_ms += elapsed_ms(encode_started, std::chrono::steady_clock::now());
                         for(const auto &encoded : encoded_units) {
                             MediaFrameMeta meta;
@@ -639,8 +672,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                             meta.frame_id = color->index();
                             meta.timestamp_us = color->timeStampUs();
                             meta.system_timestamp_us = color->systemTimeStampUs();
-                            meta.width = static_cast<uint32_t>(bgr.cols);
-                            meta.height = static_cast<uint32_t>(bgr.rows);
+                            meta.width = color->width();
+                            meta.height = color->height();
                             meta.pixel_format = PixelFormat::encoded_video;
                             meta.payload_size = encoded.size();
                             meta.uncompressed_size = encoded.size();
@@ -710,11 +743,13 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                     camera->last_error = transport.last_error();
                 }
                 camera->depth_frames++;
-                const auto depth_preview_started = std::chrono::steady_clock::now();
-                depth_color = depth_to_color(depth);
-                camera->perf.depth_preview_ms += elapsed_ms(depth_preview_started, std::chrono::steady_clock::now());
-                if(!depth_color.empty()) {
-                    camera->latest_depth_color = depth_color;
+                if(preview_due) {
+                    const auto depth_preview_started = std::chrono::steady_clock::now();
+                    depth_color = depth_to_color(depth);
+                    camera->perf.depth_preview_ms += elapsed_ms(depth_preview_started, std::chrono::steady_clock::now());
+                    if(!depth_color.empty()) {
+                        camera->latest_depth_color = depth_color;
+                    }
                 }
             }
 
@@ -722,9 +757,12 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 send_status(transport, logger, camera_announce(config, *camera));
                 camera->announced = true;
             }
-            const auto preview_started = std::chrono::steady_clock::now();
-            preview_frame(camera->config.camera_id, camera->latest_bgr, camera->latest_depth_color, config.preview.enabled);
-            camera->perf.preview_ms += elapsed_ms(preview_started, std::chrono::steady_clock::now());
+            if(preview_due) {
+                const auto preview_started = std::chrono::steady_clock::now();
+                preview_frame(camera->config.camera_id, camera->latest_bgr, camera->latest_depth_color, true);
+                camera->perf.preview_ms += elapsed_ms(preview_started, std::chrono::steady_clock::now());
+                camera->next_preview = frame_now + preview_interval;
+            }
         }
 
         const auto now = std::chrono::steady_clock::now();

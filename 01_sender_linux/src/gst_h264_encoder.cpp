@@ -7,23 +7,41 @@
 
 namespace gwv3 {
 
-GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name) : fps_(fps) {
+GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
+                               GstH264InputFormat input_format)
+    : fps_(fps) {
     static bool gst_initialized = false;
     if(!gst_initialized) {
         gst_init(nullptr, nullptr);
         gst_initialized = true;
     }
 
-    const std::string pipeline_text =
-        "appsrc name=src is-live=true block=true format=time do-timestamp=false "
-        "caps=video/x-raw,format=BGR,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
-        "! queue max-size-buffers=2 leaky=downstream "
-        "! videoconvert "
-        "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
-        "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
-        "! h264parse "
-        "! video/x-h264,stream-format=byte-stream,alignment=au "
-        "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
+    std::string pipeline_text;
+    if(input_format == GstH264InputFormat::Jpeg) {
+        pipeline_text =
+            "appsrc name=src is-live=true block=true format=time do-timestamp=false "
+            "caps=image/jpeg,framerate=" + std::to_string(fps) + "/1 "
+            "! queue max-size-buffers=2 leaky=downstream "
+            "! jpegparse "
+            "! mppjpegdec fast-mode=true format=NV12 "
+            "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
+            "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
+            "! h264parse "
+            "! video/x-h264,stream-format=byte-stream,alignment=au "
+            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
+    }
+    else {
+        pipeline_text =
+            "appsrc name=src is-live=true block=true format=time do-timestamp=false "
+            "caps=video/x-raw,format=BGR,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
+            "! queue max-size-buffers=2 leaky=downstream "
+            "! videoconvert "
+            "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
+            "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
+            "! h264parse "
+            "! video/x-h264,stream-format=byte-stream,alignment=au "
+            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
+    }
 
     GError *error = nullptr;
     pipeline_ = gst_parse_launch(pipeline_text.c_str(), &error);
@@ -76,8 +94,23 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr,
     }
 
     const size_t size = bgr.total() * bgr.elemSize();
+    return encode_bytes(bgr.data, size, timestamp_us);
+}
+
+std::vector<std::vector<uint8_t>> GstH264Encoder::encode_jpeg(const void *data, size_t size, uint64_t timestamp_us) {
+    if(!data || size == 0) {
+        return {};
+    }
+    return encode_bytes(static_cast<const uint8_t *>(data), size, timestamp_us);
+}
+
+std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us) {
+    if(!ok_) {
+        throw std::runtime_error("gstreamer encoder is not ready: " + error_);
+    }
+
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
-    gst_buffer_fill(buffer, 0, bgr.data, size);
+    gst_buffer_fill(buffer, 0, data, size);
     GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
     GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
     GST_BUFFER_DURATION(buffer) = static_cast<GstClockTime>(1000000000ull / static_cast<uint64_t>(fps_));
@@ -89,8 +122,9 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr,
     }
 
     std::vector<std::vector<uint8_t>> outputs;
+    GstClockTime timeout = 20 * GST_MSECOND;
     while(true) {
-        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 20 * GST_MSECOND);
+        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), timeout);
         if(!sample) {
             break;
         }
@@ -101,6 +135,7 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr,
             gst_buffer_unmap(encoded, &map);
         }
         gst_sample_unref(sample);
+        timeout = 0;
     }
     return outputs;
 }
