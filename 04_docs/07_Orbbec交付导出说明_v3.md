@@ -1,6 +1,6 @@
 # Orbbec 兼容交付导出说明
 
-更新时间：2026-05-12
+更新时间：2026-05-14
 
 本文档说明如何把接收端现有 segment 导出成下游 Orbbec 多相机方案更容易读取的目录结构。
 
@@ -117,7 +117,14 @@ frame_index,timeline_frame_index,timeline_offset_frames,depth_file,depth_video_f
 从本版本开始，接收端 `frames.csv` 在旧字段后追加：
 
 ```csv
-packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us
+packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,codec_or_compression
 ```
 
-旧字段顺序保持不变，老解析逻辑不会受到影响。新增字段用于后续更可靠地做 RGBD 时间线对齐。
+旧字段顺序保持不变，老解析逻辑不会受到影响。
+
+新增字段说明：
+
+- `frame_id`：当前行所属流自己的帧号。
+- `timestamp_us`：当前行所属流自己的设备/SDK timestamp。
+- `frame_system_timestamp_us`：当前行所属流自己的发送端 system timestamp，推荐作为跨设备/跨相机对齐入口。
+- `codec_or_compression`：当前行媒体包的编码或压缩方式。

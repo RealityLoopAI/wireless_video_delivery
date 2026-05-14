@@ -214,6 +214,70 @@ std::optional<bool> json_bool_field(const std::string &json, const std::string &
     return std::nullopt;
 }
 
+std::optional<std::string> json_object_field(const std::string &json, const std::string &key) {
+    const std::string marker = "\"" + key + "\"";
+    const size_t key_pos = json.find(marker);
+    if(key_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const size_t colon = json.find(':', key_pos + marker.size());
+    if(colon == std::string::npos) {
+        return std::nullopt;
+    }
+    const size_t start = json.find('{', colon + 1);
+    if(start == std::string::npos) {
+        return std::nullopt;
+    }
+
+    bool in_string = false;
+    bool escaped = false;
+    int depth = 0;
+    for(size_t i = start; i < json.size(); ++i) {
+        const char ch = json[i];
+        if(in_string) {
+            if(escaped) {
+                escaped = false;
+            }
+            else if(ch == '\\') {
+                escaped = true;
+            }
+            else if(ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if(ch == '"') {
+            in_string = true;
+        }
+        else if(ch == '{') {
+            ++depth;
+        }
+        else if(ch == '}') {
+            --depth;
+            if(depth == 0) {
+                return json.substr(start, i - start + 1);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> json_string_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
+    const auto object = json_object_field(json, object_key);
+    if(!object) {
+        return std::nullopt;
+    }
+    return json_string_field(*object, field_key);
+}
+
+std::optional<int> json_int_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
+    const auto object = json_object_field(json, object_key);
+    if(!object) {
+        return std::nullopt;
+    }
+    return json_int_field(*object, field_key);
+}
+
 std::string config_string(const std::string &json, const std::string &key, const std::string &fallback) {
     return json_string_field(json, key).value_or(fallback);
 }
@@ -945,6 +1009,54 @@ struct FrameInfo {
     uint64_t system_timestamp_us = 0;
 };
 
+struct StreamRecordStats {
+    uint64_t frames = 0;
+    uint64_t first_local_us = 0;
+    uint64_t last_local_us = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::string codec_or_compression;
+
+    void add(const MediaPacket &packet, uint64_t local_us) {
+        if(frames == 0) {
+            first_local_us = local_us;
+            width = packet.width;
+            height = packet.height;
+            codec_or_compression = packet.codec_or_compression;
+        }
+        last_local_us = local_us;
+        if(width == 0) {
+            width = packet.width;
+        }
+        if(height == 0) {
+            height = packet.height;
+        }
+        if(codec_or_compression.empty()) {
+            codec_or_compression = packet.codec_or_compression;
+        }
+        ++frames;
+    }
+
+    double actual_fps() const {
+        if(frames >= 2 && last_local_us > first_local_us) {
+            const double seconds = static_cast<double>(last_local_us - first_local_us) / 1'000'000.0;
+            if(seconds > 0.0) {
+                return static_cast<double>(frames - 1) / seconds;
+            }
+        }
+        return 0.0;
+    }
+
+    void reset() {
+        frames = 0;
+        first_local_us = 0;
+        last_local_us = 0;
+        width = 0;
+        height = 0;
+        codec_or_compression.clear();
+    }
+};
+
 std::string format_fps(double fps) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(3) << fps;
@@ -1019,7 +1131,8 @@ public:
 
         frames_csv_.open(std::filesystem::path(directory_) / "frames.csv", std::ios::out | std::ios::trunc);
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
-                       "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us\n";
+                       "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
+                       "codec_or_compression\n";
 
         if(cfg.write_debug_h264) {
             rgb_debug_.open(std::filesystem::path(directory_) / "rgb_debug.h264", std::ios::binary | std::ios::out | std::ios::trunc);
@@ -1028,7 +1141,7 @@ public:
             depth_debug_.open(std::filesystem::path(directory_) / "depth_debug.raw", std::ios::binary | std::ios::out | std::ios::trunc);
         }
 
-        write_meta(sender_id, camera_id, announce_json, false);
+        write_meta(cfg, sender_id, camera_id, announce_json, false);
         active_ = true;
         logger.info("recording segment started: " + directory_);
     }
@@ -1051,7 +1164,7 @@ public:
         const int rgb_rc = rgb_pipe_.close();
         const int depth_rc = depth_pipe_.close();
         end_us_ = now_us();
-        write_meta(sender_id, camera_id, announce_json, true);
+        write_meta(cfg, sender_id, camera_id, announce_json, true);
         if(rgb_rc != 0) {
             logger.warn("rgb ffmpeg exited with non-zero status for segment: " + directory_);
         }
@@ -1073,6 +1186,8 @@ public:
         depth_fps_probe_.reset();
         rgb_record_fps_ = 0.0;
         depth_record_fps_ = 0.0;
+        rgb_stats_.reset();
+        depth_stats_.reset();
     }
 
     bool should_rotate(const Config &cfg) const {
@@ -1097,6 +1212,7 @@ public:
             }
             write_rgb_packet(cfg, packet, packet_local_us, logger);
             last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
+            rgb_stats_.add(packet, packet_local_us);
         }
         else if(packet.stream_type == StreamType::depth_raw) {
             if(depth_debug_) {
@@ -1104,6 +1220,7 @@ public:
             }
             write_depth_packet(cfg, packet, packet_local_us, logger);
             last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
+            depth_stats_.add(packet, packet_local_us);
         }
 
         if(frames_csv_) {
@@ -1134,7 +1251,8 @@ public:
             if(last_depth_.valid) {
                 frames_csv_ << last_depth_.system_timestamp_us;
             }
-            frames_csv_ << '\n';
+            frames_csv_ << ',' << packet.frame_id << ',' << packet.timestamp_us << ',' << packet.system_timestamp_us << ','
+                        << packet.codec_or_compression << '\n';
         }
     }
 
@@ -1188,10 +1306,12 @@ private:
 
         if(h264_payload_has_vcl_nal(packet.payload)) {
             rgb_pending_has_vcl_ = true;
-            rgb_fps_probe_.add(packet_local_us);
+            const uint64_t fps_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
+            rgb_fps_probe_.add(fps_probe_us);
         }
 
-        if(rgb_pending_has_vcl_ && rgb_fps_probe_.ready(packet_local_us)) {
+        const uint64_t ready_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
+        if(rgb_pending_has_vcl_ && rgb_fps_probe_.ready(ready_probe_us)) {
             flush_rgb_pending(cfg, logger);
         }
     }
@@ -1215,8 +1335,9 @@ private:
 
         depth_pending_.push_back(packet.payload);
         depth_pending_bytes_ += packet.payload.size();
-        depth_fps_probe_.add(packet_local_us);
-        if(depth_fps_probe_.ready(packet_local_us)) {
+        const uint64_t fps_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
+        depth_fps_probe_.add(fps_probe_us);
+        if(depth_fps_probe_.ready(fps_probe_us)) {
             flush_depth_pending(cfg, logger);
         }
     }
@@ -1255,10 +1376,19 @@ private:
         }
     }
 
-    void write_meta(const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) {
+    void write_meta(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) {
         if(directory_.empty()) {
             return;
         }
+        const int rgb_requested_fps = json_int_in_object(announce_json, "rgb_profile", "fps").value_or(30);
+        const int depth_requested_fps = json_int_in_object(announce_json, "depth_profile", "fps").value_or(cfg.depth_fps);
+        const std::string rgb_codec = !rgb_stats_.codec_or_compression.empty()
+                                          ? rgb_stats_.codec_or_compression
+                                          : json_string_in_object(announce_json, "rgb_profile", "codec").value_or("h264");
+        const uint32_t rgb_width = rgb_stats_.width > 0 ? rgb_stats_.width
+                                                        : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "width").value_or(0));
+        const uint32_t rgb_height = rgb_stats_.height > 0 ? rgb_stats_.height
+                                                          : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "height").value_or(0));
         std::ofstream meta(std::filesystem::path(directory_) / "meta.json", std::ios::out | std::ios::trunc);
         meta << "{\n";
         meta << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
@@ -1272,11 +1402,26 @@ private:
         meta << "  \"depth_file\": \"depth.mkv\",\n";
         meta << "  \"depth_debug_file\": \"depth_debug.raw\",\n";
         meta << "  \"frames_file\": \"frames.csv\",\n";
+        meta << "  \"ffmpeg_log_file\": \"ffmpeg.log\",\n";
+        meta << "  \"rgb_codec\": \"" << json_escape(rgb_codec) << "\",\n";
+        meta << "  \"rgb_width\": " << rgb_width << ",\n";
+        meta << "  \"rgb_height\": " << rgb_height << ",\n";
+        meta << "  \"rgb_fps\": " << rgb_requested_fps << ",\n";
+        meta << "  \"rgb_actual_fps\": " << format_fps(rgb_stats_.actual_fps()) << ",\n";
+        meta << "  \"rgb_frames\": " << rgb_stats_.frames << ",\n";
+        meta << "  \"depth_codec\": \"ffv1\",\n";
+        meta << "  \"depth_pixel_format\": \"gray16le\",\n";
+        meta << "  \"depth_dtype\": \"uint16le\",\n";
+        meta << "  \"depth_fps\": " << depth_requested_fps << ",\n";
+        meta << "  \"depth_actual_fps\": " << format_fps(depth_stats_.actual_fps()) << ",\n";
+        meta << "  \"depth_frames\": " << depth_stats_.frames << ",\n";
         meta << "  \"depth_format\": \"ffv1_mkv_gray16le\",\n";
         meta << "  \"depth_width\": " << depth_width_ << ",\n";
         meta << "  \"depth_height\": " << depth_height_ << ",\n";
         meta << "  \"rgb_record_fps\": " << format_fps(rgb_record_fps_) << ",\n";
         meta << "  \"depth_record_fps\": " << format_fps(depth_record_fps_) << ",\n";
+        meta << "  \"write_debug_h264\": " << (cfg.write_debug_h264 ? "true" : "false") << ",\n";
+        meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
         meta << "}\n";
     }
@@ -1301,6 +1446,8 @@ private:
     FpsProbe depth_fps_probe_;
     double rgb_record_fps_ = 0.0;
     double depth_record_fps_ = 0.0;
+    StreamRecordStats rgb_stats_;
+    StreamRecordStats depth_stats_;
     FrameInfo last_rgb_;
     FrameInfo last_depth_;
 };

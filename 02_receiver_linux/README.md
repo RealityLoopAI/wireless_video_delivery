@@ -8,8 +8,8 @@
 4. 录制时写入 NAS 根目录，默认 `/home/fz/Desktop/nas`。
 5. RGB 调用 `ffmpeg` 按实测到达帧率封装为 `rgb.mp4`，同时保留 `rgb_debug.h264`。
 6. Depth 调用 `ffmpeg` 按实测到达帧率封装为 `depth.mkv + FFV1`，同时保留 `depth_debug.raw`。
-7. `frames.csv` 记录媒体包索引，并追加发送端 system timestamp 字段用于后续对齐。
-8. `meta.json` 记录 `rgb_record_fps` / `depth_record_fps`，用于确认封装帧率。
+7. `frames.csv` 记录媒体包索引，并追加统一的当前帧字段 `frame_id` / `timestamp_us` / `frame_system_timestamp_us` / `codec_or_compression` 用于后续对齐。
+8. `meta.json` 记录编码、分辨率、请求帧率、实际帧率、帧数和 `rgb_record_fps` / `depth_record_fps`。
 
 构建：
 
