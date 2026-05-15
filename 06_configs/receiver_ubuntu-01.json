@@ -8,7 +8,7 @@
   "web_bind_ip": "0.0.0.0",
   "web_port": 8080,
   "nas_root": "/home/fz/Desktop/nas",
-  "segment_seconds": 300,
+  "segment_seconds": 900,
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",
   "log_directory": "08_reports/receiver_logs",
