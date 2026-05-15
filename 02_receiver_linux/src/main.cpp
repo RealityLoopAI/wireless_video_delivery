@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1168,6 +1169,7 @@ public:
         const int depth_rc = depth_pipe_.close();
         end_us_ = now_us();
         write_meta(cfg, sender_id, camera_id, announce_json, true);
+        set_segment_mtime_to_start(logger);
         if(rgb_rc != 0) {
             logger.warn("rgb ffmpeg exited with non-zero status for segment: " + directory_);
         }
@@ -1427,6 +1429,63 @@ private:
         meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
         meta << "}\n";
+    }
+
+    void set_segment_mtime_to_start(Logger &logger) const {
+        if(directory_.empty() || start_us_ == 0) {
+            return;
+        }
+
+        std::vector<std::filesystem::path> paths;
+        std::error_code ec;
+        for(const auto &entry : std::filesystem::directory_iterator(directory_, ec)) {
+            paths.push_back(entry.path());
+        }
+        if(ec) {
+            logger.warn("cannot enumerate segment files for mtime update: " + directory_ + ": " + ec.message());
+            return;
+        }
+        paths.emplace_back(directory_);
+
+        timespec times[2]{};
+        times[0].tv_sec = static_cast<time_t>(start_us_ / 1'000'000ull);
+        times[0].tv_nsec = static_cast<long>((start_us_ % 1'000'000ull) * 1000ull);
+        times[1] = times[0];
+
+        for(const auto &path : paths) {
+            if(utimensat(AT_FDCWD, path.c_str(), times, 0) != 0) {
+                logger.warn("cannot set segment mtime to start: " + path.string() + ": " + std::strerror(errno));
+            }
+        }
+
+        std::string cmd = "touch -d " + shell_quote("@" + std::to_string(start_us_ / 1'000'000ull)) + " --";
+        for(const auto &path : paths) {
+            cmd += " " + shell_quote(path.string());
+        }
+        const int rc = std::system(cmd.c_str());
+        if(rc != 0) {
+            logger.warn("touch command failed while setting segment mtime to start: " + directory_);
+        }
+
+        const auto delayed_paths = paths;
+        const auto delayed_start_us = start_us_;
+        std::thread([delayed_paths, delayed_start_us] {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+
+            timespec delayed_times[2]{};
+            delayed_times[0].tv_sec = static_cast<time_t>(delayed_start_us / 1'000'000ull);
+            delayed_times[0].tv_nsec = static_cast<long>((delayed_start_us % 1'000'000ull) * 1000ull);
+            delayed_times[1] = delayed_times[0];
+            for(const auto &path : delayed_paths) {
+                utimensat(AT_FDCWD, path.c_str(), delayed_times, 0);
+            }
+
+            std::string delayed_cmd = "touch -d " + shell_quote("@" + std::to_string(delayed_start_us / 1'000'000ull)) + " --";
+            for(const auto &path : delayed_paths) {
+                delayed_cmd += " " + shell_quote(path.string());
+            }
+            std::system(delayed_cmd.c_str());
+        }).detach();
     }
 
     bool active_ = false;
