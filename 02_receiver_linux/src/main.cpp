@@ -45,6 +45,9 @@ constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
 constexpr uint32_t kRgbPreviewFps = 30;
+constexpr uint64_t kCameraOnlineTimeoutUs = 5ull * 1000ull * 1000ull;
+constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
+constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
 constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
 constexpr double kMinRecordFps = 5.0;
@@ -1518,6 +1521,8 @@ public:
 
     std::string status_json() {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = now_us();
+        refresh_camera_liveness_locked(now);
         std::ostringstream out;
         out << "{";
         out << "\"running\":true,";
@@ -1530,6 +1535,7 @@ public:
         bool first = true;
         for(const auto &item : cameras_) {
             const auto &cam = *item.second;
+            const bool media_fresh = is_recent_us(now, cam.last_media_us, kPreviewFreshUs);
             if(!first) {
                 out << ',';
             }
@@ -1548,11 +1554,12 @@ public:
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
-            out << "\"rgb_preview_available\":" << (cam.rgb_decoder && cam.rgb_decoder->has_frame() ? "true" : "false") << ',';
+            out << "\"rgb_preview_available\":"
+                << (cam.online && media_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame() ? "true" : "false") << ',';
             out << "\"rgb_preview_width\":" << cam.rgb_preview_width << ',';
             out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
             out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
-            out << "\"depth_preview_available\":" << (!cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
+            out << "\"depth_preview_available\":" << (cam.online && media_fresh && !cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
             out << "\"depth_preview_width\":" << cam.depth_preview_width << ',';
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
             out << "\"depth_preview_us\":" << cam.depth_preview_us << ',';
@@ -1580,6 +1587,7 @@ public:
 
     std::string start_all() {
         std::lock_guard<std::mutex> lock(mutex_);
+        refresh_camera_liveness_locked(now_us());
         recording_all_ = true;
         for(auto &item : cameras_) {
             item.second->recording_requested = true;
@@ -1595,6 +1603,7 @@ public:
             item.second->recording_requested = false;
             item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
         }
+        refresh_camera_liveness_locked(now_us());
         logger_.info("recording stop-all requested");
         return "{\"ok\":true,\"recording_all\":false}";
     }
@@ -1628,9 +1637,12 @@ public:
 
     std::optional<std::vector<uint8_t>> depth_preview(const std::string &sender_id, const std::string &camera_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = now_us();
+        refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || it->second->depth_preview_ppm.empty()) {
+        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kPreviewFreshUs) ||
+           it->second->depth_preview_ppm.empty()) {
             return std::nullopt;
         }
         return it->second->depth_preview_ppm;
@@ -1638,15 +1650,51 @@ public:
 
     std::optional<std::vector<uint8_t>> rgb_preview(const std::string &sender_id, const std::string &camera_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = now_us();
+        refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->rgb_decoder) {
+        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kPreviewFreshUs) ||
+           !it->second->rgb_decoder) {
             return std::nullopt;
         }
         return it->second->rgb_decoder->latest_jpeg();
     }
 
 private:
+    static uint64_t camera_last_seen_us(const CameraState &cam) {
+        return std::max(cam.last_status_us, cam.last_media_us);
+    }
+
+    static bool is_recent_us(uint64_t now, uint64_t timestamp_us, uint64_t timeout_us) {
+        return timestamp_us > 0 && (timestamp_us >= now || now - timestamp_us <= timeout_us);
+    }
+
+    static bool is_older_than_us(uint64_t now, uint64_t timestamp_us, uint64_t timeout_us) {
+        return timestamp_us == 0 || (timestamp_us < now && now - timestamp_us > timeout_us);
+    }
+
+    void refresh_camera_liveness_locked(uint64_t now) {
+        for(auto it = cameras_.begin(); it != cameras_.end();) {
+            auto &cam = *it->second;
+            const auto last_seen = camera_last_seen_us(cam);
+            if(is_older_than_us(now, last_seen, kCameraOnlineTimeoutUs)) {
+                cam.online = false;
+            }
+
+            if(!cam.online && !cam.recording_requested && !cam.segment.active() &&
+               is_older_than_us(now, last_seen, kOfflineCameraPurgeUs)) {
+                if(cam.rgb_decoder) {
+                    cam.rgb_decoder->stop();
+                }
+                logger_.info("camera purged: " + cam.key);
+                it = cameras_.erase(it);
+                continue;
+            }
+            ++it;
+        }
+    }
+
     CameraState &ensure_camera_locked(const std::string &sender_id, const std::string &camera_id) {
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
