@@ -5,7 +5,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response as FastAPIResponse
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -36,7 +36,8 @@ def index() -> str:
 
 
 @app.get("/api/status")
-def status() -> Any:
+def status(response: FastAPIResponse) -> Any:
+    response.headers["Cache-Control"] = "no-store"
     return _request("GET", "/api/status")
 
 

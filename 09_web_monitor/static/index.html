@@ -343,34 +343,59 @@
     }
     function setPills(card, c) {
       const pills = card.querySelector('[data-field="pills"]');
+      const live = c.live !== false && c.online;
       const rgbWarn = c.rgb_packets > 0 && c.rgb_bytes / c.rgb_packets < 1000
         ? '<span class="pill warn">RGB 异常</span>' : '';
       pills.innerHTML = `
-        <span class="pill ${c.online ? 'ok' : 'off'}">${c.online ? '在线' : '离线'}</span>
+        <span class="pill ${live ? 'ok' : 'off'}">${live ? '实时' : '非实时'}</span>
         <span class="pill ${c.recording ? 'ok' : 'off'}">${c.recording ? '录制中' : '空闲'}</span>
         ${rgbWarn}`;
+    }
+    function previewLabel(kind) {
+      return kind === 'rgb' ? 'RGB' : 'Depth';
+    }
+    function nextPreviewToken(card, kind) {
+      const key = `${kind}Token`;
+      const token = String(Number(card.dataset[key] || '0') + 1);
+      card.dataset[key] = token;
+      return token;
+    }
+    function clearPreview(card, kind, message) {
+      const img = card.querySelector(`[data-preview="${kind}"]`);
+      const placeholder = card.querySelector(`[data-placeholder="${kind}"]`);
+      nextPreviewToken(card, kind);
+      card.dataset[`${kind}Loading`] = '0';
+      img.removeAttribute('src');
+      img.style.display = 'none';
+      placeholder.textContent = message || `${previewLabel(kind)} 无实时画面`;
+      placeholder.style.display = '';
     }
     function refreshPreview(card, kind, available, url) {
       const img = card.querySelector(`[data-preview="${kind}"]`);
       const placeholder = card.querySelector(`[data-placeholder="${kind}"]`);
       if (!available) {
-        if (!img.src) {
-          img.style.display = 'none';
-          placeholder.style.display = '';
-        }
+        clearPreview(card, kind, `${previewLabel(kind)} 无实时画面`);
         return;
       }
       if (card.dataset[`${kind}Loading`] === '1') return;
 
       const next = new Image();
+      const token = nextPreviewToken(card, kind);
       card.dataset[`${kind}Loading`] = '1';
       next.onload = () => {
+        if (card.dataset[`${kind}Token`] !== token || card.dataset[`${kind}Available`] !== '1') {
+          return;
+        }
         img.src = next.src;
         img.style.display = 'block';
         placeholder.style.display = 'none';
         card.dataset[`${kind}Loading`] = '0';
       };
       next.onerror = () => {
+        if (card.dataset[`${kind}Token`] === token) {
+          clearPreview(card, kind, `${previewLabel(kind)} 暂无实时画面`);
+          return;
+        }
         card.dataset[`${kind}Loading`] = '0';
       };
       next.src = url;
@@ -379,8 +404,9 @@
       const card = ensureCard(c);
       card.dataset.senderId = c.sender_id;
       card.dataset.cameraId = c.camera_id;
-      card.dataset.rgbAvailable = c.rgb_preview_available ? '1' : '0';
-      card.dataset.depthAvailable = c.depth_preview_available ? '1' : '0';
+      const live = c.live !== false && c.online;
+      card.dataset.rgbAvailable = live && c.rgb_preview_available ? '1' : '0';
+      card.dataset.depthAvailable = live && c.depth_preview_available ? '1' : '0';
       setPills(card, c);
       setText(card, 'camera_key', c.camera_key);
       setText(card, 'segment_dir', c.segment_dir || '未开启录制');
@@ -409,7 +435,7 @@
     async function load() {
       const res = await fetch('/api/status');
       const data = await res.json();
-      const online = data.cameras.filter((c) => c.online).length;
+      const online = data.cameras.filter((c) => c.live !== false && c.online).length;
       const recording = data.cameras.filter((c) => c.recording).length;
       document.getElementById('summary').textContent =
         `${online}/${data.cameras.length} 在线 · ${recording ? `${recording} 路录制中` : '空闲'}`;

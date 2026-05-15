@@ -1535,7 +1535,10 @@ public:
         bool first = true;
         for(const auto &item : cameras_) {
             const auto &cam = *item.second;
-            const bool media_fresh = is_recent_us(now, cam.last_media_us, kPreviewFreshUs);
+            const auto last_seen = camera_last_seen_us(cam);
+            const bool live = cam.online && is_recent_us(now, last_seen, kCameraOnlineTimeoutUs);
+            const bool rgb_preview_fresh = live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
+            const bool depth_preview_fresh = live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             if(!first) {
                 out << ',';
             }
@@ -1545,24 +1548,30 @@ public:
             out << "\"camera_id\":\"" << json_escape(cam.camera_id) << "\",";
             out << "\"camera_key\":\"" << json_escape(cam.key) << "\",";
             out << "\"online\":" << (cam.online ? "true" : "false") << ',';
+            out << "\"live\":" << (live ? "true" : "false") << ',';
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
             out << "\"segment_active\":" << (cam.segment.active() ? "true" : "false") << ',';
             out << "\"segment_dir\":\"" << json_escape(cam.segment.directory()) << "\",";
             out << "\"last_status_us\":" << cam.last_status_us << ',';
             out << "\"last_media_us\":" << cam.last_media_us << ',';
+            out << "\"last_seen_us\":" << last_seen << ',';
+            out << "\"status_age_ms\":" << age_ms_or_negative(now, cam.last_status_us) << ',';
+            out << "\"media_age_ms\":" << age_ms_or_negative(now, cam.last_media_us) << ',';
             out << "\"rgb_packets\":" << cam.rgb_packets << ',';
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
             out << "\"rgb_preview_available\":"
-                << (cam.online && media_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame() ? "true" : "false") << ',';
+                << (rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame() ? "true" : "false") << ',';
             out << "\"rgb_preview_width\":" << cam.rgb_preview_width << ',';
             out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
             out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
-            out << "\"depth_preview_available\":" << (cam.online && media_fresh && !cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
+            out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.rgb_preview_us) << ',';
+            out << "\"depth_preview_available\":" << (depth_preview_fresh && !cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
             out << "\"depth_preview_width\":" << cam.depth_preview_width << ',';
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
             out << "\"depth_preview_us\":" << cam.depth_preview_us << ',';
+            out << "\"depth_preview_age_ms\":" << age_ms_or_negative(now, cam.depth_preview_us) << ',';
             out << "\"last_error\":\"" << json_escape(cam.last_error) << "\"";
             out << "}";
         }
@@ -1641,7 +1650,7 @@ public:
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kPreviewFreshUs) ||
+        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->depth_preview_us, kPreviewFreshUs) ||
            it->second->depth_preview_ppm.empty()) {
             return std::nullopt;
         }
@@ -1654,7 +1663,7 @@ public:
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kPreviewFreshUs) ||
+        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->rgb_preview_us, kPreviewFreshUs) ||
            !it->second->rgb_decoder) {
             return std::nullopt;
         }
@@ -1674,12 +1683,42 @@ private:
         return timestamp_us == 0 || (timestamp_us < now && now - timestamp_us > timeout_us);
     }
 
+    static int64_t age_ms_or_negative(uint64_t now, uint64_t timestamp_us) {
+        if(timestamp_us == 0) {
+            return -1;
+        }
+        if(timestamp_us >= now) {
+            return 0;
+        }
+        return static_cast<int64_t>((now - timestamp_us) / 1000ull);
+    }
+
+    void clear_camera_live_cache_locked(CameraState &cam) {
+        cam.rgb_preview_prefix_h264.clear();
+        if(cam.rgb_decoder) {
+            cam.rgb_decoder->stop();
+            cam.rgb_decoder.reset();
+        }
+        cam.rgb_preview_us = 0;
+        cam.rgb_preview_width = 0;
+        cam.rgb_preview_height = 0;
+        cam.depth_preview_ppm.clear();
+        cam.depth_preview_us = 0;
+        cam.depth_preview_width = 0;
+        cam.depth_preview_height = 0;
+    }
+
     void refresh_camera_liveness_locked(uint64_t now) {
         for(auto it = cameras_.begin(); it != cameras_.end();) {
             auto &cam = *it->second;
             const auto last_seen = camera_last_seen_us(cam);
             if(is_older_than_us(now, last_seen, kCameraOnlineTimeoutUs)) {
-                cam.online = false;
+                if(cam.online) {
+                    cam.online = false;
+                    cam.last_error = cam.last_error.empty() ? "receiver_timeout" : cam.last_error;
+                    logger_.info("camera timed out: " + cam.key);
+                }
+                clear_camera_live_cache_locked(cam);
             }
 
             if(!cam.online && !cam.recording_requested && !cam.segment.active() &&
@@ -1723,6 +1762,7 @@ private:
             }
             else if(type == "camera_offline") {
                 cam.online = false;
+                clear_camera_live_cache_locked(cam);
                 cam.last_error = json_string_field(json, "reason").value_or("camera_offline");
             }
             else if(type == "event") {
