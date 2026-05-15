@@ -1446,6 +1446,15 @@ private:
             return;
         }
         paths.emplace_back(directory_);
+        const auto segment_dir = std::filesystem::path(directory_);
+        const auto date_dir = segment_dir.parent_path();
+        const auto camera_dir = date_dir.parent_path();
+        if(!date_dir.empty()) {
+            paths.emplace_back(date_dir);
+        }
+        if(!camera_dir.empty()) {
+            paths.emplace_back(camera_dir);
+        }
 
         timespec times[2]{};
         times[0].tv_sec = static_cast<time_t>(start_us_ / 1'000'000ull);
