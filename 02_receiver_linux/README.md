@@ -10,6 +10,7 @@
 6. Depth 调用 `ffmpeg` 按实测到达帧率封装为 `depth.mkv + FFV1`，同时保留 `depth_debug.raw`。
 7. `frames.csv` 记录媒体包索引，并追加统一的当前帧字段 `frame_id` / `timestamp_us` / `frame_system_timestamp_us` / `codec_or_compression` 用于后续对齐。
 8. `meta.json` 记录编码、分辨率、请求帧率、实际帧率、帧数和 `rgb_record_fps` / `depth_record_fps`。
+9. Web/REST 可持久化设置相机自命名和单路文件名前缀；录制停止返回整次录制任务的 `recording_start_us`。
 
 构建：
 
@@ -32,7 +33,10 @@ GET  /api/config
 POST /api/record/start-all
 POST /api/record/stop-all
 POST /api/record/start?sender_id=...&camera_id=...
+POST /api/record/start?sender_id=...&camera_id=...&file_prefix=...
 POST /api/record/stop?sender_id=...&camera_id=...
+POST /api/camera/name?sender_id=...&camera_id=...&camera_name=...
+POST /api/camera/prefix?sender_id=...&camera_id=...&prefix=...
 ```
 
 一键运行：

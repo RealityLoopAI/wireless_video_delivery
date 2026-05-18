@@ -81,12 +81,21 @@ std::string timestamp_text() {
     return local_time_text("%Y-%m-%d %H:%M:%S");
 }
 
-std::string date_dir() {
-    return local_time_text("%Y-%m-%d");
+std::string local_time_text_from_us(uint64_t epoch_us, const char *format) {
+    const auto seconds = static_cast<time_t>(epoch_us / 1'000'000ull);
+    std::tm tm{};
+    localtime_r(&seconds, &tm);
+    std::ostringstream oss;
+    oss << std::put_time(&tm, format);
+    return oss.str();
 }
 
-std::string time_dir() {
-    return local_time_text("%H%M%S");
+std::string date_dir_from_us(uint64_t epoch_us) {
+    return local_time_text_from_us(epoch_us, "%Y-%m-%d");
+}
+
+std::string time_dir_from_us(uint64_t epoch_us) {
+    return local_time_text_from_us(epoch_us, "%H%M%S");
 }
 
 std::string json_escape(const std::string &value) {
@@ -365,6 +374,40 @@ std::string camera_key(const std::string &sender_id, const std::string &camera_i
     return sender_id + "_" + camera_id;
 }
 
+bool is_safe_storage_text(const std::string &value) {
+    if(value == "." || value == "..") {
+        return false;
+    }
+    for(unsigned char ch : value) {
+        if(ch < 0x20 || ch == 0x7f) {
+            return false;
+        }
+        if(ch >= 0x80) {
+            continue;
+        }
+        if(std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.') {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::string> storage_text_error(const std::string &field, const std::string &value) {
+    if(is_safe_storage_text(value)) {
+        return std::nullopt;
+    }
+    return field + " only allows Chinese/letters/digits/_/-. and must not contain path or control characters";
+}
+
+std::string prefixed_filename(const std::string &prefix, const std::string &basename) {
+    return prefix + basename;
+}
+
+std::string json_error(const std::string &error) {
+    return "{\"ok\":false,\"error\":\"" + json_escape(error) + "\"}";
+}
+
 bool h264_payload_has_nal_type(const std::vector<uint8_t> &payload, uint8_t expected_type) {
     for(size_t i = 0; i + 4 < payload.size(); ++i) {
         size_t nal_offset = std::string::npos;
@@ -539,6 +582,7 @@ struct Config {
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
     std::string log_directory = "08_reports/receiver_logs";
+    std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
     int segment_seconds = 300;
     int depth_fps = 30;
@@ -563,6 +607,7 @@ Config load_config(const std::string &path) {
     cfg.admin_port = config_port(json, "admin_port", cfg.admin_port);
     cfg.nas_root = config_string(json, "nas_root", cfg.nas_root);
     cfg.log_directory = config_string(json, "log_directory", cfg.log_directory);
+    cfg.state_path = config_string(json, "state_path", cfg.state_path);
     cfg.ffmpeg_path = config_string(json, "ffmpeg_path", cfg.ffmpeg_path);
     cfg.segment_seconds = config_int(json, "segment_seconds", cfg.segment_seconds);
     cfg.depth_fps = config_int(json, "depth_fps", cfg.depth_fps);
@@ -577,6 +622,97 @@ Config load_config(const std::string &path) {
         throw std::runtime_error("depth_fps must be positive");
     }
     return cfg;
+}
+
+struct RuntimeState {
+    std::string default_file_prefix;
+    std::map<std::string, std::string> camera_names;
+    std::map<std::string, std::string> camera_file_prefixes;
+};
+
+std::map<std::string, std::string> json_string_map_field(const std::string &json, const std::string &key) {
+    std::map<std::string, std::string> result;
+    const auto object = json_object_field(json, key);
+    if(!object) {
+        return result;
+    }
+    const std::regex pair_pattern("\"([^\"]+)\"\\s*:\\s*\"([^\"]*)\"");
+    for(auto it = std::sregex_iterator(object->begin(), object->end(), pair_pattern); it != std::sregex_iterator(); ++it) {
+        if(it->size() >= 3) {
+            result[(*it)[1].str()] = (*it)[2].str();
+        }
+    }
+    return result;
+}
+
+RuntimeState load_runtime_state(const std::string &path) {
+    RuntimeState state;
+    std::ifstream input(path);
+    if(!input) {
+        return state;
+    }
+    const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    state.default_file_prefix = json_string_field(json, "default_file_prefix").value_or("");
+    state.camera_names = json_string_map_field(json, "camera_names");
+    state.camera_file_prefixes = json_string_map_field(json, "camera_file_prefixes");
+    if(!is_safe_storage_text(state.default_file_prefix)) {
+        state.default_file_prefix.clear();
+    }
+    for(auto it = state.camera_names.begin(); it != state.camera_names.end();) {
+        if(!is_safe_storage_text(it->second) || it->second.empty()) {
+            it = state.camera_names.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+    for(auto it = state.camera_file_prefixes.begin(); it != state.camera_file_prefixes.end();) {
+        if(!is_safe_storage_text(it->second) || it->second.empty()) {
+            it = state.camera_file_prefixes.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+    return state;
+}
+
+void save_runtime_state_file(const std::string &path, const RuntimeState &state) {
+    const auto state_path = std::filesystem::path(path);
+    const auto parent = state_path.parent_path();
+    if(!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    const auto tmp_path = state_path.string() + ".tmp";
+    std::ofstream out(tmp_path, std::ios::out | std::ios::trunc);
+    if(!out) {
+        throw std::runtime_error("cannot write receiver state: " + tmp_path);
+    }
+    out << "{\n";
+    out << "  \"default_file_prefix\": \"" << json_escape(state.default_file_prefix) << "\",\n";
+    out << "  \"camera_names\": {\n";
+    bool first = true;
+    for(const auto &item : state.camera_names) {
+        if(!first) {
+            out << ",\n";
+        }
+        first = false;
+        out << "    \"" << json_escape(item.first) << "\": \"" << json_escape(item.second) << "\"";
+    }
+    out << "\n  },\n";
+    out << "  \"camera_file_prefixes\": {\n";
+    first = true;
+    for(const auto &item : state.camera_file_prefixes) {
+        if(!first) {
+            out << ",\n";
+        }
+        first = false;
+        out << "    \"" << json_escape(item.first) << "\": \"" << json_escape(item.second) << "\"";
+    }
+    out << "\n  }\n";
+    out << "}\n";
+    out.close();
+    std::filesystem::rename(tmp_path, state_path);
 }
 
 class Logger {
@@ -1124,25 +1260,31 @@ public:
         return directory_;
     }
 
-    void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json,
-               Logger &logger) {
+    uint64_t start_us() const {
+        return start_us_;
+    }
+
+    void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &camera_name,
+               const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json, Logger &logger) {
         close(cfg, sender_id, camera_id, announce_json, logger);
         start_us_ = now_us();
         start_steady_ = std::chrono::steady_clock::now();
-        const auto key = camera_key(sender_id, camera_id);
-        directory_ = (std::filesystem::path(cfg.nas_root) / key / date_dir() / time_dir()).string();
+        camera_name_ = camera_name;
+        storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
+        file_prefix_ = file_prefix;
+        directory_ = (std::filesystem::path(cfg.nas_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_)).string();
         std::filesystem::create_directories(directory_);
 
-        frames_csv_.open(std::filesystem::path(directory_) / "frames.csv", std::ios::out | std::ios::trunc);
+        frames_csv_.open(file_path("frames.csv"), std::ios::out | std::ios::trunc);
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
                        "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
                        "codec_or_compression\n";
 
         if(cfg.write_debug_h264) {
-            rgb_debug_.open(std::filesystem::path(directory_) / "rgb_debug.h264", std::ios::binary | std::ios::out | std::ios::trunc);
+            rgb_debug_.open(file_path("rgb_debug.h264"), std::ios::binary | std::ios::out | std::ios::trunc);
         }
         if(cfg.write_debug_depth_raw) {
-            depth_debug_.open(std::filesystem::path(directory_) / "depth_debug.raw", std::ios::binary | std::ios::out | std::ios::trunc);
+            depth_debug_.open(file_path("depth_debug.raw"), std::ios::binary | std::ios::out | std::ios::trunc);
         }
 
         write_meta(cfg, sender_id, camera_id, announce_json, false);
@@ -1179,6 +1321,9 @@ public:
         logger.info("recording segment closed: " + directory_);
         active_ = false;
         directory_.clear();
+        camera_name_.clear();
+        storage_key_.clear();
+        file_prefix_.clear();
         depth_width_ = 0;
         depth_height_ = 0;
         last_rgb_ = {};
@@ -1200,13 +1345,14 @@ public:
     }
 
     void write_packet(const Config &cfg, const MediaPacket &packet, const std::string &sender_id, const std::string &camera_id,
+                      const std::string &camera_name, const std::string &storage_key, const std::string &file_prefix,
                       const std::string &announce_json, Logger &logger) {
         if(!active_) {
-            start(cfg, sender_id, camera_id, announce_json, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
         }
         if(should_rotate(cfg)) {
             close(cfg, sender_id, camera_id, announce_json, logger);
-            start(cfg, sender_id, camera_id, announce_json, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
         }
 
         const uint64_t packet_local_us = now_us();
@@ -1262,14 +1408,18 @@ public:
     }
 
 private:
+    std::filesystem::path file_path(const std::string &basename) const {
+        return std::filesystem::path(directory_) / prefixed_filename(file_prefix_, basename);
+    }
+
     void ensure_depth_pipe(const Config &cfg, uint32_t width, uint32_t height, double fps, Logger &logger) {
         if(depth_pipe_.active()) {
             return;
         }
         depth_width_ = width;
         depth_height_ = height;
-        const auto ffmpeg_log = shell_quote((std::filesystem::path(directory_) / "ffmpeg.log").string());
-        const auto depth_mkv = shell_quote((std::filesystem::path(directory_) / "depth.mkv").string());
+        const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
+        const auto depth_mkv = shell_quote(file_path("depth.mkv").string());
         std::ostringstream cmd;
         cmd << shell_quote(cfg.ffmpeg_path)
             << " -hide_banner -loglevel warning -y -f rawvideo -pixel_format gray16le -video_size " << width << "x" << height
@@ -1281,8 +1431,8 @@ private:
         if(rgb_pipe_.active()) {
             return;
         }
-        const auto ffmpeg_log = shell_quote((std::filesystem::path(directory_) / "ffmpeg.log").string());
-        const auto rgb_mp4 = shell_quote((std::filesystem::path(directory_) / "rgb.mp4").string());
+        const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
+        const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
                                     " -hide_banner -loglevel warning -y -r " + format_fps(fps) + " -f h264 -i pipe:0 -c:v copy -movflags +faststart " +
                                     rgb_mp4 + " 2>>" + ffmpeg_log;
@@ -1394,20 +1544,23 @@ private:
                                                         : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "width").value_or(0));
         const uint32_t rgb_height = rgb_stats_.height > 0 ? rgb_stats_.height
                                                           : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "height").value_or(0));
-        std::ofstream meta(std::filesystem::path(directory_) / "meta.json", std::ios::out | std::ios::trunc);
+        std::ofstream meta(file_path("meta.json"), std::ios::out | std::ios::trunc);
         meta << "{\n";
         meta << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         meta << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         meta << "  \"camera_key\": \"" << json_escape(camera_key(sender_id, camera_id)) << "\",\n";
+        meta << "  \"camera_name\": \"" << json_escape(camera_name_) << "\",\n";
+        meta << "  \"storage_key\": \"" << json_escape(storage_key_) << "\",\n";
+        meta << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
         meta << "  \"segment_start_us\": " << start_us_ << ",\n";
         meta << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
-        meta << "  \"rgb_file\": \"rgb.mp4\",\n";
-        meta << "  \"rgb_debug_file\": \"rgb_debug.h264\",\n";
-        meta << "  \"depth_file\": \"depth.mkv\",\n";
-        meta << "  \"depth_debug_file\": \"depth_debug.raw\",\n";
-        meta << "  \"frames_file\": \"frames.csv\",\n";
-        meta << "  \"ffmpeg_log_file\": \"ffmpeg.log\",\n";
+        meta << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
+        meta << "  \"rgb_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_debug.h264")) << "\",\n";
+        meta << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
+        meta << "  \"depth_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_debug.raw")) << "\",\n";
+        meta << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
+        meta << "  \"ffmpeg_log_file\": \"" << json_escape(prefixed_filename(file_prefix_, "ffmpeg.log")) << "\",\n";
         meta << "  \"rgb_codec\": \"" << json_escape(rgb_codec) << "\",\n";
         meta << "  \"rgb_width\": " << rgb_width << ",\n";
         meta << "  \"rgb_height\": " << rgb_height << ",\n";
@@ -1502,6 +1655,9 @@ private:
     uint64_t end_us_ = 0;
     std::chrono::steady_clock::time_point start_steady_{};
     std::string directory_;
+    std::string camera_name_;
+    std::string storage_key_;
+    std::string file_prefix_;
     std::ofstream frames_csv_;
     std::ofstream rgb_debug_;
     std::ofstream depth_debug_;
@@ -1530,6 +1686,10 @@ struct CameraState {
     std::string sender_id;
     std::string camera_id;
     std::string key;
+    std::string camera_name;
+    std::string camera_file_prefix;
+    uint64_t recording_start_us = 0;
+    std::string recording_file_prefix;
     bool online = true;
     bool recording_requested = false;
     uint64_t last_status_us = 0;
@@ -1550,11 +1710,17 @@ struct CameraState {
     std::string last_error;
     std::string last_announce_json;
     SegmentWriter segment;
+
+    std::string storage_key() const {
+        return camera_name.empty() ? key : camera_name;
+    }
 };
 
 class ReceiverApp {
 public:
-    explicit ReceiverApp(Config config) : config_(std::move(config)), logger_(config_.log_directory) {}
+    explicit ReceiverApp(Config config) : config_(std::move(config)), logger_(config_.log_directory), runtime_state_(load_runtime_state(config_.state_path)) {
+        logger_.info("receiver state loaded: " + config_.state_path);
+    }
 
     void start() {
         running_ = true;
@@ -1595,6 +1761,9 @@ public:
         out << "{";
         out << "\"running\":true,";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
+        out << "\"recording_start_us\":" << recording_all_start_us_ << ',';
+        out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
+        out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
         out << "\"status_port\":" << config_.status_port << ',';
@@ -1615,9 +1784,14 @@ public:
             out << "\"sender_id\":\"" << json_escape(cam.sender_id) << "\",";
             out << "\"camera_id\":\"" << json_escape(cam.camera_id) << "\",";
             out << "\"camera_key\":\"" << json_escape(cam.key) << "\",";
+            out << "\"camera_name\":\"" << json_escape(cam.camera_name) << "\",";
+            out << "\"storage_key\":\"" << json_escape(cam.storage_key()) << "\",";
+            out << "\"camera_file_prefix\":\"" << json_escape(cam.camera_file_prefix) << "\",";
             out << "\"online\":" << (cam.online ? "true" : "false") << ',';
             out << "\"live\":" << (live ? "true" : "false") << ',';
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
+            out << "\"recording_start_us\":" << cam.recording_start_us << ',';
+            out << "\"file_prefix\":\"" << json_escape(cam.recording_file_prefix) << "\",";
             out << "\"segment_active\":" << (cam.segment.active() ? "true" : "false") << ',';
             out << "\"segment_dir\":\"" << json_escape(cam.segment.directory()) << "\",";
             out << "\"last_status_us\":" << cam.last_status_us << ',';
@@ -1657,43 +1831,103 @@ public:
         out << "\"admin_bind_ip\":\"" << json_escape(config_.admin_bind_ip) << "\",";
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
+        out << "\"state_path\":\"" << json_escape(config_.state_path) << "\",";
+        out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
+        out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"segment_seconds\":" << config_.segment_seconds;
         out << "}";
         return out.str();
     }
 
-    std::string start_all() {
+    std::string effective_file_prefix_locked(const CameraState &cam) const {
+        if(recording_all_ && recording_all_has_file_prefix_override_) {
+            return recording_all_file_prefix_;
+        }
+        return cam.camera_file_prefix;
+    }
+
+    std::string start_all(const std::optional<std::string> &file_prefix_override) {
+        if(file_prefix_override) {
+            if(const auto error = storage_text_error("file_prefix", *file_prefix_override)) {
+                return json_error(*error);
+            }
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         refresh_camera_liveness_locked(now_us());
+        const bool already_recording = recording_all_;
+        if(!already_recording) {
+            recording_all_start_us_ = now_us();
+            recording_all_has_file_prefix_override_ = file_prefix_override.has_value();
+            recording_all_file_prefix_ = file_prefix_override.value_or("");
+        }
         recording_all_ = true;
         for(auto &item : cameras_) {
+            if(!item.second->recording_requested && !item.second->segment.active()) {
+                item.second->recording_start_us = recording_all_start_us_;
+                item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
+            }
             item.second->recording_requested = true;
         }
         logger_.info("recording start-all requested");
-        return "{\"ok\":true,\"recording_all\":true}";
+        std::ostringstream out;
+        out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << recording_all_start_us_
+            << ",\"file_prefix_scope\":\"" << (recording_all_has_file_prefix_override_ ? "override_all" : "per_camera") << "\"}";
+        return out.str();
     }
 
     std::string stop_all() {
         std::lock_guard<std::mutex> lock(mutex_);
+        uint64_t recording_start_us = recording_all_start_us_;
+        if(recording_start_us == 0) {
+            for(const auto &item : cameras_) {
+                if(item.second->recording_start_us > 0 &&
+                   (recording_start_us == 0 || item.second->recording_start_us < recording_start_us)) {
+                    recording_start_us = item.second->recording_start_us;
+                }
+            }
+        }
         recording_all_ = false;
+        recording_all_start_us_ = 0;
+        recording_all_has_file_prefix_override_ = false;
+        recording_all_file_prefix_.clear();
         for(auto &item : cameras_) {
             item.second->recording_requested = false;
             item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
+            item.second->recording_start_us = 0;
+            item.second->recording_file_prefix.clear();
         }
         refresh_camera_liveness_locked(now_us());
         logger_.info("recording stop-all requested");
-        return "{\"ok\":true,\"recording_all\":false}";
+        std::ostringstream out;
+        out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us << "}";
+        return out.str();
     }
 
-    std::string start_camera(const std::string &sender_id, const std::string &camera_id) {
+    std::string start_camera(const std::string &sender_id, const std::string &camera_id, const std::optional<std::string> &file_prefix_override) {
         if(sender_id.empty() || camera_id.empty()) {
             return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
         }
+        if(file_prefix_override) {
+            if(const auto error = storage_text_error("file_prefix", *file_prefix_override)) {
+                return json_error(*error);
+            }
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         auto &cam = ensure_camera_locked(sender_id, camera_id);
+        if(!recording_all_ && !cam.recording_requested && !cam.segment.active()) {
+            cam.recording_start_us = now_us();
+            cam.recording_file_prefix = file_prefix_override.value_or(cam.camera_file_prefix);
+        }
+        else if(cam.recording_start_us == 0) {
+            cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+            cam.recording_file_prefix = recording_all_ ? effective_file_prefix_locked(cam) : file_prefix_override.value_or(cam.camera_file_prefix);
+        }
         cam.recording_requested = true;
         logger_.info("recording start requested: " + cam.key);
-        return "{\"ok\":true}";
+        std::ostringstream out;
+        out << "{\"ok\":true,\"recording_start_us\":" << cam.recording_start_us << ",\"file_prefix\":\""
+            << json_escape(cam.recording_file_prefix) << "\"}";
+        return out.str();
     }
 
     std::string stop_camera(const std::string &sender_id, const std::string &camera_id) {
@@ -1706,10 +1940,105 @@ public:
         if(it == cameras_.end()) {
             return "{\"ok\":false,\"error\":\"camera not found\"}";
         }
+        const uint64_t recording_start_us = it->second->recording_start_us;
         it->second->recording_requested = false;
         it->second->segment.close(config_, it->second->sender_id, it->second->camera_id, it->second->last_announce_json, logger_);
+        if(recording_all_) {
+            it->second->recording_start_us = recording_all_start_us_;
+            it->second->recording_file_prefix = effective_file_prefix_locked(*it->second);
+        }
+        else {
+            it->second->recording_start_us = 0;
+            it->second->recording_file_prefix.clear();
+        }
         logger_.info("recording stop requested: " + key);
-        return "{\"ok\":true}";
+        std::ostringstream out;
+        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << "}";
+        return out.str();
+    }
+
+    std::string set_camera_name(const std::string &sender_id, const std::string &camera_id, const std::string &camera_name) {
+        if(sender_id.empty() || camera_id.empty()) {
+            return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
+        }
+        if(const auto error = storage_text_error("camera_name", camera_name)) {
+            return json_error(*error);
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto key = camera_key(sender_id, camera_id);
+        if(camera_name.empty()) {
+            runtime_state_.camera_names.erase(key);
+        }
+        else {
+            runtime_state_.camera_names[key] = camera_name;
+        }
+        auto it = cameras_.find(key);
+        if(it != cameras_.end()) {
+            it->second->camera_name = camera_name;
+        }
+        try {
+            save_runtime_state_file(config_.state_path, runtime_state_);
+        }
+        catch(const std::exception &e) {
+            logger_.error(e.what());
+            return json_error(e.what());
+        }
+        logger_.info("camera name updated: " + key + " -> " + (camera_name.empty() ? key : camera_name));
+        std::ostringstream out;
+        out << "{\"ok\":true,\"sender_id\":\"" << json_escape(sender_id) << "\",\"camera_id\":\"" << json_escape(camera_id)
+            << "\",\"camera_key\":\"" << json_escape(key) << "\",\"camera_name\":\"" << json_escape(camera_name)
+            << "\",\"storage_key\":\"" << json_escape(camera_name.empty() ? key : camera_name) << "\"}";
+        return out.str();
+    }
+
+    std::string set_camera_file_prefix(const std::string &sender_id, const std::string &camera_id, const std::string &file_prefix) {
+        if(sender_id.empty() || camera_id.empty()) {
+            return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
+        }
+        if(const auto error = storage_text_error("file_prefix", file_prefix)) {
+            return json_error(*error);
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto key = camera_key(sender_id, camera_id);
+        if(file_prefix.empty()) {
+            runtime_state_.camera_file_prefixes.erase(key);
+        }
+        else {
+            runtime_state_.camera_file_prefixes[key] = file_prefix;
+        }
+        auto it = cameras_.find(key);
+        if(it != cameras_.end()) {
+            it->second->camera_file_prefix = file_prefix;
+        }
+        try {
+            save_runtime_state_file(config_.state_path, runtime_state_);
+        }
+        catch(const std::exception &e) {
+            logger_.error(e.what());
+            return json_error(e.what());
+        }
+        logger_.info("camera file prefix updated: " + key + " -> " + file_prefix);
+        std::ostringstream out;
+        out << "{\"ok\":true,\"sender_id\":\"" << json_escape(sender_id) << "\",\"camera_id\":\"" << json_escape(camera_id)
+            << "\",\"camera_key\":\"" << json_escape(key) << "\",\"camera_file_prefix\":\"" << json_escape(file_prefix) << "\"}";
+        return out.str();
+    }
+
+    std::string set_default_file_prefix(const std::string &file_prefix) {
+        if(const auto error = storage_text_error("file_prefix", file_prefix)) {
+            return json_error(*error);
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        runtime_state_.default_file_prefix = file_prefix;
+        try {
+            save_runtime_state_file(config_.state_path, runtime_state_);
+        }
+        catch(const std::exception &e) {
+            logger_.error(e.what());
+            return json_error(e.what());
+        }
+        logger_.info("default file prefix updated: " + file_prefix);
+        return "{\"ok\":true,\"default_file_prefix\":\"" + json_escape(file_prefix) + "\"}";
     }
 
     std::optional<std::vector<uint8_t>> depth_preview(const std::string &sender_id, const std::string &camera_id) {
@@ -1807,7 +2136,19 @@ private:
         auto it = cameras_.find(key);
         if(it == cameras_.end()) {
             auto state = std::make_unique<CameraState>(sender_id, camera_id);
+            const auto name = runtime_state_.camera_names.find(key);
+            if(name != runtime_state_.camera_names.end()) {
+                state->camera_name = name->second;
+            }
+            const auto prefix = runtime_state_.camera_file_prefixes.find(key);
+            if(prefix != runtime_state_.camera_file_prefixes.end()) {
+                state->camera_file_prefix = prefix->second;
+            }
             state->recording_requested = recording_all_;
+            if(recording_all_) {
+                state->recording_start_us = recording_all_start_us_;
+                state->recording_file_prefix = effective_file_prefix_locked(*state);
+            }
             it = cameras_.emplace(key, std::move(state)).first;
             logger_.info("camera discovered: " + key);
         }
@@ -1923,7 +2264,12 @@ private:
         }
 
         if(recording_all_ || cam.recording_requested) {
-            cam.segment.write_packet(config_, decoded_packet, cam.sender_id, cam.camera_id, cam.last_announce_json, logger_);
+            if(cam.recording_start_us == 0) {
+                cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                cam.recording_file_prefix = effective_file_prefix_locked(cam);
+            }
+            cam.segment.write_packet(config_, decoded_packet, cam.sender_id, cam.camera_id, cam.camera_name, cam.storage_key(),
+                                     cam.recording_file_prefix, cam.last_announce_json, logger_);
         }
     }
 
@@ -2086,16 +2432,28 @@ private:
             body = config_json();
         }
         else if(method == "POST" && path == "/api/record/start-all") {
-            body = start_all();
+            body = start_all(args.count("file_prefix") ? std::optional<std::string>(args.at("file_prefix")) : std::nullopt);
         }
         else if(method == "POST" && path == "/api/record/stop-all") {
             body = stop_all();
         }
         else if(method == "POST" && path == "/api/record/start") {
-            body = start_camera(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "");
+            body = start_camera(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "",
+                                args.count("file_prefix") ? std::optional<std::string>(args.at("file_prefix")) : std::nullopt);
         }
         else if(method == "POST" && path == "/api/record/stop") {
             body = stop_camera(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "");
+        }
+        else if(method == "POST" && path == "/api/camera/name") {
+            body = set_camera_name(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "",
+                                   args.count("camera_name") ? args.at("camera_name") : "");
+        }
+        else if(method == "POST" && path == "/api/camera/prefix") {
+            body = set_camera_file_prefix(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "",
+                                          args.count("prefix") ? args.at("prefix") : "");
+        }
+        else if(method == "POST" && path == "/api/storage/prefix") {
+            body = set_default_file_prefix(args.count("prefix") ? args.at("prefix") : "");
         }
         else if(method == "GET" && path == "/api/preview/depth") {
             const auto preview = depth_preview(args.count("sender_id") ? args.at("sender_id") : "",
@@ -2139,12 +2497,16 @@ private:
 
     Config config_;
     Logger logger_;
+    RuntimeState runtime_state_;
     std::atomic<bool> running_{false};
     std::thread udp_thread_;
     std::thread tcp_thread_;
     std::thread admin_thread_;
     std::mutex mutex_;
     bool recording_all_ = false;
+    uint64_t recording_all_start_us_ = 0;
+    bool recording_all_has_file_prefix_override_ = false;
+    std::string recording_all_file_prefix_;
     std::map<std::string, std::unique_ptr<CameraState>> cameras_;
 };
 

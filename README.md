@@ -192,11 +192,9 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 sender_id: orangepi5pro-01
 camera_id: cam01
 receiver_ip: 192.168.1.107
-RGB target: 1920x1080@30 H.264 12Mbps
+RGB: 1920x1080@30 H.264 12Mbps
 Depth: 640x400@30 zlib
 ```
-
-当前 Orange Pi 5 Pro + Orbbec SV1301S_U3 实测：Depth 基本可到 30fps，RGB 1080p MJPG 即使单独打开也约 19-21fps。配置中的 `30fps` 是请求 profile 和编码时间基准，接收端应以发送端心跳和日志里的实测帧率为准。
 
 启动：
 

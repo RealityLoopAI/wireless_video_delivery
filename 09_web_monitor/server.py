@@ -47,8 +47,11 @@ def config() -> Any:
 
 
 @app.post("/api/record/start-all")
-def start_all() -> Any:
-    return _request("POST", "/api/record/start-all")
+def start_all(file_prefix: str | None = Query(None)) -> Any:
+    query = ""
+    if file_prefix is not None:
+        query = "?" + urllib.parse.urlencode({"file_prefix": file_prefix})
+    return _request("POST", f"/api/record/start-all{query}")
 
 
 @app.post("/api/record/stop-all")
@@ -57,8 +60,11 @@ def stop_all() -> Any:
 
 
 @app.post("/api/record/start")
-def start_camera(sender_id: str = Query(...), camera_id: str = Query(...)) -> Any:
-    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
+def start_camera(sender_id: str = Query(...), camera_id: str = Query(...), file_prefix: str | None = Query(None)) -> Any:
+    params = {"sender_id": sender_id, "camera_id": camera_id}
+    if file_prefix is not None:
+        params["file_prefix"] = file_prefix
+    query = urllib.parse.urlencode(params)
     return _request("POST", f"/api/record/start?{query}")
 
 
@@ -66,6 +72,24 @@ def start_camera(sender_id: str = Query(...), camera_id: str = Query(...)) -> An
 def stop_camera(sender_id: str = Query(...), camera_id: str = Query(...)) -> Any:
     query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
     return _request("POST", f"/api/record/stop?{query}")
+
+
+@app.post("/api/camera/name")
+def set_camera_name(sender_id: str = Query(...), camera_id: str = Query(...), camera_name: str = Query("")) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id, "camera_name": camera_name})
+    return _request("POST", f"/api/camera/name?{query}")
+
+
+@app.post("/api/camera/prefix")
+def set_camera_prefix(sender_id: str = Query(...), camera_id: str = Query(...), prefix: str = Query("")) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id, "prefix": prefix})
+    return _request("POST", f"/api/camera/prefix?{query}")
+
+
+@app.post("/api/storage/prefix")
+def set_storage_prefix(prefix: str = Query("")) -> Any:
+    query = urllib.parse.urlencode({"prefix": prefix})
+    return _request("POST", f"/api/storage/prefix?{query}")
 
 
 @app.get("/api/preview/depth")

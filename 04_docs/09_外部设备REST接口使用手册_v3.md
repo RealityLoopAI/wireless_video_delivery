@@ -1,6 +1,6 @@
 # 外部设备 REST/Web 接口使用手册 v3
 
-更新时间：2026-05-14
+更新时间：2026-05-18
 
 本文档只说明外部设备如何调用接收端已暴露的 Web/REST 接口，不包含接收端安装、启动、停止和运维排查内容。
 
@@ -44,6 +44,8 @@ http://192.168.66.196:8080/
 - 查看接收端配置。
 - 获取 RGB 最新预览图。
 - 获取 Depth 最新伪彩预览图。
+- 设置相机自命名，并持久保存。
+- 设置单路相机文件名前缀，并持久保存。
 - 开始全部相机录制。
 - 停止全部相机录制。
 - 开始指定相机录制。
@@ -67,6 +69,8 @@ http://192.168.66.196:8080/
 | `GET` | `/api/config` | 查询接收端配置。 |
 | `GET` | `/api/preview/rgb` | 获取指定相机 RGB 最新预览图。 |
 | `GET` | `/api/preview/depth` | 获取指定相机 Depth 最新伪彩预览图。 |
+| `POST` | `/api/camera/name` | 设置指定相机自命名。 |
+| `POST` | `/api/camera/prefix` | 设置指定相机文件名前缀。 |
 | `POST` | `/api/record/start-all` | 开始全部相机录制。 |
 | `POST` | `/api/record/stop-all` | 停止全部相机录制。 |
 | `POST` | `/api/record/start` | 开始指定相机录制。 |
@@ -92,6 +96,9 @@ curl "http://192.168.66.196:8080/api/status"
 {
   "running": true,
   "recording_all": false,
+  "recording_start_us": 0,
+  "default_file_prefix": "",
+  "file_prefix_scope": "per_camera",
   "nas_root": "/home/fz/Desktop/nas",
   "media_port": 50010,
   "status_port": 50011,
@@ -101,8 +108,14 @@ curl "http://192.168.66.196:8080/api/status"
       "sender_id": "orangepi5pro-01",
       "camera_id": "cam01",
       "camera_key": "orangepi5pro-01_cam01",
+      "camera_name": "",
+      "storage_key": "orangepi5pro-01_cam01",
+      "camera_file_prefix": "cam01_",
       "online": true,
+      "live": true,
       "recording": false,
+      "recording_start_us": 0,
+      "file_prefix": "",
       "segment_active": false,
       "segment_dir": "",
       "last_status_us": 1778739951620992,
@@ -131,13 +144,22 @@ curl "http://192.168.66.196:8080/api/status"
 |---|---|
 | `running` | 接收端 C++ 服务是否运行。 |
 | `recording_all` | 是否处于全局录制状态。 |
+| `recording_start_us` | 全局录制任务开始时间。未录制时为 `0`。 |
+| `default_file_prefix` | 兼容旧字段。当前正式前缀粒度看每路相机的 `camera_file_prefix`。 |
+| `file_prefix_scope` | 文件名前缀粒度。当前为 `per_camera`，即每一路相机单独配置。 |
 | `nas_root` | 录像保存根目录。 |
 | `cameras` | 当前接收端已发现的相机列表。 |
 | `sender_id` | 发送端 ID。 |
 | `camera_id` | 相机 ID。 |
 | `camera_key` | `<sender_id>_<camera_id>`。 |
+| `camera_name` | 外部设置的相机自命名。为空表示未自命名。 |
+| `storage_key` | 实际保存目录名。优先使用 `camera_name`，否则使用 `camera_key`。 |
+| `camera_file_prefix` | 该路相机已保存的文件名前缀。为空表示该路不加前缀。 |
 | `online` | 相机是否在线。 |
+| `live` | 是否在实时窗口内收到心跳或媒体包。 |
 | `recording` | 该相机是否被请求录制。 |
+| `recording_start_us` | 该相机当前录制任务开始时间。未录制时为 `0`。 |
+| `file_prefix` | 当前录制任务使用的文件名前缀。 |
 | `segment_active` | 该相机当前是否已有录制切片正在写入。 |
 | `segment_dir` | 当前录制切片目录；未录制时为空。 |
 | `last_status_us` | 最近一次收到发送端状态心跳的时间，Unix epoch microseconds。 |
@@ -181,7 +203,10 @@ curl "http://192.168.66.196:8080/api/config"
   "status_port": 50011,
   "admin_bind_ip": "127.0.0.1",
   "admin_port": 18080,
-  "nas_root": "/home/fz/Desktop/nas"
+  "nas_root": "/home/fz/Desktop/nas",
+  "state_path": "06_configs/receiver_runtime_state.json",
+  "default_file_prefix": "",
+  "file_prefix_scope": "per_camera"
 }
 ```
 
@@ -269,9 +294,95 @@ http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-01&camera_id
 http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-01&camera_id=cam01&t=1778739951
 ```
 
-## 7. 录制控制接口
+## 7. 命名和文件前缀接口
 
-### 7.1 开始全部相机录制
+`camera_name` 和 `prefix` 会进入保存路径或文件名，安全规则如下：
+
+- 允许中文、英文、数字、下划线 `_`、中划线 `-`、点 `.`。
+- 禁止 `/ \ : * ? " < > |`、空格和控制字符。
+- 空字符串表示清空自命名或清空该路文件名前缀。
+
+### 7.1 设置相机自命名
+
+```http
+POST /api/camera/name?sender_id=<sender_id>&camera_id=<camera_id>&camera_name=<camera_name>
+```
+
+示例：
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-01&camera_id=cam01&camera_name=front_left"
+```
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "sender_id": "orangepi5pro-01",
+  "camera_id": "cam01",
+  "camera_key": "orangepi5pro-01_cam01",
+  "camera_name": "front_left",
+  "storage_key": "front_left"
+}
+```
+
+说明：
+
+- 自命名会持久保存，接收端重启后仍生效。
+- 录像保存路径优先使用 `camera_name`，未设置时使用原始 `camera_key`。
+- 控制和预览接口仍使用原始 `sender_id` + `camera_id`，不使用 `camera_name`。
+
+清空自命名：
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-01&camera_id=cam01&camera_name="
+```
+
+### 7.2 设置单路文件名前缀
+
+```http
+POST /api/camera/prefix?sender_id=<sender_id>&camera_id=<camera_id>&prefix=<prefix>
+```
+
+示例：
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix=cam01_"
+```
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "sender_id": "orangepi5pro-01",
+  "camera_id": "cam01",
+  "camera_key": "orangepi5pro-01_cam01",
+  "camera_file_prefix": "cam01_"
+}
+```
+
+说明：
+
+- 文件名前缀按相机单独保存，接收端重启后仍生效。
+- 后续该路相机开始录制时，如果没有临时传 `file_prefix`，会使用该路已保存前缀。
+- 前缀作用于该路 segment 目录下所有文件，例如 `cam01_rgb.mp4`、`cam01_depth.mkv`、`cam01_frames.csv`、`cam01_meta.json`。
+- `start-all` 会按每一路相机各自保存的 `camera_file_prefix` 分别写文件，不会默认给所有相机套同一个前缀。
+
+清空该路前缀：
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix="
+```
+
+## 8. 录制控制接口
+
+### 8.1 开始全部相机录制
 
 ```http
 POST /api/record/start-all
@@ -288,11 +399,15 @@ curl -X POST "http://192.168.66.196:8080/api/record/start-all"
 ```json
 {
   "ok": true,
-  "recording_all": true
+  "recording_all": true,
+  "recording_start_us": 1778739951620992,
+  "file_prefix_scope": "per_camera"
 }
 ```
 
-### 7.2 停止全部相机录制
+说明：开始全部录制时，每一路使用自己已保存的 `camera_file_prefix`。不建议用 `file_prefix` 给全部相机临时套同一个前缀。
+
+### 8.2 停止全部相机录制
 
 ```http
 POST /api/record/stop-all
@@ -309,11 +424,14 @@ curl -X POST "http://192.168.66.196:8080/api/record/stop-all"
 ```json
 {
   "ok": true,
-  "recording_all": false
+  "recording_all": false,
+  "recording_start_us": 1778739951620992
 }
 ```
 
-### 7.3 开始指定相机录制
+`recording_start_us` 是整次录制任务的开始时间，即调用开始录制接口时的接收端 Unix epoch microseconds。
+
+### 8.3 开始指定相机录制
 
 ```http
 POST /api/record/start?sender_id=<sender_id>&camera_id=<camera_id>
@@ -326,11 +444,20 @@ curl -X POST \
   "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01"
 ```
 
+使用本次录制临时文件名前缀：
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01&file_prefix=test02_"
+```
+
 返回示例：
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "recording_start_us": 1778739951620992,
+  "file_prefix": "test02_"
 }
 ```
 
@@ -338,8 +465,9 @@ curl -X POST \
 
 - `sender_id` 和 `camera_id` 可从 `/api/status` 的 `cameras` 列表读取。
 - 如果相机尚未被接收端发现，会返回错误。
+- 如果未传临时 `file_prefix`，该路会使用已保存的 `camera_file_prefix`。
 
-### 7.4 停止指定相机录制
+### 8.4 停止指定相机录制
 
 ```http
 POST /api/record/stop?sender_id=<sender_id>&camera_id=<camera_id>
@@ -356,13 +484,14 @@ curl -X POST \
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "recording_start_us": 1778739951620992
 }
 ```
 
-## 8. 典型调用流程
+## 9. 典型调用流程
 
-### 8.1 查看在线相机
+### 9.1 查看在线相机
 
 ```bash
 curl "http://192.168.66.196:8080/api/status"
@@ -375,7 +504,7 @@ sender_id = orangepi5pro-01
 camera_id = cam01
 ```
 
-### 8.2 检查画面是否可预览
+### 9.2 检查画面是否可预览
 
 ```bash
 curl \
@@ -389,14 +518,21 @@ curl \
   -o depth_preview.bmp
 ```
 
-### 8.3 开始录制
+### 9.3 设置该路文件名前缀
+
+```bash
+curl -X POST \
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix=cam01_"
+```
+
+### 9.4 开始录制
 
 ```bash
 curl -X POST \
   "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01"
 ```
 
-### 8.4 确认录制目录
+### 9.5 确认录制目录
 
 ```bash
 curl "http://192.168.66.196:8080/api/status"
@@ -408,18 +544,21 @@ curl "http://192.168.66.196:8080/api/status"
 {
   "recording": true,
   "segment_active": true,
-  "segment_dir": "/home/fz/Desktop/nas/orangepi5pro-01_cam01/2026-05-14/142343"
+  "storage_key": "orangepi5pro-01_cam01",
+  "camera_file_prefix": "cam01_",
+  "file_prefix": "cam01_",
+  "segment_dir": "/home/fz/Desktop/nas/orangepi5pro-01_cam01/2026-05-18/142343"
 }
 ```
 
-### 8.5 停止录制
+### 9.6 停止录制
 
 ```bash
 curl -X POST \
   "http://192.168.66.196:8080/api/record/stop?sender_id=orangepi5pro-01&camera_id=cam01"
 ```
 
-## 9. Python 调用示例
+## 10. Python 调用示例
 
 ```python
 import time
@@ -433,18 +572,26 @@ status = requests.get(f"{BASE}/api/status", timeout=3).json()
 print(status["cameras"])
 
 requests.post(
+    f"{BASE}/api/camera/prefix",
+    params={"sender_id": SENDER_ID, "camera_id": CAMERA_ID, "prefix": "cam01_"},
+    timeout=3,
+)
+
+start_resp = requests.post(
     f"{BASE}/api/record/start",
     params={"sender_id": SENDER_ID, "camera_id": CAMERA_ID},
     timeout=3,
-)
+).json()
+print(start_resp["recording_start_us"])
 
 time.sleep(10)
 
-requests.post(
+stop_resp = requests.post(
     f"{BASE}/api/record/stop",
     params={"sender_id": SENDER_ID, "camera_id": CAMERA_ID},
     timeout=3,
-)
+).json()
+print(stop_resp["recording_start_us"])
 ```
 
 保存预览图：
@@ -464,9 +611,9 @@ depth.raise_for_status()
 open("depth_preview.bmp", "wb").write(depth.content)
 ```
 
-## 10. 错误和限制
+## 11. 错误和限制
 
-### 10.1 常见 HTTP 状态
+### 11.1 常见 HTTP 状态
 
 | 状态码 | 含义 |
 |---:|---|
@@ -474,7 +621,7 @@ open("depth_preview.bmp", "wb").write(depth.content)
 | `404` | 预览不可用，或相机 ID 不存在。 |
 | `502` | Web 代理无法访问本机 C++ 管理接口。 |
 
-### 10.2 常见问题
+### 11.2 常见问题
 
 页面能打开但画面不动：
 
@@ -498,6 +645,6 @@ open("depth_preview.bmp", "wb").write(depth.content)
 - 录制请求已记录，但还没有媒体包进来。
 - 等发送端开始发送 RGB/Depth 后，segment 才会真正创建并写入。
 
-### 10.3 安全限制
+### 11.3 安全限制
 
 当前接口没有鉴权。不要直接暴露到公网。如果必须跨网访问，应先加 VPN、反向代理鉴权或防火墙白名单。

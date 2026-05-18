@@ -72,6 +72,28 @@
     }
     button.stop { background: var(--danger); }
     button.secondary { background: #635a50; }
+    .input-group {
+      display: grid;
+      gap: 5px;
+      min-width: min(280px, 100%);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    input {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 13px;
+      color: var(--ink);
+      background: rgba(255,255,255,.68);
+      font: inherit;
+      font-weight: 750;
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,108,103,.12);
+    }
     .grid {
       display: grid;
       grid-template-columns: 1fr;
@@ -99,7 +121,35 @@
       justify-content: flex-end;
       gap: 8px;
     }
+    .camera-name-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: end;
+      margin-top: 10px;
+    }
+    .camera-name-row .input-group {
+      min-width: min(340px, 100%);
+    }
+    .camera-edit-row {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) auto minmax(240px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+      margin-top: 14px;
+    }
+    .camera-edit-row .input-group {
+      min-width: 0;
+    }
+    .storage-key {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      word-break: break-all;
+    }
     .save-path {
+      margin-top: 10px;
       padding: 12px 14px;
       border: 1px solid var(--line);
       border-radius: 18px;
@@ -122,7 +172,7 @@
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
-      margin-top: 16px;
+      margin-top: 14px;
     }
     .view {
       min-height: min(42vh, 440px);
@@ -172,7 +222,7 @@
     .pill.off { background: rgba(178,64,42,.12); color: var(--danger); }
     .pill.warn { background: rgba(184,121,0,.14); color: var(--warn); }
     .debug-panel {
-      margin-top: 16px;
+      margin-top: 10px;
       padding: 12px 14px;
     }
     .card .debug-panel {
@@ -221,6 +271,9 @@
       .camera-actions {
         justify-content: flex-start;
         margin-top: 12px;
+      }
+      .camera-edit-row {
+        grid-template-columns: 1fr;
       }
       .preview {
         grid-template-columns: 1fr;
@@ -272,11 +325,21 @@
     }[ch]));
     async function post(url) {
       const res = await fetch(url, {method: 'POST'});
-      if (!res.ok) alert(await res.text());
+      const text = await res.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {raw: text}; }
+      if (!res.ok || data.ok === false) alert(data.error || data.detail || text);
       await load();
+      return data;
     }
-    async function postCamera(path, sender, camera) {
-      await post(`${path}?sender_id=${encodeURIComponent(sender)}&camera_id=${encodeURIComponent(camera)}`);
+    function currentCardPrefix(card) {
+      const input = card.querySelector('[data-field="file_prefix_input"]');
+      return input ? input.value || '' : '';
+    }
+    async function postCamera(path, sender, camera, card = null) {
+      const params = new URLSearchParams({sender_id: sender, camera_id: camera});
+      if (card) params.set('file_prefix', currentCardPrefix(card));
+      await post(`${path}?${params.toString()}`);
     }
     function cardId(key) {
       return `camera-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -299,15 +362,12 @@
           <div>
             <div data-field="pills"></div>
             <div class="key" data-field="camera_key"></div>
+            <div class="storage-key">保存目录名：<span data-field="storage_key"></span></div>
           </div>
           <div class="camera-actions">
             <button data-action="start">单路开始</button>
             <button class="stop" data-action="stop">单路停止</button>
           </div>
-        </div>
-        <div class="save-path">
-          <span>当前保存目录</span>
-          <strong data-field="segment_dir"></strong>
         </div>
         <div class="preview">
           <div class="view" data-title="RGB">
@@ -318,6 +378,22 @@
             <img alt="Depth preview" data-preview="depth" style="display:none">
             <span data-placeholder="depth">等待 Depth 画面</span>
           </div>
+        </div>
+        <div class="camera-edit-row">
+          <label class="input-group">
+            <span>相机自命名（留空则用原始 ID）</span>
+            <input data-field="camera_name_input" placeholder="例如 front_left" />
+          </label>
+          <button class="secondary" data-action="save-name">保存命名</button>
+          <label class="input-group">
+            <span>本路文件名前缀（留空则不加）</span>
+            <input data-field="file_prefix_input" placeholder="例如 cam01_" />
+          </label>
+          <button class="secondary" data-action="save-prefix">保存前缀</button>
+        </div>
+        <div class="save-path">
+          <span>当前保存目录</span>
+          <strong data-field="segment_dir"></strong>
         </div>
         <details class="debug-panel">
           <summary>高级状态</summary>
@@ -333,10 +409,28 @@
           </div>
         </details>`;
       card.querySelector('[data-action="start"]').addEventListener('click', () => {
-        postCamera('/api/record/start', card.dataset.senderId, card.dataset.cameraId);
+        postCamera('/api/record/start', card.dataset.senderId, card.dataset.cameraId, card);
       });
       card.querySelector('[data-action="stop"]').addEventListener('click', () => {
         postCamera('/api/record/stop', card.dataset.senderId, card.dataset.cameraId);
+      });
+      card.querySelector('[data-action="save-name"]').addEventListener('click', () => {
+        const input = card.querySelector('[data-field="camera_name_input"]');
+        const params = new URLSearchParams({
+          sender_id: card.dataset.senderId,
+          camera_id: card.dataset.cameraId,
+          camera_name: input.value || ''
+        });
+        post(`/api/camera/name?${params.toString()}`);
+      });
+      card.querySelector('[data-action="save-prefix"]').addEventListener('click', () => {
+        const input = card.querySelector('[data-field="file_prefix_input"]');
+        const params = new URLSearchParams({
+          sender_id: card.dataset.senderId,
+          camera_id: card.dataset.cameraId,
+          prefix: input.value || ''
+        });
+        post(`/api/camera/prefix?${params.toString()}`);
       });
       cards.appendChild(card);
       return card;
@@ -409,6 +503,15 @@
       card.dataset.depthAvailable = live && c.depth_preview_available ? '1' : '0';
       setPills(card, c);
       setText(card, 'camera_key', c.camera_key);
+      setText(card, 'storage_key', c.storage_key || c.camera_key);
+      const nameInput = card.querySelector('[data-field="camera_name_input"]');
+      if (nameInput && document.activeElement !== nameInput) {
+        nameInput.value = c.camera_name || '';
+      }
+      const prefixInput = card.querySelector('[data-field="file_prefix_input"]');
+      if (prefixInput && document.activeElement !== prefixInput) {
+        prefixInput.value = c.camera_file_prefix || '';
+      }
       setText(card, 'segment_dir', c.segment_dir || '未开启录制');
       setText(card, 'rgb_packets', c.rgb_packets);
       setText(card, 'depth_packets', c.depth_packets);

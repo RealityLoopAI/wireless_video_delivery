@@ -12,6 +12,7 @@
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",
   "log_directory": "08_reports/receiver_logs",
+  "state_path": "06_configs/receiver_runtime_state.json",
   "write_debug_h264": true,
   "write_debug_depth_raw": true,
   "max_payload_mb": 128
