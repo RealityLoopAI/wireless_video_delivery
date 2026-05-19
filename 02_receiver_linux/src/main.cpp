@@ -31,6 +31,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -46,6 +47,9 @@ constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
 constexpr uint32_t kRgbPreviewFps = 30;
+constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
+constexpr int kRgbPreviewWritePollMs = 2;
+constexpr int kRgbPreviewWriteBudgetMs = 12;
 constexpr uint64_t kCameraOnlineTimeoutUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
@@ -55,6 +59,8 @@ constexpr double kMinRecordFps = 5.0;
 constexpr double kMaxRecordFps = 60.0;
 constexpr size_t kMaxPendingRgbRecordBytes = 8ull * 1024ull * 1024ull;
 constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
+constexpr int kMaxActiveMediaClients = 32;
+constexpr int kMediaClientSocketTimeoutSec = 2;
 
 std::atomic<bool> g_running{true};
 
@@ -355,6 +361,51 @@ void set_socket_timeout(int fd, int seconds) {
     tv.tv_sec = seconds;
     tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+void set_fd_cloexec(int fd) {
+    if(fd < 0) {
+        return;
+    }
+    const int flags = fcntl(fd, F_GETFD, 0);
+    if(flags >= 0) {
+        fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
+
+void set_fd_nonblocking(int fd) {
+    if(fd < 0) {
+        return;
+    }
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if(flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+}
+
+void set_pipe_size_if_supported(int fd, int bytes) {
+    if(fd < 0 || bytes <= 0) {
+        return;
+    }
+#ifdef F_SETPIPE_SZ
+    fcntl(fd, F_SETPIPE_SZ, bytes);
+#else
+    (void)bytes;
+#endif
+}
+
+bool wait_fd_writable(int fd, int timeout_ms) {
+    if(fd < 0) {
+        return false;
+    }
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    int rc = 0;
+    do {
+        rc = poll(&pfd, 1, timeout_ms);
+    } while(rc < 0 && errno == EINTR);
+    return rc > 0 && (pfd.revents & POLLOUT) != 0;
 }
 
 sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
@@ -745,16 +796,6 @@ private:
     std::mutex mutex_;
 };
 
-ssize_t retrying_write(int fd, const uint8_t *data, size_t size) {
-    while(true) {
-        const ssize_t written = write(fd, data, size);
-        if(written < 0 && errno == EINTR) {
-            continue;
-        }
-        return written;
-    }
-}
-
 std::optional<size_t> find_marker(const std::vector<uint8_t> &buffer, uint8_t a, uint8_t b, size_t start) {
     if(buffer.size() < 2 || start >= buffer.size() - 1) {
         return std::nullopt;
@@ -828,6 +869,8 @@ public:
         close(stdout_pipe[1]);
         stdin_fd_ = stdin_pipe[1];
         stdout_fd_ = stdout_pipe[0];
+        set_pipe_size_if_supported(stdin_fd_, kRgbPreviewPipeBytes);
+        set_fd_nonblocking(stdin_fd_);
         pid_ = pid;
         running_ = true;
         reader_ = std::thread([this] { read_loop(); });
@@ -841,26 +884,41 @@ public:
 
     void stop() {
         int stdin_fd = -1;
+        int stdout_fd = -1;
+        pid_t pid = -1;
         {
             std::lock_guard<std::mutex> lock(process_mutex_);
             running_ = false;
             stdin_fd = stdin_fd_;
+            stdout_fd = stdout_fd_;
+            pid = pid_;
             stdin_fd_ = -1;
+            stdout_fd_ = -1;
+            pid_ = -1;
         }
         if(stdin_fd >= 0) {
             close(stdin_fd);
         }
+        if(pid > 0) {
+            kill(pid, SIGTERM);
+        }
+        if(stdout_fd >= 0) {
+            close(stdout_fd);
+        }
         if(reader_.joinable()) {
             reader_.join();
         }
-        if(stdout_fd_ >= 0) {
-            close(stdout_fd_);
-            stdout_fd_ = -1;
-        }
-        if(pid_ > 0) {
+        if(pid > 0) {
             int status = 0;
-            waitpid(pid_, &status, 0);
-            pid_ = -1;
+            for(int i = 0; i < 10; ++i) {
+                const pid_t done = waitpid(pid, &status, WNOHANG);
+                if(done == pid || (done < 0 && errno == ECHILD)) {
+                    return;
+                }
+                usleep(50 * 1000);
+            }
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
         }
     }
 
@@ -873,17 +931,30 @@ public:
             return false;
         }
         size_t offset = 0;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRgbPreviewWriteBudgetMs);
         while(offset < payload.size()) {
-            const ssize_t written = retrying_write(stdin_fd_, payload.data() + offset, payload.size() - offset);
+            const ssize_t written = write(stdin_fd_, payload.data() + offset, payload.size() - offset);
+            if(written < 0 && errno == EINTR) {
+                continue;
+            }
+            if(written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if(std::chrono::steady_clock::now() < deadline && wait_fd_writable(stdin_fd_, kRgbPreviewWritePollMs)) {
+                    continue;
+                }
+                break;
+            }
             if(written <= 0) {
-                running_ = false;
-                close(stdin_fd_);
-                stdin_fd_ = -1;
-                return false;
+                break;
             }
             offset += static_cast<size_t>(written);
         }
-        return true;
+        if(offset == payload.size()) {
+            return true;
+        }
+        running_ = false;
+        close(stdin_fd_);
+        stdin_fd_ = -1;
+        return false;
     }
 
     std::optional<std::vector<uint8_t>> latest_jpeg() const {
@@ -989,6 +1060,16 @@ private:
     std::vector<uint8_t> latest_jpeg_;
     uint64_t latest_frame_us_ = 0;
 };
+
+void cleanup_rgb_decoder_async(std::unique_ptr<RgbPreviewDecoder> decoder) {
+    if(!decoder) {
+        return;
+    }
+    std::thread([decoder = std::move(decoder)]() mutable {
+        decoder->stop();
+        decoder.reset();
+    }).detach();
+}
 
 struct MediaPacket {
     StreamType stream_type = StreamType::rgb;
@@ -1312,6 +1393,7 @@ public:
         end_us_ = now_us();
         write_meta(cfg, sender_id, camera_id, announce_json, true);
         set_segment_mtime_to_start(logger);
+        schedule_retime_completed_media(cfg);
         if(rgb_rc != 0) {
             logger.warn("rgb ffmpeg exited with non-zero status for segment: " + directory_);
         }
@@ -1434,8 +1516,8 @@ private:
         const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
         const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
-                                    " -hide_banner -loglevel warning -y -r " + format_fps(fps) + " -f h264 -i pipe:0 -c:v copy -movflags +faststart " +
-                                    rgb_mp4 + " 2>>" + ffmpeg_log;
+                                    " -hide_banner -loglevel warning -y -r " + format_fps(fps) + " -f h264 -i pipe:0 -c:v copy " + rgb_mp4 +
+                                    " 2>>" + ffmpeg_log;
         rgb_pipe_.open(rgb_cmd, logger);
     }
 
@@ -1531,6 +1613,180 @@ private:
         }
     }
 
+    struct RetimingEntry {
+        std::filesystem::path media_path;
+        std::string stream_name;
+        double target_duration_seconds = 0.0;
+        double fallback_scale = 1.0;
+    };
+
+    struct RetimingTask {
+        std::string ffmpeg_path;
+        std::string ffprobe_path;
+        std::filesystem::path log_path;
+        uint64_t start_us = 0;
+        std::vector<RetimingEntry> entries;
+    };
+
+    static double media_duration_seconds(const StreamRecordStats &stats) {
+        if(stats.frames < 2 || stats.last_local_us <= stats.first_local_us) {
+            return 0.0;
+        }
+        return static_cast<double>(stats.last_local_us - stats.first_local_us) / 1'000'000.0;
+    }
+
+    static double media_retime_scale(double record_fps, const StreamRecordStats &stats) {
+        const double actual_fps = stats.actual_fps();
+        if(record_fps <= 0.0 || actual_fps <= 0.0 || stats.frames < 2) {
+            return 1.0;
+        }
+        return record_fps / actual_fps;
+    }
+
+    static bool should_retime_media(double scale) {
+        return std::isfinite(scale) && scale >= 0.05 && scale <= 20.0 && std::fabs(scale - 1.0) >= 0.001;
+    }
+
+    static std::string format_scale(double scale) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(9) << scale;
+        return out.str();
+    }
+
+    static std::string ffprobe_path_from_ffmpeg(const std::string &ffmpeg_path) {
+        const std::filesystem::path path(ffmpeg_path);
+        if(path.filename() == "ffmpeg") {
+            return (path.parent_path() / "ffprobe").string();
+        }
+        return "ffprobe";
+    }
+
+    static std::optional<double> probe_media_duration_seconds(const std::string &ffprobe_path, const std::filesystem::path &media_path) {
+        const std::string cmd = shell_quote(ffprobe_path) +
+                                " -v error -show_entries format=duration -of default=nk=1:nw=1 " + shell_quote(media_path.string()) +
+                                " 2>/dev/null";
+        FILE *pipe = popen(cmd.c_str(), "r");
+        if(!pipe) {
+            return std::nullopt;
+        }
+        std::string output;
+        char buffer[128];
+        while(fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            output += buffer;
+        }
+        const int rc = pclose(pipe);
+        if(rc != 0) {
+            return std::nullopt;
+        }
+        try {
+            const double duration = std::stod(trim_copy(output));
+            if(std::isfinite(duration) && duration > 0.0) {
+                return duration;
+            }
+        }
+        catch(...) {
+        }
+        return std::nullopt;
+    }
+
+    static void append_retime_log(const std::filesystem::path &log_path, const std::string &message) {
+        std::ofstream log(log_path, std::ios::out | std::ios::app);
+        if(log) {
+            log << timestamp_text() << " [retime] " << message << '\n';
+        }
+    }
+
+    static void set_file_mtime_to_start(const std::filesystem::path &path, uint64_t start_us) {
+        if(start_us == 0 || path.empty()) {
+            return;
+        }
+        timespec times[2]{};
+        times[0].tv_sec = static_cast<time_t>(start_us / 1'000'000ull);
+        times[0].tv_nsec = static_cast<long>((start_us % 1'000'000ull) * 1000ull);
+        times[1] = times[0];
+        utimensat(AT_FDCWD, path.c_str(), times, 0);
+    }
+
+    static bool retime_media_file(const RetimingTask &task, const RetimingEntry &entry) {
+        if(!std::filesystem::exists(entry.media_path)) {
+            append_retime_log(task.log_path, entry.stream_name + " retime skipped: media file missing");
+            return false;
+        }
+
+        double scale = entry.fallback_scale;
+        if(const auto current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path)) {
+            if(entry.target_duration_seconds > 0.0) {
+                scale = entry.target_duration_seconds / *current_duration;
+            }
+            append_retime_log(task.log_path, entry.stream_name + " duration current=" + format_scale(*current_duration) +
+                                                 " target=" + format_scale(entry.target_duration_seconds) +
+                                                 " scale=" + format_scale(scale));
+        }
+        else {
+            append_retime_log(task.log_path, entry.stream_name + " duration probe failed; fallback scale=" + format_scale(scale));
+        }
+        if(!should_retime_media(scale)) {
+            append_retime_log(task.log_path, entry.stream_name + " retime skipped: scale near 1 or out of range");
+            return false;
+        }
+
+        const auto parent = entry.media_path.parent_path();
+        const auto tmp_path = parent / (entry.media_path.stem().string() + ".retime_tmp" + entry.media_path.extension().string());
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+
+        append_retime_log(task.log_path, entry.stream_name + " retime start scale=" + format_scale(scale));
+        const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -itsscale " + format_scale(scale) +
+                                " -i " + shell_quote(entry.media_path.string()) + " -map 0 -c copy -avoid_negative_ts make_zero " +
+                                shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
+        const int rc = std::system(cmd.c_str());
+        if(rc != 0 || !std::filesystem::exists(tmp_path) || std::filesystem::file_size(tmp_path, ec) == 0) {
+            append_retime_log(task.log_path, entry.stream_name + " retime failed");
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+
+        std::filesystem::rename(tmp_path, entry.media_path, ec);
+        if(ec) {
+            append_retime_log(task.log_path, entry.stream_name + " retime replace failed: " + ec.message());
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+        set_file_mtime_to_start(entry.media_path, task.start_us);
+        append_retime_log(task.log_path, entry.stream_name + " retime done");
+        return true;
+    }
+
+    static void run_retime_task(RetimingTask task) {
+        for(const auto &entry : task.entries) {
+            retime_media_file(task, entry);
+        }
+        set_file_mtime_to_start(task.log_path, task.start_us);
+    }
+
+    void schedule_retime_completed_media(const Config &cfg) const {
+        RetimingTask task;
+        task.ffmpeg_path = cfg.ffmpeg_path;
+        task.ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
+        task.log_path = file_path("ffmpeg.log");
+        task.start_us = start_us_;
+
+        const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
+        const double rgb_duration = media_duration_seconds(rgb_stats_);
+        if(rgb_duration > 0.0) {
+            task.entries.push_back(RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale});
+        }
+        const double depth_scale = media_retime_scale(depth_record_fps_, depth_stats_);
+        const double depth_duration = media_duration_seconds(depth_stats_);
+        if(depth_duration > 0.0) {
+            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale});
+        }
+        if(task.entries.empty()) {
+            return;
+        }
+        std::thread([task = std::move(task)]() mutable { run_retime_task(std::move(task)); }).detach();
+    }
+
     void write_meta(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) {
         if(directory_.empty()) {
             return;
@@ -1577,7 +1833,13 @@ private:
         meta << "  \"depth_width\": " << depth_width_ << ",\n";
         meta << "  \"depth_height\": " << depth_height_ << ",\n";
         meta << "  \"rgb_record_fps\": " << format_fps(rgb_record_fps_) << ",\n";
+        meta << "  \"rgb_playback_fps\": " << format_fps(rgb_stats_.actual_fps()) << ",\n";
+        meta << "  \"rgb_target_duration_sec\": " << format_fps(media_duration_seconds(rgb_stats_)) << ",\n";
+        meta << "  \"rgb_retime_scale\": " << format_fps(media_retime_scale(rgb_record_fps_, rgb_stats_)) << ",\n";
         meta << "  \"depth_record_fps\": " << format_fps(depth_record_fps_) << ",\n";
+        meta << "  \"depth_playback_fps\": " << format_fps(depth_stats_.actual_fps()) << ",\n";
+        meta << "  \"depth_target_duration_sec\": " << format_fps(media_duration_seconds(depth_stats_)) << ",\n";
+        meta << "  \"depth_retime_scale\": " << format_fps(media_retime_scale(depth_record_fps_, depth_stats_)) << ",\n";
         meta << "  \"write_debug_h264\": " << (cfg.write_debug_h264 ? "true" : "false") << ",\n";
         meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
@@ -1709,6 +1971,10 @@ struct CameraState {
     std::vector<uint8_t> depth_preview_ppm;
     std::string last_error;
     std::string last_announce_json;
+    std::mutex segment_mutex;
+    bool segment_active = false;
+    bool segment_finalizing = false;
+    std::string segment_dir;
     SegmentWriter segment;
 
     std::string storage_key() const {
@@ -1721,6 +1987,13 @@ public:
     explicit ReceiverApp(Config config) : config_(std::move(config)), logger_(config_.log_directory), runtime_state_(load_runtime_state(config_.state_path)) {
         logger_.info("receiver state loaded: " + config_.state_path);
     }
+
+    struct SegmentCloseTask {
+        std::shared_ptr<CameraState> cam;
+        std::string sender_id;
+        std::string camera_id;
+        std::string announce_json;
+    };
 
     void start() {
         running_ = true;
@@ -1743,12 +2016,17 @@ public:
         if(admin_thread_.joinable()) {
             admin_thread_.join();
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        for(auto &item : cameras_) {
-            if(item.second->rgb_decoder) {
-                item.second->rgb_decoder->stop();
+        std::vector<SegmentCloseTask> close_tasks;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for(auto &item : cameras_) {
+                cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
+                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id, item.second->last_announce_json});
             }
-            item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
+        }
+        for(auto &task : close_tasks) {
+            std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
+            task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
         }
         logger_.info("receiver stopped");
     }
@@ -1766,6 +2044,7 @@ public:
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
+        out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"cameras\":[";
@@ -1792,8 +2071,9 @@ public:
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
             out << "\"recording_start_us\":" << cam.recording_start_us << ',';
             out << "\"file_prefix\":\"" << json_escape(cam.recording_file_prefix) << "\",";
-            out << "\"segment_active\":" << (cam.segment.active() ? "true" : "false") << ',';
-            out << "\"segment_dir\":\"" << json_escape(cam.segment.directory()) << "\",";
+            out << "\"segment_active\":" << (cam.segment_active ? "true" : "false") << ',';
+            out << "\"segment_finalizing\":" << (cam.segment_finalizing ? "true" : "false") << ',';
+            out << "\"segment_dir\":\"" << json_escape(cam.segment_dir) << "\",";
             out << "\"last_status_us\":" << cam.last_status_us << ',';
             out << "\"last_media_us\":" << cam.last_media_us << ',';
             out << "\"last_seen_us\":" << last_seen << ',';
@@ -1846,6 +2126,29 @@ public:
         return cam.camera_file_prefix;
     }
 
+    void close_segments_async(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
+        if(close_tasks.empty()) {
+            return;
+        }
+        std::thread([this, close_tasks = std::move(close_tasks), done_log_message] {
+            for(auto &task : close_tasks) {
+                bool segment_active = false;
+                std::string segment_dir;
+                {
+                    std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
+                    task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+                    segment_active = task.cam->segment.active();
+                    segment_dir = task.cam->segment.directory();
+                }
+                std::lock_guard<std::mutex> lock(mutex_);
+                task.cam->segment_active = segment_active;
+                task.cam->segment_finalizing = false;
+                task.cam->segment_dir = std::move(segment_dir);
+            }
+            logger_.info(done_log_message);
+        }).detach();
+    }
+
     std::string start_all(const std::optional<std::string> &file_prefix_override) {
         if(file_prefix_override) {
             if(const auto error = storage_text_error("file_prefix", *file_prefix_override)) {
@@ -1862,7 +2165,7 @@ public:
         }
         recording_all_ = true;
         for(auto &item : cameras_) {
-            if(!item.second->recording_requested && !item.second->segment.active()) {
+            if(!item.second->recording_requested && !item.second->segment_active) {
                 item.second->recording_start_us = recording_all_start_us_;
                 item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
             }
@@ -1876,30 +2179,41 @@ public:
     }
 
     std::string stop_all() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        uint64_t recording_start_us = recording_all_start_us_;
-        if(recording_start_us == 0) {
-            for(const auto &item : cameras_) {
-                if(item.second->recording_start_us > 0 &&
-                   (recording_start_us == 0 || item.second->recording_start_us < recording_start_us)) {
-                    recording_start_us = item.second->recording_start_us;
+        std::vector<SegmentCloseTask> close_tasks;
+        uint64_t recording_start_us = 0;
+        bool finalizing = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            recording_start_us = recording_all_start_us_;
+            if(recording_start_us == 0) {
+                for(const auto &item : cameras_) {
+                    if(item.second->recording_start_us > 0 &&
+                       (recording_start_us == 0 || item.second->recording_start_us < recording_start_us)) {
+                        recording_start_us = item.second->recording_start_us;
+                    }
                 }
             }
+            recording_all_ = false;
+            recording_all_start_us_ = 0;
+            recording_all_has_file_prefix_override_ = false;
+            recording_all_file_prefix_.clear();
+            for(auto &item : cameras_) {
+                item.second->recording_requested = false;
+                item.second->recording_start_us = 0;
+                item.second->recording_file_prefix.clear();
+                if(item.second->segment_active) {
+                    item.second->segment_finalizing = true;
+                    finalizing = true;
+                }
+                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id, item.second->last_announce_json});
+            }
+            refresh_camera_liveness_locked(now_us());
         }
-        recording_all_ = false;
-        recording_all_start_us_ = 0;
-        recording_all_has_file_prefix_override_ = false;
-        recording_all_file_prefix_.clear();
-        for(auto &item : cameras_) {
-            item.second->recording_requested = false;
-            item.second->segment.close(config_, item.second->sender_id, item.second->camera_id, item.second->last_announce_json, logger_);
-            item.second->recording_start_us = 0;
-            item.second->recording_file_prefix.clear();
-        }
-        refresh_camera_liveness_locked(now_us());
         logger_.info("recording stop-all requested");
+        close_segments_async(std::move(close_tasks), "recording stop-all finalized");
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us << "}";
+        out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":"
+            << (finalizing ? "true" : "false") << "}";
         return out.str();
     }
 
@@ -1914,7 +2228,7 @@ public:
         }
         std::lock_guard<std::mutex> lock(mutex_);
         auto &cam = ensure_camera_locked(sender_id, camera_id);
-        if(!recording_all_ && !cam.recording_requested && !cam.segment.active()) {
+        if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
             cam.recording_start_us = now_us();
             cam.recording_file_prefix = file_prefix_override.value_or(cam.camera_file_prefix);
         }
@@ -1934,26 +2248,38 @@ public:
         if(sender_id.empty() || camera_id.empty()) {
             return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
         }
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_ptr<CameraState> cam;
+        std::string announce_json;
+        uint64_t recording_start_us = 0;
         const auto key = camera_key(sender_id, camera_id);
-        auto it = cameras_.find(key);
-        if(it == cameras_.end()) {
-            return "{\"ok\":false,\"error\":\"camera not found\"}";
-        }
-        const uint64_t recording_start_us = it->second->recording_start_us;
-        it->second->recording_requested = false;
-        it->second->segment.close(config_, it->second->sender_id, it->second->camera_id, it->second->last_announce_json, logger_);
-        if(recording_all_) {
-            it->second->recording_start_us = recording_all_start_us_;
-            it->second->recording_file_prefix = effective_file_prefix_locked(*it->second);
-        }
-        else {
-            it->second->recording_start_us = 0;
-            it->second->recording_file_prefix.clear();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end()) {
+                return "{\"ok\":false,\"error\":\"camera not found\"}";
+            }
+            cam = it->second;
+            announce_json = cam->last_announce_json;
+            recording_start_us = cam->recording_start_us;
+            cam->recording_requested = false;
+            if(cam->segment_active) {
+                cam->segment_finalizing = true;
+            }
+            if(recording_all_) {
+                cam->recording_start_us = recording_all_start_us_;
+                cam->recording_file_prefix = effective_file_prefix_locked(*cam);
+            }
+            else {
+                cam->recording_start_us = 0;
+                cam->recording_file_prefix.clear();
+            }
         }
         logger_.info("recording stop requested: " + key);
+        std::vector<SegmentCloseTask> close_tasks;
+        close_tasks.push_back({cam, cam->sender_id, cam->camera_id, announce_json});
+        close_segments_async(std::move(close_tasks), "recording stop finalized: " + key);
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << "}";
+        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":true}";
         return out.str();
     }
 
@@ -2092,10 +2418,7 @@ private:
 
     void clear_camera_live_cache_locked(CameraState &cam) {
         cam.rgb_preview_prefix_h264.clear();
-        if(cam.rgb_decoder) {
-            cam.rgb_decoder->stop();
-            cam.rgb_decoder.reset();
-        }
+        cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
         cam.rgb_preview_height = 0;
@@ -2118,11 +2441,9 @@ private:
                 clear_camera_live_cache_locked(cam);
             }
 
-            if(!cam.online && !cam.recording_requested && !cam.segment.active() &&
+            if(!cam.online && !cam.recording_requested && !cam.segment_active &&
                is_older_than_us(now, last_seen, kOfflineCameraPurgeUs)) {
-                if(cam.rgb_decoder) {
-                    cam.rgb_decoder->stop();
-                }
+                cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
                 logger_.info("camera purged: " + cam.key);
                 it = cameras_.erase(it);
                 continue;
@@ -2131,11 +2452,11 @@ private:
         }
     }
 
-    CameraState &ensure_camera_locked(const std::string &sender_id, const std::string &camera_id) {
+    std::shared_ptr<CameraState> ensure_camera_ptr_locked(const std::string &sender_id, const std::string &camera_id) {
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
         if(it == cameras_.end()) {
-            auto state = std::make_unique<CameraState>(sender_id, camera_id);
+            auto state = std::make_shared<CameraState>(sender_id, camera_id);
             const auto name = runtime_state_.camera_names.find(key);
             if(name != runtime_state_.camera_names.end()) {
                 state->camera_name = name->second;
@@ -2153,7 +2474,11 @@ private:
             logger_.info("camera discovered: " + key);
         }
         it->second->online = true;
-        return *it->second;
+        return it->second;
+    }
+
+    CameraState &ensure_camera_locked(const std::string &sender_id, const std::string &camera_id) {
+        return *ensure_camera_ptr_locked(sender_id, camera_id);
     }
 
     void handle_status_message(const std::string &payload) {
@@ -2203,7 +2528,10 @@ private:
             }
             cam.rgb_decoder->start(config_, cam.key, packet.width, packet.height, logger_);
             if(!cam.rgb_preview_prefix_h264.empty()) {
-                cam.rgb_decoder->write_packet(cam.rgb_preview_prefix_h264);
+                if(!cam.rgb_decoder->write_packet(cam.rgb_preview_prefix_h264)) {
+                    cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+                    return;
+                }
             }
         }
         else if(!cam.rgb_decoder || !cam.rgb_decoder->active()) {
@@ -2211,7 +2539,7 @@ private:
         }
 
         if(!cam.rgb_decoder->write_packet(packet.payload)) {
-            cam.rgb_decoder.reset();
+            cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
             return;
         }
         cam.rgb_preview_width = cam.rgb_decoder->preview_width();
@@ -2244,32 +2572,65 @@ private:
                                  (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
         const bool rgb_has_vcl = packet.stream_type == StreamType::rgb && h264_payload_has_vcl_nal(packet.payload);
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto &cam = ensure_camera_locked(packet.sender_id, packet.camera_id);
-        cam.last_media_us = now_us();
-        if(packet.stream_type == StreamType::rgb) {
-            cam.rgb_packets++;
-            cam.rgb_bytes += packet.payload_size;
-            update_rgb_preview_locked(cam, packet, rgb_has_idr, rgb_has_vcl);
-        }
-        else if(packet.stream_type == StreamType::depth_raw) {
-            cam.depth_packets++;
-            cam.depth_bytes += packet.payload_size;
-            if(!preview.bytes.empty()) {
-                cam.depth_preview_ppm = std::move(preview.bytes);
-                cam.depth_preview_width = preview.width;
-                cam.depth_preview_height = preview.height;
-                cam.depth_preview_us = cam.last_media_us;
+        std::shared_ptr<CameraState> cam;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
+            cam->last_media_us = now_us();
+            if(packet.stream_type == StreamType::rgb) {
+                cam->rgb_packets++;
+                cam->rgb_bytes += packet.payload_size;
+                update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+            }
+            else if(packet.stream_type == StreamType::depth_raw) {
+                cam->depth_packets++;
+                cam->depth_bytes += packet.payload_size;
+                if(!preview.bytes.empty()) {
+                    cam->depth_preview_ppm = std::move(preview.bytes);
+                    cam->depth_preview_width = preview.width;
+                    cam->depth_preview_height = preview.height;
+                    cam->depth_preview_us = cam->last_media_us;
+                }
             }
         }
 
-        if(recording_all_ || cam.recording_requested) {
-            if(cam.recording_start_us == 0) {
-                cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
-                cam.recording_file_prefix = effective_file_prefix_locked(cam);
+        std::unique_lock<std::mutex> segment_lock(cam->segment_mutex, std::try_to_lock);
+        if(!segment_lock.owns_lock()) {
+            return;
+        }
+        bool should_record = false;
+        std::string sender_id;
+        std::string camera_id;
+        std::string camera_name;
+        std::string storage_key;
+        std::string file_prefix;
+        std::string announce_json;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            should_record = recording_all_ || cam->recording_requested;
+            if(should_record) {
+                if(cam->recording_start_us == 0) {
+                    cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                    cam->recording_file_prefix = effective_file_prefix_locked(*cam);
+                }
+                sender_id = cam->sender_id;
+                camera_id = cam->camera_id;
+                camera_name = cam->camera_name;
+                storage_key = cam->storage_key();
+                file_prefix = cam->recording_file_prefix;
+                announce_json = cam->last_announce_json;
             }
-            cam.segment.write_packet(config_, decoded_packet, cam.sender_id, cam.camera_id, cam.camera_name, cam.storage_key(),
-                                     cam.recording_file_prefix, cam.last_announce_json, logger_);
+        }
+        if(!should_record) {
+            return;
+        }
+        cam->segment.write_packet(config_, decoded_packet, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger_);
+        const bool segment_active = cam->segment.active();
+        std::string segment_dir = cam->segment.directory();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cam->segment_active = segment_active;
+            cam->segment_dir = std::move(segment_dir);
         }
     }
 
@@ -2279,6 +2640,7 @@ private:
             logger_.error(std::string("cannot create UDP socket: ") + std::strerror(errno));
             return;
         }
+        set_fd_cloexec(fd);
         int yes = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         set_socket_timeout(fd, 1);
@@ -2313,6 +2675,7 @@ private:
             logger_.error(std::string("cannot create TCP socket: ") + std::strerror(errno));
             return;
         }
+        set_fd_cloexec(fd);
         int yes = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         set_socket_timeout(fd, 1);
@@ -2339,7 +2702,18 @@ private:
                 logger_.warn(std::string("media accept failed: ") + std::strerror(errno));
                 continue;
             }
-            std::thread([this, client] { media_client_loop(client); }).detach();
+            set_fd_cloexec(client);
+            const int previous_clients = active_media_clients_.fetch_add(1);
+            if(previous_clients >= kMaxActiveMediaClients) {
+                active_media_clients_.fetch_sub(1);
+                close(client);
+                continue;
+            }
+            set_socket_timeout(client, kMediaClientSocketTimeoutSec);
+            std::thread([this, client] {
+                media_client_loop(client);
+                active_media_clients_.fetch_sub(1);
+            }).detach();
         }
         close(fd);
     }
@@ -2367,6 +2741,7 @@ private:
             logger_.error(std::string("cannot create admin socket: ") + std::strerror(errno));
             return;
         }
+        set_fd_cloexec(fd);
         int yes = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         set_socket_timeout(fd, 1);
@@ -2391,6 +2766,8 @@ private:
                 logger_.warn(std::string("admin accept failed: ") + std::strerror(errno));
                 continue;
             }
+            set_fd_cloexec(client);
+            set_socket_timeout(client, 2);
             handle_admin_client(client);
             close(client);
         }
@@ -2499,6 +2876,7 @@ private:
     Logger logger_;
     RuntimeState runtime_state_;
     std::atomic<bool> running_{false};
+    std::atomic<int> active_media_clients_{0};
     std::thread udp_thread_;
     std::thread tcp_thread_;
     std::thread admin_thread_;
@@ -2507,7 +2885,7 @@ private:
     uint64_t recording_all_start_us_ = 0;
     bool recording_all_has_file_prefix_override_ = false;
     std::string recording_all_file_prefix_;
-    std::map<std::string, std::unique_ptr<CameraState>> cameras_;
+    std::map<std::string, std::shared_ptr<CameraState>> cameras_;
 };
 
 struct Args {
