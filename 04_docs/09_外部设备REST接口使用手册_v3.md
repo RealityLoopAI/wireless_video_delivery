@@ -1,6 +1,6 @@
 # 外部设备 REST/Web 接口使用手册 v3
 
-更新时间：2026-05-18
+更新时间：2026-05-21
 
 本文档只说明外部设备如何调用接收端已暴露的 Web/REST 接口，不包含接收端安装、启动、停止和运维排查内容。
 
@@ -105,12 +105,12 @@ curl "http://192.168.66.196:8080/api/status"
   "admin_port": 18080,
   "cameras": [
     {
-      "sender_id": "orangepi5pro-01",
-      "camera_id": "cam01",
-      "camera_key": "orangepi5pro-01_cam01",
+      "sender_id": "orangepi5pro-b439137c",
+      "camera_id": "cam02",
+      "camera_key": "orangepi5pro-b439137c_cam02",
       "camera_name": "",
-      "storage_key": "orangepi5pro-01_cam01",
-      "camera_file_prefix": "cam01_",
+      "storage_key": "orangepi5pro-b439137c_cam02",
+      "camera_file_prefix": "cam02_",
       "online": true,
       "live": true,
       "recording": false,
@@ -229,7 +229,7 @@ GET /api/preview/rgb?sender_id=<sender_id>&camera_id=<camera_id>
 
 ```bash
 curl \
-  "http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-01&camera_id=cam01" \
+  "http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-b439137c&camera_id=cam02" \
   -o rgb_preview.jpg
 ```
 
@@ -256,7 +256,7 @@ GET /api/preview/depth?sender_id=<sender_id>&camera_id=<camera_id>
 
 ```bash
 curl \
-  "http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-01&camera_id=cam01" \
+  "http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-b439137c&camera_id=cam02" \
   -o depth_preview.bmp
 ```
 
@@ -279,19 +279,19 @@ Body: BMP 图片字节
 RGB：
 
 ```text
-http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-01&camera_id=cam01
+http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-b439137c&camera_id=cam02
 ```
 
 Depth：
 
 ```text
-http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-01&camera_id=cam01
+http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-b439137c&camera_id=cam02
 ```
 
 客户端如果要做实时预览，可以每隔 `100ms ~ 300ms` 请求一次，并在 URL 后追加时间戳避免缓存：
 
 ```text
-http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-01&camera_id=cam01&t=1778739951
+http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-b439137c&camera_id=cam02&t=1778739951
 ```
 
 ## 7. 命名和文件前缀接口
@@ -312,7 +312,7 @@ POST /api/camera/name?sender_id=<sender_id>&camera_id=<camera_id>&camera_name=<c
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-01&camera_id=cam01&camera_name=front_left"
+  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-b439137c&camera_id=cam02&camera_name=front_left"
 ```
 
 返回示例：
@@ -320,9 +320,9 @@ curl -X POST \
 ```json
 {
   "ok": true,
-  "sender_id": "orangepi5pro-01",
-  "camera_id": "cam01",
-  "camera_key": "orangepi5pro-01_cam01",
+  "sender_id": "orangepi5pro-b439137c",
+  "camera_id": "cam02",
+  "camera_key": "orangepi5pro-b439137c_cam02",
   "camera_name": "front_left",
   "storage_key": "front_left"
 }
@@ -338,7 +338,7 @@ curl -X POST \
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-01&camera_id=cam01&camera_name="
+  "http://192.168.66.196:8080/api/camera/name?sender_id=orangepi5pro-b439137c&camera_id=cam02&camera_name="
 ```
 
 ### 7.2 设置单路文件名前缀
@@ -351,7 +351,7 @@ POST /api/camera/prefix?sender_id=<sender_id>&camera_id=<camera_id>&prefix=<pref
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix=cam01_"
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-b439137c&camera_id=cam02&prefix=cam02_"
 ```
 
 返回示例：
@@ -359,10 +359,10 @@ curl -X POST \
 ```json
 {
   "ok": true,
-  "sender_id": "orangepi5pro-01",
-  "camera_id": "cam01",
-  "camera_key": "orangepi5pro-01_cam01",
-  "camera_file_prefix": "cam01_"
+  "sender_id": "orangepi5pro-b439137c",
+  "camera_id": "cam02",
+  "camera_key": "orangepi5pro-b439137c_cam02",
+  "camera_file_prefix": "cam02_"
 }
 ```
 
@@ -370,14 +370,14 @@ curl -X POST \
 
 - 文件名前缀按相机单独保存，接收端重启后仍生效。
 - 后续该路相机开始录制时，如果没有临时传 `file_prefix`，会使用该路已保存前缀。
-- 前缀作用于该路 segment 目录下所有文件，例如 `cam01_rgb.mp4`、`cam01_depth.mkv`、`cam01_frames.csv`、`cam01_meta.json`。
+- 前缀作用于该路 segment 目录下所有文件，例如 `cam02_rgb.mp4`、`cam02_depth.mkv`、`cam02_frames.csv`、`cam02_meta.json`。
 - `start-all` 会按每一路相机各自保存的 `camera_file_prefix` 分别写文件，不会默认给所有相机套同一个前缀。
 
 清空该路前缀：
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix="
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-b439137c&camera_id=cam02&prefix="
 ```
 
 ## 8. 录制控制接口
@@ -441,14 +441,14 @@ POST /api/record/start?sender_id=<sender_id>&camera_id=<camera_id>
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01"
+  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-b439137c&camera_id=cam02"
 ```
 
 使用本次录制临时文件名前缀：
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01&file_prefix=test02_"
+  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-b439137c&camera_id=cam02&file_prefix=test02_"
 ```
 
 返回示例：
@@ -477,7 +477,7 @@ POST /api/record/stop?sender_id=<sender_id>&camera_id=<camera_id>
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/record/stop?sender_id=orangepi5pro-01&camera_id=cam01"
+  "http://192.168.66.196:8080/api/record/stop?sender_id=orangepi5pro-b439137c&camera_id=cam02"
 ```
 
 返回示例：
@@ -500,21 +500,21 @@ curl "http://192.168.66.196:8080/api/status"
 从返回的 `cameras` 中读取：
 
 ```text
-sender_id = orangepi5pro-01
-camera_id = cam01
+sender_id = orangepi5pro-b439137c
+camera_id = cam02
 ```
 
 ### 9.2 检查画面是否可预览
 
 ```bash
 curl \
-  "http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-01&camera_id=cam01" \
+  "http://192.168.66.196:8080/api/preview/rgb?sender_id=orangepi5pro-b439137c&camera_id=cam02" \
   -o rgb_preview.jpg
 ```
 
 ```bash
 curl \
-  "http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-01&camera_id=cam01" \
+  "http://192.168.66.196:8080/api/preview/depth?sender_id=orangepi5pro-b439137c&camera_id=cam02" \
   -o depth_preview.bmp
 ```
 
@@ -522,14 +522,14 @@ curl \
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-01&camera_id=cam01&prefix=cam01_"
+  "http://192.168.66.196:8080/api/camera/prefix?sender_id=orangepi5pro-b439137c&camera_id=cam02&prefix=cam02_"
 ```
 
 ### 9.4 开始录制
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-01&camera_id=cam01"
+  "http://192.168.66.196:8080/api/record/start?sender_id=orangepi5pro-b439137c&camera_id=cam02"
 ```
 
 ### 9.5 确认录制目录
@@ -544,10 +544,10 @@ curl "http://192.168.66.196:8080/api/status"
 {
   "recording": true,
   "segment_active": true,
-  "storage_key": "orangepi5pro-01_cam01",
-  "camera_file_prefix": "cam01_",
-  "file_prefix": "cam01_",
-  "segment_dir": "/home/fz/Desktop/nas/orangepi5pro-01_cam01/2026-05-18/142343"
+  "storage_key": "orangepi5pro-b439137c_cam02",
+  "camera_file_prefix": "cam02_",
+  "file_prefix": "cam02_",
+  "segment_dir": "/home/fz/Desktop/nas/orangepi5pro-b439137c_cam02/2026-05-18/142343"
 }
 ```
 
@@ -555,7 +555,7 @@ curl "http://192.168.66.196:8080/api/status"
 
 ```bash
 curl -X POST \
-  "http://192.168.66.196:8080/api/record/stop?sender_id=orangepi5pro-01&camera_id=cam01"
+  "http://192.168.66.196:8080/api/record/stop?sender_id=orangepi5pro-b439137c&camera_id=cam02"
 ```
 
 ## 10. Python 调用示例
@@ -565,15 +565,15 @@ import time
 import requests
 
 BASE = "http://192.168.66.196:8080"
-SENDER_ID = "orangepi5pro-01"
-CAMERA_ID = "cam01"
+SENDER_ID = "orangepi5pro-b439137c"
+CAMERA_ID = "cam02"
 
 status = requests.get(f"{BASE}/api/status", timeout=3).json()
 print(status["cameras"])
 
 requests.post(
     f"{BASE}/api/camera/prefix",
-    params={"sender_id": SENDER_ID, "camera_id": CAMERA_ID, "prefix": "cam01_"},
+    params={"sender_id": SENDER_ID, "camera_id": CAMERA_ID, "prefix": "cam02_"},
     timeout=3,
 )
 
@@ -600,7 +600,7 @@ print(stop_resp["recording_start_us"])
 import requests
 
 BASE = "http://192.168.66.196:8080"
-params = {"sender_id": "orangepi5pro-01", "camera_id": "cam01"}
+params = {"sender_id": "orangepi5pro-b439137c", "camera_id": "cam02"}
 
 rgb = requests.get(f"{BASE}/api/preview/rgb", params=params, timeout=3)
 rgb.raise_for_status()

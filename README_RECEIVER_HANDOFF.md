@@ -10,6 +10,8 @@ This package is for receiver-side integration with the current sender implementa
 
 2026-05-12 startup update: sender startup/status scripts now print the active config, receiver endpoint, RGB/Depth profiles, encoder, Depth compression, preview mode, route, Wi-Fi link, and validation result before starting.
 
+2026-05-21 identity update: sender configs now use `sender_id: auto`. The sender derives the actual ID from the default-route network MAC suffix, with `/etc/machine-id` as fallback. Use `05_tools/sender_preflight.sh` or `05_tools/status_sender.sh` to read the actual ID before issuing receiver-side REST/CLI commands.
+
 Read first:
 
 ```text
@@ -23,9 +25,9 @@ Read first:
 Current sender endpoint:
 
 ```text
-sender_id: orangepi5pro-01
-camera_id: cam01
-receiver_ip: 192.168.1.107
+sender_id: orangepi5pro-b439137c
+camera_id: cam02
+receiver_ip: 192.168.66.196
 status: UDP 50011
 media: TCP 50010
 ```

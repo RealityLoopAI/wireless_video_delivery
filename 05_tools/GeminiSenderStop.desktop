@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Stop Gemini Sender
+Comment=Stop Gemini wireless video sender
+Exec=/home/orangepi/Desktop/gemini_wireless_video_v3/05_tools/desktop_stop_sender.sh
+Terminal=true
+Categories=Utility;

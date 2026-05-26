@@ -1,6 +1,6 @@
 # Orbbec 兼容交付导出说明
 
-更新时间：2026-05-14
+更新时间：2026-05-21
 
 本文档说明如何把接收端现有 segment 导出成下游 Orbbec 多相机方案更容易读取的目录结构。
 
@@ -33,7 +33,7 @@ GWV3 segment -> Orbbec-compatible delivery folder
 
 ```bash
 python3 05_tools/export_orbbec_delivery.py \
-  /home/fz/Desktop/nas/orangepi5pro-01_cam01/2026-05-11/162546 \
+  /home/fz/Desktop/nas/orangepi5pro-b439137c_cam02/2026-05-11/162546 \
   --overwrite
 ```
 
@@ -47,7 +47,7 @@ python3 05_tools/export_orbbec_delivery.py \
 
 ```bash
 python3 05_tools/export_orbbec_delivery.py \
-  /home/fz/Desktop/nas/orangepi5pro-01_cam01/2026-05-11/162546 \
+  /home/fz/Desktop/nas/orangepi5pro-b439137c_cam02/2026-05-11/162546 \
   -o /home/fz/Desktop/nas/orbbec_exports \
   --overwrite
 ```

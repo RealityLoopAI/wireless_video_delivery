@@ -27,8 +27,82 @@ command -v lsusb >/dev/null 2>&1 || fail "未找到 lsusb，无法检查相机 U
 config_exports="$(
   python3 - "$CONFIG" <<'PY'
 import json
+import os
+import re
 import shlex
+import socket
 import sys
+
+
+def _read_first_line(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.readline().strip()
+    except OSError:
+        return ""
+
+
+def _valid_mac(value):
+    return bool(re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", value or "")) and value.lower().replace(":", "") != "000000000000"
+
+
+def _mac_for_interface(name):
+    value = _read_first_line(f"/sys/class/net/{name}/address")
+    return value if _valid_mac(value) else ""
+
+
+def _default_route_interface():
+    try:
+        with open("/proc/net/route", "r", encoding="utf-8") as f:
+            next(f, None)
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 2 and fields[1] == "00000000":
+                    return fields[0]
+    except OSError:
+        return ""
+    return ""
+
+
+def _first_available_mac():
+    route_iface = _default_route_interface()
+    if route_iface:
+        mac = _mac_for_interface(route_iface)
+        if mac:
+            return mac
+
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        names = []
+    for name in names:
+        if name == "lo":
+            continue
+        mac = _mac_for_interface(name)
+        if mac:
+            return mac
+    return ""
+
+
+def _sanitize_protocol_part(value):
+    value = re.sub(r"[^A-Za-z0-9_-]", "-", value or "").strip("-").lower()
+    return value or "sender"
+
+
+def _derive_auto_sender_id():
+    mac = _first_available_mac()
+    suffix = mac.lower().replace(":", "")[-8:] if mac else ""
+    if not suffix:
+        machine_id = re.sub(r"[^0-9A-Fa-f]", "", _read_first_line("/etc/machine-id")).lower()
+        suffix = machine_id[-8:] if machine_id else ""
+    if not suffix:
+        raise SystemExit("无法自动生成 sender_id：没有可用网卡 MAC 或 /etc/machine-id")
+
+    prefix = _sanitize_protocol_part(socket.gethostname())
+    max_len = 64
+    if len(prefix) + 1 + len(suffix) > max_len:
+        prefix = prefix[: max_len - len(suffix) - 1]
+    return f"{prefix}-{suffix}"
 
 path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as f:
@@ -57,8 +131,12 @@ missing = [k for k, v in required.items() if v in ("", None)]
 if missing:
     raise SystemExit("配置缺少字段: " + ", ".join(missing))
 
+sender_id = cfg.get("sender_id", "")
+if sender_id == "auto":
+    sender_id = _derive_auto_sender_id()
+
 values = {
-    "SENDER_ID": cfg.get("sender_id", ""),
+    "SENDER_ID": sender_id,
     "SENDER_VERSION": cfg.get("sender_version", ""),
     "CAMERA_COUNT": len(cams),
     "CAMERA_ID": cam.get("camera_id", ""),

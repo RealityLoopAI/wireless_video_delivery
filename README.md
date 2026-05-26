@@ -25,9 +25,9 @@
 12. 接收端 Orbbec 兼容交付导出工具。
 13. 发送端一键脚本预检：配置、SDK、相机、GStreamer 编码器、接收端路由和 Wi-Fi 链路信息。
 
-暂未内置：
+源码仓库默认不包含或尚未完成：
 
-1. Orbbec SDK 实体库文件。
+1. Orbbec SDK 实体库文件（GitHub 源码交付默认不包含）。
 2. 长时间稳定性测试报告。
 3. 接收端历史回放、文件下载、权限体系。
 4. 发送端软件编码 fallback 的实测验证。
@@ -38,7 +38,7 @@
 01_sender_linux/
 ```
 
-发送端工程目录。后续放树莓派 5、香橙派上运行的 C++ 采集和发送程序。
+发送端工程目录，包含树莓派 5、香橙派等 Linux ARM/ARM64 设备上运行的 C++ 采集和发送程序。
 
 ```text
 02_receiver_linux/
@@ -50,7 +50,7 @@
 03_common_core/
 ```
 
-公共核心目录。后续放发送端和接收端共用的数据结构、协议定义、配置读取、日志、时间戳等代码。
+公共核心目录，包含发送端和接收端共用的数据结构、协议定义、配置读取、日志、时间戳等代码。
 
 ```text
 04_docs/
@@ -62,25 +62,25 @@
 05_tools/
 ```
 
-工具目录。后续放环境检查、网络检查、调试工具等。
+工具目录，包含启动、停止、状态、预检、导出和调试工具。
 
 ```text
 06_configs/
 ```
 
-配置目录。后续放发送端和接收端 JSON 配置模板。
+配置目录，包含发送端和接收端 JSON 配置模板。
 
 ```text
 07_samples/
 ```
 
-样例目录。后续放录制目录样例、配置样例或小规模测试样例。
+样例目录，用于放录制目录样例、配置样例或小规模测试样例。
 
 ```text
 08_reports/
 ```
 
-报告目录。后续放测试报告、联调记录、问题总结和验收记录。
+报告目录，用于放测试报告、联调记录、问题总结、验收记录和运行日志。
 
 ```text
 09_web_monitor/
@@ -92,7 +92,7 @@
 10_tests/
 ```
 
-测试目录。后续放单元测试、集成测试和功能验证脚本。
+测试目录，用于放单元测试、集成测试和功能验证脚本。
 
 ```text
 11_third_party/
@@ -104,7 +104,7 @@
 12_build/
 ```
 
-构建输出目录。后续 CMake 生成的临时文件和可执行文件可放这里。
+构建输出目录，CMake 生成的临时文件和可执行文件放在这里。
 
 ## 4. 关键文档
 
@@ -140,7 +140,7 @@
 
 ## 5. Orbbec SDK 状态
 
-当前 v3 工程没有直接内置 Orbbec SDK 实体文件。
+GitHub 源码交付默认不内置 Orbbec SDK 实体文件。本机运行发送端时，应按下方路径放置 ARM64 SDK；当前这台发送端已按 `linux_arm64` 路径放置 SDK。
 
 已确认 Orbbec SDK v1.10.27 release 中有 Linux ARM64 包，可作为发送端候选 SDK：
 
@@ -148,7 +148,7 @@
 https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 ```
 
-本项目建议后续按架构分开放置：
+本项目按架构分开放置：
 
 ```text
 11_third_party/orbbec/linux_arm64/
@@ -189,12 +189,15 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 默认规格：
 
 ```text
-sender_id: orangepi5pro-01
-camera_id: cam01
-receiver_ip: 192.168.1.107
+sender_id: auto
+actual sender_id example: orangepi5pro-b439137c
+camera_id: cam02
+receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 640x400@30 zlib
 ```
+
+`sender_id: auto` 会在发送端启动时按本机网卡 MAC 或 `/etc/machine-id` 派生实际 ID，避免多台设备复制同一配置后冲突。实际 ID 可用 `./05_tools/status_sender.sh` 查看。
 
 启动：
 
