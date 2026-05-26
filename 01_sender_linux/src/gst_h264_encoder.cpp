@@ -90,7 +90,7 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr,
 
     std::vector<std::vector<uint8_t>> outputs;
     while(true) {
-        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 20 * GST_MSECOND);
+        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0);
         if(!sample) {
             break;
         }
