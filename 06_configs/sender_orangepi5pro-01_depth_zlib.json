@@ -1,5 +1,5 @@
 {
-  "sender_id": "auto",
+  "sender_id": "orangepi5pro-01",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -11,12 +11,14 @@
     "status_protocol": "udp",
     "media_protocol": "tcp",
     "connect_timeout_ms": 250,
+    "send_timeout_ms": 80,
+    "send_buffer_bytes": 1048576,
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
   "preview": {
     "enabled": true,
-    "fps": 10
+    "fps": 30
   },
   "logging": {
     "directory": "08_reports/sender_logs",
@@ -24,7 +26,7 @@
   },
   "cameras": [
     {
-      "camera_id": "cam02",
+      "camera_id": "cam01",
       "serial_number": "AY2M54302ZH",
       "device_index": 0,
       "rgb_profile": {
@@ -47,6 +49,9 @@
       },
       "depth_transport": {
         "compression": "zlib"
+      },
+      "color_controls": {
+        "auto_exposure": true
       }
     }
   ]

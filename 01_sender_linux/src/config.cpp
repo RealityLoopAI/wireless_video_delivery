@@ -1,15 +1,8 @@
 #include "gwv3_sender/config.hpp"
 
-#include <algorithm>
-#include <cctype>
-#include <filesystem>
 #include <fstream>
 #include <regex>
-#include <sstream>
 #include <stdexcept>
-#include <vector>
-
-#include <unistd.h>
 
 #include <json/json.h>
 
@@ -54,162 +47,24 @@ bool optional_bool(const Json::Value &node, const char *key, bool fallback) {
     return node[key].asBool();
 }
 
-std::string trim_copy(std::string value) {
-    const auto not_space = [](unsigned char c) { return !std::isspace(c); };
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
-    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
-    return value;
+std::optional<int> optional_int_value(const Json::Value &node, const char *key) {
+    if(!node.isMember(key)) {
+        return std::nullopt;
+    }
+    if(!node[key].isInt()) {
+        throw std::runtime_error(std::string("invalid integer field: ") + key);
+    }
+    return node[key].asInt();
 }
 
-std::string read_first_line(const std::filesystem::path &path) {
-    std::ifstream input(path);
-    std::string line;
-    if(input && std::getline(input, line)) {
-        return trim_copy(line);
+std::optional<bool> optional_bool_value(const Json::Value &node, const char *key) {
+    if(!node.isMember(key)) {
+        return std::nullopt;
     }
-    return "";
-}
-
-std::string sanitize_protocol_part(std::string value) {
-    for(char &ch : value) {
-        const auto c = static_cast<unsigned char>(ch);
-        if(std::isalnum(c) || ch == '_' || ch == '-') {
-            ch = static_cast<char>(std::tolower(c));
-        }
-        else {
-            ch = '-';
-        }
+    if(!node[key].isBool()) {
+        throw std::runtime_error(std::string("invalid boolean field: ") + key);
     }
-    while(!value.empty() && value.front() == '-') {
-        value.erase(value.begin());
-    }
-    while(!value.empty() && value.back() == '-') {
-        value.pop_back();
-    }
-    return value.empty() ? "sender" : value;
-}
-
-bool is_valid_mac_address(const std::string &value) {
-    static const std::regex pattern("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$");
-    if(!std::regex_match(value, pattern)) {
-        return false;
-    }
-
-    std::string compact;
-    for(char ch : value) {
-        if(ch != ':') {
-            compact.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-        }
-    }
-    return compact != "000000000000";
-}
-
-std::string suffix_from_mac(std::string mac) {
-    std::string compact;
-    for(char ch : mac) {
-        if(ch != ':') {
-            compact.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-        }
-    }
-    if(compact.size() <= 8) {
-        return compact;
-    }
-    return compact.substr(compact.size() - 8);
-}
-
-std::string mac_for_interface(const std::string &interface_name) {
-    const auto address = read_first_line(std::filesystem::path("/sys/class/net") / interface_name / "address");
-    return is_valid_mac_address(address) ? address : "";
-}
-
-std::string default_route_interface() {
-    std::ifstream input("/proc/net/route");
-    std::string line;
-    std::string iface;
-    std::string destination;
-    std::getline(input, line);
-    while(std::getline(input, line)) {
-        std::istringstream row(line);
-        row >> iface >> destination;
-        if(destination == "00000000") {
-            return iface;
-        }
-    }
-    return "";
-}
-
-std::string first_available_mac() {
-    const auto route_iface = default_route_interface();
-    if(!route_iface.empty()) {
-        const auto mac = mac_for_interface(route_iface);
-        if(!mac.empty()) {
-            return mac;
-        }
-    }
-
-    std::vector<std::string> names;
-    const std::filesystem::path net_dir("/sys/class/net");
-    if(std::filesystem::exists(net_dir)) {
-        for(const auto &entry : std::filesystem::directory_iterator(net_dir)) {
-            names.push_back(entry.path().filename().string());
-        }
-    }
-    std::sort(names.begin(), names.end());
-
-    for(const auto &name : names) {
-        if(name == "lo") {
-            continue;
-        }
-        const auto mac = mac_for_interface(name);
-        if(!mac.empty()) {
-            return mac;
-        }
-    }
-    return "";
-}
-
-std::string machine_id_suffix() {
-    auto machine_id = read_first_line("/etc/machine-id");
-    machine_id.erase(std::remove_if(machine_id.begin(), machine_id.end(), [](unsigned char c) { return !std::isxdigit(c); }), machine_id.end());
-    std::transform(machine_id.begin(), machine_id.end(), machine_id.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    if(machine_id.empty()) {
-        return "";
-    }
-    if(machine_id.size() <= 8) {
-        return machine_id;
-    }
-    return machine_id.substr(machine_id.size() - 8);
-}
-
-std::string host_prefix() {
-    char buffer[256] = {};
-    if(gethostname(buffer, sizeof(buffer) - 1) == 0 && buffer[0] != '\0') {
-        return sanitize_protocol_part(buffer);
-    }
-    return "sender";
-}
-
-std::string derive_auto_sender_id() {
-    std::string suffix;
-    const auto mac = first_available_mac();
-    if(!mac.empty()) {
-        suffix = suffix_from_mac(mac);
-    }
-    if(suffix.empty()) {
-        suffix = machine_id_suffix();
-    }
-    if(suffix.empty()) {
-        throw std::runtime_error("cannot derive auto sender_id: no usable network MAC or /etc/machine-id");
-    }
-
-    auto prefix = host_prefix();
-    constexpr size_t max_id_len = 64;
-    if(prefix.size() + 1 + suffix.size() > max_id_len) {
-        prefix.resize(max_id_len - suffix.size() - 1);
-    }
-    return prefix + "-" + suffix;
+    return node[key].asBool();
 }
 
 VideoProfileConfig load_profile(const Json::Value &node) {
@@ -219,6 +74,24 @@ VideoProfileConfig load_profile(const Json::Value &node) {
     profile.fps = optional_int(node, "fps", 0);
     profile.format = optional_string(node, "format", "");
     return profile;
+}
+
+ColorControlsConfig load_color_controls(const Json::Value &node) {
+    ColorControlsConfig controls;
+    if(node.isNull()) {
+        return controls;
+    }
+    if(!node.isObject()) {
+        throw std::runtime_error("invalid object field: color_controls");
+    }
+    controls.auto_exposure = optional_bool_value(node, "auto_exposure");
+    controls.exposure = optional_int_value(node, "exposure");
+    controls.gain = optional_int_value(node, "gain");
+    controls.auto_exposure_priority = optional_int_value(node, "auto_exposure_priority");
+    controls.max_exposure = optional_int_value(node, "max_exposure");
+    controls.max_gain = optional_int_value(node, "max_gain");
+    controls.power_line_frequency = optional_int_value(node, "power_line_frequency");
+    return controls;
 }
 
 uint16_t parse_port(const Json::Value &node, const char *key, uint16_t fallback) {
@@ -251,9 +124,6 @@ AppConfig load_config(const std::string &path) {
 
     AppConfig config;
     config.sender_id = required_string(root, "sender_id");
-    if(config.sender_id == "auto") {
-        config.sender_id = derive_auto_sender_id();
-    }
     config.sender_version = optional_string(root, "sender_version", config.sender_version);
     config.heartbeat_interval_ms = optional_int(root, "heartbeat_interval_ms", config.heartbeat_interval_ms);
 
@@ -268,6 +138,8 @@ AppConfig load_config(const std::string &path) {
         config.transport.status_protocol = optional_string(transport, "status_protocol", config.transport.status_protocol);
         config.transport.media_protocol = optional_string(transport, "media_protocol", config.transport.media_protocol);
         config.transport.connect_timeout_ms = optional_int(transport, "connect_timeout_ms", config.transport.connect_timeout_ms);
+        config.transport.send_timeout_ms = optional_int(transport, "send_timeout_ms", config.transport.send_timeout_ms);
+        config.transport.send_buffer_bytes = optional_int(transport, "send_buffer_bytes", config.transport.send_buffer_bytes);
         config.transport.reconnect_interval_ms = optional_int(transport, "reconnect_interval_ms", config.transport.reconnect_interval_ms);
     }
 
@@ -308,6 +180,8 @@ AppConfig load_config(const std::string &path) {
         if(!depth.isNull()) {
             camera.depth_transport.compression = optional_string(depth, "compression", camera.depth_transport.compression);
         }
+
+        camera.color_controls = load_color_controls(item["color_controls"]);
         config.cameras.push_back(camera);
     }
 
@@ -334,7 +208,24 @@ void validate_config(const AppConfig &config) {
     if(config.transport.media_protocol != "tcp") {
         throw std::runtime_error("only tcp media_protocol is implemented in this sender build");
     }
+    if(config.transport.connect_timeout_ms <= 0) {
+        throw std::runtime_error("transport.connect_timeout_ms must be positive");
+    }
+    if(config.transport.send_timeout_ms <= 0) {
+        throw std::runtime_error("transport.send_timeout_ms must be positive");
+    }
+    if(config.transport.send_buffer_bytes < 0) {
+        throw std::runtime_error("transport.send_buffer_bytes must be non-negative");
+    }
+    if(config.transport.reconnect_interval_ms <= 0) {
+        throw std::runtime_error("transport.reconnect_interval_ms must be positive");
+    }
     for(const auto &camera : config.cameras) {
+        auto validate_nonnegative = [](const std::optional<int> &value, const char *name) {
+            if(value && *value < 0) {
+                throw std::runtime_error(std::string(name) + " must be non-negative");
+            }
+        };
         if(!is_valid_protocol_id(camera.camera_id)) {
             throw std::runtime_error("camera_id must be 1-64 ASCII letters/digits/_/-");
         }
@@ -344,6 +235,12 @@ void validate_config(const AppConfig &config) {
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
             throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
         }
+        validate_nonnegative(camera.color_controls.exposure, "color_controls.exposure");
+        validate_nonnegative(camera.color_controls.gain, "color_controls.gain");
+        validate_nonnegative(camera.color_controls.auto_exposure_priority, "color_controls.auto_exposure_priority");
+        validate_nonnegative(camera.color_controls.max_exposure, "color_controls.max_exposure");
+        validate_nonnegative(camera.color_controls.max_gain, "color_controls.max_gain");
+        validate_nonnegative(camera.color_controls.power_line_frequency, "color_controls.power_line_frequency");
     }
 }
 

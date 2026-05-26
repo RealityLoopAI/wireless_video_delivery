@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-$ROOT_DIR/06_configs/sender_orangepi5pro-01_depth_zlib.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
+CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender.log"
 
 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "状态查看" "config" || true
@@ -11,11 +12,22 @@ echo
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   PID="$(cat "$PID_FILE")"
-  echo "发送端运行中，PID=$PID"
+  echo "发送端守护运行中，watchdog PID=$PID"
   if [[ -r "/proc/$PID/cmdline" ]]; then
-    echo -n "启动命令："
+    echo -n "守护命令："
     tr '\0' ' ' < "/proc/$PID/cmdline"
     echo
+  fi
+  if [[ -f "$CHILD_PID_FILE" ]] && kill -0 "$(cat "$CHILD_PID_FILE")" 2>/dev/null; then
+    CHILD_PID="$(cat "$CHILD_PID_FILE")"
+    echo "发送端子进程运行中，PID=$CHILD_PID"
+    if [[ -r "/proc/$CHILD_PID/cmdline" ]]; then
+      echo -n "发送命令："
+      tr '\0' ' ' < "/proc/$CHILD_PID/cmdline"
+      echo
+    fi
+  else
+    echo "发送端子进程暂未运行，守护进程会继续尝试重启"
   fi
 else
   echo "发送端未运行"

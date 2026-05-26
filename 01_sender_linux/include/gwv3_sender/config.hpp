@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,16 @@ struct DepthTransportConfig {
     std::string compression = "none";
 };
 
+struct ColorControlsConfig {
+    std::optional<bool> auto_exposure;
+    std::optional<int> exposure;
+    std::optional<int> gain;
+    std::optional<int> auto_exposure_priority;
+    std::optional<int> max_exposure;
+    std::optional<int> max_gain;
+    std::optional<int> power_line_frequency;
+};
+
 struct CameraConfig {
     std::string camera_id;
     std::string serial_number;
@@ -33,6 +44,7 @@ struct CameraConfig {
     VideoProfileConfig depth_profile;
     RgbEncodingConfig rgb_encoding;
     DepthTransportConfig depth_transport;
+    ColorControlsConfig color_controls;
 };
 
 struct ReceiverConfig {
@@ -46,6 +58,8 @@ struct TransportConfig {
     std::string status_protocol = "udp";
     std::string media_protocol = "tcp";
     int connect_timeout_ms = 250;
+    int send_timeout_ms = 80;
+    int send_buffer_bytes = 1048576;
     int reconnect_interval_ms = 1000;
 };
 

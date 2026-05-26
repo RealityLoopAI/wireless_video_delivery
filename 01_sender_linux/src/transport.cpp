@@ -1,14 +1,18 @@
 #include "gwv3_sender/transport.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <string>
 #include <stdexcept>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace gwv3 {
@@ -67,6 +71,17 @@ int Transport::make_tcp_socket() {
         set_error(std::string("cannot create TCP socket: ") + std::strerror(errno));
         return -1;
     }
+    if(config_.transport.send_buffer_bytes > 0) {
+        int requested = config_.transport.send_buffer_bytes;
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &requested, sizeof(requested));
+    }
+    int actual = 0;
+    socklen_t actual_len = sizeof(actual);
+    if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &actual, &actual_len) == 0) {
+        media_send_buffer_bytes_ = actual;
+    }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     return fd;
 }
 
@@ -84,11 +99,18 @@ bool Transport::send_media(const std::vector<uint8_t> &packet) {
     if(!ensure_media_tcp_connected()) {
         return false;
     }
-    if(!send_all(media_tcp_fd_, packet.data(), packet.size())) {
-        close_media_socket();
+    if(should_drop_before_write(media_tcp_fd_, packet.size())) {
         return false;
     }
-    return true;
+    const auto result = send_all(media_tcp_fd_, packet.data(), packet.size());
+    if(result == SendResult::sent) {
+        return true;
+    }
+    if(result == SendResult::failed) {
+        close_media_socket();
+        last_media_connect_attempt_ = std::chrono::steady_clock::now();
+    }
+    return false;
 }
 
 bool Transport::send_udp_status(const std::string &json_message) {
@@ -145,26 +167,73 @@ bool Transport::ensure_media_tcp_connected() {
         close(fd);
         return false;
     }
-    set_nonblock(fd, false);
     media_tcp_fd_ = fd;
     return true;
 }
 
-bool Transport::send_all(int fd, const uint8_t *data, size_t size) {
+Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t size) {
     size_t offset = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.transport.send_timeout_ms);
     while(offset < size) {
         const ssize_t sent = send(fd, data + offset, size - offset, MSG_NOSIGNAL);
-        if(sent <= 0) {
-            set_error(std::string("media TCP send failed: ") + std::strerror(errno));
-            return false;
+        if(sent > 0) {
+            offset += static_cast<size_t>(sent);
+            continue;
         }
-        offset += static_cast<size_t>(sent);
+        if(sent == 0) {
+            set_error("media TCP send failed: peer closed connection");
+            return SendResult::failed;
+        }
+        if(errno == EINTR) {
+            continue;
+        }
+        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+            const auto now = std::chrono::steady_clock::now();
+            if(now >= deadline) {
+                if(offset == 0) {
+                    set_error("media TCP packet dropped under backpressure before write");
+                    return SendResult::dropped_backpressure;
+                }
+                set_error("media TCP send timed out after partial write under backpressure");
+                return SendResult::failed;
+            }
+
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+            timeval timeout{};
+            timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
+            timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
+            const int rc = select(fd + 1, nullptr, &wfds, nullptr, &timeout);
+            if(rc > 0) {
+                continue;
+            }
+            if(rc < 0 && errno == EINTR) {
+                continue;
+            }
+            if(rc == 0 && offset == 0) {
+                set_error("media TCP packet dropped under backpressure before write");
+                return SendResult::dropped_backpressure;
+            }
+            set_error(rc == 0 ? "media TCP send timed out after partial write under backpressure"
+                              : std::string("media TCP send select failed: ") + std::strerror(errno));
+            return SendResult::failed;
+        }
+        else {
+            set_error(std::string("media TCP send failed: ") + std::strerror(errno));
+            return SendResult::failed;
+        }
     }
-    return true;
+    return SendResult::sent;
 }
 
 void Transport::close_media_socket() {
     if(media_tcp_fd_ >= 0) {
+        linger reset_linger{};
+        reset_linger.l_onoff = 1;
+        reset_linger.l_linger = 0;
+        setsockopt(media_tcp_fd_, SOL_SOCKET, SO_LINGER, &reset_linger, sizeof(reset_linger));
         close(media_tcp_fd_);
         media_tcp_fd_ = -1;
     }
@@ -176,6 +245,37 @@ bool Transport::can_retry_media_connect() const {
     }
     const auto elapsed = std::chrono::steady_clock::now() - last_media_connect_attempt_;
     return elapsed >= std::chrono::milliseconds(config_.transport.reconnect_interval_ms);
+}
+
+bool Transport::should_drop_before_write(int fd, size_t packet_size) {
+#ifdef TIOCOUTQ
+    int pending = 0;
+    if(ioctl(fd, TIOCOUTQ, &pending) != 0 || pending <= 0) {
+        return false;
+    }
+    const size_t capacity = media_send_capacity_bytes();
+    if(capacity == 0) {
+        return false;
+    }
+    const size_t queued = static_cast<size_t>(pending);
+    if(queued >= capacity || packet_size > capacity - queued) {
+        set_error("media TCP packet dropped under backpressure pending_bytes=" + std::to_string(queued)
+                  + " packet_bytes=" + std::to_string(packet_size) + " capacity_bytes=" + std::to_string(capacity));
+        return true;
+    }
+#else
+    (void)fd;
+    (void)packet_size;
+#endif
+    return false;
+}
+
+size_t Transport::media_send_capacity_bytes() const {
+    if(media_send_buffer_bytes_ > 0) {
+        // Linux reports SO_SNDBUF doubled for bookkeeping; user payload capacity is roughly half.
+        return static_cast<size_t>(media_send_buffer_bytes_) / 2;
+    }
+    return config_.transport.send_buffer_bytes > 0 ? static_cast<size_t>(config_.transport.send_buffer_bytes) : 0;
 }
 
 void Transport::set_error(const std::string &message) {

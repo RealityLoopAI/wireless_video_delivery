@@ -27,82 +27,8 @@ command -v lsusb >/dev/null 2>&1 || fail "未找到 lsusb，无法检查相机 U
 config_exports="$(
   python3 - "$CONFIG" <<'PY'
 import json
-import os
-import re
 import shlex
-import socket
 import sys
-
-
-def _read_first_line(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.readline().strip()
-    except OSError:
-        return ""
-
-
-def _valid_mac(value):
-    return bool(re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", value or "")) and value.lower().replace(":", "") != "000000000000"
-
-
-def _mac_for_interface(name):
-    value = _read_first_line(f"/sys/class/net/{name}/address")
-    return value if _valid_mac(value) else ""
-
-
-def _default_route_interface():
-    try:
-        with open("/proc/net/route", "r", encoding="utf-8") as f:
-            next(f, None)
-            for line in f:
-                fields = line.split()
-                if len(fields) >= 2 and fields[1] == "00000000":
-                    return fields[0]
-    except OSError:
-        return ""
-    return ""
-
-
-def _first_available_mac():
-    route_iface = _default_route_interface()
-    if route_iface:
-        mac = _mac_for_interface(route_iface)
-        if mac:
-            return mac
-
-    try:
-        names = sorted(os.listdir("/sys/class/net"))
-    except OSError:
-        names = []
-    for name in names:
-        if name == "lo":
-            continue
-        mac = _mac_for_interface(name)
-        if mac:
-            return mac
-    return ""
-
-
-def _sanitize_protocol_part(value):
-    value = re.sub(r"[^A-Za-z0-9_-]", "-", value or "").strip("-").lower()
-    return value or "sender"
-
-
-def _derive_auto_sender_id():
-    mac = _first_available_mac()
-    suffix = mac.lower().replace(":", "")[-8:] if mac else ""
-    if not suffix:
-        machine_id = re.sub(r"[^0-9A-Fa-f]", "", _read_first_line("/etc/machine-id")).lower()
-        suffix = machine_id[-8:] if machine_id else ""
-    if not suffix:
-        raise SystemExit("无法自动生成 sender_id：没有可用网卡 MAC 或 /etc/machine-id")
-
-    prefix = _sanitize_protocol_part(socket.gethostname())
-    max_len = 64
-    if len(prefix) + 1 + len(suffix) > max_len:
-        prefix = prefix[: max_len - len(suffix) - 1]
-    return f"{prefix}-{suffix}"
 
 path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as f:
@@ -118,6 +44,7 @@ rgb = cam.get("rgb_profile") or {}
 depth = cam.get("depth_profile") or {}
 encoding = cam.get("rgb_encoding") or {}
 transport = cam.get("depth_transport") or {}
+color_controls = cam.get("color_controls") or {}
 preview = cfg.get("preview") or {}
 
 required = {
@@ -131,12 +58,8 @@ missing = [k for k, v in required.items() if v in ("", None)]
 if missing:
     raise SystemExit("配置缺少字段: " + ", ".join(missing))
 
-sender_id = cfg.get("sender_id", "")
-if sender_id == "auto":
-    sender_id = _derive_auto_sender_id()
-
 values = {
-    "SENDER_ID": sender_id,
+    "SENDER_ID": cfg.get("sender_id", ""),
     "SENDER_VERSION": cfg.get("sender_version", ""),
     "CAMERA_COUNT": len(cams),
     "CAMERA_ID": cam.get("camera_id", ""),
@@ -147,6 +70,8 @@ values = {
     "MEDIA_PROTOCOL": top_transport.get("media_protocol", "tcp"),
     "STATUS_PROTOCOL": top_transport.get("status_protocol", "udp"),
     "CONNECT_TIMEOUT_MS": top_transport.get("connect_timeout_ms", ""),
+    "SEND_TIMEOUT_MS": top_transport.get("send_timeout_ms", ""),
+    "SEND_BUFFER_BYTES": top_transport.get("send_buffer_bytes", ""),
     "RECONNECT_INTERVAL_MS": top_transport.get("reconnect_interval_ms", ""),
     "HEARTBEAT_INTERVAL_MS": cfg.get("heartbeat_interval_ms", ""),
     "RGB_WIDTH": rgb.get("width", ""),
@@ -161,6 +86,7 @@ values = {
     "DEPTH_FPS": depth.get("fps", ""),
     "DEPTH_FORMAT": depth.get("format", ""),
     "DEPTH_COMPRESSION": transport.get("compression", ""),
+    "COLOR_CONTROLS": " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in color_controls.items()) or "未配置",
     "PREVIEW_ENABLED": preview.get("enabled", ""),
     "PREVIEW_FPS": preview.get("fps", ""),
     "LOG_DIRECTORY": (cfg.get("logging") or {}).get("directory", ""),
@@ -173,8 +99,12 @@ for item in cams:
     depth_item = item.get("depth_profile") or {}
     enc_item = item.get("rgb_encoding") or {}
     depth_transport_item = item.get("depth_transport") or {}
+    controls_item = item.get("color_controls") or {}
+    controls_summary = ",".join(
+        f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in controls_item.items()
+    ) or "未配置"
     camera_summaries.append(
-        "{camera_id} serial={serial} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression}".format(
+        "{camera_id} serial={serial} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} color_controls={controls}".format(
             camera_id=item.get("camera_id", ""),
             serial=item.get("serial_number", "") or "未指定",
             rgb_w=rgb_item.get("width", ""),
@@ -188,6 +118,7 @@ for item in cams:
             depth_fps=depth_item.get("fps", ""),
             depth_fmt=depth_item.get("format", ""),
             compression=depth_transport_item.get("compression", ""),
+            controls=controls_summary,
         )
     )
 values["CAMERA_SUMMARY"] = " | ".join(camera_summaries)
@@ -202,14 +133,25 @@ PY
 eval "$config_exports"
 
 [[ -n "${RGB_ENCODER:-}" ]] || fail "配置中没有 rgb_encoding.gstreamer_encoder"
-gst-inspect-1.0 "$RGB_ENCODER" >/dev/null 2>&1 || fail "未找到硬件编码插件 $RGB_ENCODER"
+rockchipmpp_features="$(gst-inspect-1.0 rockchipmpp 2>/dev/null || true)"
+if ! printf '%s\n' "$rockchipmpp_features" | grep -Fq "$RGB_ENCODER:"; then
+  fail "未找到硬件编码插件 $RGB_ENCODER"
+fi
+if [[ "$RGB_FORMAT" == "mjpg" ]] && ! printf '%s\n' "$rockchipmpp_features" | grep -Fq 'mppjpegdec:'; then
+  fail "RGB MJPG 直通需要 mppjpegdec，但当前 GStreamer 未发现该插件"
+fi
 
 validate_output="$(
   LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --validate-config 2>&1
 )" || fail "$validate_output"
 
+USB_WARNING=""
 if ! lsusb | grep -q '2bc5:'; then
-  fail "未发现 Orbbec USB 设备。请检查相机 USB 连接"
+  if [[ "${GEMINI_SENDER_REQUIRE_USB:-1}" == "0" ]]; then
+    USB_WARNING="未发现 Orbbec USB 设备；守护进程会等待相机重新枚举后重试"
+  else
+    fail "未发现 Orbbec USB 设备。请检查相机 USB 连接"
+  fi
 fi
 
 route_output="$(ip route get "$RECEIVER_IP" 2>/dev/null || true)"
@@ -219,12 +161,13 @@ echo "发送端${MODE}参数："
 echo "  config: $CONFIG"
 echo "  sender_id: $SENDER_ID  version: ${SENDER_VERSION:-未指定}"
 echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
-echo "  reconnect: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
+echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_timeout=${SEND_TIMEOUT_MS:-未指定}ms  send_buffer=${SEND_BUFFER_BYTES:-未指定}B  reconnect_interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"
 echo "  camera_count: $CAMERA_COUNT"
 echo "  cameras: $CAMERA_SUMMARY"
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
+echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"
 case "$PREVIEW_MODE" in
   no-preview)
@@ -239,6 +182,9 @@ echo "  route: $route_output"
 
 if echo "$route_output" | grep -q ' dev wlan0 '; then
   iw dev wlan0 link 2>/dev/null | sed 's/^/  wifi: /' || true
+fi
+if [[ -n "$USB_WARNING" ]]; then
+  echo "  usb: $USB_WARNING"
 fi
 
 echo "  validate: ok"
