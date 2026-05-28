@@ -620,23 +620,22 @@ std::string existing_usb_device_name(std::string uid) {
     return "";
 }
 
-std::string paired_usb2_device_name(const std::string &usb3_device_name) {
-    const auto dash = usb3_device_name.find('-');
-    if(dash == std::string::npos || dash == 0 || dash + 1 >= usb3_device_name.size()) {
-        return "";
+bool split_usb_device_name(const std::string &device_name, int &bus, std::string &port_path) {
+    const auto dash = device_name.find('-');
+    if(dash == std::string::npos || dash == 0 || dash + 1 >= device_name.size()) {
+        return false;
     }
-    int bus = 0;
     try {
-        bus = std::stoi(usb3_device_name.substr(0, dash));
+        bus = std::stoi(device_name.substr(0, dash));
     }
     catch(const std::exception &) {
-        return "";
+        return false;
     }
-    if(bus <= 1) {
-        return "";
-    }
+    port_path = device_name.substr(dash + 1);
+    return true;
+}
 
-    std::string port_path = usb3_device_name.substr(dash + 1);
+std::string previous_usb_port_path(std::string port_path) {
     const auto dot = port_path.rfind('.');
     const size_t last_port_begin = dot == std::string::npos ? 0 : dot + 1;
     try {
@@ -650,7 +649,27 @@ std::string paired_usb2_device_name(const std::string &usb3_device_name) {
         return "";
     }
 
-    return std::to_string(bus - 1) + "-" + port_path;
+    return port_path;
+}
+
+std::vector<std::string> paired_color_device_candidates(const std::string &depth_device_name) {
+    int bus = 0;
+    std::string port_path;
+    if(!split_usb_device_name(depth_device_name, bus, port_path)) {
+        return {};
+    }
+
+    const auto color_port_path = previous_usb_port_path(port_path);
+    if(color_port_path.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> candidates;
+    candidates.push_back(std::to_string(bus) + "-" + color_port_path);
+    if(bus > 1) {
+        candidates.push_back(std::to_string(bus - 1) + "-" + color_port_path);
+    }
+    return candidates;
 }
 
 std::string paired_rgb_serial_for_depth_uid(const std::string &uid) {
@@ -659,15 +678,13 @@ std::string paired_rgb_serial_for_depth_uid(const std::string &uid) {
     if(depth_name.empty()) {
         return "";
     }
-    const auto color_name = paired_usb2_device_name(depth_name);
-    if(color_name.empty()) {
-        return "";
+    for(const auto &color_name : paired_color_device_candidates(depth_name)) {
+        const auto color_path = root / color_name;
+        if(read_text_file(color_path / "idVendor") == "2bc5" && read_text_file(color_path / "idProduct") == "0511") {
+            return read_text_file(color_path / "serial");
+        }
     }
-    const auto color_path = root / color_name;
-    if(read_text_file(color_path / "idVendor") != "2bc5" || read_text_file(color_path / "idProduct") != "0511") {
-        return "";
-    }
-    return read_text_file(color_path / "serial");
+    return "";
 }
 
 std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devices) {
