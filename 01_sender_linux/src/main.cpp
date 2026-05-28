@@ -36,6 +36,8 @@ namespace gwv3 {
 namespace {
 
 std::atomic<bool> g_running{true};
+constexpr uint16_t kDepthPreviewMinMm = 250;
+constexpr uint16_t kDepthPreviewMaxMm = 2500;
 
 void handle_signal(int) {
     g_running = false;
@@ -882,9 +884,24 @@ cv::Mat color_to_preview_bgr(const std::shared_ptr<ob::ColorFrame> &frame) {
 cv::Mat depth_to_color(const std::shared_ptr<ob::DepthFrame> &frame) {
     cv::Mat depth(frame->height(), frame->width(), CV_16UC1, frame->data());
     cv::Mat depth8;
-    cv::normalize(depth, depth8, 0, 255, cv::NORM_MINMAX, CV_8U);
+    depth8.create(depth.rows, depth.cols, CV_8UC1);
+    const auto denom = static_cast<float>(kDepthPreviewMaxMm - kDepthPreviewMinMm);
+    for(int y = 0; y < depth.rows; ++y) {
+        const auto *src = depth.ptr<uint16_t>(y);
+        auto *dst = depth8.ptr<uint8_t>(y);
+        for(int x = 0; x < depth.cols; ++x) {
+            const uint16_t value = src[x];
+            if(value == 0 || denom <= 0.0f) {
+                dst[x] = 0;
+                continue;
+            }
+            const auto clamped = static_cast<float>(std::clamp<uint16_t>(value, kDepthPreviewMinMm, kDepthPreviewMaxMm));
+            dst[x] = static_cast<uint8_t>((clamped - static_cast<float>(kDepthPreviewMinMm)) * 255.0f / denom + 0.5f);
+        }
+    }
     cv::Mat color;
     cv::applyColorMap(depth8, color, cv::COLORMAP_JET);
+    color.setTo(cv::Scalar(24, 16, 12), depth == 0);
     return color;
 }
 

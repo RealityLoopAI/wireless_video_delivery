@@ -503,6 +503,9 @@ struct PreviewImage {
     uint32_t height = 0;
 };
 
+constexpr uint16_t kDepthPreviewMinMm = 250;
+constexpr uint16_t kDepthPreviewMaxMm = 2500;
+
 uint8_t clamp_color(double value) {
     if(value <= 0.0) {
         return 0;
@@ -513,14 +516,17 @@ uint8_t clamp_color(double value) {
     return static_cast<uint8_t>(value);
 }
 
-void append_depth_color(std::vector<uint8_t> &out, uint16_t value, uint16_t max_value) {
-    if(value == 0 || max_value == 0) {
+void append_depth_color(std::vector<uint8_t> &out, uint16_t value) {
+    if(value == 0 || kDepthPreviewMaxMm <= kDepthPreviewMinMm) {
         out.push_back(12);
         out.push_back(16);
         out.push_back(24);
         return;
     }
-    const double t = std::min(1.0, static_cast<double>(value) / static_cast<double>(max_value));
+    const double clamped = std::clamp(static_cast<double>(value), static_cast<double>(kDepthPreviewMinMm),
+                                      static_cast<double>(kDepthPreviewMaxMm));
+    const double t = (clamped - static_cast<double>(kDepthPreviewMinMm))
+                     / static_cast<double>(kDepthPreviewMaxMm - kDepthPreviewMinMm);
     const auto channel = [t](double center) {
         return clamp_color(255.0 * std::max(0.0, std::min(1.0, 1.5 - std::abs(4.0 * t - center))));
     };
@@ -601,15 +607,6 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32
         return {};
     }
 
-    uint16_t max_value = 0;
-    for(uint32_t y = 0; y < height; y += stride) {
-        for(uint32_t x = 0; x < width; x += stride) {
-            const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
-            const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            max_value = std::max(max_value, value);
-        }
-    }
-
     std::vector<uint8_t> rgb;
     rgb.reserve(static_cast<size_t>(image.width) * image.height * 3ull);
 
@@ -617,7 +614,7 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32
         for(uint32_t x = 0; x < width && x / stride < image.width; x += stride) {
             const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
             const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            append_depth_color(rgb, value, max_value);
+            append_depth_color(rgb, value);
         }
     }
 
