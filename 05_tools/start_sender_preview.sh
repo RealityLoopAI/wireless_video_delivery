@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 WATCHDOG="$ROOT_DIR/05_tools/sender_watchdog.sh"
-CONFIG="${1:-$ROOT_DIR/06_configs/sender_orangepi5pro-01_depth_zlib.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_two_cameras.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 STDOUT_LOG="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
@@ -16,6 +16,11 @@ fail() {
   exit 1
 }
 
+prepare_usb_for_orbbec() {
+  "$ROOT_DIR/05_tools/prepare_rk3588_usb.sh" || true
+}
+
+prepare_usb_for_orbbec
 GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "预览启动" "config"
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then

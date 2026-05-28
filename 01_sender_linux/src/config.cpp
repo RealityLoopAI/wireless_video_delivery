@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <regex>
+#include <set>
 #include <stdexcept>
 
 #include <json/json.h>
@@ -162,9 +163,13 @@ AppConfig load_config(const std::string &path) {
     for(const auto &item : cameras) {
         CameraConfig camera;
         camera.camera_id = required_string(item, "camera_id");
+        if(item.isMember("depth_camera_id")) {
+            throw std::runtime_error("depth_camera_id is not supported; RGB and Depth are always sent with the same camera_id");
+        }
         camera.serial_number = optional_string(item, "serial_number", "");
         camera.uid = optional_string(item, "uid", "");
         camera.device_index = optional_int(item, "device_index", camera.device_index);
+        camera.validate_rgb_mjpeg = optional_bool(item, "validate_rgb_mjpeg", camera.validate_rgb_mjpeg);
         camera.rgb_profile = load_profile(item["rgb_profile"]);
         camera.depth_profile = load_profile(item["depth_profile"]);
 
@@ -220,6 +225,9 @@ void validate_config(const AppConfig &config) {
     if(config.transport.reconnect_interval_ms <= 0) {
         throw std::runtime_error("transport.reconnect_interval_ms must be positive");
     }
+    std::set<std::string> camera_ids;
+    std::set<std::string> serial_numbers;
+    std::set<std::string> uids;
     for(const auto &camera : config.cameras) {
         auto validate_nonnegative = [](const std::optional<int> &value, const char *name) {
             if(value && *value < 0) {
@@ -228,6 +236,18 @@ void validate_config(const AppConfig &config) {
         };
         if(!is_valid_protocol_id(camera.camera_id)) {
             throw std::runtime_error("camera_id must be 1-64 ASCII letters/digits/_/-");
+        }
+        if(!camera_ids.insert(camera.camera_id).second) {
+            throw std::runtime_error("duplicate camera_id is not allowed: " + camera.camera_id);
+        }
+        if(config.cameras.size() > 1 && camera.serial_number.empty() && camera.uid.empty()) {
+            throw std::runtime_error("multi-camera configs require serial_number or uid for every camera: " + camera.camera_id);
+        }
+        if(!camera.serial_number.empty() && !serial_numbers.insert(camera.serial_number).second) {
+            throw std::runtime_error("duplicate camera serial_number is not allowed: " + camera.serial_number);
+        }
+        if(!camera.uid.empty() && !uids.insert(camera.uid).second) {
+            throw std::runtime_error("duplicate camera uid is not allowed: " + camera.uid);
         }
         if(camera.rgb_encoding.codec != "h264") {
             throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");

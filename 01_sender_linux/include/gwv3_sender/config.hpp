@@ -40,6 +40,7 @@ struct CameraConfig {
     std::string serial_number;
     std::string uid;
     int device_index = 0;
+    bool validate_rgb_mjpeg = false;
     VideoProfileConfig rgb_profile;
     VideoProfileConfig depth_profile;
     RgbEncodingConfig rgb_encoding;

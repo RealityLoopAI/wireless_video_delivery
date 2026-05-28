@@ -12,7 +12,7 @@
     "media_protocol": "tcp",
     "connect_timeout_ms": 250,
     "send_timeout_ms": 80,
-    "send_buffer_bytes": 1048576,
+    "send_buffer_bytes": 4194304,
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
@@ -29,6 +29,7 @@
       "camera_id": "cam01",
       "serial_number": "AY2M54302ZH",
       "device_index": 0,
+      "validate_rgb_mjpeg": true,
       "rgb_profile": {
         "width": 1920,
         "height": 1080,

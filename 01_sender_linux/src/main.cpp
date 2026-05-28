@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csetjmp>
+#include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -20,6 +23,7 @@
 #include <vector>
 
 #include <json/json.h>
+#include <jpeglib.h>
 #include <libobsensor/ObSensor.hpp>
 #include <libobsensor/hpp/Error.hpp>
 #include <opencv2/highgui.hpp>
@@ -52,6 +56,7 @@ struct CameraPerfStats {
     uint64_t depth_input_frames = 0;
     uint64_t rgb_sent_packets = 0;
     uint64_t depth_sent_frames = 0;
+    uint64_t rgb_corrupt_jpeg_frames = 0;
     uint64_t rgb_send_failures = 0;
     uint64_t depth_send_failures = 0;
     uint64_t rgb_bytes = 0;
@@ -121,6 +126,7 @@ struct CameraRuntime {
     uint32_t disconnects = 0;
     uint64_t rgb_frames = 0;
     uint64_t depth_frames = 0;
+    uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t depth_dropped = 0;
     std::string last_error;
@@ -129,6 +135,9 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point next_preview = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_reconnect = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_time_sync_log = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_jpeg_warning = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_media_warning = std::chrono::steady_clock::now();
+    std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
     CameraPerfStats perf;
@@ -362,6 +371,7 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_gain=" << camera.live.color_gain
         << " rgb_meta_actual_fps=" << camera.live.color_actual_fps
         << " rgb_exposure_priority=" << camera.live.color_exposure_priority
+        << " rgb_corrupt_jpeg_frames=" << perf.rgb_corrupt_jpeg_frames
         << " rgb_send_failures=" << perf.rgb_send_failures
         << " depth_send_failures=" << perf.depth_send_failures;
     logger.info(oss.str());
@@ -569,22 +579,150 @@ std::shared_ptr<ob::VideoStreamProfile> select_profile(ob::Pipeline &pipeline, O
     }
 }
 
+std::string trim_copy(std::string value) {
+    while(!value.empty() && (value.back() == '\n' || value.back() == '\r' || value.back() == ' ' || value.back() == '\t')) {
+        value.pop_back();
+    }
+    size_t first = 0;
+    while(first < value.size() && (value[first] == ' ' || value[first] == '\t')) {
+        ++first;
+    }
+    return first == 0 ? value : value.substr(first);
+}
+
+std::string read_text_file(const std::filesystem::path &path) {
+    std::ifstream file(path);
+    if(!file) {
+        return "";
+    }
+    std::string value;
+    std::getline(file, value);
+    return trim_copy(value);
+}
+
+std::string existing_usb_device_name(std::string uid) {
+    const std::filesystem::path root = "/sys/bus/usb/devices";
+    if(uid.empty()) {
+        return "";
+    }
+    if(std::filesystem::exists(root / uid)) {
+        return uid;
+    }
+    const auto last_dash = uid.rfind('-');
+    if(last_dash != std::string::npos) {
+        const auto shortened = uid.substr(0, last_dash);
+        if(std::filesystem::exists(root / shortened)) {
+            return shortened;
+        }
+    }
+    return "";
+}
+
+std::string paired_usb2_device_name(const std::string &usb3_device_name) {
+    const auto dash = usb3_device_name.find('-');
+    if(dash == std::string::npos || dash == 0 || dash + 1 >= usb3_device_name.size()) {
+        return "";
+    }
+    int bus = 0;
+    try {
+        bus = std::stoi(usb3_device_name.substr(0, dash));
+    }
+    catch(const std::exception &) {
+        return "";
+    }
+    if(bus <= 1) {
+        return "";
+    }
+
+    std::string port_path = usb3_device_name.substr(dash + 1);
+    const auto dot = port_path.rfind('.');
+    const size_t last_port_begin = dot == std::string::npos ? 0 : dot + 1;
+    try {
+        const int last_port = std::stoi(port_path.substr(last_port_begin));
+        if(last_port <= 1) {
+            return "";
+        }
+        port_path.replace(last_port_begin, std::string::npos, std::to_string(last_port - 1));
+    }
+    catch(const std::exception &) {
+        return "";
+    }
+
+    return std::to_string(bus - 1) + "-" + port_path;
+}
+
+std::string paired_rgb_serial_for_depth_uid(const std::string &uid) {
+    const std::filesystem::path root = "/sys/bus/usb/devices";
+    const auto depth_name = existing_usb_device_name(uid);
+    if(depth_name.empty()) {
+        return "";
+    }
+    const auto color_name = paired_usb2_device_name(depth_name);
+    if(color_name.empty()) {
+        return "";
+    }
+    const auto color_path = root / color_name;
+    if(read_text_file(color_path / "idVendor") != "2bc5" || read_text_file(color_path / "idProduct") != "0511") {
+        return "";
+    }
+    return read_text_file(color_path / "serial");
+}
+
+std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devices) {
+    if(!devices) {
+        return "none";
+    }
+    std::ostringstream oss;
+    const uint32_t count = devices->deviceCount();
+    if(count == 0) {
+        return "none";
+    }
+    for(uint32_t i = 0; i < count; ++i) {
+        if(i > 0) {
+            oss << "; ";
+        }
+        const std::string uid = devices->uid(i) ? devices->uid(i) : "";
+        const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
+        oss << "index=" << i << " serial=" << (devices->serialNumber(i) ? devices->serialNumber(i) : "") << " uid=" << uid
+            << " paired_rgb_serial=" << paired_rgb_serial
+            << " connection=" << (devices->connectionType(i) ? devices->connectionType(i) : "");
+    }
+    return oss.str();
+}
+
 std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &camera) {
     auto devices = ctx.queryDeviceList();
     if(devices->deviceCount() == 0) {
         throw std::runtime_error("no Orbbec device found");
     }
-    for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
-        auto device = devices->getDevice(i);
-        auto info = device->getDeviceInfo();
-        const std::string serial = info->serialNumber() ? info->serialNumber() : "";
-        const std::string uid = info->uid() ? info->uid() : "";
-        if((!camera.serial_number.empty() && serial == camera.serial_number) || (!camera.uid.empty() && uid == camera.uid)) {
-            return device;
+    if(!camera.serial_number.empty() || !camera.uid.empty()) {
+        for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
+            const std::string serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
+            const std::string uid = devices->uid(i) ? devices->uid(i) : "";
+            const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
+            if((!camera.serial_number.empty() && (serial == camera.serial_number || paired_rgb_serial == camera.serial_number))
+               || (!camera.uid.empty() && uid == camera.uid)) {
+                return devices->getDevice(i);
+            }
         }
+
+        std::ostringstream oss;
+        oss << "configured camera not found camera_id=" << camera.camera_id;
+        if(!camera.serial_number.empty()) {
+            oss << " serial=" << camera.serial_number;
+        }
+        if(!camera.uid.empty()) {
+            oss << " uid=" << camera.uid;
+        }
+        oss << " available=[" << safe_device_list_string(devices) << "]";
+        throw std::runtime_error(oss.str());
     }
+
     if(camera.device_index < 0 || static_cast<uint32_t>(camera.device_index) >= devices->deviceCount()) {
-        throw std::runtime_error("camera device_index out of range");
+        std::ostringstream oss;
+        oss << "camera device_index out of range camera_id=" << camera.camera_id << " device_index=" << camera.device_index
+            << " available_count=" << devices->deviceCount() << " available=[" << safe_device_list_string(devices) << "]";
+        throw std::runtime_error(oss.str());
     }
     return devices->getDevice(static_cast<uint32_t>(camera.device_index));
 }
@@ -592,6 +730,117 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
 cv::Mat mjpg_to_bgr(const std::shared_ptr<ob::ColorFrame> &frame, int flags) {
     cv::Mat raw(1, static_cast<int>(frame->dataSize()), CV_8UC1, frame->data());
     return cv::imdecode(raw, flags);
+}
+
+bool mjpg_has_complete_jpeg(const std::shared_ptr<ob::ColorFrame> &frame) {
+    if(!frame || !frame->data() || frame->dataSize() < 4) {
+        return false;
+    }
+    const auto *data = static_cast<const uint8_t *>(frame->data());
+    const size_t size = frame->dataSize();
+    if(data[0] != 0xff || data[1] != 0xd8) {
+        return false;
+    }
+
+    size_t end = size;
+    while(end > 0 && data[end - 1] == 0x00) {
+        --end;
+    }
+    return end >= 4 && data[end - 2] == 0xff && data[end - 1] == 0xd9;
+}
+
+struct JpegValidationError {
+    jpeg_error_mgr pub;
+    jmp_buf jump_buffer;
+    bool warning = false;
+    char message[JMSG_LENGTH_MAX] = {};
+};
+
+void jpeg_validation_error_exit(j_common_ptr cinfo) {
+    auto *error = reinterpret_cast<JpegValidationError *>(cinfo->err);
+    (*cinfo->err->format_message)(cinfo, error->message);
+    longjmp(error->jump_buffer, 1);
+}
+
+void jpeg_validation_emit_message(j_common_ptr cinfo, int msg_level) {
+    if(msg_level >= 0) {
+        return;
+    }
+    auto *error = reinterpret_cast<JpegValidationError *>(cinfo->err);
+    error->warning = true;
+    (*cinfo->err->format_message)(cinfo, error->message);
+}
+
+bool mjpg_decodes_cleanly(const std::shared_ptr<ob::ColorFrame> &frame, std::string &message) {
+    if(!mjpg_has_complete_jpeg(frame)) {
+        message = "missing jpeg soi/eoi marker";
+        return false;
+    }
+
+    jpeg_decompress_struct cinfo{};
+    JpegValidationError error{};
+    cinfo.err = jpeg_std_error(&error.pub);
+    error.pub.error_exit = jpeg_validation_error_exit;
+    error.pub.emit_message = jpeg_validation_emit_message;
+
+    if(setjmp(error.jump_buffer) != 0) {
+        jpeg_destroy_decompress(&cinfo);
+        message = error.message[0] ? error.message : "jpeg validation failed";
+        return false;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, static_cast<const unsigned char *>(frame->data()), static_cast<unsigned long>(frame->dataSize()));
+    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&cinfo);
+        message = "jpeg header validation failed";
+        return false;
+    }
+    cinfo.scale_num = 1;
+    cinfo.scale_denom = 8;
+    jpeg_start_decompress(&cinfo);
+
+    std::vector<JSAMPLE> row(static_cast<size_t>(cinfo.output_width) * static_cast<size_t>(cinfo.output_components));
+    while(cinfo.output_scanline < cinfo.output_height) {
+        JSAMPROW row_ptr = row.data();
+        if(jpeg_read_scanlines(&cinfo, &row_ptr, 1) != 1) {
+            break;
+        }
+    }
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    if(error.warning) {
+        message = error.message[0] ? error.message : "jpeg decoder warning";
+        return false;
+    }
+    return true;
+}
+
+void mark_corrupt_rgb_jpeg_frame(CameraRuntime &camera, Logger &logger, const std::shared_ptr<ob::ColorFrame> &color,
+                                 std::chrono::steady_clock::time_point frame_now, const std::string &reason) {
+    camera.perf.rgb_corrupt_jpeg_frames++;
+    camera.rgb_corrupt_jpeg++;
+    camera.rgb_dropped++;
+    camera.last_error = "corrupt rgb mjpeg frame dropped";
+    if(frame_now >= camera.next_jpeg_warning) {
+        std::ostringstream oss;
+        oss << "corrupt rgb mjpeg frame dropped camera_id=" << camera.config.camera_id << " frame_id=" << color->index()
+            << " size=" << color->dataSize() << " reason=\"" << reason << "\"";
+        logger.warn(oss.str());
+        camera.next_jpeg_warning = frame_now + std::chrono::seconds(1);
+    }
+}
+
+void mark_media_send_failure(CameraRuntime &camera, Logger &logger, const std::string &stream_type,
+                             std::chrono::steady_clock::time_point frame_now, const std::string &reason) {
+    const std::string message = reason.empty() ? "unknown media transport error" : reason;
+    camera.last_error = message;
+    if(frame_now >= camera.next_media_warning || message != camera.last_media_warning) {
+        logger.warn("media send failed camera_id=" + camera.config.camera_id + " stream=" + stream_type + " error=" + message);
+        camera.next_media_warning = frame_now + std::chrono::seconds(2);
+        camera.last_media_warning = message;
+    }
 }
 
 cv::Mat color_to_bgr(const std::shared_ptr<ob::ColorFrame> &frame) {
@@ -718,6 +967,13 @@ Json::Value event_message(const AppConfig &config, const std::string &level, con
     return msg;
 }
 
+Json::Value camera_offline_message(const AppConfig &config, const std::string &camera_id, const std::string &reason) {
+    Json::Value msg = base_message(config, "camera_offline");
+    msg["camera_id"] = camera_id;
+    msg["reason"] = reason.empty() ? "camera_offline" : reason;
+    return msg;
+}
+
 Json::Value heartbeat(const AppConfig &config, const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
                       std::chrono::steady_clock::time_point started) {
     Json::Value msg = base_message(config, "heartbeat");
@@ -734,6 +990,7 @@ Json::Value heartbeat(const AppConfig &config, const std::vector<std::unique_ptr
         item["rgb_encoding"] = camera->config.rgb_encoding.codec;
         item["depth_compression"] = camera->config.depth_transport.compression;
         item["rgb_dropped_frames"] = Json::UInt64(camera->rgb_dropped);
+        item["rgb_corrupt_jpeg_frames"] = Json::UInt64(camera->rgb_corrupt_jpeg);
         item["depth_dropped_frames"] = Json::UInt64(camera->depth_dropped);
         item["hardware_encoder"] = camera->hardware_encoder;
         item["rgb_measured_fps"] = camera->live.rgb_input_fps;
@@ -845,6 +1102,9 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     runtime.perf.interval_started = now;
     runtime.next_preview = now;
     runtime.next_time_sync_log = now;
+    runtime.next_jpeg_warning = now;
+    runtime.next_media_warning = now;
+    runtime.last_media_warning.clear();
     runtime.latest_bgr.release();
     runtime.latest_depth_color.release();
 
@@ -862,7 +1122,23 @@ std::vector<std::unique_ptr<CameraRuntime>> start_cameras(const AppConfig &confi
     for(const auto &camera_config : config.cameras) {
         auto runtime = std::make_unique<CameraRuntime>();
         runtime->config = camera_config;
-        start_camera_runtime(*runtime, logger);
+        try {
+            start_camera_runtime(*runtime, logger);
+        }
+        catch(const ob::Error &e) {
+            stop_camera(*runtime, logger);
+            runtime->last_error = ob_error_text(e);
+            runtime->next_reconnect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            logger.warn("camera unavailable at startup camera_id=" + runtime->config.camera_id + " error=" + runtime->last_error
+                        + "; continuing with remaining cameras");
+        }
+        catch(const std::exception &e) {
+            stop_camera(*runtime, logger);
+            runtime->last_error = e.what();
+            runtime->next_reconnect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            logger.warn("camera unavailable at startup camera_id=" + runtime->config.camera_id + " error=" + runtime->last_error
+                        + "; continuing with remaining cameras");
+        }
         cameras.push_back(std::move(runtime));
     }
     return cameras;
@@ -874,7 +1150,7 @@ void mark_camera_disconnected(const AppConfig &config, CameraRuntime &camera, Se
     camera.reconnect_attempts = 0;
     camera.last_error = error;
     logger.error("camera disconnected camera_id=" + camera.config.camera_id + " error=" + error);
-    send_status(transport, logger, event_message(config, "error", "camera_disconnected", error, camera.config.camera_id));
+    send_status(transport, logger, camera_offline_message(config, camera.config.camera_id, error));
     stop_camera(camera, logger);
     camera.next_reconnect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 }
@@ -900,6 +1176,7 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
         camera.last_error = ob_error_text(e);
         logger.warn("camera reconnect failed camera_id=" + camera.config.camera_id + " attempt=" + std::to_string(camera.reconnect_attempts)
                     + " error=" + camera.last_error);
+        send_status(transport, logger, camera_offline_message(config, camera.config.camera_id, camera.last_error));
         camera.next_reconnect = now + reconnect_delay(camera.reconnect_attempts);
     }
     catch(const std::exception &e) {
@@ -907,6 +1184,7 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
         camera.last_error = e.what();
         logger.warn("camera reconnect failed camera_id=" + camera.config.camera_id + " attempt=" + std::to_string(camera.reconnect_attempts)
                     + " error=" + camera.last_error);
+        send_status(transport, logger, camera_offline_message(config, camera.config.camera_id, camera.last_error));
         camera.next_reconnect = now + reconnect_delay(camera.reconnect_attempts);
     }
 }
@@ -926,7 +1204,15 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
     send_status(transport, logger, sender_hello(config));
-    send_status(transport, logger, event_message(config, "info", "camera_connected", "camera pipeline started", cameras.front()->config.camera_id));
+    for(const auto &camera : cameras) {
+        if(camera->online) {
+            send_status(transport, logger,
+                        event_message(config, "info", "camera_connected", "camera pipeline started", camera->config.camera_id));
+        }
+        else {
+            send_status(transport, logger, camera_offline_message(config, camera->config.camera_id, camera->last_error));
+        }
+    }
 
     auto next_heartbeat = std::chrono::steady_clock::now();
     auto next_perf_log = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -960,6 +1246,10 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 mark_camera_disconnected(config, *camera, transport, logger, ob_error_text(e));
                 continue;
             }
+            catch(const std::exception &e) {
+                mark_camera_disconnected(config, *camera, transport, logger, e.what());
+                continue;
+            }
             const auto frame_now = std::chrono::steady_clock::now();
             const uint64_t frame_host_now_us = now_us();
             const bool preview_due = config.preview.enabled && frame_now >= camera->next_preview;
@@ -970,95 +1260,110 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 camera->perf.note_rgb_frame_id(color->index());
                 update_color_metadata(*camera, color);
                 const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
-                if(color_is_mjpg && preview_due) {
-                    const auto decode_started = std::chrono::steady_clock::now();
-                    auto preview_bgr = color_to_preview_bgr(color);
-                    camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
-                    if(!preview_bgr.empty()) {
-                        camera->latest_bgr = preview_bgr;
+                bool rgb_usable = true;
+                if(color_is_mjpg && !mjpg_has_complete_jpeg(color)) {
+                    rgb_usable = false;
+                    mark_corrupt_rgb_jpeg_frame(*camera, logger, color, frame_now, "missing jpeg soi/eoi marker");
+                }
+                else if(color_is_mjpg && (preview_due || camera->config.validate_rgb_mjpeg)) {
+                    std::string jpeg_validation_message;
+                    if(!mjpg_decodes_cleanly(color, jpeg_validation_message)) {
+                        rgb_usable = false;
+                        mark_corrupt_rgb_jpeg_frame(*camera, logger, color, frame_now, jpeg_validation_message);
                     }
                 }
-                else if(!color_is_mjpg) {
-                    const auto decode_started = std::chrono::steady_clock::now();
-                    bgr = color_to_bgr(color);
-                    camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
-                    if(preview_due && !bgr.empty()) {
-                        camera->latest_bgr = bgr;
+
+                if(rgb_usable) {
+                    if(color_is_mjpg && preview_due) {
+                        const auto decode_started = std::chrono::steady_clock::now();
+                        auto preview_bgr = color_to_preview_bgr(color);
+                        camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                        if(!preview_bgr.empty()) {
+                            camera->latest_bgr = preview_bgr;
+                        }
                     }
-                }
-                if(!camera->encoder && (color_is_mjpg || !bgr.empty())) {
-                    camera->encoder_input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
-                    camera->encoder = std::make_unique<GstH264Encoder>(color->width(), color->height(), camera->color_profile->fps(),
-                                                                        camera->config.rgb_encoding.bitrate_bps,
-                                                                        camera->config.rgb_encoding.gstreamer_encoder,
-                                                                        camera->encoder_input_format);
-                    if(!camera->encoder->ok() && color_is_mjpg) {
-                        logger.warn("mppjpegdec rgb path unavailable, falling back to BGR encode path: " + camera->encoder->error());
-                        camera->encoder_input_format = GstH264InputFormat::Bgr;
+                    else if(!color_is_mjpg) {
+                        const auto decode_started = std::chrono::steady_clock::now();
+                        bgr = color_to_bgr(color);
+                        camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                        if(preview_due && !bgr.empty()) {
+                            camera->latest_bgr = bgr;
+                        }
+                    }
+                    if(!camera->encoder && (color_is_mjpg || !bgr.empty())) {
+                        camera->encoder_input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
                         camera->encoder = std::make_unique<GstH264Encoder>(color->width(), color->height(), camera->color_profile->fps(),
                                                                             camera->config.rgb_encoding.bitrate_bps,
                                                                             camera->config.rgb_encoding.gstreamer_encoder,
                                                                             camera->encoder_input_format);
-                    }
-                    camera->hardware_encoder = camera->encoder->ok();
-                    if(!camera->hardware_encoder) {
-                        camera->last_error = camera->encoder->error();
-                        logger.error("encoder_init_failed: " + camera->last_error);
-                        send_status(transport, logger,
-                                    event_message(config, "error", "encoder_init_failed", camera->last_error, camera->config.camera_id));
-                    }
-                }
-                if(camera->encoder && camera->encoder->ok()) {
-                    try {
-                        if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
-                            const auto decode_started = std::chrono::steady_clock::now();
-                            bgr = color_to_bgr(color);
-                            camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                        if(!camera->encoder->ok() && color_is_mjpg) {
+                            logger.warn("mppjpegdec rgb path unavailable, falling back to BGR encode path: " + camera->encoder->error());
+                            camera->encoder_input_format = GstH264InputFormat::Bgr;
+                            camera->encoder = std::make_unique<GstH264Encoder>(color->width(), color->height(), camera->color_profile->fps(),
+                                                                                camera->config.rgb_encoding.bitrate_bps,
+                                                                                camera->config.rgb_encoding.gstreamer_encoder,
+                                                                                camera->encoder_input_format);
                         }
-                        if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
-                            camera->last_error = "rgb decode produced empty frame";
-                            camera->rgb_dropped++;
-                            camera->rgb_frames++;
-                            continue;
+                        camera->hardware_encoder = camera->encoder->ok();
+                        if(!camera->hardware_encoder) {
+                            camera->last_error = camera->encoder->error();
+                            logger.error("encoder_init_failed: " + camera->last_error);
+                            send_status(transport, logger,
+                                        event_message(config, "error", "encoder_init_failed", camera->last_error, camera->config.camera_id));
                         }
-                        const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
-                        const auto encode_started = std::chrono::steady_clock::now();
-                        const auto encoded_units = camera->encoder_input_format == GstH264InputFormat::Jpeg
-                                                       ? camera->encoder->encode_jpeg(color->data(), color->dataSize(), color->timeStampUs())
-                                                       : camera->encoder->encode_bgr(bgr, color->timeStampUs());
-                        camera->perf.rgb_encode_ms += elapsed_ms(encode_started, std::chrono::steady_clock::now());
-                        for(const auto &encoded : encoded_units) {
-                            MediaFrameMeta meta;
-                            meta.stream_type = StreamType::rgb;
-                            meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded) ? key_frame : 0u);
-                            meta.sender_id = config.sender_id;
-                            meta.camera_id = camera->config.camera_id;
-                            meta.codec_or_compression = "h264";
-                            meta.frame_id = color->index();
-                            meta.timestamp_us = rgb_system_timestamp_us;
-                            meta.system_timestamp_us = rgb_system_timestamp_us;
-                            meta.width = color->width();
-                            meta.height = color->height();
-                            meta.pixel_format = PixelFormat::encoded_video;
-                            meta.payload_size = encoded.size();
-                            meta.uncompressed_size = encoded.size();
-                            const auto packet = build_media_packet(meta, encoded.data());
-                            const auto send_started = std::chrono::steady_clock::now();
-                            const bool sent = transport.send_media(packet);
-                            camera->perf.rgb_send_ms += elapsed_ms(send_started, std::chrono::steady_clock::now());
-                            if(sent) {
-                                camera->perf.rgb_sent_packets++;
-                                camera->perf.rgb_bytes += packet.size();
+                    }
+                    if(camera->encoder && camera->encoder->ok()) {
+                        try {
+                            if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                const auto decode_started = std::chrono::steady_clock::now();
+                                bgr = color_to_bgr(color);
+                                camera->perf.rgb_decode_ms += elapsed_ms(decode_started, std::chrono::steady_clock::now());
+                            }
+                            if(camera->encoder_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                camera->last_error = "rgb decode produced empty frame";
+                                camera->rgb_dropped++;
                             }
                             else {
-                                camera->perf.rgb_send_failures++;
-                                camera->last_error = transport.last_error();
+                                const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
+                                const auto encode_started = std::chrono::steady_clock::now();
+                                const auto encoded_units = camera->encoder_input_format == GstH264InputFormat::Jpeg
+                                                               ? camera->encoder->encode_jpeg(color->data(), color->dataSize(), color->timeStampUs())
+                                                               : camera->encoder->encode_bgr(bgr, color->timeStampUs());
+                                camera->perf.rgb_encode_ms += elapsed_ms(encode_started, std::chrono::steady_clock::now());
+                                for(const auto &encoded : encoded_units) {
+                                    MediaFrameMeta meta;
+                                    meta.stream_type = StreamType::rgb;
+                                    meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded) ? key_frame : 0u);
+                                    meta.sender_id = config.sender_id;
+                                    meta.camera_id = camera->config.camera_id;
+                                    meta.codec_or_compression = "h264";
+                                    meta.frame_id = color->index();
+                                    meta.timestamp_us = rgb_system_timestamp_us;
+                                    meta.system_timestamp_us = rgb_system_timestamp_us;
+                                    meta.width = color->width();
+                                    meta.height = color->height();
+                                    meta.pixel_format = PixelFormat::encoded_video;
+                                    meta.payload_size = encoded.size();
+                                    meta.uncompressed_size = encoded.size();
+                                    const auto packet = build_media_packet(meta, encoded.data());
+                                    const auto send_started = std::chrono::steady_clock::now();
+                                    const bool sent = transport.send_media(packet);
+                                    camera->perf.rgb_send_ms += elapsed_ms(send_started, std::chrono::steady_clock::now());
+                                    if(sent) {
+                                        camera->perf.rgb_sent_packets++;
+                                        camera->perf.rgb_bytes += packet.size();
+                                    }
+                                    else {
+                                        camera->perf.rgb_send_failures++;
+                                        mark_media_send_failure(*camera, logger, "rgb", frame_now, transport.last_error());
+                                    }
+                                }
                             }
                         }
-                    }
-                    catch(const std::exception &e) {
-                        camera->last_error = e.what();
-                        logger.error("rgb encode failed: " + camera->last_error);
+                        catch(const std::exception &e) {
+                            camera->last_error = e.what();
+                            logger.error("rgb encode failed: " + camera->last_error);
+                        }
                     }
                 }
                 camera->rgb_frames++;
@@ -1106,7 +1411,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 }
                 else {
                     camera->perf.depth_send_failures++;
-                    camera->last_error = transport.last_error();
+                    mark_media_send_failure(*camera, logger, "depth", frame_now, transport.last_error());
                 }
                 camera->depth_frames++;
                 if(preview_due) {

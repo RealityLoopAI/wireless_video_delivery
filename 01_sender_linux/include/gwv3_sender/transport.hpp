@@ -40,6 +40,7 @@ private:
     int status_udp_fd_ = -1;
     int media_tcp_fd_ = -1;
     int media_send_buffer_bytes_ = 0;
+    uint32_t consecutive_media_backpressure_drops_ = 0;
     std::chrono::steady_clock::time_point last_media_connect_attempt_{};
     std::string last_error_;
 };

@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare RK3588 USB settings for Orbbec sender
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rk3588-usb-prepare
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

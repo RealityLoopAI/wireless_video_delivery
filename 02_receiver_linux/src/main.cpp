@@ -2452,7 +2452,8 @@ private:
         }
     }
 
-    std::shared_ptr<CameraState> ensure_camera_ptr_locked(const std::string &sender_id, const std::string &camera_id) {
+    std::shared_ptr<CameraState> ensure_camera_ptr_locked(const std::string &sender_id, const std::string &camera_id,
+                                                          bool mark_online = true) {
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
         if(it == cameras_.end()) {
@@ -2473,7 +2474,9 @@ private:
             it = cameras_.emplace(key, std::move(state)).first;
             logger_.info("camera discovered: " + key);
         }
-        it->second->online = true;
+        if(mark_online) {
+            it->second->online = true;
+        }
         return it->second;
     }
 
@@ -2489,7 +2492,9 @@ private:
 
         if(!sender_id.empty() && !camera_id.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
-            auto &cam = ensure_camera_locked(sender_id, camera_id);
+            const auto code = type == "event" ? json_string_field(json, "event_code").value_or("event") : "";
+            const bool marks_online = type == "camera_announce" || code == "camera_connected" || code == "camera_reconnected";
+            auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
             cam.last_status_us = now_us();
             if(type == "camera_announce") {
                 cam.last_announce_json = json;
@@ -2500,9 +2505,12 @@ private:
                 cam.last_error = json_string_field(json, "reason").value_or("camera_offline");
             }
             else if(type == "event") {
-                const auto code = json_string_field(json, "event_code").value_or("event");
                 const auto message = json_string_field(json, "message").value_or("");
                 cam.last_error = code + (message.empty() ? "" : ": " + message);
+                if(code == "camera_unavailable" || code == "camera_disconnected") {
+                    cam.online = false;
+                    clear_camera_live_cache_locked(cam);
+                }
             }
         }
 

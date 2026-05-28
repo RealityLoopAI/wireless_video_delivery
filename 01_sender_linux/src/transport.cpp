@@ -100,15 +100,25 @@ bool Transport::send_media(const std::vector<uint8_t> &packet) {
         return false;
     }
     if(should_drop_before_write(media_tcp_fd_, packet.size())) {
+        consecutive_media_backpressure_drops_++;
+        if(consecutive_media_backpressure_drops_ >= 30) {
+            const std::string previous = last_error_;
+            close_media_socket();
+            last_media_connect_attempt_ = {};
+            consecutive_media_backpressure_drops_ = 0;
+            set_error(previous + "; reconnecting after repeated backpressure drops");
+        }
         return false;
     }
     const auto result = send_all(media_tcp_fd_, packet.data(), packet.size());
     if(result == SendResult::sent) {
+        consecutive_media_backpressure_drops_ = 0;
         return true;
     }
     if(result == SendResult::failed) {
         close_media_socket();
         last_media_connect_attempt_ = std::chrono::steady_clock::now();
+        consecutive_media_backpressure_drops_ = 0;
     }
     return false;
 }

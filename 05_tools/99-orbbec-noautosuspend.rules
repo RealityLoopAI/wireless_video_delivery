@@ -1,0 +1,2 @@
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="2bc5", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="2bc5", TEST=="power/autosuspend", ATTR{power/autosuspend}="-1"

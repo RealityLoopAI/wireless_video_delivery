@@ -1,5 +1,5 @@
 {
-  "sender_id": "orangepi5pro-01",
+  "sender_id": "rk3588-ubuntu",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",

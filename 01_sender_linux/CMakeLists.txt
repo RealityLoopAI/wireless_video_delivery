@@ -1,5 +1,6 @@
 find_package(PkgConfig REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(JPEG REQUIRED)
 find_package(ZLIB REQUIRED)
 
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
@@ -41,6 +42,7 @@ target_link_libraries(gemini_sender PRIVATE
     ${JSONCPP_LIBRARIES}
     ${GSTREAMER_LIBRARIES}
     ${OpenCV_LIBS}
+    JPEG::JPEG
     ZLIB::ZLIB
     pthread
 )
