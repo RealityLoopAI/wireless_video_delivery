@@ -6,9 +6,26 @@ write_sysfs() {
   local value="$2"
   [[ -e "$path" ]] || return 0
   if [[ -w "$path" ]]; then
-    printf '%s\n' "$value" >"$path" 2>/dev/null || true
+    if ! printf '%s\n' "$value" >"$path" 2>/dev/null; then
+      printf 'prepare warning: failed to write %s=%s\n' "$path" "$value" >&2
+    fi
   else
-    printf '%s\n' "$value" | sudo -n tee "$path" >/dev/null 2>&1 || true
+    if ! printf '%s\n' "$value" | sudo -n tee "$path" >/dev/null 2>&1; then
+      printf 'prepare warning: need root permission to write %s=%s\n' "$path" "$value" >&2
+    fi
+  fi
+}
+
+warn_if_less_than() {
+  local path="$1"
+  local minimum="$2"
+  local label="$3"
+  [[ -r "$path" ]] || return 0
+  local value
+  value="$(<"$path")"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 0
+  if (( value < minimum )); then
+    printf 'prepare warning: %s is %s, expected at least %s\n' "$label" "$value" "$minimum" >&2
   fi
 }
 
@@ -26,6 +43,10 @@ fi
 
 write_sysfs /sys/module/usbcore/parameters/usbfs_memory_mb 256
 write_sysfs /sys/module/usbcore/parameters/autosuspend -1
+write_sysfs /proc/sys/net/core/wmem_max 8388608
+write_sysfs /proc/sys/net/core/wmem_default 1048576
+warn_if_less_than /sys/module/usbcore/parameters/usbfs_memory_mb 256 usbfs_memory_mb
+warn_if_less_than /proc/sys/net/core/wmem_max 4194304 net.core.wmem_max
 
 for device in /sys/bus/usb/devices/*; do
   [[ -f "$device/idVendor" ]] || continue

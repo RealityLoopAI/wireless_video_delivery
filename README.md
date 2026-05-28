@@ -17,13 +17,13 @@
 4. 接收端需求文档。
 5. 中间传输数据格式文档。
 6. 第三方 SDK 放置说明。
-7. RK3588/香橙派 5 Pro 发送端 C++ 实现，包含本地预览、自动曝光配置、坏 MJPEG 帧过滤、TCP 背压丢包保护/自动重连、媒体发送停滞自恢复和 watchdog 自动重启。
+7. RK3588/香橙派 5 Pro 发送端 C++ 实现，包含本地预览、自动曝光配置、坏 MJPEG 帧过滤、TCP 背压丢包保护/自动重连、采集/媒体发送停滞自恢复和 watchdog 自动重启。
 8. Ubuntu 接收端 C++ 核心接收与录制服务。
 9. FastAPI Web/REST 监控服务。
 10. 接收端 CLI 控制工具。
 11. 发送端和接收端一键启动、停止、状态脚本。
 12. 接收端 Orbbec 兼容交付导出工具。
-13. 发送端一键脚本预检：配置、SDK、相机、GStreamer 编码器、接收端路由、Wi-Fi 链路信息和当前设备 5GHz Wi-Fi guard。
+13. 发送端一键脚本预检：配置、SDK、相机、GStreamer 编码器、接收端路由、Wi-Fi 链路信息、USB/TCP 缓冲告警和当前设备 5GHz Wi-Fi guard。
 
 源码仓库默认不包含或尚未完成：
 
@@ -118,7 +118,7 @@
 6. `04_docs/07_Orbbec交付导出说明_v3.md`
 7. `04_docs/06_发送端运行使用手册_v3.md`
 
-发送端默认配置当前使用固定 `sender_id=rk3588-ubuntu`，接收端地址 `192.168.66.196`。RK3588 双相机配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y16 -> zlib`，本地预览按配置启用。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
+发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 双相机配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y16 -> zlib`，本地预览按配置启用。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
 
 发送端开发人员重点阅读：
 
@@ -191,17 +191,18 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 默认规格：
 
 ```text
-sender_id: rk3588-ubuntu
+sender_id: orangepi5pro-66-133
 camera_id: cam01 / cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 640x400@30 zlib
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
+dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 ```
 
 固定 `sender_id` 必须和设备名称对应，避免接收端把多台设备的数据混在一起。
-实际运行参数以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
+实际运行参数和系统缓冲告警以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
 
 启动：
 

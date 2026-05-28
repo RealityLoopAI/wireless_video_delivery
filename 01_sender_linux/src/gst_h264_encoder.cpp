@@ -1,5 +1,6 @@
 #include "gwv3_sender/gst_h264_encoder.hpp"
 
+#include <mutex>
 #include <stdexcept>
 
 #include <gst/app/gstappsink.h>
@@ -10,11 +11,8 @@ namespace gwv3 {
 GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
                                GstH264InputFormat input_format)
     : fps_(fps) {
-    static bool gst_initialized = false;
-    if(!gst_initialized) {
-        gst_init(nullptr, nullptr);
-        gst_initialized = true;
-    }
+    static std::once_flag gst_init_once;
+    std::call_once(gst_init_once, [] { gst_init(nullptr, nullptr); });
 
     std::string pipeline_text;
     if(input_format == GstH264InputFormat::Jpeg) {

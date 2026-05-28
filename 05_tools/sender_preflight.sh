@@ -155,6 +155,19 @@ if ! lsusb | grep -q '2bc5:'; then
   fi
 fi
 
+USBFS_MEMORY_MB=""
+TCP_WMEM_MAX=""
+TCP_WMEM_DEFAULT=""
+if [[ -r /sys/module/usbcore/parameters/usbfs_memory_mb ]]; then
+  USBFS_MEMORY_MB="$(cat /sys/module/usbcore/parameters/usbfs_memory_mb 2>/dev/null || true)"
+fi
+if [[ -r /proc/sys/net/core/wmem_max ]]; then
+  TCP_WMEM_MAX="$(cat /proc/sys/net/core/wmem_max 2>/dev/null || true)"
+fi
+if [[ -r /proc/sys/net/core/wmem_default ]]; then
+  TCP_WMEM_DEFAULT="$(cat /proc/sys/net/core/wmem_default 2>/dev/null || true)"
+fi
+
 if gemini_sender_wifi_required; then
   gemini_sender_wifi_connect_if_configured || fail "$GEMINI_SENDER_WIFI_LAST_ERROR"
   gemini_sender_wifi_check_policy || fail "$GEMINI_SENDER_WIFI_LAST_ERROR"
@@ -162,6 +175,52 @@ fi
 
 route_output="$(ip route get "$RECEIVER_IP" 2>/dev/null || true)"
 [[ -n "$route_output" ]] || fail "无法找到到接收端 $RECEIVER_IP 的路由"
+
+receiver_status_warning="$(
+  python3 - "$RECEIVER_IP" "$SENDER_ID" <<'PY' 2>/dev/null || true
+import json
+import os
+import sys
+import urllib.request
+
+receiver_ip = sys.argv[1]
+sender_id = sys.argv[2]
+urls = []
+if os.environ.get("GEMINI_RECEIVER_STATUS_URL"):
+    urls.append(os.environ["GEMINI_RECEIVER_STATUS_URL"])
+urls.append(f"http://{receiver_ip}:8080/api/status")
+
+status = None
+for url in urls:
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as resp:
+            status = json.load(resp)
+        break
+    except Exception:
+        continue
+
+if not isinstance(status, dict):
+    raise SystemExit(0)
+
+active_clients = status.get("active_media_clients")
+if isinstance(active_clients, int) and active_clients > 1:
+    print(f"receiver currently has {active_clients} active media clients; full-spec dual streaming may hit TCP backpressure")
+
+conflicts = []
+for cam in status.get("cameras", []):
+    if cam.get("sender_id") != sender_id:
+        continue
+    if not (cam.get("status_live") or cam.get("media_live")):
+        continue
+    key = cam.get("camera_key") or f"{cam.get('sender_id', '')}_{cam.get('camera_id', '')}"
+    status_age = cam.get("status_age_ms", -1)
+    media_age = cam.get("media_age_ms", -1)
+    conflicts.append(f"{key}(status_live={cam.get('status_live')},media_live={cam.get('media_live')},status_age_ms={status_age},media_age_ms={media_age})")
+
+if conflicts:
+    print("receiver already has live cameras with this sender_id; expected only if this sender is already running, otherwise it is an ID conflict: " + ", ".join(conflicts))
+PY
+)"
 
 echo "发送端${MODE}参数："
 echo "  config: $CONFIG"
@@ -192,8 +251,25 @@ echo "  route: $route_output"
 if echo "$route_output" | grep -q ' dev wlan0 '; then
   iw dev wlan0 link 2>/dev/null | sed 's/^/  wifi: /' || true
 fi
+if [[ -n "$receiver_status_warning" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo "  warning: $line"
+  done <<< "$receiver_status_warning"
+fi
 if [[ -n "$USB_WARNING" ]]; then
   echo "  usb: $USB_WARNING"
+fi
+if [[ -n "$USBFS_MEMORY_MB" ]]; then
+  echo "  usbfs_memory_mb: $USBFS_MEMORY_MB"
+  if [[ "$USBFS_MEMORY_MB" =~ ^[0-9]+$ ]] && (( USBFS_MEMORY_MB < 256 )); then
+    echo "  warning: usbfs_memory_mb 低于双路满规格建议值 256，Orbbec SDK 可能无法分配 USB 传输缓冲"
+  fi
+fi
+if [[ -n "$TCP_WMEM_MAX" ]]; then
+  echo "  tcp_wmem: default=${TCP_WMEM_DEFAULT:-unknown} max=$TCP_WMEM_MAX"
+  if [[ "$TCP_WMEM_MAX" =~ ^[0-9]+$ ]] && (( TCP_WMEM_MAX < 4194304 )); then
+    echo "  warning: net.core.wmem_max 低于配置发送缓冲，满规格双路发送可能出现 TCP 背压丢帧"
+  fi
 fi
 
 echo "  validate: ok"
