@@ -1,11 +1,5 @@
 {
   "default_file_prefix": "",
-  "camera_names": {
-    "orangepi5pro-01_cam01": "test_auto_001",
-    "raspberrypi-01_cam01": "test_auto_002"
-  },
-  "camera_file_prefixes": {
-    "orangepi5pro-01_cam01": "test_auto_001_009_",
-    "raspberrypi-01_cam01": "test_auto_002_009_"
-  }
+  "camera_names": {},
+  "camera_file_prefixes": {}
 }

@@ -6,305 +6,468 @@
   <title>Gemini Monitor</title>
   <style>
     :root {
-      --bg: #f3efe6;
-      --ink: #1c1a16;
-      --muted: #746b5f;
-      --panel: rgba(255, 252, 244, 0.9);
-      --line: #d7cab8;
-      --accent: #006c67;
-      --danger: #b2402a;
-      --ok: #27733f;
-      --warn: #b87900;
+      --bg: #070b0b;
+      --panel: rgba(15, 21, 20, .88);
+      --panel-soft: rgba(255, 255, 255, .055);
+      --ink: #eef5ee;
+      --muted: #93a39a;
+      --line: rgba(218, 232, 221, .17);
+      --accent: #25c4ad;
+      --danger: #d75b44;
+      --ok: #55d87c;
+      --warn: #e0ad42;
+      --shadow: rgba(0, 0, 0, .42);
+      --header-h: 38px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       color: var(--ink);
       font-family: "Aptos", "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 12% 8%, rgba(0,108,103,.16), transparent 30rem),
-        radial-gradient(circle at 88% 6%, rgba(178,64,42,.13), transparent 28rem),
-        linear-gradient(135deg, #f9f3e5 0%, var(--bg) 58%, #e9dfce 100%);
+        radial-gradient(circle at 12% -10%, rgba(37, 196, 173, .18), transparent 32rem),
+        radial-gradient(circle at 92% 2%, rgba(215, 91, 68, .11), transparent 28rem),
+        linear-gradient(135deg, #050707 0%, #0b1110 55%, #121817 100%);
     }
     header {
-      padding: 24px clamp(16px, 4vw, 48px) 14px;
+      height: var(--header-h);
+      padding: 4px clamp(8px, 1.2vw, 14px);
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      gap: 18px;
-      align-items: flex-end;
+      gap: 10px;
+      background: rgba(5, 7, 7, .78);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(16px);
     }
     h1 {
       margin: 0;
-      font-size: clamp(30px, 4vw, 48px);
-      letter-spacing: -0.06em;
+      font-size: clamp(15px, 1.6vw, 21px);
+      letter-spacing: -.04em;
+      white-space: nowrap;
     }
-    .sub {
-      color: var(--muted);
-      margin-top: 6px;
-    }
-    main {
-      padding: 0 clamp(16px, 4vw, 48px) 42px;
-    }
-    .toolbar, .card, .debug-panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      box-shadow: 0 18px 60px rgba(44, 33, 21, .10);
-      backdrop-filter: blur(12px);
-      border-radius: 24px;
-    }
-    .toolbar {
-      padding: 14px;
+    .topbar {
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
       align-items: center;
-      margin-bottom: 16px;
+      gap: 6px;
+      min-width: 0;
+    }
+    .summary {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }
     button {
       border: 0;
       border-radius: 999px;
-      padding: 11px 17px;
-      color: white;
+      padding: 5px 9px;
+      color: #03110f;
       background: var(--accent);
-      font-weight: 800;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 900;
       cursor: pointer;
     }
-    button.stop { background: var(--danger); }
-    button.secondary { background: #635a50; }
-    .input-group {
-      display: grid;
-      gap: 5px;
-      min-width: min(280px, 100%);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 900;
-    }
-    input {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 10px 13px;
+    button.stop { background: var(--danger); color: #fff; }
+    button.secondary { background: #53615b; color: #fff; }
+    button.ghost {
       color: var(--ink);
-      background: rgba(255,255,255,.68);
-      font: inherit;
-      font-weight: 750;
-      outline: none;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid var(--line);
     }
-    input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(0,108,103,.12);
+    button.active {
+      color: #03110f;
+      background: var(--accent);
     }
-    .grid {
+    main {
+      height: calc(100vh - var(--header-h));
+      padding: 8px;
       display: grid;
-      grid-template-columns: 1fr;
-      gap: 18px;
-    }
-    .card {
-      padding: clamp(14px, 2.5vw, 22px);
-    }
-    .camera-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 14px;
-      margin-bottom: 14px;
-    }
-    .key {
-      margin-top: 7px;
-      font-size: clamp(20px, 2.5vw, 30px);
-      font-weight: 900;
-      letter-spacing: -0.04em;
-    }
-    .camera-actions {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
+      grid-template-columns: minmax(0, 1fr) clamp(260px, 22vw, 360px);
       gap: 8px;
+      overflow: hidden;
     }
-    .camera-name-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: end;
-      margin-top: 10px;
-    }
-    .camera-name-row .input-group {
-      min-width: min(340px, 100%);
-    }
-    .camera-edit-row {
-      display: grid;
-      grid-template-columns: minmax(240px, 1fr) auto minmax(240px, 1fr) auto;
-      gap: 8px;
-      align-items: end;
-      margin-top: 14px;
-    }
-    .camera-edit-row .input-group {
+    .main-stage,
+    .side-rail {
+      min-height: 0;
       min-width: 0;
-    }
-    .storage-key {
-      margin-top: 7px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 800;
-      word-break: break-all;
-    }
-    .save-path {
-      margin-top: 10px;
-      padding: 12px 14px;
+      background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 18px;
-      background: rgba(255,255,255,.42);
-      color: var(--muted);
-      word-break: break-all;
+      box-shadow: 0 18px 52px var(--shadow);
+      backdrop-filter: blur(16px);
     }
-    .save-path span {
-      display: block;
-      font-size: 12px;
-      font-weight: 800;
-      color: var(--muted);
-      margin-bottom: 3px;
+    .main-stage {
+      padding: 8px;
     }
-    .save-path strong {
-      color: var(--ink);
-      font-size: 15px;
-    }
-    .preview {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 14px;
-    }
-    .view {
-      min-height: min(42vh, 440px);
-      aspect-ratio: 16 / 9;
-      border-radius: 20px;
-      overflow: hidden;
-      background: #1c1a16;
-      border: 1px solid rgba(28,26,22,.2);
+    .main-screen {
+      position: relative;
+      width: 100%;
+      height: 100%;
       display: grid;
       place-items: center;
-      position: relative;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(238, 245, 238, .14);
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, .045), transparent 35%),
+        #020505;
     }
-    .view img {
+    .main-screen img,
+    .thumb-view img {
       width: 100%;
       height: 100%;
       object-fit: contain;
       display: block;
     }
-    .view span {
-      color: #f9f3e5;
-      padding: 14px;
+    .placeholder {
+      color: #dfe9df;
+      padding: 16px;
       text-align: center;
-      font-weight: 800;
+      font-weight: 900;
     }
-    .view::before {
+    .mode-switch {
+      position: absolute;
+      z-index: 2;
+      left: 10px;
+      top: 10px;
+      display: flex;
+      gap: 5px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(0, 0, 0, .5);
+      backdrop-filter: blur(10px);
+    }
+    .mode-switch button {
+      padding: 4px 9px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, .08);
+    }
+    .mode-switch button.active {
+      color: #03110f;
+      background: var(--accent);
+    }
+    .side-rail {
+      padding: 7px;
+      overflow: hidden;
+    }
+    .thumb-list {
+      height: 100%;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .thumb-card {
+      flex: 1 1 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 4px;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(255, 255, 255, .045);
+      cursor: pointer;
+      overflow: hidden;
+    }
+    .thumb-card.active {
+      border-color: rgba(37, 196, 173, .72);
+      box-shadow: inset 0 0 0 1px rgba(37, 196, 173, .35), 0 0 0 1px rgba(37, 196, 173, .16);
+    }
+    .thumb-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+      height: 16px;
+    }
+    .thumb-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .thumb-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--danger);
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.recording { background: var(--warn); }
+    .thumb-preview {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px;
+    }
+    .thumb-view {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      border: 1px solid rgba(238, 245, 238, .12);
+      background: #020505;
+    }
+    .thumb-view::before {
       content: attr(data-title);
       position: absolute;
-      left: 12px;
-      top: 12px;
+      left: 5px;
+      top: 4px;
       z-index: 1;
-      color: #fff;
-      font-size: 12px;
-      font-weight: 900;
-      background: rgba(0,0,0,.48);
-      padding: 5px 9px;
+      padding: 2px 5px;
       border-radius: 999px;
-    }
-    .pill {
-      display: inline-flex;
-      padding: 6px 11px;
-      border-radius: 999px;
-      font-size: 12px;
+      color: var(--ink);
+      background: rgba(0, 0, 0, .55);
+      font-size: 8px;
       font-weight: 900;
-      margin-right: 6px;
     }
-    .pill.ok { background: rgba(39,115,63,.12); color: var(--ok); }
-    .pill.off { background: rgba(178,64,42,.12); color: var(--danger); }
-    .pill.warn { background: rgba(184,121,0,.14); color: var(--warn); }
-    .debug-panel {
-      margin-top: 10px;
-      padding: 12px 14px;
+    .thumb-view span {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 800;
+      text-align: center;
+      padding: 6px;
     }
-    .card .debug-panel {
-      box-shadow: none;
-      background: rgba(255,255,255,.32);
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      pointer-events: none;
+      opacity: 0;
+      background: rgba(0, 0, 0, .36);
+      transition: opacity .16s ease;
+    }
+    .settings-drawer {
+      position: fixed;
+      z-index: 31;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: min(560px, 94vw);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 10px;
+      padding: 12px;
+      color: var(--ink);
+      background: rgba(12, 17, 16, .96);
+      border-left: 1px solid var(--line);
+      box-shadow: -24px 0 80px rgba(0, 0, 0, .45);
+      transform: translateX(100%);
+      transition: transform .18s ease;
+    }
+    body.drawer-open .drawer-backdrop {
+      pointer-events: auto;
+      opacity: 1;
+    }
+    body.drawer-open .settings-drawer {
+      transform: translateX(0);
+    }
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .drawer-title {
+      font-size: 18px;
+      font-weight: 950;
+    }
+    .settings-body {
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .setting-card {
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--panel-soft);
+    }
+    .setting-title {
+      font-size: 14px;
+      font-weight: 950;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .setting-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .input-group {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 11px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, .08);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 750;
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 196, 173, .16);
+    }
+    .info-block {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .04);
+      word-break: break-all;
+    }
+    .info-block span,
+    .debug-label {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .info-block strong,
+    .debug-value {
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 850;
+      word-break: break-all;
+    }
+    details {
+      margin-top: 8px;
     }
     summary {
       cursor: pointer;
       color: var(--muted);
+      font-size: 11px;
       font-weight: 900;
       user-select: none;
     }
     .debug-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 10px;
-      margin-top: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 8px;
     }
     .debug-item {
+      padding-top: 8px;
       border-top: 1px solid var(--line);
-      padding-top: 10px;
-    }
-    .label {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .value {
-      font-size: 16px;
-      font-weight: 850;
-      word-break: break-all;
     }
     .empty {
-      padding: 28px;
-      text-align: center;
+      height: 100%;
+      display: grid;
+      place-items: center;
       color: var(--muted);
-      font-weight: 800;
+      font-weight: 900;
+      text-align: center;
     }
     @media (max-width: 900px) {
+      body {
+        height: auto;
+        overflow: auto;
+      }
       header {
-        display: block;
+        height: auto;
+        flex-wrap: wrap;
       }
-      .camera-head {
-        display: block;
-      }
-      .camera-actions {
-        justify-content: flex-start;
-        margin-top: 12px;
-      }
-      .camera-edit-row {
+      main {
+        height: auto;
         grid-template-columns: 1fr;
+        overflow: visible;
       }
-      .preview {
-        grid-template-columns: 1fr;
+      .main-stage {
+        height: 55vh;
+        min-height: 320px;
       }
-      .view {
-        min-height: 220px;
+      .side-rail {
+        height: 42vh;
       }
     }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Gemini Monitor</h1>
-      <div class="sub">日常画面监控与录制控制</div>
-    </div>
-    <div id="summary" class="sub">加载中...</div>
-  </header>
-  <main>
-    <section class="toolbar">
-      <button onclick="post('/api/record/start-all')">开始全部录制</button>
-      <button class="stop" onclick="post('/api/record/stop-all')">停止全部录制</button>
+    <h1>Gemini Monitor</h1>
+    <div class="topbar">
+      <div id="summary" class="summary">加载中...</div>
+      <button onclick="post('/api/record/start-all')">开始</button>
+      <button class="stop" onclick="post('/api/record/stop-all')">停止</button>
       <button class="secondary" onclick="load()">刷新</button>
+      <button class="ghost" onclick="openSettings()">设置</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="main-stage">
+      <div id="mainScreen" class="main-screen">
+        <div class="mode-switch">
+          <button data-main-mode="rgb" class="active" onclick="setMainMode('rgb')">RGB</button>
+          <button data-main-mode="depth" onclick="setMainMode('depth')">Depth</button>
+        </div>
+        <img alt="主预览" id="mainPreview" style="display:none" />
+        <span id="mainPlaceholder" class="placeholder">等待主画面</span>
+      </div>
     </section>
-    <section id="cards" class="grid"></section>
-    <details class="debug-panel">
-      <summary>高级状态</summary>
-      <section id="system" class="debug-grid"></section>
-    </details>
+
+    <aside class="side-rail">
+      <section id="thumbs" class="thumb-list"></section>
+    </aside>
   </main>
+
+  <div id="drawerBackdrop" class="drawer-backdrop" onclick="closeSettings()"></div>
+  <aside id="settingsDrawer" class="settings-drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div class="drawer-title">设置 / 状态</div>
+      <button class="ghost" onclick="closeSettings()">关闭</button>
+    </div>
+    <div class="settings-body">
+      <section id="settingsList"></section>
+      <details>
+        <summary>系统状态</summary>
+        <section id="system" class="debug-grid"></section>
+      </details>
+    </div>
+  </aside>
+
   <script>
+    let cameras = [];
+    let visibleCameras = [];
+    let mainKey = '';
+    let mainMode = 'rgb';
+    let mainTargetSyncKey = '';
+
+    const mainPreviewState = {token: 0, loading: false};
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -323,6 +486,9 @@
       '"': '&quot;',
       "'": '&#39;'
     }[ch]));
+    const displayName = (c) => c?.camera_name || c?.storage_key || c?.camera_key || '未知相机';
+    const isLive = (c) => c && c.live !== false && c.online;
+
     async function post(url) {
       const res = await fetch(url, {method: 'POST'});
       const text = await res.text();
@@ -332,88 +498,237 @@
       await load();
       return data;
     }
-    function currentCardPrefix(card) {
-      const input = card.querySelector('[data-field="file_prefix_input"]');
-      return input ? input.value || '' : '';
+    function openSettings() {
+      document.body.classList.add('drawer-open');
+      document.getElementById('settingsDrawer').setAttribute('aria-hidden', 'false');
     }
-    async function postCamera(path, sender, camera, card = null) {
-      const params = new URLSearchParams({sender_id: sender, camera_id: camera});
-      if (card) params.set('file_prefix', currentCardPrefix(card));
-      await post(`${path}?${params.toString()}`);
+    function closeSettings() {
+      document.body.classList.remove('drawer-open');
+      document.getElementById('settingsDrawer').setAttribute('aria-hidden', 'true');
     }
-    function cardId(key) {
-      return `camera-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    function cardId(prefix, key) {
+      return `${prefix}-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     }
-    function setText(card, field, value) {
-      const node = card.querySelector(`[data-field="${field}"]`);
+    function setText(root, field, value) {
+      const node = root.querySelector(`[data-field="${field}"]`);
       if (node) node.textContent = value;
     }
-    function ensureCard(c) {
-      const cards = document.getElementById('cards');
-      const id = cardId(c.camera_key);
+    function setMainMode(mode) {
+      mainMode = mode === 'depth' ? 'depth' : 'rgb';
+      document.querySelectorAll('[data-main-mode]').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.mainMode === mainMode);
+      });
+      syncMainTarget();
+      clearMainPreview();
+      refreshMainPreview();
+    }
+    function chooseMainCamera() {
+      if (mainKey && visibleCameras.some((c) => c.camera_key === mainKey)) return;
+      mainKey = (visibleCameras[0] || {}).camera_key || '';
+      mainMode = 'rgb';
+      setMainMode('rgb');
+    }
+    function selectMainCamera(key) {
+      if (!key) return;
+      mainKey = key;
+      mainTargetSyncKey = '';
+      setMainMode('rgb');
+      renderThumbState();
+      clearMainPreview();
+      refreshMainPreview();
+    }
+    function syncMainTarget() {
+      const c = cameras.find((item) => item.camera_key === mainKey);
+      if (!c || mainTargetSyncKey === mainKey) return;
+      mainTargetSyncKey = mainKey;
+      const params = new URLSearchParams({sender_id: c.sender_id, camera_id: c.camera_id});
+      fetch(`/api/preview/main-target?${params.toString()}`, {method: 'POST'}).catch(() => {
+        if (mainTargetSyncKey === mainKey) mainTargetSyncKey = '';
+      });
+    }
+    function previewUrl(c, kind, high = false) {
+      const endpoint = high && kind === 'rgb' ? 'rgb-main' : kind;
+      return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+    }
+    function previewAvailable(c, kind) {
+      return isLive(c) && (kind === 'rgb' ? c.rgb_preview_available : c.depth_preview_available);
+    }
+    function hasAnyPreview(c) {
+      return previewAvailable(c, 'rgb') || previewAvailable(c, 'depth');
+    }
+    function clearMainPreview(message = '等待主画面') {
+      mainPreviewState.token += 1;
+      mainPreviewState.loading = false;
+      const img = document.getElementById('mainPreview');
+      const placeholder = document.getElementById('mainPlaceholder');
+      img.removeAttribute('src');
+      img.style.display = 'none';
+      placeholder.textContent = message;
+      placeholder.style.display = '';
+    }
+    function refreshMainPreview() {
+      const c = cameras.find((item) => item.camera_key === mainKey);
+      if (!c) {
+        clearMainPreview(cameras.length ? '等待实时画面' : '等待发送端连接');
+        return;
+      }
+      if (!previewAvailable(c, mainMode)) {
+        clearMainPreview(`${mainMode === 'rgb' ? 'RGB' : 'Depth'} 无实时画面`);
+        return;
+      }
+      if (mainMode === 'rgb') {
+        syncMainTarget();
+      }
+      if (mainPreviewState.loading) return;
+      const img = document.getElementById('mainPreview');
+      const placeholder = document.getElementById('mainPlaceholder');
+      const token = String(mainPreviewState.token + 1);
+      const key = mainKey;
+      const mode = mainMode;
+      mainPreviewState.token = Number(token);
+      mainPreviewState.loading = true;
+      const next = new Image();
+      next.onload = () => {
+        if (String(mainPreviewState.token) !== token || mainKey !== key || mainMode !== mode) return;
+        img.src = next.src;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+        mainPreviewState.loading = false;
+      };
+      next.onerror = () => {
+        if (String(mainPreviewState.token) === token) {
+          mainPreviewState.loading = false;
+          clearMainPreview(`${mode === 'rgb' ? 'RGB' : 'Depth'} 暂无实时画面`);
+        }
+      };
+      next.src = previewUrl(c, mode, true);
+    }
+    function ensureThumb(c) {
+      const thumbs = document.getElementById('thumbs');
+      const id = cardId('thumb', c.camera_key);
       let card = document.getElementById(id);
       if (card) return card;
-
       card = document.createElement('article');
-      card.className = 'card';
+      card.className = 'thumb-card';
       card.id = id;
       card.innerHTML = `
-        <div class="camera-head">
-          <div>
-            <div data-field="pills"></div>
-            <div class="key" data-field="camera_key"></div>
-            <div class="storage-key">保存目录名：<span data-field="storage_key"></span></div>
-          </div>
-          <div class="camera-actions">
-            <button data-action="start">单路开始</button>
-            <button class="stop" data-action="stop">单路停止</button>
-          </div>
+        <div class="thumb-head">
+          <div class="thumb-name" data-field="name"></div>
+          <div class="thumb-state"><span class="dot" data-field="live_dot"></span><span data-field="state"></span></div>
         </div>
-        <div class="preview">
-          <div class="view" data-title="RGB">
+        <div class="thumb-preview">
+          <div class="thumb-view" data-title="RGB">
             <img alt="RGB preview" data-preview="rgb" style="display:none">
-            <span data-placeholder="rgb">等待 RGB 画面</span>
+            <span data-placeholder="rgb">RGB</span>
           </div>
-          <div class="view" data-title="Depth 伪彩">
+          <div class="thumb-view" data-title="Depth">
             <img alt="Depth preview" data-preview="depth" style="display:none">
-            <span data-placeholder="depth">等待 Depth 画面</span>
+            <span data-placeholder="depth">Depth</span>
           </div>
-        </div>
-        <div class="camera-edit-row">
+        </div>`;
+      card.addEventListener('click', () => selectMainCamera(card.dataset.cameraKey));
+      thumbs.appendChild(card);
+      return card;
+    }
+    function updateThumb(c) {
+      const card = ensureThumb(c);
+      card.dataset.cameraKey = c.camera_key;
+      card.dataset.senderId = c.sender_id;
+      card.dataset.cameraId = c.camera_id;
+      card.dataset.rgbAvailable = previewAvailable(c, 'rgb') ? '1' : '0';
+      card.dataset.depthAvailable = previewAvailable(c, 'depth') ? '1' : '0';
+      setText(card, 'name', displayName(c));
+      setText(card, 'state', c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF'));
+      const dot = card.querySelector('[data-field="live_dot"]');
+      dot.className = `dot ${c.recording ? 'recording' : (isLive(c) ? 'ok' : '')}`;
+      card.classList.toggle('active', c.camera_key === mainKey);
+    }
+    function clearPreview(root, kind, message) {
+      const img = root.querySelector(`[data-preview="${kind}"]`);
+      const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
+      root.dataset[`${kind}Token`] = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
+      root.dataset[`${kind}Loading`] = '0';
+      img.removeAttribute('src');
+      img.style.display = 'none';
+      placeholder.textContent = message || kind;
+      placeholder.style.display = '';
+    }
+    function refreshPreview(root, c, kind) {
+      if (!previewAvailable(c, kind)) {
+        clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
+        return;
+      }
+      if (root.dataset[`${kind}Loading`] === '1') return;
+      const img = root.querySelector(`[data-preview="${kind}"]`);
+      const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
+      const token = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
+      root.dataset[`${kind}Token`] = token;
+      root.dataset[`${kind}Loading`] = '1';
+      const next = new Image();
+      next.onload = () => {
+        if (root.dataset[`${kind}Token`] !== token) return;
+        img.src = next.src;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+        root.dataset[`${kind}Loading`] = '0';
+      };
+      next.onerror = () => {
+        if (root.dataset[`${kind}Token`] === token) {
+          clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
+        }
+      };
+      next.src = previewUrl(c, kind, false);
+    }
+    function refreshAllThumbPreviews() {
+      visibleCameras.forEach((c) => {
+        const card = document.getElementById(cardId('thumb', c.camera_key));
+        if (!card) return;
+        refreshPreview(card, c, 'rgb');
+        refreshPreview(card, c, 'depth');
+      });
+    }
+    function renderThumbState() {
+      document.querySelectorAll('.thumb-card').forEach((card) => {
+        card.classList.toggle('active', card.dataset.cameraKey === mainKey);
+      });
+    }
+    function ensureSetting(c) {
+      const list = document.getElementById('settingsList');
+      const id = cardId('setting', c.camera_key);
+      let card = document.getElementById(id);
+      if (card) return card;
+      card = document.createElement('article');
+      card.className = 'setting-card';
+      card.id = id;
+      card.innerHTML = `
+        <div class="setting-title" data-field="title"></div>
+        <div class="setting-grid">
           <label class="input-group">
-            <span>相机自命名（留空则用原始 ID）</span>
-            <input data-field="camera_name_input" placeholder="例如 front_left" />
+            <span>相机自命名</span>
+            <input data-field="camera_name_input" placeholder="留空则使用原始 ID">
           </label>
-          <button class="secondary" data-action="save-name">保存命名</button>
+          <button class="secondary" data-action="save-name">保存</button>
           <label class="input-group">
-            <span>本路文件名前缀（留空则不加）</span>
-            <input data-field="file_prefix_input" placeholder="例如 cam01_" />
+            <span>本路文件名前缀</span>
+            <input data-field="file_prefix_input" placeholder="留空则不加">
           </label>
-          <button class="secondary" data-action="save-prefix">保存前缀</button>
+          <button class="secondary" data-action="save-prefix">保存</button>
         </div>
-        <div class="save-path">
-          <span>当前保存目录</span>
-          <strong data-field="segment_dir"></strong>
-        </div>
-        <details class="debug-panel">
-          <summary>高级状态</summary>
+        <div class="info-block"><span>当前保存目录</span><strong data-field="segment_dir"></strong></div>
+        <div class="info-block"><span>保存目录名</span><strong data-field="storage_key"></strong></div>
+        <details>
+          <summary>详细状态</summary>
           <div class="debug-grid">
-            <div class="debug-item"><div class="label">RGB packets</div><div class="value" data-field="rgb_packets"></div></div>
-            <div class="debug-item"><div class="label">Depth packets</div><div class="value" data-field="depth_packets"></div></div>
-            <div class="debug-item"><div class="label">RGB bytes</div><div class="value" data-field="rgb_bytes"></div></div>
-            <div class="debug-item"><div class="label">Depth bytes</div><div class="value" data-field="depth_bytes"></div></div>
-            <div class="debug-item"><div class="label">RGB preview</div><div class="value" data-field="rgb_preview"></div></div>
-            <div class="debug-item"><div class="label">Depth preview</div><div class="value" data-field="depth_preview"></div></div>
-            <div class="debug-item"><div class="label">Last media us</div><div class="value" data-field="last_media_us"></div></div>
-            <div class="debug-item"><div class="label">Last error</div><div class="value" data-field="last_error"></div></div>
+            <div class="debug-item"><span class="debug-label">RGB packets</span><div class="debug-value" data-field="rgb_packets"></div></div>
+            <div class="debug-item"><span class="debug-label">Depth packets</span><div class="debug-value" data-field="depth_packets"></div></div>
+            <div class="debug-item"><span class="debug-label">RGB bytes</span><div class="debug-value" data-field="rgb_bytes"></div></div>
+            <div class="debug-item"><span class="debug-label">Depth bytes</span><div class="debug-value" data-field="depth_bytes"></div></div>
+            <div class="debug-item"><span class="debug-label">RGB preview</span><div class="debug-value" data-field="rgb_preview"></div></div>
+            <div class="debug-item"><span class="debug-label">Depth preview</span><div class="debug-value" data-field="depth_preview"></div></div>
+            <div class="debug-item"><span class="debug-label">Last media us</span><div class="debug-value" data-field="last_media_us"></div></div>
+            <div class="debug-item"><span class="debug-label">Last error</span><div class="debug-value" data-field="last_error"></div></div>
           </div>
         </details>`;
-      card.querySelector('[data-action="start"]').addEventListener('click', () => {
-        postCamera('/api/record/start', card.dataset.senderId, card.dataset.cameraId, card);
-      });
-      card.querySelector('[data-action="stop"]').addEventListener('click', () => {
-        postCamera('/api/record/stop', card.dataset.senderId, card.dataset.cameraId);
-      });
       card.querySelector('[data-action="save-name"]').addEventListener('click', () => {
         const input = card.querySelector('[data-field="camera_name_input"]');
         const params = new URLSearchParams({
@@ -432,87 +747,16 @@
         });
         post(`/api/camera/prefix?${params.toString()}`);
       });
-      cards.appendChild(card);
+      list.appendChild(card);
       return card;
     }
-    function setPills(card, c) {
-      const pills = card.querySelector('[data-field="pills"]');
-      const live = c.live !== false && c.online;
-      const rgbWarn = c.rgb_packets > 0 && c.rgb_bytes / c.rgb_packets < 1000
-        ? '<span class="pill warn">RGB 异常</span>' : '';
-      pills.innerHTML = `
-        <span class="pill ${live ? 'ok' : 'off'}">${live ? '实时' : '非实时'}</span>
-        <span class="pill ${c.recording ? 'ok' : 'off'}">${c.recording ? '录制中' : '空闲'}</span>
-        ${rgbWarn}`;
-    }
-    function previewLabel(kind) {
-      return kind === 'rgb' ? 'RGB' : 'Depth';
-    }
-    function nextPreviewToken(card, kind) {
-      const key = `${kind}Token`;
-      const token = String(Number(card.dataset[key] || '0') + 1);
-      card.dataset[key] = token;
-      return token;
-    }
-    function clearPreview(card, kind, message) {
-      const img = card.querySelector(`[data-preview="${kind}"]`);
-      const placeholder = card.querySelector(`[data-placeholder="${kind}"]`);
-      nextPreviewToken(card, kind);
-      card.dataset[`${kind}Loading`] = '0';
-      img.removeAttribute('src');
-      img.style.display = 'none';
-      placeholder.textContent = message || `${previewLabel(kind)} 无实时画面`;
-      placeholder.style.display = '';
-    }
-    function refreshPreview(card, kind, available, url) {
-      const img = card.querySelector(`[data-preview="${kind}"]`);
-      const placeholder = card.querySelector(`[data-placeholder="${kind}"]`);
-      if (!available) {
-        clearPreview(card, kind, `${previewLabel(kind)} 无实时画面`);
-        return;
-      }
-      if (card.dataset[`${kind}Loading`] === '1') return;
-
-      const next = new Image();
-      const token = nextPreviewToken(card, kind);
-      card.dataset[`${kind}Loading`] = '1';
-      next.onload = () => {
-        if (card.dataset[`${kind}Token`] !== token || card.dataset[`${kind}Available`] !== '1') {
-          return;
-        }
-        img.src = next.src;
-        img.style.display = 'block';
-        placeholder.style.display = 'none';
-        card.dataset[`${kind}Loading`] = '0';
-      };
-      next.onerror = () => {
-        if (card.dataset[`${kind}Token`] === token) {
-          clearPreview(card, kind, `${previewLabel(kind)} 暂无实时画面`);
-          return;
-        }
-        card.dataset[`${kind}Loading`] = '0';
-      };
-      next.src = url;
-    }
-    function updateCard(c) {
-      const card = ensureCard(c);
+    function updateSetting(c) {
+      const card = ensureSetting(c);
       card.dataset.senderId = c.sender_id;
       card.dataset.cameraId = c.camera_id;
-      const live = c.live !== false && c.online;
-      card.dataset.rgbAvailable = live && c.rgb_preview_available ? '1' : '0';
-      card.dataset.depthAvailable = live && c.depth_preview_available ? '1' : '0';
-      setPills(card, c);
-      setText(card, 'camera_key', c.camera_key);
-      setText(card, 'storage_key', c.storage_key || c.camera_key);
-      const nameInput = card.querySelector('[data-field="camera_name_input"]');
-      if (nameInput && document.activeElement !== nameInput) {
-        nameInput.value = c.camera_name || '';
-      }
-      const prefixInput = card.querySelector('[data-field="file_prefix_input"]');
-      if (prefixInput && document.activeElement !== prefixInput) {
-        prefixInput.value = c.camera_file_prefix || '';
-      }
+      setText(card, 'title', `${displayName(c)} · ${c.camera_key}`);
       setText(card, 'segment_dir', c.segment_dir || '未开启录制');
+      setText(card, 'storage_key', c.storage_key || c.camera_key);
       setText(card, 'rgb_packets', c.rgb_packets);
       setText(card, 'depth_packets', c.depth_packets);
       setText(card, 'rgb_bytes', fmtBytes(c.rgb_bytes));
@@ -521,48 +765,64 @@
       setText(card, 'depth_preview', `${c.depth_preview_width || 0}x${c.depth_preview_height || 0}`);
       setText(card, 'last_media_us', c.last_media_us);
       setText(card, 'last_error', c.last_error || '无');
-
-      refreshCardPreviews(card);
+      const nameInput = card.querySelector('[data-field="camera_name_input"]');
+      if (nameInput && document.activeElement !== nameInput) nameInput.value = c.camera_name || '';
+      const prefixInput = card.querySelector('[data-field="file_prefix_input"]');
+      if (prefixInput && document.activeElement !== prefixInput) prefixInput.value = c.camera_file_prefix || '';
     }
-    function previewUrl(card, kind) {
-      return `/api/preview/${kind}?sender_id=${encodeURIComponent(card.dataset.senderId)}&camera_id=${encodeURIComponent(card.dataset.cameraId)}&t=${Date.now()}`;
-    }
-    function refreshCardPreviews(card) {
-      if (!card.dataset.senderId || !card.dataset.cameraId) return;
-      refreshPreview(card, 'rgb', card.dataset.rgbAvailable === '1', previewUrl(card, 'rgb'));
-      refreshPreview(card, 'depth', card.dataset.depthAvailable === '1', previewUrl(card, 'depth'));
-    }
-    function refreshAllPreviews() {
-      document.querySelectorAll('.card[id^="camera-"]').forEach(refreshCardPreviews);
+    function syncDomList(containerId, prefix, items) {
+      const liveIds = new Set(items.map((c) => cardId(prefix, c.camera_key)));
+      document.querySelectorAll(`#${containerId} > [id^="${prefix}-"]`).forEach((node) => {
+        if (!liveIds.has(node.id)) node.remove();
+      });
     }
     async function load() {
       const res = await fetch('/api/status');
       const data = await res.json();
-      const online = data.cameras.filter((c) => c.live !== false && c.online).length;
-      const recording = data.cameras.filter((c) => c.recording).length;
+      cameras = data.cameras || [];
+      visibleCameras = cameras.filter(hasAnyPreview);
+      chooseMainCamera();
+
+      const online = cameras.filter(isLive).length;
+      const recording = cameras.filter((c) => c.recording).length;
+      const visible = visibleCameras.length;
       document.getElementById('summary').textContent =
-        `${online}/${data.cameras.length} 在线 · ${recording ? `${recording} 路录制中` : '空闲'}`;
+        `${visible}/${cameras.length} 有画面 · ${online} 在线 · ${recording ? `${recording} 路录制` : '空闲'}`;
       document.getElementById('system').innerHTML = `
-        <div class="debug-item"><div class="label">媒体端口</div><div class="value">TCP ${data.media_port}</div></div>
-        <div class="debug-item"><div class="label">状态端口</div><div class="value">UDP ${data.status_port}</div></div>
-        <div class="debug-item"><div class="label">管理端口</div><div class="value">HTTP ${data.admin_port}</div></div>
-        <div class="debug-item"><div class="label">NAS</div><div class="value">${escapeHtml(data.nas_root)}</div></div>
-        <div class="debug-item"><div class="label">全局录制</div><div class="value">${data.recording_all ? '开启' : '关闭'}</div></div>`;
-      const cards = document.getElementById('cards');
-      cards.querySelector('[data-empty="true"]')?.remove();
-      const seen = new Set(data.cameras.map((c) => cardId(c.camera_key)));
-      for (const card of [...cards.querySelectorAll('.card[id^="camera-"]')]) {
-        if (!seen.has(card.id)) card.remove();
+        <div class="debug-item"><span class="debug-label">媒体端口</span><div class="debug-value">TCP ${data.media_port}</div></div>
+        <div class="debug-item"><span class="debug-label">状态端口</span><div class="debug-value">UDP ${data.status_port}</div></div>
+        <div class="debug-item"><span class="debug-label">管理端口</span><div class="debug-value">HTTP ${data.admin_port}</div></div>
+        <div class="debug-item"><span class="debug-label">NAS</span><div class="debug-value">${escapeHtml(data.nas_root)}</div></div>
+        <div class="debug-item"><span class="debug-label">全局录制</span><div class="debug-value">${data.recording_all ? '开启' : '关闭'}</div></div>`;
+
+      syncDomList('thumbs', 'thumb', visibleCameras);
+      syncDomList('settingsList', 'setting', cameras);
+      const thumbs = document.getElementById('thumbs');
+      if (!visibleCameras.length) {
+        thumbs.innerHTML = '<div class="empty">等待实时画面</div>';
+        clearMainPreview(cameras.length ? '等待实时画面' : '等待发送端连接');
       }
-      if (data.cameras.length) {
-        data.cameras.forEach(updateCard);
-      } else if (!cards.querySelector('[data-empty="true"]')) {
-        cards.innerHTML = '<article class="card empty" data-empty="true">等待发送端连接</article>';
+      else {
+        thumbs.querySelector('.empty')?.remove();
       }
+      if (!cameras.length) {
+        document.getElementById('settingsList').innerHTML = '<div class="empty">暂无相机</div>';
+        return;
+      }
+      document.getElementById('settingsList').querySelector('.empty')?.remove();
+      visibleCameras.forEach((c) => {
+        updateThumb(c);
+      });
+      cameras.forEach((c) => {
+        updateSetting(c);
+      });
+      refreshMainPreview();
     }
+
     load();
     setInterval(load, 1000);
-    setInterval(refreshAllPreviews, 25);
+    setInterval(refreshMainPreview, 25);
+    setInterval(refreshAllThumbPreviews, 180);
   </script>
 </body>
 </html>

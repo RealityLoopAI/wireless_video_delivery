@@ -46,6 +46,7 @@ constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
+constexpr uint32_t kRgbMainPreviewWidth = 0; // 0 keeps the source RGB resolution for the selected main preview.
 constexpr uint32_t kRgbPreviewFps = 30;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
@@ -815,12 +816,12 @@ public:
         stop();
     }
 
-    bool start(const Config &cfg, const std::string &key, uint32_t width, uint32_t height, Logger &logger) {
+    bool start(const Config &cfg, const std::string &key, uint32_t width, uint32_t height, uint32_t target_width, Logger &logger) {
         stop();
         key_ = key;
         source_width_ = width;
         source_height_ = height;
-        preview_width_ = width > 0 ? std::min<uint32_t>(width, kRgbPreviewWidth) : kRgbPreviewWidth;
+        preview_width_ = target_width == 0 ? width : (width > 0 ? std::min<uint32_t>(width, target_width) : target_width);
         preview_height_ = scaled_height(width, height, preview_width_);
 
         int stdin_pipe[2] = {-1, -1};
@@ -855,7 +856,8 @@ public:
                 close(fd);
             }
 
-            const std::string scale = "fps=" + std::to_string(kRgbPreviewFps) + ",scale=" + std::to_string(kRgbPreviewWidth) + ":-2";
+            const std::string scale = target_width == 0 ? "fps=" + std::to_string(kRgbPreviewFps)
+                                                        : "fps=" + std::to_string(kRgbPreviewFps) + ",scale=" + std::to_string(target_width) + ":-2";
             execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
                    "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
                    "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
@@ -1962,6 +1964,10 @@ struct CameraState {
     uint32_t rgb_preview_height = 0;
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
+    uint64_t main_rgb_preview_us = 0;
+    uint32_t main_rgb_preview_width = 0;
+    uint32_t main_rgb_preview_height = 0;
+    std::unique_ptr<RgbPreviewDecoder> main_rgb_decoder;
     uint64_t depth_preview_us = 0;
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
@@ -2018,6 +2024,7 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             for(auto &item : cameras_) {
                 cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
+                cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
                 close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id, item.second->last_announce_json});
             }
         }
@@ -2044,14 +2051,18 @@ public:
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
+        out << "\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\",";
         out << "\"cameras\":[";
         bool first = true;
         for(const auto &item : cameras_) {
             const auto &cam = *item.second;
             const auto last_seen = camera_last_seen_us(cam);
-            const bool live = cam.online && is_recent_us(now, last_seen, kCameraOnlineTimeoutUs);
-            const bool rgb_preview_fresh = live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
-            const bool depth_preview_fresh = live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
+            const bool status_live = cam.online && is_recent_us(now, cam.last_status_us, kCameraOnlineTimeoutUs);
+            const bool media_live = cam.online && is_recent_us(now, cam.last_media_us, kCameraOnlineTimeoutUs);
+            const bool live = media_live;
+            const bool rgb_preview_fresh = media_live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
+            const bool main_rgb_preview_fresh = media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
+            const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             if(!first) {
                 out << ',';
             }
@@ -2064,6 +2075,8 @@ public:
             out << "\"storage_key\":\"" << json_escape(cam.storage_key()) << "\",";
             out << "\"camera_file_prefix\":\"" << json_escape(cam.camera_file_prefix) << "\",";
             out << "\"online\":" << (cam.online ? "true" : "false") << ',';
+            out << "\"status_live\":" << (status_live ? "true" : "false") << ',';
+            out << "\"media_live\":" << (media_live ? "true" : "false") << ',';
             out << "\"live\":" << (live ? "true" : "false") << ',';
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
             out << "\"recording_start_us\":" << cam.recording_start_us << ',';
@@ -2086,6 +2099,13 @@ public:
             out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
             out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
             out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.rgb_preview_us) << ',';
+            out << "\"main_rgb_preview_available\":"
+                << (cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame() ? "true" : "false")
+                << ',';
+            out << "\"main_rgb_preview_width\":" << cam.main_rgb_preview_width << ',';
+            out << "\"main_rgb_preview_height\":" << cam.main_rgb_preview_height << ',';
+            out << "\"main_rgb_preview_us\":" << cam.main_rgb_preview_us << ',';
+            out << "\"main_rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.main_rgb_preview_us) << ',';
             out << "\"depth_preview_available\":" << (depth_preview_fresh && !cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
             out << "\"depth_preview_width\":" << cam.depth_preview_width << ',';
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
@@ -2390,6 +2410,57 @@ public:
         return it->second->rgb_decoder->latest_jpeg();
     }
 
+    std::string set_main_preview_target(const std::string &sender_id, const std::string &camera_id) {
+        if(sender_id.empty() || camera_id.empty()) {
+            return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto key = camera_key(sender_id, camera_id);
+        auto it = cameras_.find(key);
+        if(it == cameras_.end()) {
+            return "{\"ok\":false,\"error\":\"camera not found\"}";
+        }
+        if(main_preview_key_ != key) {
+            for(auto &item : cameras_) {
+                if(item.first != key) {
+                    cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
+                    item.second->main_rgb_preview_us = 0;
+                    item.second->main_rgb_preview_width = 0;
+                    item.second->main_rgb_preview_height = 0;
+                }
+            }
+        }
+        main_preview_key_ = key;
+        std::ostringstream out;
+        out << "{\"ok\":true,\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\"}";
+        return out.str();
+    }
+
+    std::optional<std::vector<uint8_t>> main_rgb_preview(const std::string &sender_id, const std::string &camera_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = now_us();
+        refresh_camera_liveness_locked(now);
+        const auto key = camera_key(sender_id, camera_id);
+        if(key != main_preview_key_) {
+            return std::nullopt;
+        }
+        auto it = cameras_.find(key);
+        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+            return std::nullopt;
+        }
+        auto &cam = *it->second;
+        if(is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
+            const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
+            if(jpeg) {
+                return jpeg;
+            }
+        }
+        if(is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs) && cam.rgb_decoder) {
+            return cam.rgb_decoder->latest_jpeg();
+        }
+        return std::nullopt;
+    }
+
 private:
     static uint64_t camera_last_seen_us(const CameraState &cam) {
         return std::max(cam.last_status_us, cam.last_media_us);
@@ -2416,9 +2487,13 @@ private:
     void clear_camera_live_cache_locked(CameraState &cam) {
         cam.rgb_preview_prefix_h264.clear();
         cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+        cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
         cam.rgb_preview_height = 0;
+        cam.main_rgb_preview_us = 0;
+        cam.main_rgb_preview_width = 0;
+        cam.main_rgb_preview_height = 0;
         cam.depth_preview_ppm.clear();
         cam.depth_preview_us = 0;
         cam.depth_preview_width = 0;
@@ -2441,6 +2516,7 @@ private:
             if(!cam.online && !cam.recording_requested && !cam.segment_active &&
                is_older_than_us(now, last_seen, kOfflineCameraPurgeUs)) {
                 cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+                cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
                 logger_.info("camera purged: " + cam.key);
                 it = cameras_.erase(it);
                 continue;
@@ -2514,6 +2590,47 @@ private:
         logger_.info("status " + type + " sender=" + sender_id + (camera_id.empty() ? "" : " camera=" + camera_id));
     }
 
+    bool feed_rgb_preview_decoder_locked(CameraState &cam,
+                                         const MediaPacket &packet,
+                                         bool has_idr,
+                                         std::unique_ptr<RgbPreviewDecoder> &decoder,
+                                         uint32_t target_width,
+                                         const std::string &decoder_key,
+                                         uint32_t &preview_width,
+                                         uint32_t &preview_height,
+                                         uint64_t &preview_us) {
+        if(has_idr && (!decoder || !decoder->active())) {
+            if(!decoder) {
+                decoder = std::make_unique<RgbPreviewDecoder>();
+            }
+            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, logger_);
+            if(!cam.rgb_preview_prefix_h264.empty()) {
+                if(!decoder->write_packet(cam.rgb_preview_prefix_h264)) {
+                    cleanup_rgb_decoder_async(std::move(decoder));
+                    preview_width = 0;
+                    preview_height = 0;
+                    preview_us = 0;
+                    return false;
+                }
+            }
+        }
+        else if(!decoder || !decoder->active()) {
+            return false;
+        }
+
+        if(!decoder->write_packet(packet.payload)) {
+            cleanup_rgb_decoder_async(std::move(decoder));
+            preview_width = 0;
+            preview_height = 0;
+            preview_us = 0;
+            return false;
+        }
+        preview_width = decoder->preview_width();
+        preview_height = decoder->preview_height();
+        preview_us = decoder->frame_us();
+        return true;
+    }
+
     void update_rgb_preview_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
         if(packet.payload.empty()) {
             return;
@@ -2527,29 +2644,18 @@ private:
             return;
         }
 
-        if(has_idr && (!cam.rgb_decoder || !cam.rgb_decoder->active())) {
-            if(!cam.rgb_decoder) {
-                cam.rgb_decoder = std::make_unique<RgbPreviewDecoder>();
-            }
-            cam.rgb_decoder->start(config_, cam.key, packet.width, packet.height, logger_);
-            if(!cam.rgb_preview_prefix_h264.empty()) {
-                if(!cam.rgb_decoder->write_packet(cam.rgb_preview_prefix_h264)) {
-                    cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
-                    return;
-                }
-            }
+        feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, cam.key, cam.rgb_preview_width,
+                                        cam.rgb_preview_height, cam.rgb_preview_us);
+        if(cam.key == main_preview_key_) {
+            feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, cam.key + ":main",
+                                            cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }
-        else if(!cam.rgb_decoder || !cam.rgb_decoder->active()) {
-            return;
+        else if(cam.main_rgb_decoder) {
+            cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
+            cam.main_rgb_preview_width = 0;
+            cam.main_rgb_preview_height = 0;
+            cam.main_rgb_preview_us = 0;
         }
-
-        if(!cam.rgb_decoder->write_packet(packet.payload)) {
-            cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
-            return;
-        }
-        cam.rgb_preview_width = cam.rgb_decoder->preview_width();
-        cam.rgb_preview_height = cam.rgb_decoder->preview_height();
-        cam.rgb_preview_us = cam.rgb_decoder->frame_us();
     }
 
     void handle_media_packet(const MediaPacket &packet) {
@@ -2837,6 +2943,10 @@ private:
         else if(method == "POST" && path == "/api/storage/prefix") {
             body = set_default_file_prefix(args.count("prefix") ? args.at("prefix") : "");
         }
+        else if(method == "POST" && path == "/api/preview/main-target") {
+            body = set_main_preview_target(args.count("sender_id") ? args.at("sender_id") : "",
+                                           args.count("camera_id") ? args.at("camera_id") : "");
+        }
         else if(method == "GET" && path == "/api/preview/depth") {
             const auto preview = depth_preview(args.count("sender_id") ? args.at("sender_id") : "",
                                                args.count("camera_id") ? args.at("camera_id") : "");
@@ -2859,6 +2969,18 @@ private:
             else {
                 status = 404;
                 body = "{\"ok\":false,\"error\":\"rgb preview not found\"}";
+            }
+        }
+        else if(method == "GET" && path == "/api/preview/rgb-main") {
+            const auto preview = main_rgb_preview(args.count("sender_id") ? args.at("sender_id") : "",
+                                                  args.count("camera_id") ? args.at("camera_id") : "");
+            if(preview) {
+                content_type = "image/jpeg";
+                body.assign(reinterpret_cast<const char *>(preview->data()), preview->size());
+            }
+            else {
+                status = 404;
+                body = "{\"ok\":false,\"error\":\"main rgb preview not found\"}";
             }
         }
         else {
@@ -2886,6 +3008,7 @@ private:
     std::thread tcp_thread_;
     std::thread admin_thread_;
     std::mutex mutex_;
+    std::string main_preview_key_;
     bool recording_all_ = false;
     uint64_t recording_all_start_us_ = 0;
     bool recording_all_has_file_prefix_override_ = false;
