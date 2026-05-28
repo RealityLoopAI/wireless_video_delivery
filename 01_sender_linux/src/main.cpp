@@ -61,6 +61,8 @@ struct CameraPerfStats {
     uint64_t rgb_corrupt_jpeg_frames = 0;
     uint64_t rgb_send_failures = 0;
     uint64_t depth_send_failures = 0;
+    uint64_t rgb_input_bytes = 0;
+    uint64_t depth_input_bytes = 0;
     uint64_t rgb_bytes = 0;
     uint64_t depth_bytes = 0;
     bool rgb_frame_id_seen = false;
@@ -101,6 +103,8 @@ struct CameraLiveStats {
     double depth_input_fps = 0.0;
     double rgb_sent_fps = 0.0;
     double depth_sent_fps = 0.0;
+    double rgb_usb_mbps = 0.0;
+    double depth_usb_mbps = 0.0;
     double rgb_mbps = 0.0;
     double depth_mbps = 0.0;
     double rgb_encode_ms = 0.0;
@@ -343,6 +347,8 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
     camera.live.depth_input_fps = rate_per_second(perf.depth_input_frames, seconds);
     camera.live.rgb_sent_fps = rate_per_second(perf.rgb_sent_packets, seconds);
     camera.live.depth_sent_fps = rate_per_second(perf.depth_sent_frames, seconds);
+    camera.live.rgb_usb_mbps = seconds > 0.0 ? static_cast<double>(perf.rgb_input_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
+    camera.live.depth_usb_mbps = seconds > 0.0 ? static_cast<double>(perf.depth_input_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.rgb_mbps = seconds > 0.0 ? static_cast<double>(perf.rgb_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.depth_mbps = seconds > 0.0 ? static_cast<double>(perf.depth_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.rgb_encode_ms = avg_ms(perf.rgb_encode_ms, perf.rgb_input_frames);
@@ -357,6 +363,8 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " depth_sent_fps=" << camera.live.depth_sent_fps
         << " rgb_frame_id_delta=" << rgb_frame_id_delta
         << " depth_frame_id_delta=" << depth_frame_id_delta
+        << " rgb_usb_mbps=" << camera.live.rgb_usb_mbps
+        << " depth_usb_mbps=" << camera.live.depth_usb_mbps
         << " rgb_mbps=" << camera.live.rgb_mbps
         << " depth_mbps=" << camera.live.depth_mbps
         << " wait_avg_ms=" << avg_ms(perf.wait_ms, perf.wait_calls)
@@ -1291,6 +1299,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             cv::Mat bgr;
             if(color) {
                 camera->perf.rgb_input_frames++;
+                camera->perf.rgb_input_bytes += color->dataSize();
                 camera->perf.note_rgb_frame_id(color->index());
                 update_color_metadata(*camera, color);
                 const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
@@ -1406,6 +1415,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             cv::Mat depth_color;
             if(depth) {
                 camera->perf.depth_input_frames++;
+                camera->perf.depth_input_bytes += depth->dataSize();
                 camera->perf.note_depth_frame_id(depth->index());
                 if(camera->depth_scale == 0.0f) {
                     camera->depth_scale = depth->getValueScale();
