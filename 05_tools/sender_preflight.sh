@@ -8,6 +8,7 @@ MODE="${2:-启动}"
 PREVIEW_MODE="${3:-config}"
 SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 SDK_CONFIG="$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml"
+source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 
 fail() {
   echo "发送端${MODE}检查失败：$1" >&2
@@ -154,6 +155,11 @@ if ! lsusb | grep -q '2bc5:'; then
   fi
 fi
 
+if gemini_sender_wifi_required; then
+  gemini_sender_wifi_connect_if_configured || fail "$GEMINI_SENDER_WIFI_LAST_ERROR"
+  gemini_sender_wifi_check_policy || fail "$GEMINI_SENDER_WIFI_LAST_ERROR"
+fi
+
 route_output="$(ip route get "$RECEIVER_IP" 2>/dev/null || true)"
 [[ -n "$route_output" ]] || fail "无法找到到接收端 $RECEIVER_IP 的路由"
 
@@ -178,6 +184,9 @@ case "$PREVIEW_MODE" in
     ;;
 esac
 echo "  log: ${LOG_DIRECTORY:-未指定} max_bytes=${LOG_MAX_BYTES:-未指定}"
+if gemini_sender_wifi_required; then
+  echo "  wifi_guard: $(gemini_sender_wifi_policy_summary)"
+fi
 echo "  route: $route_output"
 
 if echo "$route_output" | grep -q ' dev wlan0 '; then

@@ -12,6 +12,8 @@ SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20
 RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
+source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
+gemini_sender_wifi_apply_default_policy "土著拯救器-5G" "5000"
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
 cd "$ROOT_DIR"
@@ -40,9 +42,9 @@ cleanup() {
 
 trap cleanup INT TERM HUP EXIT
 
-log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$"
+log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ wifi_guard=$(gemini_sender_wifi_policy_summary)"
 
-monitor_child_usb() {
+monitor_child_health() {
   local pid="$1"
   while kill -0 "$pid" 2>/dev/null; do
     if ! lsusb | grep -q '2bc5:'; then
@@ -53,11 +55,40 @@ monitor_child_usb() {
         return
       fi
     fi
+    if gemini_sender_wifi_required && ! gemini_sender_wifi_check_policy; then
+      local reason="$GEMINI_SENDER_WIFI_LAST_ERROR"
+      log_watchdog "wifi guard failed while sender child pid=$pid: $reason; attempting repair"
+      if gemini_sender_wifi_connect_if_configured; then
+        sleep 2
+        if gemini_sender_wifi_check_policy; then
+          log_watchdog "wifi guard repaired link; killing sender child pid=$pid to rebuild media TCP"
+        else
+          log_watchdog "wifi guard still failing after repair: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+        fi
+      else
+        log_watchdog "wifi guard repair command failed: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+      fi
+      kill "$pid" 2>/dev/null || true
+      return
+    fi
     sleep 2
   done
 }
 
 while [[ "$stopping" -eq 0 ]]; do
+  if gemini_sender_wifi_required; then
+    if ! gemini_sender_wifi_connect_if_configured; then
+      log_watchdog "wifi guard connect failed before child start: $GEMINI_SENDER_WIFI_LAST_ERROR; retrying in ${RESTART_DELAY_SECONDS}s"
+      sleep "$RESTART_DELAY_SECONDS"
+      continue
+    fi
+    if ! gemini_sender_wifi_check_policy; then
+      log_watchdog "wifi guard check failed before child start: $GEMINI_SENDER_WIFI_LAST_ERROR; retrying in ${RESTART_DELAY_SECONDS}s"
+      sleep "$RESTART_DELAY_SECONDS"
+      continue
+    fi
+  fi
+
   if [[ "$MODE" == "no-preview" ]]; then
     LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
   else
@@ -67,7 +98,7 @@ while [[ "$stopping" -eq 0 ]]; do
   child_pid="$!"
   echo "$child_pid" > "$CHILD_PID_FILE"
   log_watchdog "sender child started pid=$child_pid"
-  monitor_child_usb "$child_pid" &
+  monitor_child_health "$child_pid" &
   monitor_pid="$!"
 
   set +e

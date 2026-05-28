@@ -10,6 +10,7 @@ CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 STDOUT_LOG="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
 SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 DISPLAY_VALUE="${DISPLAY:-:1}"
+source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 
 fail() {
   echo "发送端预览启动失败：$1" >&2
@@ -21,6 +22,7 @@ prepare_usb_for_orbbec() {
 }
 
 prepare_usb_for_orbbec
+gemini_sender_wifi_apply_default_policy "土著拯救器-5G" "5000"
 GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "预览启动" "config"
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then

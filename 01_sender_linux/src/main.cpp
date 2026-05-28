@@ -19,6 +19,7 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -135,6 +136,7 @@ struct CameraRuntime {
     uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t depth_dropped = 0;
+    uint32_t media_outage_samples = 0;
     std::string last_error;
     float depth_scale = 0.0f;
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
@@ -332,6 +334,59 @@ void update_color_properties(CameraRuntime &camera) {
     camera.live.color_exposure_priority = int_property_or(camera.device, OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT, camera.live.color_exposure_priority);
 }
 
+int media_outage_restart_samples() {
+    const char *value = std::getenv("GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES");
+    if(value == nullptr || value[0] == '\0') {
+        return 5;
+    }
+    try {
+        return std::max(1, std::stoi(value));
+    }
+    catch(const std::exception &) {
+        return 5;
+    }
+}
+
+double capture_outage_fps_floor() {
+    return 5.0;
+}
+
+void update_media_outage_guard(CameraRuntime &camera, Logger &logger, const CameraPerfStats &perf) {
+    const bool rgb_outage = camera.live.rgb_input_fps >= capture_outage_fps_floor() && perf.rgb_sent_packets == 0 && perf.rgb_send_failures > 0;
+    const bool depth_outage = camera.live.depth_input_fps >= capture_outage_fps_floor()
+                              && perf.depth_sent_frames == 0 && perf.depth_send_failures > 0;
+
+    if(rgb_outage || depth_outage) {
+        camera.media_outage_samples++;
+    }
+    else {
+        camera.media_outage_samples = 0;
+        return;
+    }
+
+    const int restart_samples = media_outage_restart_samples();
+    if(camera.media_outage_samples < static_cast<uint32_t>(restart_samples)) {
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "media outage guard stopping sender for watchdog restart camera_id=" << camera.config.camera_id
+        << " samples=" << camera.media_outage_samples
+        << " threshold=" << restart_samples
+        << " rgb_input_fps=" << camera.live.rgb_input_fps
+        << " depth_input_fps=" << camera.live.depth_input_fps
+        << " rgb_sent_packets_s=" << camera.live.rgb_sent_fps
+        << " depth_sent_fps=" << camera.live.depth_sent_fps
+        << " rgb_send_failures=" << perf.rgb_send_failures
+        << " depth_send_failures=" << perf.depth_send_failures;
+    if(!camera.last_error.empty()) {
+        oss << " last_error=" << camera.last_error;
+    }
+    logger.error(oss.str());
+    g_running = false;
+}
+
 void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::time_point now) {
     auto &perf = camera.perf;
     const double seconds = std::chrono::duration<double>(now - perf.interval_started).count();
@@ -385,6 +440,7 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_send_failures=" << perf.rgb_send_failures
         << " depth_send_failures=" << perf.depth_send_failures;
     logger.info(oss.str());
+    update_media_outage_guard(camera, logger, perf);
 
     CameraPerfStats reset;
     reset.interval_started = now;
