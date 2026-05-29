@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -228,12 +229,51 @@ class DepthAligner:
         return aligned.reshape(self.rgb_height, self.rgb_width)
 
 
-def load_calibration(segment_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
+def load_calibration(segment_dir: Path, meta: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     calibration_name = str(meta.get("calibration_file") or "calibration.json")
     calibration_path = segment_dir / calibration_name
     if not calibration_path.exists():
         calibration_path = find_json_file(segment_dir, "calibration.json")
-    return load_json(calibration_path)
+    return load_json(calibration_path), calibration_path
+
+
+def relative_or_absolute(path: Path, base: Path) -> str:
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def update_calibration_aligned_depth(
+    calibration_path: Path,
+    segment_dir: Path,
+    output: Path,
+    sidecar: Path,
+    frames: int,
+    width: int,
+    height: int,
+    fps: float,
+) -> None:
+    doc = load_json(calibration_path)
+    aligned = doc.get("aligned_depth")
+    if not isinstance(aligned, dict):
+        aligned = {}
+    aligned.update(
+        {
+            "generated": True,
+            "target": "rgb",
+            "output_file": relative_or_absolute(output, segment_dir),
+            "sidecar_file": relative_or_absolute(sidecar, segment_dir),
+            "method": "offline",
+            "frames": frames,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "generated_at_us": int(time.time() * 1_000_000),
+        }
+    )
+    doc["aligned_depth"] = aligned
+    calibration_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -247,7 +287,7 @@ def main() -> int:
 
     segment_dir = args.segment_dir.resolve()
     meta = load_json(find_json_file(segment_dir, "meta.json"))
-    calibration_json = load_calibration(segment_dir, meta)
+    calibration_json, calibration_path = load_calibration(segment_dir, meta)
     calibration = require_object(calibration_json.get("calibration"), "calibration")
     if not calibration.get("available"):
         die("calibration.available is false; cannot align depth to RGB")
@@ -366,10 +406,11 @@ def main() -> int:
         "height": rgb_height,
         "fps": fps,
         "depth_scale": depth_scale,
-        "calibration_file": str(segment_dir / str(meta.get("calibration_file") or "calibration.json")),
+        "calibration_file": str(calibration_path),
         "z_buffer": "nearest_depth_in_rgb_camera",
     }
     sidecar.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    update_calibration_aligned_depth(calibration_path, segment_dir, output, sidecar, frames, rgb_width, rgb_height, fps)
     print(output)
     return 0
 

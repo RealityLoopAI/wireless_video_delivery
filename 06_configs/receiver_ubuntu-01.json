@@ -11,6 +11,8 @@
   "segment_seconds": 900,
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",
+  "auto_align_depth_to_rgb": true,
+  "align_depth_to_rgb_path": "05_tools/run_align_depth_to_rgb.sh",
   "log_directory": "08_reports/receiver_logs",
   "state_path": "06_configs/receiver_runtime_state.json",
   "write_debug_h264": true,

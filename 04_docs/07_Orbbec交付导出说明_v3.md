@@ -12,7 +12,7 @@
 - Depth 仍然保存为 `depth.mkv`，FFV1 / `gray16le` 无损。
 - `frames.csv`、`meta.json` 和 `calibration.json` 仍然作为接收端原始索引、元数据和空间标定来源。
 - 导出文件名里的 fps 来自主文件探测结果，通常接近 `meta.json` 的 `rgb_record_fps` / `depth_record_fps`。
-- 如果下游需要 RGB 坐标系下的 Depth，可先运行 `05_tools/align_depth_to_rgb.py` 离线生成 `depth_aligned_to_rgb.mkv`。
+- 如果下游需要 RGB 坐标系下的 Depth，可使用录制结束后自动生成的 `depth_aligned_to_rgb.mkv`；未生成时可手动运行 `05_tools/run_align_depth_to_rgb.sh`。
 
 新增的是离线交付层：
 
@@ -98,10 +98,10 @@ camera_00_<serial>_depth_png/
 
 ## 5. 可选 RGB 对齐深度
 
-接收端实时录制阶段不生成 `depth_aligned_to_rgb`，避免增加发送端和接收端压力。需要空间对齐时，在录制完成后运行：
+接收端实时录制阶段仍保存原始 Depth 母版。配置 `auto_align_depth_to_rgb=true` 时，每个 segment 关闭、媒体时间戳修正完成后会异步生成 `depth_aligned_to_rgb`；如果需要补跑，可在录制完成后手动运行：
 
 ```bash
-python3 05_tools/align_depth_to_rgb.py /path/to/segment_dir
+05_tools/run_align_depth_to_rgb.sh /path/to/segment_dir
 ```
 
 输出：
@@ -111,7 +111,7 @@ depth_aligned_to_rgb.mkv
 depth_aligned_to_rgb.json
 ```
 
-该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。脚本会拒绝内参尺寸与当前视频/profile 不一致、D2C 外参缺失或全 0 的数据；如果 SDK 只给出某个分辨率组合的完整标定，应使用该已标定组合录制或先补齐目标分辨率对应的标定。
+该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。成功后会更新 `calibration.json.aligned_depth`。脚本会拒绝内参尺寸与当前视频/profile 不一致、D2C 外参缺失或全 0 的数据；如果 SDK 只给出某个分辨率组合的完整标定，应使用该已标定组合录制或先补齐目标分辨率对应的标定。
 
 ## 6. `depth_frames.csv`
 

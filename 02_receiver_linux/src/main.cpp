@@ -62,6 +62,7 @@ constexpr size_t kMaxPendingRgbRecordBytes = 8ull * 1024ull * 1024ull;
 constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
+constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 
 std::atomic<bool> g_running{true};
 
@@ -661,8 +662,10 @@ struct Config {
     std::string log_directory = "08_reports/receiver_logs";
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
+    std::string align_depth_to_rgb_path = "05_tools/run_align_depth_to_rgb.sh";
     int segment_seconds = 300;
     int depth_fps = 30;
+    bool auto_align_depth_to_rgb = false;
     bool write_debug_h264 = true;
     bool write_debug_depth_raw = true;
     size_t max_payload_bytes = kMaxReasonablePayload;
@@ -686,8 +689,10 @@ Config load_config(const std::string &path) {
     cfg.log_directory = config_string(json, "log_directory", cfg.log_directory);
     cfg.state_path = config_string(json, "state_path", cfg.state_path);
     cfg.ffmpeg_path = config_string(json, "ffmpeg_path", cfg.ffmpeg_path);
+    cfg.align_depth_to_rgb_path = config_string(json, "align_depth_to_rgb_path", cfg.align_depth_to_rgb_path);
     cfg.segment_seconds = config_int(json, "segment_seconds", cfg.segment_seconds);
     cfg.depth_fps = config_int(json, "depth_fps", cfg.depth_fps);
+    cfg.auto_align_depth_to_rgb = config_bool(json, "auto_align_depth_to_rgb", cfg.auto_align_depth_to_rgb);
     cfg.write_debug_h264 = config_bool(json, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = config_bool(json, "write_debug_depth_raw", cfg.write_debug_depth_raw);
     cfg.max_payload_bytes = static_cast<size_t>(std::max(1, config_int(json, "max_payload_mb", 128))) * 1024ull * 1024ull;
@@ -705,6 +710,7 @@ struct RuntimeState {
     std::string default_file_prefix;
     std::map<std::string, std::string> camera_names;
     std::map<std::string, std::string> camera_file_prefixes;
+    std::map<std::string, std::string> camera_announces;
 };
 
 std::map<std::string, std::string> json_string_map_field(const std::string &json, const std::string &key) {
@@ -722,6 +728,86 @@ std::map<std::string, std::string> json_string_map_field(const std::string &json
     return result;
 }
 
+std::map<std::string, std::string> json_object_map_field(const std::string &json, const std::string &key) {
+    std::map<std::string, std::string> result;
+    const auto object = json_object_field(json, key);
+    if(!object) {
+        return result;
+    }
+
+    size_t pos = 0;
+    while(pos < object->size()) {
+        const size_t key_start = object->find('"', pos);
+        if(key_start == std::string::npos) {
+            break;
+        }
+        bool escaped = false;
+        size_t key_end = std::string::npos;
+        for(size_t i = key_start + 1; i < object->size(); ++i) {
+            const char ch = (*object)[i];
+            if(escaped) {
+                escaped = false;
+            }
+            else if(ch == '\\') {
+                escaped = true;
+            }
+            else if(ch == '"') {
+                key_end = i;
+                break;
+            }
+        }
+        if(key_end == std::string::npos) {
+            break;
+        }
+        const std::string item_key = object->substr(key_start + 1, key_end - key_start - 1);
+        const size_t colon = object->find(':', key_end + 1);
+        if(colon == std::string::npos) {
+            break;
+        }
+        const size_t value_start = object->find('{', colon + 1);
+        if(value_start == std::string::npos) {
+            break;
+        }
+
+        bool in_string = false;
+        escaped = false;
+        int depth = 0;
+        for(size_t i = value_start; i < object->size(); ++i) {
+            const char ch = (*object)[i];
+            if(in_string) {
+                if(escaped) {
+                    escaped = false;
+                }
+                else if(ch == '\\') {
+                    escaped = true;
+                }
+                else if(ch == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if(ch == '"') {
+                in_string = true;
+            }
+            else if(ch == '{') {
+                ++depth;
+            }
+            else if(ch == '}') {
+                --depth;
+                if(depth == 0) {
+                    result[item_key] = object->substr(value_start, i - value_start + 1);
+                    pos = i + 1;
+                    break;
+                }
+            }
+        }
+        if(depth != 0) {
+            break;
+        }
+    }
+    return result;
+}
+
 RuntimeState load_runtime_state(const std::string &path) {
     RuntimeState state;
     std::ifstream input(path);
@@ -732,6 +818,7 @@ RuntimeState load_runtime_state(const std::string &path) {
     state.default_file_prefix = json_string_field(json, "default_file_prefix").value_or("");
     state.camera_names = json_string_map_field(json, "camera_names");
     state.camera_file_prefixes = json_string_map_field(json, "camera_file_prefixes");
+    state.camera_announces = json_object_map_field(json, "camera_announces");
     if(!is_safe_storage_text(state.default_file_prefix)) {
         state.default_file_prefix.clear();
     }
@@ -785,6 +872,16 @@ void save_runtime_state_file(const std::string &path, const RuntimeState &state)
         }
         first = false;
         out << "    \"" << json_escape(item.first) << "\": \"" << json_escape(item.second) << "\"";
+    }
+    out << "\n  },\n";
+    out << "  \"camera_announces\": {\n";
+    first = true;
+    for(const auto &item : state.camera_announces) {
+        if(!first) {
+            out << ",\n";
+        }
+        first = false;
+        out << "    \"" << json_escape(item.first) << "\": " << item.second;
     }
     out << "\n  }\n";
     out << "}\n";
@@ -1650,8 +1747,14 @@ private:
     struct RetimingTask {
         std::string ffmpeg_path;
         std::string ffprobe_path;
+        std::string align_depth_to_rgb_path;
         std::filesystem::path log_path;
+        std::filesystem::path segment_dir;
+        std::filesystem::path aligned_depth_path;
+        std::filesystem::path aligned_depth_sidecar_path;
+        std::filesystem::path calibration_path;
         uint64_t start_us = 0;
+        bool auto_align_depth_to_rgb = false;
         std::vector<RetimingEntry> entries;
     };
 
@@ -1788,14 +1891,49 @@ private:
         for(const auto &entry : task.entries) {
             retime_media_file(task, entry);
         }
+        run_align_depth_to_rgb_task(task);
         set_file_mtime_to_start(task.log_path, task.start_us);
+    }
+
+    static void run_align_depth_to_rgb_task(const RetimingTask &task) {
+        if(!task.auto_align_depth_to_rgb) {
+            return;
+        }
+        if(task.align_depth_to_rgb_path.empty() || task.segment_dir.empty()) {
+            append_retime_log(task.log_path, "depth alignment skipped: align script or segment directory missing");
+            return;
+        }
+        std::error_code ec;
+        if(!std::filesystem::exists(task.segment_dir, ec)) {
+            append_retime_log(task.log_path, "depth alignment skipped: segment directory missing");
+            return;
+        }
+
+        append_retime_log(task.log_path, "depth alignment start");
+        const std::string cmd = shell_quote(task.align_depth_to_rgb_path) + " " + shell_quote(task.segment_dir.string()) + " >>" +
+                                shell_quote(task.log_path.string()) + " 2>&1";
+        const int rc = std::system(cmd.c_str());
+        if(rc != 0) {
+            append_retime_log(task.log_path, "depth alignment failed with exit status " + std::to_string(rc));
+            return;
+        }
+        set_file_mtime_to_start(task.aligned_depth_path, task.start_us);
+        set_file_mtime_to_start(task.aligned_depth_sidecar_path, task.start_us);
+        set_file_mtime_to_start(task.calibration_path, task.start_us);
+        append_retime_log(task.log_path, "depth alignment done: " + task.aligned_depth_path.string());
     }
 
     void schedule_retime_completed_media(const Config &cfg) const {
         RetimingTask task;
         task.ffmpeg_path = cfg.ffmpeg_path;
         task.ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
+        task.align_depth_to_rgb_path = cfg.align_depth_to_rgb_path;
         task.log_path = file_path("ffmpeg.log");
+        task.segment_dir = directory_;
+        task.aligned_depth_path = file_path("depth_aligned_to_rgb.mkv");
+        task.aligned_depth_sidecar_path = task.aligned_depth_path;
+        task.aligned_depth_sidecar_path.replace_extension(".json");
+        task.calibration_path = file_path("calibration.json");
         task.start_us = start_us_;
 
         const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
@@ -1808,7 +1946,8 @@ private:
         if(depth_duration > 0.0) {
             task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale});
         }
-        if(task.entries.empty()) {
+        task.auto_align_depth_to_rgb = cfg.auto_align_depth_to_rgb && depth_duration > 0.0;
+        if(task.entries.empty() && !task.auto_align_depth_to_rgb) {
             return;
         }
         std::thread([task = std::move(task)]() mutable { run_retime_task(std::move(task)); }).detach();
@@ -2049,6 +2188,9 @@ struct CameraState {
     std::vector<uint8_t> depth_preview_ppm;
     std::string last_error;
     std::string last_announce_json;
+    bool last_announce_live = false;
+    uint64_t last_announce_received_us = 0;
+    uint64_t last_announce_cache_save_us = 0;
     std::mutex segment_mutex;
     bool segment_active = false;
     bool segment_finalizing = false;
@@ -2100,7 +2242,8 @@ public:
             for(auto &item : cameras_) {
                 cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
                 cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
-                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id, item.second->last_announce_json});
+                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
+                                       item.second->last_announce_live ? item.second->last_announce_json : ""});
             }
         }
         for(auto &task : close_tasks) {
@@ -2138,6 +2281,14 @@ public:
             const bool rgb_preview_fresh = media_live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
             const bool main_rgb_preview_fresh = media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
             const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
+            const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
+            const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
+            const bool calibration_available = cam.last_announce_live && cached_calibration_available;
+            const int announce_rgb_width = json_int_in_object(cam.last_announce_json, "rgb_profile", "width").value_or(0);
+            const int announce_rgb_height = json_int_in_object(cam.last_announce_json, "rgb_profile", "height").value_or(0);
+            const int announce_depth_width = json_int_in_object(cam.last_announce_json, "depth_profile", "width").value_or(0);
+            const int announce_depth_height = json_int_in_object(cam.last_announce_json, "depth_profile", "height").value_or(0);
+            const auto announce_timestamp_us = json_uint64_field(cam.last_announce_json, "timestamp_us").value_or(0);
             if(!first) {
                 out << ',';
             }
@@ -2186,6 +2337,15 @@ public:
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
             out << "\"depth_preview_us\":" << cam.depth_preview_us << ',';
             out << "\"depth_preview_age_ms\":" << age_ms_or_negative(now, cam.depth_preview_us) << ',';
+            out << "\"calibration_available\":" << (calibration_available ? "true" : "false") << ',';
+            out << "\"cached_calibration_available\":" << (cached_calibration_available ? "true" : "false") << ',';
+            out << "\"announce_live\":" << (cam.last_announce_live ? "true" : "false") << ',';
+            out << "\"announce_received_us\":" << cam.last_announce_received_us << ',';
+            out << "\"announce_timestamp_us\":" << announce_timestamp_us << ',';
+            out << "\"announce_rgb_width\":" << announce_rgb_width << ',';
+            out << "\"announce_rgb_height\":" << announce_rgb_height << ',';
+            out << "\"announce_depth_width\":" << announce_depth_width << ',';
+            out << "\"announce_depth_height\":" << announce_depth_height << ',';
             out << "\"last_error\":\"" << json_escape(cam.last_error) << "\"";
             out << "}";
         }
@@ -2206,7 +2366,9 @@ public:
         out << "\"state_path\":\"" << json_escape(config_.state_path) << "\",";
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
-        out << "\"segment_seconds\":" << config_.segment_seconds;
+        out << "\"segment_seconds\":" << config_.segment_seconds << ',';
+        out << "\"auto_align_depth_to_rgb\":" << (config_.auto_align_depth_to_rgb ? "true" : "false") << ',';
+        out << "\"align_depth_to_rgb_path\":\"" << json_escape(config_.align_depth_to_rgb_path) << "\"";
         out << "}";
         return out.str();
     }
@@ -2297,7 +2459,8 @@ public:
                     item.second->segment_finalizing = true;
                     finalizing = true;
                 }
-                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id, item.second->last_announce_json});
+                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
+                                       item.second->last_announce_live ? item.second->last_announce_json : ""});
             }
             refresh_camera_liveness_locked(now_us());
         }
@@ -2351,7 +2514,7 @@ public:
                 return "{\"ok\":false,\"error\":\"camera not found\"}";
             }
             cam = it->second;
-            announce_json = cam->last_announce_json;
+            announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             recording_start_us = cam->recording_start_us;
             cam->recording_requested = false;
             if(cam->segment_active) {
@@ -2611,6 +2774,10 @@ private:
             if(prefix != runtime_state_.camera_file_prefixes.end()) {
                 state->camera_file_prefix = prefix->second;
             }
+            const auto announce = runtime_state_.camera_announces.find(key);
+            if(announce != runtime_state_.camera_announces.end()) {
+                state->last_announce_json = announce->second;
+            }
             state->recording_requested = recording_all_;
             if(recording_all_) {
                 state->recording_start_us = recording_all_start_us_;
@@ -2637,15 +2804,36 @@ private:
 
         if(!sender_id.empty() && !camera_id.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
+            const auto key = camera_key(sender_id, camera_id);
             const auto code = type == "event" ? json_string_field(json, "event_code").value_or("event") : "";
             const bool marks_online = type == "camera_announce" || code == "camera_connected" || code == "camera_reconnected";
             auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
-            cam.last_status_us = now_us();
+            const auto received_us = now_us();
+            cam.last_status_us = received_us;
             if(type == "camera_announce") {
                 cam.last_announce_json = json;
+                cam.last_announce_live = true;
+                cam.last_announce_received_us = received_us;
+                const bool should_save_announce =
+                    (runtime_state_.camera_announces.find(key) == runtime_state_.camera_announces.end() ||
+                     runtime_state_.camera_announces[key] != json) &&
+                    (cam.last_announce_cache_save_us == 0 ||
+                     received_us >= cam.last_announce_cache_save_us + kAnnounceCacheSaveMinIntervalUs);
+                if(should_save_announce) {
+                    runtime_state_.camera_announces[key] = json;
+                    cam.last_announce_cache_save_us = received_us;
+                    try {
+                        save_runtime_state_file(config_.state_path, runtime_state_);
+                    }
+                    catch(const std::exception &e) {
+                        logger_.error(e.what());
+                    }
+                }
             }
             else if(type == "camera_offline") {
                 cam.online = false;
+                cam.last_announce_live = false;
+                cam.last_announce_received_us = 0;
                 clear_camera_live_cache_locked(cam);
                 cam.last_error = json_string_field(json, "reason").value_or("camera_offline");
             }
@@ -2654,6 +2842,8 @@ private:
                 cam.last_error = code + (message.empty() ? "" : ": " + message);
                 if(code == "camera_unavailable" || code == "camera_disconnected") {
                     cam.online = false;
+                    cam.last_announce_live = false;
+                    cam.last_announce_received_us = 0;
                     clear_camera_live_cache_locked(cam);
                 }
             }
@@ -2802,7 +2992,7 @@ private:
                 camera_name = cam->camera_name;
                 storage_key = cam->storage_key();
                 file_prefix = cam->recording_file_prefix;
-                announce_json = cam->last_announce_json;
+                announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             }
         }
         if(!should_record) {
