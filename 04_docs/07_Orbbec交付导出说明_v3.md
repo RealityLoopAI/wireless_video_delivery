@@ -12,7 +12,7 @@
 - Depth 仍然保存为 `depth.mkv`，FFV1 / `gray16le` 无损。
 - `frames.csv`、`meta.json` 和 `calibration.json` 仍然作为接收端原始索引、元数据和空间标定来源。
 - 导出文件名里的 fps 来自主文件探测结果，通常接近 `meta.json` 的 `rgb_record_fps` / `depth_record_fps`。
-- 如果下游需要 RGB 坐标系下的 Depth，可使用录制结束后自动生成的 `depth_aligned_to_rgb.mkv`；未生成时可手动运行 `05_tools/run_align_depth_to_rgb.sh`。
+- 如果下游需要 RGB 坐标系下的 Depth，可在录制完成后手动运行 `05_tools/run_align_depth_to_rgb.sh` 生成 `depth_aligned_to_rgb.mkv`。
 
 新增的是离线交付层：
 
@@ -98,7 +98,7 @@ camera_00_<serial>_depth_png/
 
 ## 5. 可选 RGB 对齐深度
 
-接收端实时录制阶段仍保存原始 Depth 母版。配置 `auto_align_depth_to_rgb=true` 时，每个 segment 关闭、媒体时间戳修正完成后会异步生成 `depth_aligned_to_rgb`；如果需要补跑，可在录制完成后手动运行：
+接收端实时录制阶段只保存原始 Depth 母版，不自动生成 `depth_aligned_to_rgb`。如果需要空间对齐，可在录制完成后手动运行：
 
 ```bash
 05_tools/run_align_depth_to_rgb.sh /path/to/segment_dir

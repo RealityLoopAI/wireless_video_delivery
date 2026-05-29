@@ -662,10 +662,8 @@ struct Config {
     std::string log_directory = "08_reports/receiver_logs";
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
-    std::string align_depth_to_rgb_path = "05_tools/run_align_depth_to_rgb.sh";
     int segment_seconds = 300;
     int depth_fps = 30;
-    bool auto_align_depth_to_rgb = false;
     bool write_debug_h264 = true;
     bool write_debug_depth_raw = true;
     size_t max_payload_bytes = kMaxReasonablePayload;
@@ -689,10 +687,8 @@ Config load_config(const std::string &path) {
     cfg.log_directory = config_string(json, "log_directory", cfg.log_directory);
     cfg.state_path = config_string(json, "state_path", cfg.state_path);
     cfg.ffmpeg_path = config_string(json, "ffmpeg_path", cfg.ffmpeg_path);
-    cfg.align_depth_to_rgb_path = config_string(json, "align_depth_to_rgb_path", cfg.align_depth_to_rgb_path);
     cfg.segment_seconds = config_int(json, "segment_seconds", cfg.segment_seconds);
     cfg.depth_fps = config_int(json, "depth_fps", cfg.depth_fps);
-    cfg.auto_align_depth_to_rgb = config_bool(json, "auto_align_depth_to_rgb", cfg.auto_align_depth_to_rgb);
     cfg.write_debug_h264 = config_bool(json, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = config_bool(json, "write_debug_depth_raw", cfg.write_debug_depth_raw);
     cfg.max_payload_bytes = static_cast<size_t>(std::max(1, config_int(json, "max_payload_mb", 128))) * 1024ull * 1024ull;
@@ -1747,14 +1743,8 @@ private:
     struct RetimingTask {
         std::string ffmpeg_path;
         std::string ffprobe_path;
-        std::string align_depth_to_rgb_path;
         std::filesystem::path log_path;
-        std::filesystem::path segment_dir;
-        std::filesystem::path aligned_depth_path;
-        std::filesystem::path aligned_depth_sidecar_path;
-        std::filesystem::path calibration_path;
         uint64_t start_us = 0;
-        bool auto_align_depth_to_rgb = false;
         std::vector<RetimingEntry> entries;
     };
 
@@ -1891,49 +1881,14 @@ private:
         for(const auto &entry : task.entries) {
             retime_media_file(task, entry);
         }
-        run_align_depth_to_rgb_task(task);
         set_file_mtime_to_start(task.log_path, task.start_us);
-    }
-
-    static void run_align_depth_to_rgb_task(const RetimingTask &task) {
-        if(!task.auto_align_depth_to_rgb) {
-            return;
-        }
-        if(task.align_depth_to_rgb_path.empty() || task.segment_dir.empty()) {
-            append_retime_log(task.log_path, "depth alignment skipped: align script or segment directory missing");
-            return;
-        }
-        std::error_code ec;
-        if(!std::filesystem::exists(task.segment_dir, ec)) {
-            append_retime_log(task.log_path, "depth alignment skipped: segment directory missing");
-            return;
-        }
-
-        append_retime_log(task.log_path, "depth alignment start");
-        const std::string cmd = shell_quote(task.align_depth_to_rgb_path) + " " + shell_quote(task.segment_dir.string()) + " >>" +
-                                shell_quote(task.log_path.string()) + " 2>&1";
-        const int rc = std::system(cmd.c_str());
-        if(rc != 0) {
-            append_retime_log(task.log_path, "depth alignment failed with exit status " + std::to_string(rc));
-            return;
-        }
-        set_file_mtime_to_start(task.aligned_depth_path, task.start_us);
-        set_file_mtime_to_start(task.aligned_depth_sidecar_path, task.start_us);
-        set_file_mtime_to_start(task.calibration_path, task.start_us);
-        append_retime_log(task.log_path, "depth alignment done: " + task.aligned_depth_path.string());
     }
 
     void schedule_retime_completed_media(const Config &cfg) const {
         RetimingTask task;
         task.ffmpeg_path = cfg.ffmpeg_path;
         task.ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
-        task.align_depth_to_rgb_path = cfg.align_depth_to_rgb_path;
         task.log_path = file_path("ffmpeg.log");
-        task.segment_dir = directory_;
-        task.aligned_depth_path = file_path("depth_aligned_to_rgb.mkv");
-        task.aligned_depth_sidecar_path = task.aligned_depth_path;
-        task.aligned_depth_sidecar_path.replace_extension(".json");
-        task.calibration_path = file_path("calibration.json");
         task.start_us = start_us_;
 
         const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
@@ -1946,8 +1901,7 @@ private:
         if(depth_duration > 0.0) {
             task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale});
         }
-        task.auto_align_depth_to_rgb = cfg.auto_align_depth_to_rgb && depth_duration > 0.0;
-        if(task.entries.empty() && !task.auto_align_depth_to_rgb) {
+        if(task.entries.empty()) {
             return;
         }
         std::thread([task = std::move(task)]() mutable { run_retime_task(std::move(task)); }).detach();
@@ -2366,9 +2320,7 @@ public:
         out << "\"state_path\":\"" << json_escape(config_.state_path) << "\",";
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
-        out << "\"segment_seconds\":" << config_.segment_seconds << ',';
-        out << "\"auto_align_depth_to_rgb\":" << (config_.auto_align_depth_to_rgb ? "true" : "false") << ',';
-        out << "\"align_depth_to_rgb_path\":\"" << json_escape(config_.align_depth_to_rgb_path) << "\"";
+        out << "\"segment_seconds\":" << config_.segment_seconds;
         out << "}";
         return out.str();
     }
