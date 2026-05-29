@@ -1,6 +1,6 @@
 # Orbbec 兼容交付导出说明
 
-更新时间：2026-05-21
+更新时间：2026-05-29
 
 本文档说明如何把接收端现有 segment 导出成下游 Orbbec 多相机方案更容易读取的目录结构。
 
@@ -10,8 +10,9 @@
 
 - RGB 仍然保存为 `rgb.mp4`，接收端不重编码。
 - Depth 仍然保存为 `depth.mkv`，FFV1 / `gray16le` 无损。
-- `frames.csv` 和 `meta.json` 仍然作为接收端原始索引和元数据。
+- `frames.csv`、`meta.json` 和 `calibration.json` 仍然作为接收端原始索引、元数据和空间标定来源。
 - 导出文件名里的 fps 来自主文件探测结果，通常接近 `meta.json` 的 `rgb_record_fps` / `depth_record_fps`。
+- 如果下游需要 RGB 坐标系下的 Depth，可先运行 `05_tools/align_depth_to_rgb.py` 离线生成 `depth_aligned_to_rgb.mkv`。
 
 新增的是离线交付层：
 
@@ -95,7 +96,24 @@ camera_00_<serial>_depth_png/
 
 不建议默认开启，因为逐帧 PNG 会制造大量小文件，对 NAS 和 IO 压力明显更高。
 
-## 5. `depth_frames.csv`
+## 5. 可选 RGB 对齐深度
+
+接收端实时录制阶段不生成 `depth_aligned_to_rgb`，避免增加发送端和接收端压力。需要空间对齐时，在录制完成后运行：
+
+```bash
+python3 05_tools/align_depth_to_rgb.py /path/to/segment_dir
+```
+
+输出：
+
+```text
+depth_aligned_to_rgb.mkv
+depth_aligned_to_rgb.json
+```
+
+该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。
+
+## 6. `depth_frames.csv`
 
 导出的 CSV 采用下游方案类似字段：
 
@@ -112,7 +130,7 @@ frame_index,timeline_frame_index,timeline_offset_frames,depth_file,depth_video_f
 - `device_timestamp_us` 来自发送端 SDK depth timestamp。
 - `source_system_timestamp_us` 来自协议头里的发送端 system timestamp。老 segment 没有该列时会留空。
 
-## 6. 接收端 CSV 增量字段
+## 7. 接收端 CSV 增量字段
 
 从本版本开始，接收端 `frames.csv` 在旧字段后追加：
 

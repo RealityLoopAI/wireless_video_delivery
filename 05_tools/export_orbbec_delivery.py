@@ -161,6 +161,24 @@ def parse_camera_announce(meta: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
+def load_calibration_doc(segment_dir: Path, meta: dict[str, Any]) -> tuple[dict[str, Any], Path | None]:
+    name = str(meta.get("calibration_file") or "calibration.json")
+    candidates = [segment_dir / name]
+    if name == "calibration.json":
+        candidates.extend(sorted(segment_dir.glob("*_calibration.json")))
+    for path in candidates:
+        if path.exists():
+            return load_json(path), path
+    return {}, None
+
+
+def object_field(*values: Any) -> dict[str, Any]:
+    for value in values:
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
 def sanitize_token(value: Any, fallback: str) -> str:
     text = str(value or "").strip() or fallback
     text = re.sub(r'[<>:"/\\|?*\s]+', "_", text)
@@ -334,7 +352,8 @@ def main() -> int:
     segment_dir = args.segment_dir.resolve()
     meta = load_json(segment_dir / "meta.json")
     announce = parse_camera_announce(meta)
-    device = announce.get("device") if isinstance(announce.get("device"), dict) else {}
+    calibration_doc, calibration_path = load_calibration_doc(segment_dir, meta)
+    device = object_field(calibration_doc.get("device"), announce.get("device"))
 
     rgb_src = segment_dir / str(meta.get("rgb_file") or "rgb.mp4")
     depth_src = segment_dir / str(meta.get("depth_file") or "depth.mkv")
@@ -387,8 +406,8 @@ def main() -> int:
     if args.export_depth_png and depth_png_dir_name:
         export_depth_png(args.ffmpeg, depth_src, session_dir / depth_png_dir_name)
 
-    depth_profile = announce.get("depth_profile") if isinstance(announce.get("depth_profile"), dict) else {}
-    rgb_profile = announce.get("rgb_profile") if isinstance(announce.get("rgb_profile"), dict) else {}
+    depth_profile = object_field(calibration_doc.get("depth_profile"), announce.get("depth_profile"))
+    rgb_profile = object_field(calibration_doc.get("rgb_profile"), announce.get("rgb_profile"))
     depth_scale = float(depth_profile.get("depth_scale") or 1.0)
     write_depth_csv(
         session_dir / depth_csv_name,
@@ -439,7 +458,7 @@ def main() -> int:
             "storage_pix_fmt": depth_stream.get("pix_fmt") or "gray16le",
             "depth_scale": depth_scale,
         },
-        "calibration": announce.get("calibration") or {"available": False},
+        "calibration": object_field(calibration_doc.get("calibration"), announce.get("calibration"), {"available": False}),
         "files": files,
         "frame_counts": {
             "rgb_packets": sum(1 for row in rows if row.get("stream_type") == "rgb"),
@@ -454,6 +473,7 @@ def main() -> int:
             "segment_dir": str(segment_dir),
             "frames_csv": str(frames_src),
             "meta_json": str(segment_dir / "meta.json"),
+            "calibration_json": str(calibration_path) if calibration_path else "",
             "rgb_install_mode": rgb_install_mode,
             "depth_install_mode": depth_install_mode,
         },

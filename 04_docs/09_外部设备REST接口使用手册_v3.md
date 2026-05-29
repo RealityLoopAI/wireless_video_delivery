@@ -370,7 +370,7 @@ curl -X POST \
 
 - 文件名前缀按相机单独保存，接收端重启后仍生效。
 - 后续该路相机开始录制时，如果没有临时传 `file_prefix`，会使用该路已保存前缀。
-- 前缀作用于该路 segment 目录下所有文件，例如 `cam02_rgb.mp4`、`cam02_depth.mkv`、`cam02_frames.csv`、`cam02_meta.json`。
+- 前缀作用于该路 segment 目录下所有文件，例如 `cam02_rgb.mp4`、`cam02_depth.mkv`、`cam02_frames.csv`、`cam02_calibration.json`、`cam02_meta.json`。
 - `start-all` 会按每一路相机各自保存的 `camera_file_prefix` 分别写文件，不会默认给所有相机套同一个前缀。
 
 清空该路前缀：

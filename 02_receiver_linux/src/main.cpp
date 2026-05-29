@@ -225,6 +225,20 @@ std::optional<int> json_int_field(const std::string &json, const std::string &ke
     return std::nullopt;
 }
 
+std::optional<uint64_t> json_uint64_field(const std::string &json, const std::string &key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
+        try {
+            return static_cast<uint64_t>(std::stoull(match[1].str()));
+        }
+        catch(const std::exception &) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<bool> json_bool_field(const std::string &json, const std::string &key) {
     const std::regex pattern("\"" + key + "\"\\s*:\\s*(true|false)");
     std::smatch match;
@@ -280,6 +294,10 @@ std::optional<std::string> json_object_field(const std::string &json, const std:
         }
     }
     return std::nullopt;
+}
+
+std::string json_object_or_empty(const std::string &json, const std::string &key) {
+    return json_object_field(json, key).value_or("{}");
 }
 
 std::optional<std::string> json_string_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
@@ -1790,6 +1808,7 @@ private:
         if(directory_.empty()) {
             return;
         }
+        write_calibration(sender_id, camera_id, announce_json, closed);
         const int rgb_requested_fps = json_int_in_object(announce_json, "rgb_profile", "fps").value_or(30);
         const int depth_requested_fps = json_int_in_object(announce_json, "depth_profile", "fps").value_or(cfg.depth_fps);
         const std::string rgb_codec = !rgb_stats_.codec_or_compression.empty()
@@ -1815,6 +1834,7 @@ private:
         meta << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
         meta << "  \"depth_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_debug.raw")) << "\",\n";
         meta << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
+        meta << "  \"calibration_file\": \"" << json_escape(prefixed_filename(file_prefix_, "calibration.json")) << "\",\n";
         meta << "  \"ffmpeg_log_file\": \"" << json_escape(prefixed_filename(file_prefix_, "ffmpeg.log")) << "\",\n";
         meta << "  \"rgb_codec\": \"" << json_escape(rgb_codec) << "\",\n";
         meta << "  \"rgb_width\": " << rgb_width << ",\n";
@@ -1843,6 +1863,51 @@ private:
         meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
         meta << "}\n";
+    }
+
+    void write_calibration(const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) const {
+        if(directory_.empty()) {
+            return;
+        }
+        const auto announce_timestamp_us = json_uint64_field(announce_json, "timestamp_us");
+        const std::string device = json_object_or_empty(announce_json, "device");
+        const std::string rgb_profile = json_object_or_empty(announce_json, "rgb_profile");
+        const std::string depth_profile = json_object_or_empty(announce_json, "depth_profile");
+        const std::string calibration = json_object_field(announce_json, "calibration")
+                                            .value_or("{\"available\":false,\"source\":\"missing_camera_announce\",\"data\":{}}");
+
+        std::ofstream out(file_path("calibration.json"), std::ios::out | std::ios::trunc);
+        out << "{\n";
+        out << "  \"schema\": \"gemini_calibration_v1\",\n";
+        out << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
+        out << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
+        out << "  \"camera_key\": \"" << json_escape(camera_key(sender_id, camera_id)) << "\",\n";
+        out << "  \"camera_name\": \"" << json_escape(camera_name_) << "\",\n";
+        out << "  \"storage_key\": \"" << json_escape(storage_key_) << "\",\n";
+        out << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
+        out << "  \"segment_start_us\": " << start_us_ << ",\n";
+        out << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
+        out << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
+        if(announce_timestamp_us) {
+            out << "  \"announce_timestamp_us\": " << *announce_timestamp_us << ",\n";
+        }
+        else {
+            out << "  \"announce_timestamp_us\": 0,\n";
+        }
+        out << "  \"alignment_mode\": \"raw_depth_to_rgb_offline\",\n";
+        out << "  \"depth_master\": \"depth_raw\",\n";
+        out << "  \"aligned_depth\": {\n";
+        out << "    \"generated\": false,\n";
+        out << "    \"target\": \"rgb\",\n";
+        out << "    \"output_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_aligned_to_rgb.mkv")) << "\",\n";
+        out << "    \"method\": \"offline\"\n";
+        out << "  },\n";
+        out << "  \"device\": " << device << ",\n";
+        out << "  \"rgb_profile\": " << rgb_profile << ",\n";
+        out << "  \"depth_profile\": " << depth_profile << ",\n";
+        out << "  \"calibration\": " << calibration << ",\n";
+        out << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
+        out << "}\n";
     }
 
     void set_segment_mtime_to_start(Logger &logger) const {
