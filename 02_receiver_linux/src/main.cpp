@@ -440,6 +440,16 @@ sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
     return addr;
 }
 
+std::string socket_endpoint(const sockaddr_in &addr) {
+    char ip[INET_ADDRSTRLEN] = {};
+    if(inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip)) == nullptr) {
+        std::strncpy(ip, "unknown", sizeof(ip) - 1);
+    }
+    std::ostringstream out;
+    out << ip << ':' << ntohs(addr.sin_port);
+    return out.str();
+}
+
 std::string camera_key(const std::string &sender_id, const std::string &camera_id) {
     return sender_id + "_" + camera_id;
 }
@@ -2506,15 +2516,12 @@ public:
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
-        if(key != main_preview_key_) {
-            return std::nullopt;
-        }
         auto it = cameras_.find(key);
         if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
             return std::nullopt;
         }
         auto &cam = *it->second;
-        if(is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
+        if(key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
             const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
             if(jpeg) {
                 return jpeg;
@@ -2622,7 +2629,7 @@ private:
         return *ensure_camera_ptr_locked(sender_id, camera_id);
     }
 
-    void handle_status_message(const std::string &payload) {
+    void handle_status_message(const std::string &payload, const std::string &peer_endpoint) {
         const auto json = trim_copy(payload);
         const auto type = json_string_field(json, "message_type").value_or("unknown");
         const auto sender_id = json_string_field(json, "sender_id").value_or("");
@@ -2652,7 +2659,8 @@ private:
             }
         }
 
-        logger_.info("status " + type + " sender=" + sender_id + (camera_id.empty() ? "" : " camera=" + camera_id));
+        logger_.info("status " + type + " from=" + peer_endpoint + " sender=" + sender_id
+                     + (camera_id.empty() ? "" : " camera=" + camera_id));
     }
 
     bool feed_rgb_preview_decoder_locked(CameraState &cam,
@@ -2840,7 +2848,7 @@ private:
                 continue;
             }
             buffer[static_cast<size_t>(got)] = '\0';
-            handle_status_message(std::string(buffer.data(), static_cast<size_t>(got)));
+            handle_status_message(std::string(buffer.data(), static_cast<size_t>(got)), socket_endpoint(peer));
         }
         close(fd);
     }
@@ -2879,6 +2887,7 @@ private:
                 continue;
             }
             set_fd_cloexec(client);
+            const auto peer_endpoint = socket_endpoint(peer);
             const int previous_clients = active_media_clients_.fetch_add(1);
             if(previous_clients >= kMaxActiveMediaClients) {
                 active_media_clients_.fetch_sub(1);
@@ -2886,24 +2895,38 @@ private:
                 continue;
             }
             set_socket_timeout(client, kMediaClientSocketTimeoutSec);
-            std::thread([this, client] {
-                media_client_loop(client);
+            std::thread([this, client, peer_endpoint] {
+                media_client_loop(client, peer_endpoint);
                 active_media_clients_.fetch_sub(1);
             }).detach();
         }
         close(fd);
     }
 
-    void media_client_loop(int fd) {
-        logger_.info("media client connected");
+    void media_client_loop(int fd, const std::string &peer_endpoint) {
+        logger_.info("media client connected from=" + peer_endpoint);
+        std::string last_sender;
+        std::string last_camera;
+        std::string last_stream;
+        uint64_t last_frame_id = 0;
         while(running_ && g_running) {
             try {
                 auto packet = read_media_packet(fd, config_.max_payload_bytes);
+                last_sender = packet.sender_id;
+                last_camera = packet.camera_id;
+                last_stream = packet.stream_type == StreamType::rgb ? "rgb" : "depth";
+                last_frame_id = packet.frame_id;
                 handle_media_packet(packet);
             }
             catch(const std::exception &e) {
-                if(std::string(e.what()) != "connection closed") {
-                    logger_.warn(std::string("media client disconnected: ") + e.what());
+                std::ostringstream msg;
+                msg << "media client disconnected from=" << peer_endpoint << " last_sender=" << last_sender << " last_camera=" << last_camera
+                    << " last_stream=" << last_stream << " last_frame=" << last_frame_id << " reason=" << e.what();
+                if(std::string(e.what()) == "connection closed") {
+                    logger_.info(msg.str());
+                }
+                else {
+                    logger_.warn(msg.str());
                 }
                 break;
             }

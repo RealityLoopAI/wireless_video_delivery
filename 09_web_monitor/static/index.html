@@ -568,11 +568,17 @@
     }
     function refreshMainPreview() {
       const c = cameras.find((item) => item.camera_key === mainKey);
+      const img = document.getElementById('mainPreview');
+      const placeholder = document.getElementById('mainPlaceholder');
       if (!c) {
         clearMainPreview(cameras.length ? '等待实时画面' : '等待发送端连接');
         return;
       }
       if (!previewAvailable(c, mainMode)) {
+        if (isLive(c) && img.getAttribute('src')) {
+          placeholder.style.display = 'none';
+          return;
+        }
         clearMainPreview(`${mainMode === 'rgb' ? 'RGB' : 'Depth'} 无实时画面`);
         return;
       }
@@ -580,8 +586,6 @@
         syncMainTarget();
       }
       if (mainPreviewState.loading) return;
-      const img = document.getElementById('mainPreview');
-      const placeholder = document.getElementById('mainPlaceholder');
       const token = String(mainPreviewState.token + 1);
       const key = mainKey;
       const mode = mainMode;
@@ -598,7 +602,12 @@
       next.onerror = () => {
         if (String(mainPreviewState.token) === token) {
           mainPreviewState.loading = false;
-          clearMainPreview(`${mode === 'rgb' ? 'RGB' : 'Depth'} 暂无实时画面`);
+          if (!img.getAttribute('src')) {
+            clearMainPreview(`${mode === 'rgb' ? 'RGB' : 'Depth'} 暂无实时画面`);
+          }
+          else {
+            placeholder.style.display = 'none';
+          }
         }
       };
       next.src = previewUrl(c, mode, true);
@@ -654,13 +663,17 @@
       placeholder.style.display = '';
     }
     function refreshPreview(root, c, kind) {
+      const img = root.querySelector(`[data-preview="${kind}"]`);
+      const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       if (!previewAvailable(c, kind)) {
+        if (isLive(c) && img.getAttribute('src')) {
+          placeholder.style.display = 'none';
+          return;
+        }
         clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
         return;
       }
       if (root.dataset[`${kind}Loading`] === '1') return;
-      const img = root.querySelector(`[data-preview="${kind}"]`);
-      const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       const token = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
       root.dataset[`${kind}Token`] = token;
       root.dataset[`${kind}Loading`] = '1';
@@ -674,7 +687,13 @@
       };
       next.onerror = () => {
         if (root.dataset[`${kind}Token`] === token) {
-          clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
+          root.dataset[`${kind}Loading`] = '0';
+          if (!img.getAttribute('src')) {
+            clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
+          }
+          else {
+            placeholder.style.display = 'none';
+          }
         }
       };
       next.src = previewUrl(c, kind, false);

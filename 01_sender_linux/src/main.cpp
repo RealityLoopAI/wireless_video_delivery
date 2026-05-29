@@ -45,6 +45,7 @@ std::mutex g_camera_lifecycle_mutex;
 constexpr uint16_t kDepthPreviewMinMm = 250;
 constexpr uint16_t kDepthPreviewMaxMm = 2500;
 constexpr size_t kMaxActiveCameras = 4;
+constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
 constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
 constexpr auto kHotplugLimitEventInterval = std::chrono::seconds(30);
@@ -1467,6 +1468,11 @@ bool camera_announced(const CameraRuntime &camera) {
     return camera.announced;
 }
 
+bool camera_online(const CameraRuntime &camera) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    return camera.online;
+}
+
 void set_camera_announced(CameraRuntime &camera, bool announced) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     camera.announced = announced;
@@ -2453,6 +2459,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     }
 
     auto next_heartbeat = std::chrono::steady_clock::now();
+    auto next_camera_announce = std::chrono::steady_clock::now() + kCameraAnnounceInterval;
     auto next_perf_log = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     auto next_preview = std::chrono::steady_clock::now();
     auto next_hotplug_scan = std::chrono::steady_clock::now() + kHotplugScanInterval;
@@ -2468,6 +2475,15 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 send_status_locked(transport, logger, transport_mutex, camera_heartbeat(config, *camera, started));
             }
             next_heartbeat = now + std::chrono::milliseconds(config.heartbeat_interval_ms);
+        }
+        if(now >= next_camera_announce) {
+            for(auto &camera : cameras) {
+                if(camera_online(*camera)) {
+                    send_status_locked(transport, logger, transport_mutex, camera_announce(config, *camera));
+                    set_camera_announced(*camera, true);
+                }
+            }
+            next_camera_announce = now + kCameraAnnounceInterval;
         }
         if(now >= next_perf_log) {
             for(auto &camera : cameras) {
