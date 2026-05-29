@@ -61,13 +61,19 @@ def require_object(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
-def intrinsic_matrix(intrinsic: dict[str, Any], name: str) -> np.ndarray:
+def intrinsic_matrix(intrinsic: dict[str, Any], name: str, expected_width: int, expected_height: int) -> np.ndarray:
     fx = parse_float(intrinsic.get("fx"))
     fy = parse_float(intrinsic.get("fy"))
     cx = parse_float(intrinsic.get("cx"))
     cy = parse_float(intrinsic.get("cy"))
+    width = parse_int(intrinsic.get("width"))
+    height = parse_int(intrinsic.get("height"))
     if fx <= 0.0 or fy <= 0.0:
         die(f"{name} has invalid fx/fy")
+    if width <= 0 or height <= 0:
+        die(f"{name} has invalid width/height")
+    if width != expected_width or height != expected_height:
+        die(f"{name} dimensions {width}x{height} do not match video/profile {expected_width}x{expected_height}")
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
@@ -162,10 +168,10 @@ class DepthAligner:
         self.rgb_width = rgb_width
         self.rgb_height = rgb_height
         self.depth_scale = depth_scale
-        self.rgb_k = intrinsic_matrix(rgb_intrinsic, "rgb_intrinsic")
+        self.rgb_k = intrinsic_matrix(rgb_intrinsic, "rgb_intrinsic", rgb_width, rgb_height)
         self.rgb_d = distortion_coeffs(rgb_distortion)
 
-        depth_k = intrinsic_matrix(depth_intrinsic, "depth_intrinsic")
+        depth_k = intrinsic_matrix(depth_intrinsic, "depth_intrinsic", depth_width, depth_height)
         depth_d = distortion_coeffs(depth_distortion)
         rot = d2c_transform.get("rot") or []
         trans = d2c_transform.get("trans_mm") or []
@@ -173,6 +179,8 @@ class DepthAligner:
             die("calibration.data.d2c_transform must contain rot[9] and trans_mm[3]")
         self.rot = np.array(rot, dtype=np.float64).reshape(3, 3)
         self.trans = np.array(trans, dtype=np.float64).reshape(3, 1)
+        if not np.any(np.abs(self.rot) > 0.0) or not np.any(np.abs(self.trans) > 0.0):
+            die("calibration.data.d2c_transform is all zero; cannot align depth to RGB")
 
         ys, xs = np.indices((depth_height, depth_width), dtype=np.float32)
         pixels = np.stack([xs.reshape(-1), ys.reshape(-1)], axis=1).reshape(-1, 1, 2)

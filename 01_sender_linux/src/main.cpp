@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <csetjmp>
 #include <cstdio>
@@ -764,24 +765,144 @@ Json::Value transform_json(const OBD2CTransform &transform) {
     return value;
 }
 
-Json::Value calibration_json(ob::Pipeline &pipeline) {
+Json::Value camera_param_data_json(const OBCameraParam &camera_param) {
+    Json::Value data;
+    data["depth_intrinsic"] = intrinsic_json(camera_param.depthIntrinsic);
+    data["rgb_intrinsic"] = intrinsic_json(camera_param.rgbIntrinsic);
+    data["depth_distortion"] = distortion_json(camera_param.depthDistortion);
+    data["rgb_distortion"] = distortion_json(camera_param.rgbDistortion);
+    data["d2c_transform"] = transform_json(camera_param.transform);
+    data["is_mirrored"] = camera_param.isMirrored;
+    return data;
+}
+
+bool intrinsic_valid(const OBCameraIntrinsic &intrinsic) {
+    return intrinsic.fx > 0.0f && intrinsic.fy > 0.0f && intrinsic.width > 0 && intrinsic.height > 0;
+}
+
+bool transform_valid(const OBD2CTransform &transform) {
+    float abs_sum = 0.0f;
+    for(float item : transform.rot) {
+        abs_sum += std::abs(item);
+    }
+    for(float item : transform.trans) {
+        abs_sum += std::abs(item);
+    }
+    return abs_sum > 0.0f;
+}
+
+bool camera_param_complete(const OBCameraParam &camera_param) {
+    return intrinsic_valid(camera_param.depthIntrinsic) && intrinsic_valid(camera_param.rgbIntrinsic) && transform_valid(camera_param.transform);
+}
+
+bool profile_dimensions_match(const OBCameraIntrinsic &intrinsic, const std::shared_ptr<ob::VideoStreamProfile> &profile) {
+    return profile && intrinsic.width > 0 && intrinsic.height > 0 && static_cast<uint32_t>(intrinsic.width) == profile->width()
+           && static_cast<uint32_t>(intrinsic.height) == profile->height();
+}
+
+void fill_missing_profile_calibration(OBCameraParam &camera_param, const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
+                                      const std::shared_ptr<ob::VideoStreamProfile> &depth_profile) {
+    if(color_profile && !intrinsic_valid(camera_param.rgbIntrinsic)) {
+        try {
+            camera_param.rgbIntrinsic = color_profile->getIntrinsic();
+            camera_param.rgbDistortion = color_profile->getDistortion();
+        }
+        catch(const std::exception &) {
+        }
+        catch(...) {
+        }
+    }
+    if(depth_profile && !intrinsic_valid(camera_param.depthIntrinsic)) {
+        try {
+            camera_param.depthIntrinsic = depth_profile->getIntrinsic();
+            camera_param.depthDistortion = depth_profile->getDistortion();
+        }
+        catch(const std::exception &) {
+        }
+        catch(...) {
+        }
+    }
+}
+
+std::optional<OBCameraParam> exact_profile_camera_param_from_device(const std::shared_ptr<ob::Device> &device,
+                                                                    const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
+                                                                    const std::shared_ptr<ob::VideoStreamProfile> &depth_profile,
+                                                                    Json::Value &raw_list_json) {
+    if(!device) {
+        return std::nullopt;
+    }
+    try {
+        auto list = device->getCalibrationCameraParamList();
+        const uint32_t count = list ? list->count() : 0;
+        for(uint32_t i = 0; i < count; ++i) {
+            const auto param = list->getCameraParam(i);
+            Json::Value item = camera_param_data_json(param);
+            item["index"] = i;
+            raw_list_json.append(item);
+            if(profile_dimensions_match(param.rgbIntrinsic, color_profile) && profile_dimensions_match(param.depthIntrinsic, depth_profile)) {
+                return param;
+            }
+        }
+    }
+    catch(const std::exception &) {
+    }
+    catch(...) {
+    }
+    return std::nullopt;
+}
+
+Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::Device> &device,
+                             const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
+                             const std::shared_ptr<ob::VideoStreamProfile> &depth_profile) {
     Json::Value calibration;
     calibration["available"] = false;
     calibration["source"] = "orbbec_sdk";
     calibration["data"] = Json::objectValue;
+    Json::Value raw_list(Json::arrayValue);
     try {
-        const auto camera_param = pipeline.getCameraParam();
-        Json::Value data;
-        data["depth_intrinsic"] = intrinsic_json(camera_param.depthIntrinsic);
-        data["rgb_intrinsic"] = intrinsic_json(camera_param.rgbIntrinsic);
-        data["depth_distortion"] = distortion_json(camera_param.depthDistortion);
-        data["rgb_distortion"] = distortion_json(camera_param.rgbDistortion);
-        data["d2c_transform"] = transform_json(camera_param.transform);
-        data["is_mirrored"] = camera_param.isMirrored;
-        calibration["available"] = true;
+        OBCameraParam camera_param{};
+        bool has_profile_param = false;
+        if(color_profile && depth_profile) {
+            try {
+                camera_param = pipeline.getCameraParamWithProfile(color_profile->width(), color_profile->height(), depth_profile->width(),
+                                                                  depth_profile->height());
+                has_profile_param = true;
+            }
+            catch(const std::exception &) {
+            }
+            catch(...) {
+            }
+        }
+        fill_missing_profile_calibration(camera_param, color_profile, depth_profile);
+        const auto exact_param = exact_profile_camera_param_from_device(device, color_profile, depth_profile, raw_list);
+        if(exact_param && !camera_param_complete(camera_param)) {
+            camera_param = *exact_param;
+            has_profile_param = true;
+            calibration["source_detail"] = "device_calibration_list_exact_profile";
+        }
+        if(!has_profile_param && !camera_param_complete(camera_param)) {
+            camera_param = pipeline.getCameraParam();
+            fill_missing_profile_calibration(camera_param, color_profile, depth_profile);
+        }
+
+        Json::Value data = camera_param_data_json(camera_param);
+        if(!raw_list.empty()) {
+            data["raw_camera_param_list"] = raw_list;
+        }
+        const bool depth_ok = intrinsic_valid(camera_param.depthIntrinsic);
+        const bool rgb_ok = intrinsic_valid(camera_param.rgbIntrinsic);
+        const bool transform_ok = transform_valid(camera_param.transform);
+        calibration["available"] = depth_ok && rgb_ok && transform_ok;
+        calibration["profile_aware"] = has_profile_param;
+        if(!depth_ok || !rgb_ok || !transform_ok) {
+            calibration["warning"] = "incomplete_calibration";
+        }
         calibration["data"] = data;
     }
     catch(const std::exception &) {
+        calibration["available"] = false;
+    }
+    catch(...) {
         calibration["available"] = false;
     }
     return calibration;
@@ -1492,7 +1613,7 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     msg["device"] = device;
     msg["rgb_profile"] = profile_json(camera.color_profile, "encoded_video", camera.config.rgb_encoding.codec);
     msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
-    msg["calibration"] = calibration_json(*camera.pipeline);
+    msg["calibration"] = calibration_json(*camera.pipeline, camera.device, camera.color_profile, camera.depth_profile);
     return msg;
 }
 

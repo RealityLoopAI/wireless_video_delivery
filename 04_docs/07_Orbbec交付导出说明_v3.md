@@ -111,7 +111,7 @@ depth_aligned_to_rgb.mkv
 depth_aligned_to_rgb.json
 ```
 
-该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。
+该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。脚本会拒绝内参尺寸与当前视频/profile 不一致、D2C 外参缺失或全 0 的数据；如果 SDK 只给出某个分辨率组合的完整标定，应使用该已标定组合录制或先补齐目标分辨率对应的标定。
 
 ## 6. `depth_frames.csv`
 
