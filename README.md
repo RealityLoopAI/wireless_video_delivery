@@ -202,12 +202,14 @@ hotplug: scan every 2s, auto cam03/cam04, max active cameras 4
 field capacity: stable 2 full-spec streams on current Wi-Fi/receiver; 3 streams run with backpressure drops
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
-watchdog USB missing grace: 30s
+desktop idle-delay: 3600s
 dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 ```
 
 固定 `sender_id` 必须和设备名称对应，避免接收端把多台设备的数据混在一起。
 实际运行参数和系统缓冲告警以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
+
+当前桌面熄屏时间设置为 3600 秒，可通过 `./05_tools/set_desktop_screen_timeout.sh 3600` 重新应用。
 
 启动：
 
