@@ -202,6 +202,7 @@ hotplug: scan every 2s, auto cam03/cam04, max active cameras 4
 field capacity: stable 2 full-spec streams on current Wi-Fi/receiver; 3 streams run with backpressure drops
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
+watchdog USB missing grace: 30s
 dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 ```
 
