@@ -43,6 +43,10 @@ std::atomic<bool> g_running{true};
 std::mutex g_camera_lifecycle_mutex;
 constexpr uint16_t kDepthPreviewMinMm = 250;
 constexpr uint16_t kDepthPreviewMaxMm = 2500;
+constexpr size_t kMaxActiveCameras = 4;
+constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
+constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
+constexpr auto kHotplugLimitEventInterval = std::chrono::seconds(30);
 
 void handle_signal(int) {
     g_running = false;
@@ -125,6 +129,9 @@ struct CameraLiveStats {
 struct CameraRuntime {
     mutable std::mutex mutex;
     CameraConfig config;
+    std::string device_serial;
+    std::string device_uid;
+    std::string device_connection_type;
     std::shared_ptr<ob::Device> device;
     std::unique_ptr<ob::Pipeline> pipeline;
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
@@ -133,6 +140,8 @@ struct CameraRuntime {
     GstH264InputFormat encoder_input_format = GstH264InputFormat::Bgr;
     bool announced = false;
     bool online = false;
+    bool hotplug_dynamic = false;
+    bool reconnect_enabled = true;
     bool hardware_encoder = false;
     uint32_t reconnect_attempts = 0;
     uint32_t disconnects = 0;
@@ -170,6 +179,13 @@ struct MediaPacketJob {
 class LatestMediaQueue {
 public:
     explicit LatestMediaQueue(size_t slot_count) : slots_(slot_count) {}
+
+    size_t append_slots(size_t slot_count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const size_t first_slot = slots_.size();
+        slots_.resize(first_slot + slot_count);
+        return first_slot;
+    }
 
     bool publish(size_t slot_index, MediaPacketJob &&job) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -941,6 +957,52 @@ std::string paired_rgb_serial_for_depth_uid(const std::string &uid) {
     return "";
 }
 
+struct OrbbecDeviceIdentity {
+    uint32_t index = 0;
+    std::string serial;
+    std::string uid;
+    std::string paired_rgb_serial;
+    std::string connection_type;
+};
+
+std::vector<OrbbecDeviceIdentity> enumerate_orbbec_devices(ob::Context &ctx) {
+    std::vector<OrbbecDeviceIdentity> identities;
+    auto devices = ctx.queryDeviceList();
+    identities.reserve(devices->deviceCount());
+    for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
+        OrbbecDeviceIdentity identity;
+        identity.index = i;
+        identity.serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
+        identity.uid = devices->uid(i) ? devices->uid(i) : "";
+        identity.paired_rgb_serial = paired_rgb_serial_for_depth_uid(identity.uid);
+        identity.connection_type = devices->connectionType(i) ? devices->connectionType(i) : "";
+        identities.push_back(std::move(identity));
+    }
+    return identities;
+}
+
+bool device_identity_matches_config(const OrbbecDeviceIdentity &identity, const CameraConfig &camera) {
+    if(!camera.uid.empty() && identity.uid == camera.uid) {
+        return true;
+    }
+    if(!camera.serial_number.empty()
+       && (identity.serial == camera.serial_number || identity.paired_rgb_serial == camera.serial_number)) {
+        return true;
+    }
+    if(camera.uid.empty() && camera.serial_number.empty() && camera.device_index >= 0
+       && identity.index == static_cast<uint32_t>(camera.device_index)) {
+        return true;
+    }
+    return false;
+}
+
+std::string device_identity_summary(const OrbbecDeviceIdentity &identity) {
+    std::ostringstream oss;
+    oss << "index=" << identity.index << " serial=" << identity.serial << " uid=" << identity.uid
+        << " paired_rgb_serial=" << identity.paired_rgb_serial << " connection=" << identity.connection_type;
+    return oss.str();
+}
+
 std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devices) {
     if(!devices) {
         return "none";
@@ -1244,6 +1306,31 @@ bool camera_is_online(const CameraRuntime &camera) {
     return camera.online;
 }
 
+bool camera_reconnect_enabled(const CameraRuntime &camera) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    return camera.reconnect_enabled;
+}
+
+bool camera_counts_against_hotplug_limit(const CameraRuntime &camera) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    return camera.online || camera.reconnect_enabled;
+}
+
+bool camera_matches_identity(const CameraRuntime &camera, const OrbbecDeviceIdentity &identity) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    if(camera.hotplug_dynamic && !camera.online && !camera.reconnect_enabled) {
+        return false;
+    }
+    if(!camera.device_uid.empty() && camera.device_uid == identity.uid) {
+        return true;
+    }
+    if(!camera.device_serial.empty()
+       && (camera.device_serial == identity.serial || camera.device_serial == identity.paired_rgb_serial)) {
+        return true;
+    }
+    return device_identity_matches_config(identity, camera.config);
+}
+
 void set_camera_reconnect_delay(CameraRuntime &camera, std::chrono::steady_clock::time_point next_reconnect) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     camera.next_reconnect = next_reconnect;
@@ -1523,6 +1610,9 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.color_profile.reset();
     camera.depth_profile.reset();
     camera.device.reset();
+    camera.device_serial.clear();
+    camera.device_uid.clear();
+    camera.device_connection_type.clear();
     camera.online = false;
     camera.announced = false;
     camera.hardware_encoder = false;
@@ -1537,6 +1627,10 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     auto context = std::make_shared<ob::Context>();
 
     runtime.device = select_device(*context, runtime.config);
+    auto device_info = runtime.device->getDeviceInfo();
+    runtime.device_serial = device_info->serialNumber() ? device_info->serialNumber() : "";
+    runtime.device_uid = device_info->uid() ? device_info->uid() : "";
+    runtime.device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
     apply_color_controls(runtime, logger);
     runtime.pipeline = std::make_unique<ob::Pipeline>(runtime.device);
 
@@ -1628,6 +1722,7 @@ void publish_media_packet(LatestMediaQueue &media_queue, size_t slot_index, Came
 template <typename Sender>
 void mark_camera_disconnected(const AppConfig &config, CameraRuntime &camera, Sender &transport, Logger &logger,
                               std::mutex &transport_mutex, const std::string &error) {
+    const bool should_reconnect = camera_reconnect_enabled(camera);
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
         camera.disconnects++;
@@ -1637,7 +1732,12 @@ void mark_camera_disconnected(const AppConfig &config, CameraRuntime &camera, Se
     logger.error("camera disconnected camera_id=" + camera.config.camera_id + " error=" + error);
     send_status_locked(transport, logger, transport_mutex, camera_offline_message(config, camera.config.camera_id, error));
     stop_camera(camera, logger);
-    set_camera_reconnect_delay(camera, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    if(should_reconnect) {
+        set_camera_reconnect_delay(camera, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    }
+    else {
+        logger.info("hotplug camera retired camera_id=" + camera.config.camera_id + " reason=" + error);
+    }
 }
 
 template <typename Sender>
@@ -1726,15 +1826,21 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
 std::mutex g_encoder_create_mutex;
 
 template <typename Sender>
-void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t camera_index, LatestMediaQueue &media_queue,
+void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &media_queue,
                         Sender &transport, Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
-    const size_t rgb_slot = camera_index * 2;
-    const size_t depth_slot = camera_index * 2 + 1;
+    const size_t rgb_slot = slot_base;
+    const size_t depth_slot = slot_base + 1;
 
     while(g_running) {
         const auto loop_now = std::chrono::steady_clock::now();
         if(!camera_is_online(camera)) {
-            retry_camera_reconnect(config, camera, transport, logger, transport_mutex, loop_now);
+            if(camera_reconnect_enabled(camera)) {
+                retry_camera_reconnect(config, camera, transport, logger, transport_mutex, loop_now);
+            }
+            else {
+                logger.info("camera worker exiting camera_id=" + camera.config.camera_id + " reason=reconnect_disabled");
+                return;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
@@ -1972,6 +2078,213 @@ CameraSummary snapshot_camera_summary(const CameraRuntime &camera) {
     return summary;
 }
 
+struct HotplugRetryCooldown {
+    std::string device_key;
+    std::chrono::steady_clock::time_point retry_after = std::chrono::steady_clock::now();
+};
+
+std::string hotplug_device_key(const OrbbecDeviceIdentity &identity) {
+    if(!identity.uid.empty()) {
+        return "uid:" + identity.uid;
+    }
+    if(!identity.serial.empty()) {
+        return "serial:" + identity.serial;
+    }
+    if(!identity.paired_rgb_serial.empty()) {
+        return "paired_rgb_serial:" + identity.paired_rgb_serial;
+    }
+    return "index:" + std::to_string(identity.index);
+}
+
+bool hotplug_retry_allowed(const std::vector<HotplugRetryCooldown> &cooldowns, const std::string &device_key,
+                           std::chrono::steady_clock::time_point now) {
+    for(const auto &cooldown : cooldowns) {
+        if(cooldown.device_key == device_key && now < cooldown.retry_after) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void set_hotplug_retry_cooldown(std::vector<HotplugRetryCooldown> &cooldowns, const std::string &device_key,
+                                std::chrono::steady_clock::time_point retry_after) {
+    for(auto &cooldown : cooldowns) {
+        if(cooldown.device_key == device_key) {
+            cooldown.retry_after = retry_after;
+            return;
+        }
+    }
+    HotplugRetryCooldown cooldown;
+    cooldown.device_key = device_key;
+    cooldown.retry_after = retry_after;
+    cooldowns.push_back(std::move(cooldown));
+}
+
+std::optional<int> numeric_cam_suffix(const std::string &camera_id) {
+    if(camera_id.size() <= 3 || camera_id.rfind("cam", 0) != 0) {
+        return std::nullopt;
+    }
+    const auto suffix = camera_id.substr(3);
+    if(!std::all_of(suffix.begin(), suffix.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+        return std::nullopt;
+    }
+    try {
+        return std::stoi(suffix);
+    }
+    catch(const std::exception &) {
+        return std::nullopt;
+    }
+}
+
+int initial_hotplug_camera_number(const AppConfig &config) {
+    int next_number = 1;
+    for(const auto &camera : config.cameras) {
+        if(auto suffix = numeric_cam_suffix(camera.camera_id)) {
+            next_number = std::max(next_number, *suffix + 1);
+        }
+    }
+    return next_number;
+}
+
+std::string format_hotplug_camera_id(int camera_number) {
+    std::ostringstream oss;
+    oss << "cam" << std::setw(2) << std::setfill('0') << camera_number;
+    return oss.str();
+}
+
+CameraConfig make_hotplug_camera_config(const AppConfig &config, const OrbbecDeviceIdentity &identity,
+                                        const std::string &camera_id) {
+    CameraConfig camera = config.cameras.front();
+    camera.camera_id = camera_id;
+    camera.serial_number.clear();
+    camera.uid.clear();
+    camera.device_index = static_cast<int>(identity.index);
+    if(!identity.uid.empty()) {
+        camera.uid = identity.uid;
+    }
+    else if(!identity.paired_rgb_serial.empty()) {
+        camera.serial_number = identity.paired_rgb_serial;
+    }
+    else if(!identity.serial.empty()) {
+        camera.serial_number = identity.serial;
+    }
+    return camera;
+}
+
+size_t active_hotplug_camera_count(const std::vector<std::unique_ptr<CameraRuntime>> &cameras) {
+    size_t active = 0;
+    for(const auto &camera : cameras) {
+        if(camera_counts_against_hotplug_limit(*camera)) {
+            ++active;
+        }
+    }
+    return active;
+}
+
+bool device_already_claimed(const std::vector<std::unique_ptr<CameraRuntime>> &cameras, const OrbbecDeviceIdentity &identity) {
+    for(const auto &camera : cameras) {
+        if(camera_matches_identity(*camera, identity)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<OrbbecDeviceIdentity> query_hotplug_device_identities() {
+    std::lock_guard<std::mutex> lifecycle_lock(g_camera_lifecycle_mutex);
+    ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
+    ob::Context context;
+    return enumerate_orbbec_devices(context);
+}
+
+template <typename Sender>
+void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                          std::vector<std::thread> &camera_threads, LatestMediaQueue &media_queue, Sender &transport,
+                          Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval,
+                          int &next_hotplug_camera_number, std::vector<HotplugRetryCooldown> &retry_cooldowns,
+                          std::chrono::steady_clock::time_point &next_limit_event) {
+    std::vector<OrbbecDeviceIdentity> identities;
+    try {
+        identities = query_hotplug_device_identities();
+    }
+    catch(const ob::Error &e) {
+        logger.warn("hotplug device scan failed: " + ob_error_text(e));
+        return;
+    }
+    catch(const std::exception &e) {
+        logger.warn(std::string("hotplug device scan failed: ") + e.what());
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    for(const auto &identity : identities) {
+        if(device_already_claimed(cameras, identity)) {
+            continue;
+        }
+
+        if(active_hotplug_camera_count(cameras) >= kMaxActiveCameras) {
+            if(now >= next_limit_event) {
+                const std::string message = "hotplug camera ignored because max active camera count is "
+                                            + std::to_string(kMaxActiveCameras) + ": " + device_identity_summary(identity);
+                logger.warn(message);
+                send_status_locked(transport, logger, transport_mutex,
+                                   event_message(config, "warning", "hotplug_camera_ignored", message));
+                next_limit_event = now + kHotplugLimitEventInterval;
+            }
+            continue;
+        }
+
+        const auto device_key = hotplug_device_key(identity);
+        if(!hotplug_retry_allowed(retry_cooldowns, device_key, now)) {
+            continue;
+        }
+
+        const auto camera_id = format_hotplug_camera_id(next_hotplug_camera_number);
+        auto runtime = std::make_unique<CameraRuntime>();
+        runtime->config = make_hotplug_camera_config(config, identity, camera_id);
+        runtime->hotplug_dynamic = true;
+        runtime->reconnect_enabled = false;
+
+        try {
+            start_camera_runtime(*runtime, logger);
+        }
+        catch(const ob::Error &e) {
+            const std::string error = ob_error_text(e);
+            stop_camera(*runtime, logger);
+            set_hotplug_retry_cooldown(retry_cooldowns, device_key, now + kHotplugRetryCooldown);
+            const std::string message = "hotplug camera start failed camera_id=" + camera_id + " device="
+                                        + device_identity_summary(identity) + " error=" + error;
+            logger.warn(message);
+            send_status_locked(transport, logger, transport_mutex,
+                               event_message(config, "warning", "hotplug_camera_start_failed", message));
+            continue;
+        }
+        catch(const std::exception &e) {
+            const std::string error = e.what();
+            stop_camera(*runtime, logger);
+            set_hotplug_retry_cooldown(retry_cooldowns, device_key, now + kHotplugRetryCooldown);
+            const std::string message = "hotplug camera start failed camera_id=" + camera_id + " device="
+                                        + device_identity_summary(identity) + " error=" + error;
+            logger.warn(message);
+            send_status_locked(transport, logger, transport_mutex,
+                               event_message(config, "warning", "hotplug_camera_start_failed", message));
+            continue;
+        }
+
+        const size_t slot_base = media_queue.append_slots(2);
+        CameraRuntime *camera_ptr = runtime.get();
+        cameras.push_back(std::move(runtime));
+        camera_threads.emplace_back([&, camera_ptr, slot_base] {
+            camera_worker_loop(config, *camera_ptr, slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
+        });
+        logger.info("hotplug camera started camera_id=" + camera_id + " slot_base=" + std::to_string(slot_base)
+                    + " device=" + device_identity_summary(identity));
+        send_status_locked(transport, logger, transport_mutex,
+                           event_message(config, "info", "camera_connected", "hotplug camera pipeline started", camera_id));
+        ++next_hotplug_camera_number;
+    }
+}
+
 template <typename Sender>
 void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &logger) {
     const bool display_available = std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
@@ -2012,14 +2325,19 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     std::vector<std::thread> camera_threads;
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
-        camera_threads.emplace_back([&, i] {
-            camera_worker_loop(config, *cameras[i], i, media_queue, transport, logger, transport_mutex, preview_interval);
+        const size_t slot_base = i * 2;
+        camera_threads.emplace_back([&, i, slot_base] {
+            camera_worker_loop(config, *cameras[i], slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
         });
     }
 
     auto next_heartbeat = std::chrono::steady_clock::now();
     auto next_perf_log = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     auto next_preview = std::chrono::steady_clock::now();
+    auto next_hotplug_scan = std::chrono::steady_clock::now() + kHotplugScanInterval;
+    auto next_hotplug_limit_event = std::chrono::steady_clock::now();
+    int next_hotplug_camera_number = initial_hotplug_camera_number(config);
+    std::vector<HotplugRetryCooldown> hotplug_retry_cooldowns;
     const auto stop_at = args.run_seconds > 0 ? started + std::chrono::seconds(args.run_seconds) : std::chrono::steady_clock::time_point::max();
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
@@ -2043,6 +2361,11 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 record_preview_ms(*camera, elapsed_ms(preview_started, std::chrono::steady_clock::now()));
             }
             next_preview = now + preview_interval;
+        }
+        if(now >= next_hotplug_scan) {
+            scan_hotplug_cameras(config, cameras, camera_threads, media_queue, transport, logger, transport_mutex, preview_interval,
+                                 next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
+            next_hotplug_scan = now + kHotplugScanInterval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
