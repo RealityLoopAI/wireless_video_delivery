@@ -113,6 +113,8 @@ depth_aligned_to_rgb.json
 
 该脚本使用 `calibration.json` 中的 RGB/Depth 内参、畸变参数和 `d2c_transform`。输出分辨率与 RGB 相同，像素格式仍为 `gray16le`，深度值单位沿用 `depth_profile.depth_scale`。成功后会更新 `calibration.json.aligned_depth`。脚本会拒绝内参尺寸与当前视频/profile 不一致、D2C 外参缺失或全 0 的数据；如果 SDK 只给出某个分辨率组合的完整标定，应使用该已标定组合录制或先补齐目标分辨率对应的标定。
 
+当前 RK3588 现场已验证的空间对齐采集组合是 `RGB 640x480 + Depth 640x400`。发送端应使用 `06_configs/sender_rk3588-01_two_cameras_align.json`，并在录制前运行 `05_tools/check_sender_alignment_ready.sh` 确认接收端状态中 `calibration_available=true`。默认高画质 `RGB 1920x1080 + Depth 640x400` 不作为 aligned depth 交付录制规格。
+
 ## 6. `depth_frames.csv`
 
 导出的 CSV 采用下游方案类似字段：
