@@ -1699,13 +1699,13 @@ void preview_frame(const CameraRuntime &camera, bool preview_enabled) {
     if(initialized_windows.insert(window_name).second) {
         const int window_index = next_window_index++;
         cv::namedWindow(window_name, cv::WINDOW_NORMAL);
-        cv::resizeWindow(window_name, 960, 360);
-        cv::moveWindow(window_name, 80 + (window_index % 2) * 1000, 80 + (window_index / 2) * 420);
+        cv::resizeWindow(window_name, 900, 300);
+        cv::moveWindow(window_name, 70, 60 + window_index * 340);
     }
     cv::Mat rgb_small;
     cv::Mat depth_small;
-    cv::resize(bgr, rgb_small, cv::Size(480, 360));
-    cv::resize(depth_color, depth_small, cv::Size(480, 360));
+    cv::resize(bgr, rgb_small, cv::Size(450, 300));
+    cv::resize(depth_color, depth_small, cv::Size(450, 300));
     cv::Mat wall;
     cv::hconcat(rgb_small, depth_small, wall);
     cv::imshow(window_name, wall);
