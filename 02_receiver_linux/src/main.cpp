@@ -47,7 +47,8 @@ constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 640;
 constexpr uint32_t kRgbMainPreviewWidth = 0; // 0 keeps the source RGB resolution for the selected main preview.
-constexpr uint32_t kRgbPreviewFps = 30;
+constexpr uint32_t kRgbPreviewFps = 10;
+constexpr uint32_t kRgbMainPreviewFps = 15;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 12;
@@ -63,6 +64,7 @@ constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
+constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 
 std::atomic<bool> g_running{true};
 
@@ -937,7 +939,13 @@ public:
         stop();
     }
 
-    bool start(const Config &cfg, const std::string &key, uint32_t width, uint32_t height, uint32_t target_width, Logger &logger) {
+    bool start(const Config &cfg,
+               const std::string &key,
+               uint32_t width,
+               uint32_t height,
+               uint32_t target_width,
+               uint32_t preview_fps,
+               Logger &logger) {
         stop();
         key_ = key;
         source_width_ = width;
@@ -977,8 +985,8 @@ public:
                 close(fd);
             }
 
-            const std::string scale = target_width == 0 ? "fps=" + std::to_string(kRgbPreviewFps)
-                                                        : "fps=" + std::to_string(kRgbPreviewFps) + ",scale=" + std::to_string(target_width) + ":-2";
+            const std::string scale = target_width == 0 ? "fps=" + std::to_string(preview_fps)
+                                                        : "fps=" + std::to_string(preview_fps) + ",scale=" + std::to_string(target_width) + ":-2";
             execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
                    "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
                    "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
@@ -2145,6 +2153,7 @@ struct CameraState {
     bool last_announce_live = false;
     uint64_t last_announce_received_us = 0;
     uint64_t last_announce_cache_save_us = 0;
+    uint64_t last_status_log_us = 0;
     std::mutex segment_mutex;
     bool segment_active = false;
     bool segment_finalizing = false;
@@ -2635,6 +2644,9 @@ public:
         if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
             return std::nullopt;
         }
+        if(main_preview_key_.empty()) {
+            main_preview_key_ = key;
+        }
         auto &cam = *it->second;
         if(key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
             const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
@@ -2753,6 +2765,7 @@ private:
         const auto type = json_string_field(json, "message_type").value_or("unknown");
         const auto sender_id = json_string_field(json, "sender_id").value_or("");
         const auto camera_id = json_string_field(json, "camera_id").value_or("");
+        bool should_log_status = type != "heartbeat" && type != "sender_hello";
 
         if(!sender_id.empty() && !camera_id.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -2762,6 +2775,13 @@ private:
             auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
             const auto received_us = now_us();
             cam.last_status_us = received_us;
+            if(type == "heartbeat" || type == "camera_announce" || type == "camera_offline") {
+                should_log_status = cam.last_status_log_us == 0 ||
+                                    received_us >= cam.last_status_log_us + kRoutineStatusLogMinIntervalUs;
+                if(should_log_status) {
+                    cam.last_status_log_us = received_us;
+                }
+            }
             if(type == "camera_announce") {
                 cam.last_announce_json = json;
                 cam.last_announce_live = true;
@@ -2801,8 +2821,10 @@ private:
             }
         }
 
-        logger_.info("status " + type + " from=" + peer_endpoint + " sender=" + sender_id
-                     + (camera_id.empty() ? "" : " camera=" + camera_id));
+        if(should_log_status) {
+            logger_.info("status " + type + " from=" + peer_endpoint + " sender=" + sender_id
+                         + (camera_id.empty() ? "" : " camera=" + camera_id));
+        }
     }
 
     bool feed_rgb_preview_decoder_locked(CameraState &cam,
@@ -2810,6 +2832,7 @@ private:
                                          bool has_idr,
                                          std::unique_ptr<RgbPreviewDecoder> &decoder,
                                          uint32_t target_width,
+                                         uint32_t preview_fps,
                                          const std::string &decoder_key,
                                          uint32_t &preview_width,
                                          uint32_t &preview_height,
@@ -2818,7 +2841,7 @@ private:
             if(!decoder) {
                 decoder = std::make_unique<RgbPreviewDecoder>();
             }
-            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, logger_);
+            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps, logger_);
             if(!cam.rgb_preview_prefix_h264.empty()) {
                 if(!decoder->write_packet(cam.rgb_preview_prefix_h264)) {
                     cleanup_rgb_decoder_async(std::move(decoder));
@@ -2859,10 +2882,10 @@ private:
             return;
         }
 
-        feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, cam.key, cam.rgb_preview_width,
+        feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, kRgbPreviewFps, cam.key, cam.rgb_preview_width,
                                         cam.rgb_preview_height, cam.rgb_preview_us);
         if(cam.key == main_preview_key_) {
-            feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, cam.key + ":main",
+            feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, kRgbMainPreviewFps, cam.key + ":main",
                                             cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }
         else if(cam.main_rgb_decoder) {

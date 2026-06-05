@@ -1,5 +1,6 @@
 12_build*/
 08_reports/*_logs/
+08_reports/frontend_snapshot_*/
 Log/
 11_third_party/orbbec/
 *.zip

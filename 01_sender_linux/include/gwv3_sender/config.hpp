@@ -82,7 +82,6 @@ struct AppConfig {
     PreviewConfig preview;
     LoggingConfig logging;
     int heartbeat_interval_ms = 1000;
-    bool swap_depth_between_cameras = false;
     std::vector<CameraConfig> cameras;
 };
 

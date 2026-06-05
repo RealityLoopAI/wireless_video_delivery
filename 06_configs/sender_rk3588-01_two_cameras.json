@@ -1,5 +1,5 @@
 {
-  "sender_id": "rk3588-ubuntu",
+  "sender_id": "orangepi5pro-66-133",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -16,7 +16,6 @@
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
-  "swap_depth_between_cameras": true,
   "preview": {
     "enabled": true,
     "fps": 10
@@ -28,7 +27,7 @@
   "cameras": [
     {
       "camera_id": "cam02",
-      "serial_number": "AY2MC3100Z8",
+      "serial_number": "AY2MC31010W",
       "device_index": 1,
       "rgb_profile": {
         "width": 1920,
@@ -57,7 +56,7 @@
     },
     {
       "camera_id": "cam01",
-      "serial_number": "AY2M54302ZH",
+      "serial_number": "AY2M5430050",
       "device_index": 0,
       "validate_rgb_mjpeg": true,
       "rgb_profile": {

@@ -24,6 +24,7 @@
 11. 发送端和接收端一键启动、停止、状态脚本。
 12. 接收端 Orbbec 兼容交付导出工具。
 13. 发送端一键脚本预检：配置、SDK、相机、GStreamer 编码器、接收端路由、Wi-Fi 链路信息、USB/TCP 缓冲告警和当前设备 5GHz Wi-Fi guard。
+14. 接收端 systemd 用户服务自启动、异常自动重启、日志轮转和 Web 访问日志降噪。
 
 源码仓库默认不包含或尚未完成：
 
@@ -118,9 +119,7 @@
 6. `04_docs/07_Orbbec交付导出说明_v3.md`
 7. `04_docs/06_发送端运行使用手册_v3.md`
 
-发送端默认配置当前使用固定 `sender_id=rk3588-ubuntu`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y16 -> zlib`，双路默认启用 `swap_depth_between_cameras=true`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
-
-如需让接收端录制完成后运行脚本生成 RGB 坐标系下的 `depth_aligned_to_rgb.mkv`，发送端应使用对齐采集配置 `06_configs/sender_rk3588-01_two_cameras_align.json`，规格为 `RGB 640x480@30 + Depth 640x400@30`。启动入口为 `05_tools/start_sender_align.sh` 或 `05_tools/start_sender_align_preview.sh`；录制前运行 `05_tools/check_sender_alignment_ready.sh`，确认接收端状态中目标相机 `calibration_available=true` 且 announce 尺寸匹配。
+发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y16 -> zlib`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
 
 2026-05-29 当前现场容量结论：这台 RK3588 发送端本机算力按实测约可支撑 5-6 路同规格采集/编码/发送处理，但在当前 Wi-Fi 与接收端组合下，端到端稳定上限是 2 路满规格；3 路可运行但 TCP Send-Q 会接近 4 MiB 上限并出现 backpressure 丢包，4 路仅表示发送端逻辑支持，不建议在当前无线链路下作为稳定配置。
 
@@ -192,36 +191,20 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 06_configs/sender_rk3588-01_two_cameras.json
 ```
 
-RGB/Depth 对齐采集配置：
-
-```text
-06_configs/sender_rk3588-01_two_cameras_align.json
-```
-
 默认规格：
 
 ```text
-sender_id: rk3588-ubuntu
+sender_id: orangepi5pro-66-133
 camera_id: cam01 / cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 640x400@30 zlib
-Depth remap: swap_depth_between_cameras=true
 hotplug: scan every 2s, auto cam03/cam04, max active cameras 4
 field capacity: stable 2 full-spec streams on current Wi-Fi/receiver; 3 streams run with backpressure drops
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
 desktop idle-delay: 3600s
 dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
-```
-
-对齐采集规格：
-
-```text
-RGB: 640x480@30 H.264 4Mbps
-Depth: 640x400@30 zlib
-receiver-side alignment: run receiver/downstream script after recording
-pre-recording check: ./05_tools/check_sender_alignment_ready.sh
 ```
 
 固定 `sender_id` 必须和设备名称对应，避免接收端把多台设备的数据混在一起。
@@ -239,14 +222,6 @@ pre-recording check: ./05_tools/check_sender_alignment_ready.sh
 
 ```bash
 ./05_tools/start_sender_preview.sh
-```
-
-切换到 RGB/Depth 对齐采集模式：
-
-```bash
-./05_tools/stop_sender.sh
-./05_tools/start_sender_align_preview.sh
-./05_tools/check_sender_alignment_ready.sh
 ```
 
 查看状态：

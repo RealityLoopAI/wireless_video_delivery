@@ -31,8 +31,11 @@ def _request(method: str, path: str) -> Any:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return INDEX_HTML.read_text(encoding="utf-8")
+def index() -> HTMLResponse:
+    return HTMLResponse(
+        content=INDEX_HTML.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/status")

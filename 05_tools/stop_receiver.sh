@@ -3,6 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/12_build"
+RECEIVER_UNIT="gwv3-gemini-receiver.service"
+WEB_UNIT="gwv3-web-monitor.service"
+
+systemd_user_available() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+
+stop_unit_if_active() {
+  local name="$1"
+  local unit="$2"
+  local file="$3"
+  if systemd_user_available && systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+    systemctl --user stop "$unit"
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    rm -f "$file"
+    echo "$name 已停止"
+    return 0
+  fi
+  return 1
+}
 
 collect_descendants() {
   local pid="$1"
@@ -56,5 +76,5 @@ stop_pid_file() {
   rm -f "$file"
 }
 
-stop_pid_file "Web 监控" "$BUILD_DIR/web_monitor.pid"
-stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1
+stop_unit_if_active "Web 监控" "$WEB_UNIT" "$BUILD_DIR/web_monitor.pid" || stop_pid_file "Web 监控" "$BUILD_DIR/web_monitor.pid"
+stop_unit_if_active "C++ 接收端" "$RECEIVER_UNIT" "$BUILD_DIR/receiver.pid" || stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1

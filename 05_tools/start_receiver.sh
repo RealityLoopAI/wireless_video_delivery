@@ -11,6 +11,9 @@ RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
 WEB_DIR="$ROOT_DIR/09_web_monitor"
 VENV="$WEB_DIR/.venv"
+RECEIVER_UNIT="gwv3-gemini-receiver.service"
+WEB_UNIT="gwv3-web-monitor.service"
+MAX_LOG_BYTES=$((256 * 1024 * 1024))
 
 fail() {
   echo "接收端启动失败：$1" >&2
@@ -47,6 +50,102 @@ if [[ "$WEB_DISPLAY_HOST" == "0.0.0.0" ]]; then
 fi
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/08_reports/receiver_logs"
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+rotate_log_if_large() {
+  local path="$1"
+  [[ -f "$path" ]] || return 0
+  local size
+  size="$(stat -c '%s' "$path" 2>/dev/null || echo 0)"
+  if ((size > MAX_LOG_BYTES)); then
+    local archive_dir="$ROOT_DIR/08_reports/receiver_logs/archive"
+    local stamp
+    stamp="$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$archive_dir"
+    mv "$path" "$archive_dir/$(basename "$path").$stamp"
+    : > "$path"
+  fi
+}
+
+systemd_user_available() {
+  command -v systemd-run >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+
+unit_active() {
+  systemctl --user is-active --quiet "$1" 2>/dev/null
+}
+
+unit_installed() {
+  systemctl --user cat "$1" >/dev/null 2>&1
+}
+
+unit_main_pid() {
+  systemctl --user show "$1" --property=MainPID --value 2>/dev/null | awk '{print $1}'
+}
+
+write_unit_pid() {
+  local unit="$1"
+  local pid_file="$2"
+  local pid
+  for _ in {1..30}; do
+    pid="$(unit_main_pid "$unit")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 0)); then
+      echo "$pid" > "$pid_file"
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+start_systemd_unit() {
+  local name="$1"
+  local unit="$2"
+  local pid_file="$3"
+  local workdir="$4"
+  local command="$5"
+  if unit_active "$unit"; then
+    write_unit_pid "$unit" "$pid_file" || true
+    echo "$name 已经运行，PID=$(cat "$pid_file" 2>/dev/null || echo unknown)"
+    return 0
+  fi
+  systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+  systemd-run --user --unit="$unit" --collect \
+    --property=Restart=on-failure \
+    --property=RestartSec=2 \
+    --property=WorkingDirectory="$workdir" \
+    /usr/bin/env bash -lc "$command" >/dev/null
+  write_unit_pid "$unit" "$pid_file" || fail "$name 已启动但无法读取 systemd MainPID"
+  echo "$name 已启动，PID=$(cat "$pid_file")"
+}
+
+start_installed_unit() {
+  local name="$1"
+  local unit="$2"
+  local pid_file="$3"
+  systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+  systemctl --user start "$unit"
+  write_unit_pid "$unit" "$pid_file" || fail "$name 已启动但无法读取 systemd MainPID"
+  echo "$name 已启动，PID=$(cat "$pid_file")"
+}
+
+start_legacy_background() {
+  local name="$1"
+  local pid_file="$2"
+  local workdir="$3"
+  shift 3
+  cd "$workdir"
+  setsid nohup "$@" &
+  echo "$!" > "$pid_file"
+  echo "$name 已启动，PID=$(cat "$pid_file")"
+}
+
+rotate_log_if_large "$RECEIVER_STDOUT"
+rotate_log_if_large "$WEB_STDOUT"
+rotate_log_if_large "$ROOT_DIR/08_reports/receiver_logs/receiver.log"
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DGWV3_BUILD_RECEIVER=ON -DGWV3_BUILD_SENDER=OFF >/dev/null
 cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null
 [[ -x "$BIN" ]] || fail "接收端可执行文件不存在 $BIN"
@@ -56,20 +155,41 @@ if [[ ! -x "$VENV/bin/python" ]]; then
 fi
 "$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
 
-if [[ -f "$RECEIVER_PID" ]] && kill -0 "$(cat "$RECEIVER_PID")" 2>/dev/null; then
+if systemd_user_available && unit_active "$RECEIVER_UNIT"; then
+  write_unit_pid "$RECEIVER_UNIT" "$RECEIVER_PID" || true
+  echo "C++ 接收端已经运行，PID=$(cat "$RECEIVER_PID" 2>/dev/null || echo unknown)"
+elif [[ -f "$RECEIVER_PID" ]] && kill -0 "$(cat "$RECEIVER_PID")" 2>/dev/null; then
   echo "C++ 接收端已经运行，PID=$(cat "$RECEIVER_PID")"
 else
-  cd "$ROOT_DIR"
-  setsid nohup "$BIN" --config "$CONFIG" >>"$RECEIVER_STDOUT" 2>&1 &
-  echo "$!" > "$RECEIVER_PID"
-  echo "C++ 接收端已启动，PID=$(cat "$RECEIVER_PID")"
+  if systemd_user_available; then
+    if unit_installed "$RECEIVER_UNIT"; then
+      start_installed_unit "C++ 接收端" "$RECEIVER_UNIT" "$RECEIVER_PID"
+    else
+      start_systemd_unit "C++ 接收端" "$RECEIVER_UNIT" "$RECEIVER_PID" "$ROOT_DIR" \
+        "exec $(shell_quote "$BIN") --config $(shell_quote "$CONFIG") >>$(shell_quote "$RECEIVER_STDOUT") 2>&1"
+    fi
+  else
+    start_legacy_background "C++ 接收端" "$RECEIVER_PID" "$ROOT_DIR" "$BIN" --config "$CONFIG" >>"$RECEIVER_STDOUT" 2>&1
+  fi
 fi
 
-if [[ -f "$WEB_PID" ]] && kill -0 "$(cat "$WEB_PID")" 2>/dev/null; then
+if systemd_user_available && unit_active "$WEB_UNIT"; then
+  write_unit_pid "$WEB_UNIT" "$WEB_PID" || true
+  echo "Web 监控已经运行，PID=$(cat "$WEB_PID" 2>/dev/null || echo unknown)"
+elif [[ -f "$WEB_PID" ]] && kill -0 "$(cat "$WEB_PID")" 2>/dev/null; then
   echo "Web 监控已经运行，PID=$(cat "$WEB_PID")"
 else
-  cd "$WEB_DIR"
-  GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" >>"$WEB_STDOUT" 2>&1 &
-  echo "$!" > "$WEB_PID"
+  if systemd_user_available; then
+    if unit_installed "$WEB_UNIT"; then
+      start_installed_unit "Web 监控" "$WEB_UNIT" "$WEB_PID"
+    else
+      start_systemd_unit "Web 监控" "$WEB_UNIT" "$WEB_PID" "$WEB_DIR" \
+        "export GWV3_RECEIVER_ADMIN=$(shell_quote "http://127.0.0.1:$ADMIN_PORT"); exec $(shell_quote "$VENV/bin/python") -m uvicorn server:app --host $(shell_quote "$WEB_BIND_IP") --port $(shell_quote "$WEB_PORT") --no-access-log >>$(shell_quote "$WEB_STDOUT") 2>&1"
+    fi
+  else
+    cd "$WEB_DIR"
+    GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" --no-access-log >>"$WEB_STDOUT" 2>&1 &
+    echo "$!" > "$WEB_PID"
+  fi
   echo "Web 监控已启动，PID=$(cat "$WEB_PID")，地址：http://$WEB_DISPLAY_HOST:$WEB_PORT"
 fi

@@ -168,7 +168,6 @@ struct CameraRuntime {
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
-    CameraRuntime *depth_remap_target = nullptr;
     CameraPerfStats perf;
     CameraLiveStats live;
 };
@@ -1695,17 +1694,15 @@ void preview_frame(const CameraRuntime &camera, bool preview_enabled) {
     }
     const std::string window_name = "Gemini Sender " + camera.config.camera_id;
     static std::set<std::string> initialized_windows;
-    static int next_window_index = 0;
     if(initialized_windows.insert(window_name).second) {
-        const int window_index = next_window_index++;
         cv::namedWindow(window_name, cv::WINDOW_NORMAL);
-        cv::resizeWindow(window_name, 900, 300);
-        cv::moveWindow(window_name, 70, 60 + window_index * 340);
+        cv::resizeWindow(window_name, 960, 360);
+        cv::moveWindow(window_name, 80, 80);
     }
     cv::Mat rgb_small;
     cv::Mat depth_small;
-    cv::resize(bgr, rgb_small, cv::Size(450, 300));
-    cv::resize(depth_color, depth_small, cv::Size(450, 300));
+    cv::resize(bgr, rgb_small, cv::Size(480, 360));
+    cv::resize(depth_color, depth_small, cv::Size(480, 360));
     cv::Mat wall;
     cv::hconcat(rgb_small, depth_small, wall);
     cv::imshow(window_name, wall);
@@ -1955,8 +1952,6 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
 
 std::mutex g_encoder_create_mutex;
 
-CameraRuntime *depth_target_camera(const AppConfig &config, CameraRuntime &source);
-
 template <typename Sender>
 void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &media_queue,
                         Sender &transport, Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
@@ -2131,7 +2126,6 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
         }
 
         if(depth) {
-            auto *depth_target = depth_target_camera(config, camera);
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
             std::vector<uint8_t> compressed_depth;
@@ -2149,7 +2143,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
             meta.stream_type = StreamType::depth_raw;
             meta.flags = has_system_timestamp;
             meta.sender_id = config.sender_id;
-            meta.camera_id = depth_target->config.camera_id;
+            meta.camera_id = camera.config.camera_id;
             meta.codec_or_compression = camera.config.depth_transport.compression;
             meta.frame_id = depth->index();
             meta.timestamp_us = depth_system_timestamp_us;
@@ -2167,7 +2161,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 const auto depth_preview_started = std::chrono::steady_clock::now();
                 auto depth_color = depth_to_color(depth);
                 record_depth_preview_ms(camera, elapsed_ms(depth_preview_started, std::chrono::steady_clock::now()));
-                set_latest_depth_color(*depth_target, depth_color);
+                set_latest_depth_color(camera, depth_color);
             }
         }
 
@@ -2186,29 +2180,6 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
             camera.next_preview = frame_now + preview_interval;
         }
     }
-}
-
-CameraRuntime *depth_target_camera(const AppConfig &config, CameraRuntime &source) {
-    if(!config.swap_depth_between_cameras || !camera_is_online(source) || source.depth_remap_target == nullptr
-       || !camera_is_online(*source.depth_remap_target)) {
-        return &source;
-    }
-    return source.depth_remap_target;
-}
-
-void configure_depth_remap_targets(const AppConfig &config, const std::vector<std::unique_ptr<CameraRuntime>> &cameras, Logger &logger) {
-    if(!config.swap_depth_between_cameras) {
-        return;
-    }
-    if(cameras.size() != 2) {
-        logger.warn("depth stream remap requested but disabled at runtime because camera_count=" + std::to_string(cameras.size()));
-        return;
-    }
-    cameras[0]->depth_remap_target = cameras[1].get();
-    cameras[1]->depth_remap_target = cameras[0].get();
-    logger.warn("depth stream remap enabled: " + cameras[0]->config.camera_id + " depth is sent/previewed as "
-                + cameras[1]->config.camera_id + ", " + cameras[1]->config.camera_id + " depth is sent/previewed as "
-                + cameras[0]->config.camera_id + " while both cameras are online");
 }
 
 struct CameraSummary {
@@ -2455,7 +2426,6 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
-    configure_depth_remap_targets(config, cameras, logger);
     LatestMediaQueue media_queue(cameras.size() * 2);
     std::mutex transport_mutex;
 

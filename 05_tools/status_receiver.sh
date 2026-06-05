@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/12_build"
 CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
+RECEIVER_UNIT="gwv3-gemini-receiver.service"
+WEB_UNIT="gwv3-web-monitor.service"
 
 read_config_field() {
   python3 - "$CONFIG" "$1" "$2" <<'PY'
@@ -22,18 +24,32 @@ PY
 
 ADMIN_PORT="$(read_config_field admin_port 18080)"
 
+systemd_user_available() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+
+unit_main_pid() {
+  systemctl --user show "$1" --property=MainPID --value 2>/dev/null | awk '{print $1}'
+}
+
 show_pid() {
   local name="$1"
   local file="$2"
-  if [[ -f "$file" ]] && kill -0 "$(cat "$file")" 2>/dev/null; then
+  local unit="${3:-}"
+  if [[ -n "$unit" ]] && systemd_user_available && systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+    local pid
+    pid="$(unit_main_pid "$unit")"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 0)) && echo "$pid" > "$file"
+    echo "$name 运行中，PID=${pid:-unknown}，systemd=$unit"
+  elif [[ -f "$file" ]] && kill -0 "$(cat "$file")" 2>/dev/null; then
     echo "$name 运行中，PID=$(cat "$file")"
   else
     echo "$name 未运行"
   fi
 }
 
-show_pid "C++ 接收端" "$BUILD_DIR/receiver.pid"
-show_pid "Web 监控" "$BUILD_DIR/web_monitor.pid"
+show_pid "C++ 接收端" "$BUILD_DIR/receiver.pid" "$RECEIVER_UNIT"
+show_pid "Web 监控" "$BUILD_DIR/web_monitor.pid" "$WEB_UNIT"
 
 ADMIN_PORT="$ADMIN_PORT" python3 - <<'PY'
 import json

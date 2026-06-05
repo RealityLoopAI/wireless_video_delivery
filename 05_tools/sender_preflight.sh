@@ -75,7 +75,6 @@ values = {
     "SEND_BUFFER_BYTES": top_transport.get("send_buffer_bytes", ""),
     "RECONNECT_INTERVAL_MS": top_transport.get("reconnect_interval_ms", ""),
     "HEARTBEAT_INTERVAL_MS": cfg.get("heartbeat_interval_ms", ""),
-    "SWAP_DEPTH_BETWEEN_CAMERAS": cfg.get("swap_depth_between_cameras", False),
     "RGB_WIDTH": rgb.get("width", ""),
     "RGB_HEIGHT": rgb.get("height", ""),
     "RGB_FPS": rgb.get("fps", ""),
@@ -229,7 +228,6 @@ echo "  sender_id: $SENDER_ID  version: ${SENDER_VERSION:-未指定}"
 echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
 echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_timeout=${SEND_TIMEOUT_MS:-未指定}ms  send_buffer=${SEND_BUFFER_BYTES:-未指定}B  reconnect_interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"
-echo "  depth_remap: swap_depth_between_cameras=${SWAP_DEPTH_BETWEEN_CAMERAS:-false}"
 echo "  camera_count: $CAMERA_COUNT"
 echo "  cameras: $CAMERA_SUMMARY"
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
