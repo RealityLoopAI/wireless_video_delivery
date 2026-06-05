@@ -74,6 +74,10 @@ struct LoggingConfig {
     size_t max_bytes = 10485760;
 };
 
+struct HotplugConfig {
+    bool enabled = true;
+};
+
 struct AppConfig {
     std::string sender_id;
     std::string sender_version = "3.0.0";
@@ -81,6 +85,7 @@ struct AppConfig {
     TransportConfig transport;
     PreviewConfig preview;
     LoggingConfig logging;
+    HotplugConfig hotplug;
     int heartbeat_interval_ms = 1000;
     std::vector<CameraConfig> cameras;
 };

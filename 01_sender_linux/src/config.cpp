@@ -156,6 +156,14 @@ AppConfig load_config(const std::string &path) {
         config.logging.max_bytes = static_cast<size_t>(optional_int(logging, "max_bytes", static_cast<int>(config.logging.max_bytes)));
     }
 
+    const auto &hotplug = root["hotplug"];
+    if(!hotplug.isNull()) {
+        if(!hotplug.isObject()) {
+            throw std::runtime_error("invalid object field: hotplug");
+        }
+        config.hotplug.enabled = optional_bool(hotplug, "enabled", config.hotplug.enabled);
+    }
+
     const auto &cameras = root["cameras"];
     if(!cameras.isArray()) {
         throw std::runtime_error("missing or invalid cameras array");

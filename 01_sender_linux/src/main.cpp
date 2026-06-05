@@ -1608,6 +1608,7 @@ Json::Value sender_hello(const AppConfig &config) {
     depth.append("zlib");
     capabilities["depth_compression"] = depth;
     capabilities["local_preview"] = config.preview.enabled;
+    capabilities["hotplug"] = config.hotplug.enabled;
     capabilities["media_protocol"] = config.transport.media_protocol;
     capabilities["status_protocol"] = config.transport.status_protocol;
     msg["capabilities"] = capabilities;
@@ -2476,6 +2477,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     auto next_hotplug_limit_event = std::chrono::steady_clock::now();
     int next_hotplug_camera_number = initial_hotplug_camera_number(config);
     std::vector<HotplugRetryCooldown> hotplug_retry_cooldowns;
+    if(!config.hotplug.enabled) {
+        logger.info("hotplug camera scan disabled by config");
+    }
     const auto stop_at = args.run_seconds > 0 ? started + std::chrono::seconds(args.run_seconds) : std::chrono::steady_clock::time_point::max();
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
@@ -2509,7 +2513,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             }
             next_preview = now + preview_interval;
         }
-        if(now >= next_hotplug_scan) {
+        if(config.hotplug.enabled && now >= next_hotplug_scan) {
             scan_hotplug_cameras(config, cameras, camera_threads, media_queue, transport, logger, transport_mutex, preview_interval,
                                  next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
             next_hotplug_scan = now + kHotplugScanInterval;
