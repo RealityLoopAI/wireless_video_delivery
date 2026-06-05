@@ -17,8 +17,8 @@
   },
   "heartbeat_interval_ms": 1000,
   "preview": {
-    "enabled": false,
-    "fps": 30
+    "enabled": true,
+    "fps": 10
   },
   "logging": {
     "directory": "08_reports/sender_logs",
@@ -27,8 +27,8 @@
   "cameras": [
     {
       "camera_id": "cam02",
-      "serial_number": "AY2M54301VE",
-      "device_index": 1,
+      "serial_number": "AY2MC31010W",
+      "device_index": 0,
       "rgb_profile": {
         "width": 1920,
         "height": 1080,
@@ -36,8 +36,8 @@
         "format": "mjpg"
       },
       "depth_profile": {
-        "width": 640,
-        "height": 400,
+        "width": 1280,
+        "height": 800,
         "fps": 30,
         "format": "y12"
       },

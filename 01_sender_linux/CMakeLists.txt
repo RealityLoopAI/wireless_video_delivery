@@ -66,3 +66,31 @@ add_custom_command(TARGET gemini_sender POST_BUILD
             "${ORBBEC_SDK_CONFIG}"
             "$<TARGET_FILE_DIR:gemini_sender>/OrbbecSDKConfig_v1.0.xml"
 )
+
+add_executable(orbbec_depth_probe
+    "${CMAKE_SOURCE_DIR}/05_tools/orbbec_depth_probe.cpp"
+)
+
+target_include_directories(orbbec_depth_probe PRIVATE
+    "${ORBBEC_SDK_INCLUDE_DIR}"
+)
+
+target_link_directories(orbbec_depth_probe PRIVATE
+    "${ORBBEC_SDK_LIBRARY_DIR}"
+)
+
+target_link_libraries(orbbec_depth_probe PRIVATE
+    OrbbecSDK
+)
+
+target_compile_options(orbbec_depth_probe PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+set_target_properties(orbbec_depth_probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
+    INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
+)

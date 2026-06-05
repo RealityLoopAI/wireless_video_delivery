@@ -39,7 +39,7 @@
         "width": 640,
         "height": 400,
         "fps": 30,
-        "format": "y16"
+        "format": "y12"
       },
       "rgb_encoding": {
         "codec": "h264",
@@ -69,7 +69,7 @@
         "width": 640,
         "height": 400,
         "fps": 30,
-        "format": "y16"
+        "format": "y12"
       },
       "rgb_encoding": {
         "codec": "h264",

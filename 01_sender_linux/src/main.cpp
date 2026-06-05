@@ -923,6 +923,10 @@ std::string ob_format_name(OBFormat format) {
         return "uyvy";
     case OB_FORMAT_Y16:
         return "y16";
+    case OB_FORMAT_Y11:
+        return "y11";
+    case OB_FORMAT_Y12:
+        return "y12";
     case OB_FORMAT_H264:
         return "h264";
     case OB_FORMAT_H265:
@@ -950,6 +954,12 @@ OBFormat requested_format(const std::string &format, OBFormat fallback) {
     }
     if(format == "y16") {
         return OB_FORMAT_Y16;
+    }
+    if(format == "y11") {
+        return OB_FORMAT_Y11;
+    }
+    if(format == "y12") {
+        return OB_FORMAT_Y12;
     }
     if(format.empty() || format == "default") {
         return fallback;

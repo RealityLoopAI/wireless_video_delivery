@@ -119,7 +119,11 @@
 6. `04_docs/07_Orbbec交付导出说明_v3.md`
 7. `04_docs/06_发送端运行使用手册_v3.md`
 
-发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y16 -> zlib`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
+发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y12 -> uint16 depth frame -> zlib`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
+
+2026-06-01 使用 `05_tools/orbbec_depth_probe.cpp` 对现场 `SV1301S_U3 / AY2MC31010W` 枚举确认：该相机最高 Depth profile 为 `1280x800@30 y11/y12`，当前默认 `640x400@30 y12` 是稳定发送档，不是最高深度分辨率档。`06_configs/sender_rk3588-01_cam02_depth_max.json` 提供单路最高 Depth 测试配置，用于容量验证，不作为默认双路稳定配置。
+
+2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认双路稳定配置不变。
 
 2026-05-29 当前现场容量结论：这台 RK3588 发送端本机算力按实测约可支撑 5-6 路同规格采集/编码/发送处理，但在当前 Wi-Fi 与接收端组合下，端到端稳定上限是 2 路满规格；3 路可运行但 TCP Send-Q 会接近 4 MiB 上限并出现 backpressure 丢包，4 路仅表示发送端逻辑支持，不建议在当前无线链路下作为稳定配置。
 
@@ -198,13 +202,23 @@ sender_id: orangepi5pro-66-133
 camera_id: cam01 / cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
-Depth: 640x400@30 zlib
+Depth: 640x400@30 y12 -> zlib
 hotplug: scan every 2s, auto cam03/cam04, max active cameras 4
 field capacity: stable 2 full-spec streams on current Wi-Fi/receiver; 3 streams run with backpressure drops
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
 desktop idle-delay: 3600s
 dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
+```
+
+最高 Depth 单路测试配置：
+
+```text
+06_configs/sender_rk3588-01_cam02_depth_max.json
+RGB: 1920x1080@30 H.264 12Mbps
+Depth: 1280x800@30 y12 -> zlib
+2026-06-05实测: RGB约30fps, Depth约30fps, 总网络约74.5Mbps, send failure为0
+用途: 单路容量和画质验证；双路默认配置仍保持 640x400@30 y12
 ```
 
 固定 `sender_id` 必须和设备名称对应，避免接收端把多台设备的数据混在一起。
