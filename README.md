@@ -223,7 +223,7 @@ Depth: 1280x800@30 y12 -> zlib
 用途: 单路容量和画质验证；双路默认配置仍保持 640x400@30 y12
 ```
 
-固定 `sender_id` 必须和设备名称对应，避免接收端把多台设备的数据混在一起。
+多发送端同时接入时，接收端以 `<sender_id>_<camera_id>` 作为唯一相机 key。固定 `sender_id` 必须和物理设备一一对应，不能为了本机 IP、当前网段或临时调试随意改名；同一个 key 被两台发送端复用会导致预览、录制控制和存储目录混写或互相覆盖。改动任何 `sender_id` / `camera_id` 前，先查接收端 `/api/status` 是否已有同名 live key，并以 `sender_preflight.sh` 的 ID conflict 提示为准。
 实际运行参数和系统缓冲告警以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
 
 当前桌面熄屏时间设置为 3600 秒，可通过 `./05_tools/set_desktop_screen_timeout.sh 3600` 重新应用。
