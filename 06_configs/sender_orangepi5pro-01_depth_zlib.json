@@ -39,8 +39,8 @@
         "format": "mjpg"
       },
       "depth_profile": {
-        "width": 640,
-        "height": 400,
+        "width": 320,
+        "height": 200,
         "fps": 30,
         "format": "y12"
       },
