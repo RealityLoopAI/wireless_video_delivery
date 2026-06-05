@@ -546,6 +546,27 @@
       }
       return `${value.toFixed(idx ? 1 : 0)} ${units[idx]}`;
     };
+    const pad2 = (value) => String(value).padStart(2, '0');
+    const formatBeijingDate = (date) => {
+      const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+      return `${beijing.getUTCFullYear()}-${pad2(beijing.getUTCMonth() + 1)}-${pad2(beijing.getUTCDate())} ` +
+        `${pad2(beijing.getUTCHours())}:${pad2(beijing.getUTCMinutes())}:${pad2(beijing.getUTCSeconds())}`;
+    };
+    const formatBeijingUs = (value) => {
+      const us = Number(value);
+      if (!Number.isFinite(us) || us <= 0) return '无';
+      return formatBeijingDate(new Date(Math.floor(us / 1000)));
+    };
+    const formatAgeSeconds = (value) => {
+      const ms = Number(value);
+      if (!Number.isFinite(ms) || ms < 0) return '';
+      return `${Math.round(ms / 1000)} 秒前`;
+    };
+    const formatBeijingUsWithAge = (timestampUs, ageMs) => {
+      const timeText = formatBeijingUs(timestampUs);
+      const ageText = formatAgeSeconds(ageMs);
+      return ageText ? `${timeText} (${ageText})` : timeText;
+    };
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
       '&': '&amp;',
       '<': '&lt;',
@@ -784,7 +805,8 @@
             <div class="debug-item"><span class="debug-label">Depth bytes</span><div class="debug-value" data-field="depth_bytes"></div></div>
             <div class="debug-item"><span class="debug-label">RGB preview</span><div class="debug-value" data-field="rgb_preview"></div></div>
             <div class="debug-item"><span class="debug-label">Depth preview</span><div class="debug-value" data-field="depth_preview"></div></div>
-            <div class="debug-item"><span class="debug-label">Last media us</span><div class="debug-value" data-field="last_media_us"></div></div>
+            <div class="debug-item"><span class="debug-label">Last media</span><div class="debug-value" data-field="last_media_time"></div></div>
+            <div class="debug-item"><span class="debug-label">Last status</span><div class="debug-value" data-field="last_status_time"></div></div>
             <div class="debug-item"><span class="debug-label">Last error</span><div class="debug-value" data-field="last_error"></div></div>
           </div>
         </details>`;
@@ -822,7 +844,8 @@
       setText(card, 'depth_bytes', fmtBytes(c.depth_bytes));
       setText(card, 'rgb_preview', `${c.rgb_preview_width || 0}x${c.rgb_preview_height || 0}`);
       setText(card, 'depth_preview', `${c.depth_preview_width || 0}x${c.depth_preview_height || 0}`);
-      setText(card, 'last_media_us', c.last_media_us);
+      setText(card, 'last_media_time', formatBeijingUsWithAge(c.last_media_us, c.media_age_ms));
+      setText(card, 'last_status_time', formatBeijingUsWithAge(c.last_status_us, c.status_age_ms));
       setText(card, 'last_error', c.last_error || '无');
       const nameInput = card.querySelector('[data-field="camera_name_input"]');
       if (nameInput && document.activeElement !== nameInput) nameInput.value = c.camera_name || '';
@@ -851,6 +874,8 @@
       document.getElementById('summary').textContent =
         `${visible}/${cameras.length} 有画面 · ${online} 在线 · ${recording ? `${recording} 路录制` : '空闲'}`;
       document.getElementById('system').innerHTML = `
+        <div class="debug-item"><span class="debug-label">系统时间</span><div class="debug-value">${formatBeijingDate(new Date())}</div></div>
+        <div class="debug-item"><span class="debug-label">时区</span><div class="debug-value">北京时间 UTC+8</div></div>
         <div class="debug-item"><span class="debug-label">媒体端口</span><div class="debug-value">TCP ${data.media_port}</div></div>
         <div class="debug-item"><span class="debug-label">状态端口</span><div class="debug-value">UDP ${data.status_port}</div></div>
         <div class="debug-item"><span class="debug-label">管理端口</span><div class="debug-value">HTTP ${data.admin_port}</div></div>
