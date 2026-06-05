@@ -206,7 +206,7 @@ sender_id: orangepi5pro-66-133
 camera_id: cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
-Depth: 640x400@30 y12 -> zlib
+Depth: 320x200@30 y12 -> zlib
 current expectation: stable 1 full-spec RGBD stream
 hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
@@ -222,7 +222,7 @@ multi-stream tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 1280x800@30 y12 -> zlib
 2026-06-05实测: RGB约30fps, Depth约30fps, 总网络约74.5Mbps, send failure为0
-用途: 单路容量和画质验证；默认交付仍保持 640x400@30 y12 稳定档
+用途: 单路容量和画质验证；默认交付保持 320x200@30 y12
 ```
 
 多发送端同时接入时，接收端以 `<sender_id>_<camera_id>` 作为唯一相机 key。固定 `sender_id` 必须和物理设备一一对应，不能为了本机 IP、当前网段或临时调试随意改名；同一个 key 被两台发送端复用会导致预览、录制控制和存储目录混写或互相覆盖。改动任何 `sender_id` / `camera_id` 前，先查接收端 `/api/status` 是否已有同名 live key，并以 `sender_preflight.sh` 的 ID conflict 提示为准。

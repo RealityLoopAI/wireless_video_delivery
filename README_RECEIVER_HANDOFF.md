@@ -6,7 +6,7 @@ This package is for receiver-side integration with the current sender implementa
 
 2026-05-11 depth update: sender and receiver now support optional `zlib` compression for Depth packets. The sender default is `06_configs/sender_orangepi5pro-01_depth_zlib.json`; keep `06_configs/sender_orangepi5pro-01.json` only as a raw Depth compatibility profile.
 
-2026-05-11 quality update: the sender default RGB profile is `1920x1080@30` with H.264 target bitrate `12000000` bps. Depth remains `640x400@30` with `zlib`.
+2026-06-05 default profile update: the sender default RGB profile remains `1920x1080@30` with H.264 target bitrate `12000000` bps. Depth now uses `320x200@30 y12` with `zlib`.
 
 2026-05-12 startup update: sender startup/status scripts now print the active config, receiver endpoint, RGB/Depth profiles, encoder, Depth compression, preview mode, route, Wi-Fi link, and validation result before starting.
 

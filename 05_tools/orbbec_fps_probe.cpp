@@ -211,7 +211,7 @@ int main(int argc, char **argv) {
         config->enableStream(color_profile);
         std::shared_ptr<ob::VideoStreamProfile> depth_profile;
         if(options.streams == "both") {
-            depth_profile = profile(pipeline, OB_SENSOR_DEPTH, 640, 400, OB_FORMAT_Y16, 30);
+            depth_profile = profile(pipeline, OB_SENSOR_DEPTH, 320, 200, OB_FORMAT_Y16, 30);
             config->enableStream(depth_profile);
         }
         config->setFrameAggregateOutputMode(aggregate_mode(options.aggregate));

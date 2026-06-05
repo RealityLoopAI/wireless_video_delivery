@@ -158,6 +158,7 @@ struct CameraRuntime {
     float depth_scale = 0.0f;
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_preview = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_depth_emit = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_reconnect = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_time_sync_log = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_jpeg_warning = std::chrono::steady_clock::now();
@@ -1417,6 +1418,30 @@ void record_depth_frame_done(CameraRuntime &camera) {
     camera.depth_frames++;
 }
 
+std::chrono::steady_clock::duration frame_interval_for_fps(int fps) {
+    if(fps <= 0) {
+        return std::chrono::steady_clock::duration::zero();
+    }
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / static_cast<double>(fps)));
+}
+
+bool depth_emit_due(CameraRuntime &camera, std::chrono::steady_clock::time_point now) {
+    const auto interval = frame_interval_for_fps(camera.config.depth_profile.fps);
+    if(interval <= std::chrono::steady_clock::duration::zero()) {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    if(now < camera.next_depth_emit) {
+        return false;
+    }
+    camera.next_depth_emit += interval;
+    if(camera.next_depth_emit <= now) {
+        camera.next_depth_emit = now + interval;
+    }
+    return true;
+}
+
 void set_latest_bgr(CameraRuntime &camera, const cv::Mat &bgr) {
     if(bgr.empty()) {
         return;
@@ -1791,6 +1816,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     runtime.perf = CameraPerfStats{};
     runtime.perf.interval_started = now;
     runtime.next_preview = now;
+    runtime.next_depth_emit = now;
     runtime.next_time_sync_log = now;
     runtime.next_jpeg_warning = now;
     runtime.next_media_warning = now;
@@ -2139,40 +2165,43 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
         if(depth) {
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
-            std::vector<uint8_t> compressed_depth;
-            const void *depth_payload = depth->data();
-            size_t depth_payload_size = depth->dataSize();
-            if(camera.config.depth_transport.compression == "zlib") {
-                const auto compress_started = std::chrono::steady_clock::now();
-                compressed_depth = zlib_compress_payload(depth->data(), depth->dataSize());
-                record_depth_compress_ms(camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
-                depth_payload = compressed_depth.data();
-                depth_payload_size = compressed_depth.size();
-            }
-            const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
-            MediaFrameMeta meta;
-            meta.stream_type = StreamType::depth_raw;
-            meta.flags = has_system_timestamp;
-            meta.sender_id = config.sender_id;
-            meta.camera_id = camera.config.camera_id;
-            meta.codec_or_compression = camera.config.depth_transport.compression;
-            meta.frame_id = depth->index();
-            meta.timestamp_us = depth_system_timestamp_us;
-            meta.system_timestamp_us = depth_system_timestamp_us;
-            meta.width = depth->width();
-            meta.height = depth->height();
-            meta.pixel_format = PixelFormat::depth_u16;
-            meta.payload_size = depth_payload_size;
-            meta.uncompressed_size = depth->dataSize();
-            auto packet = build_media_packet(meta, depth_payload);
-            publish_media_packet(media_queue, depth_slot, camera, StreamType::depth_raw, std::move(packet));
-            record_depth_frame_done(camera);
+            const bool publish_depth = depth_emit_due(camera, frame_now);
+            if(publish_depth) {
+                std::vector<uint8_t> compressed_depth;
+                const void *depth_payload = depth->data();
+                size_t depth_payload_size = depth->dataSize();
+                if(camera.config.depth_transport.compression == "zlib") {
+                    const auto compress_started = std::chrono::steady_clock::now();
+                    compressed_depth = zlib_compress_payload(depth->data(), depth->dataSize());
+                    record_depth_compress_ms(camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
+                    depth_payload = compressed_depth.data();
+                    depth_payload_size = compressed_depth.size();
+                }
+                const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
+                MediaFrameMeta meta;
+                meta.stream_type = StreamType::depth_raw;
+                meta.flags = has_system_timestamp;
+                meta.sender_id = config.sender_id;
+                meta.camera_id = camera.config.camera_id;
+                meta.codec_or_compression = camera.config.depth_transport.compression;
+                meta.frame_id = depth->index();
+                meta.timestamp_us = depth_system_timestamp_us;
+                meta.system_timestamp_us = depth_system_timestamp_us;
+                meta.width = depth->width();
+                meta.height = depth->height();
+                meta.pixel_format = PixelFormat::depth_u16;
+                meta.payload_size = depth_payload_size;
+                meta.uncompressed_size = depth->dataSize();
+                auto packet = build_media_packet(meta, depth_payload);
+                publish_media_packet(media_queue, depth_slot, camera, StreamType::depth_raw, std::move(packet));
+                record_depth_frame_done(camera);
 
-            if(preview_due) {
-                const auto depth_preview_started = std::chrono::steady_clock::now();
-                auto depth_color = depth_to_color(depth);
-                record_depth_preview_ms(camera, elapsed_ms(depth_preview_started, std::chrono::steady_clock::now()));
-                set_latest_depth_color(camera, depth_color);
+                if(preview_due) {
+                    const auto depth_preview_started = std::chrono::steady_clock::now();
+                    auto depth_color = depth_to_color(depth);
+                    record_depth_preview_ms(camera, elapsed_ms(depth_preview_started, std::chrono::steady_clock::now()));
+                    set_latest_depth_color(camera, depth_color);
+                }
             }
         }
 
