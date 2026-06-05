@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 WATCHDOG="$ROOT_DIR/05_tools/sender_watchdog.sh"
-CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_two_cameras.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 STDOUT_LOG="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"

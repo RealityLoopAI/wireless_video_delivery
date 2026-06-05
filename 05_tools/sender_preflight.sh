@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
-CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_two_cameras.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 MODE="${2:-启动}"
 PREVIEW_MODE="${3:-config}"
 SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
@@ -275,7 +275,7 @@ if not isinstance(status, dict):
 
 active_clients = status.get("active_media_clients")
 if isinstance(active_clients, int) and active_clients > 1:
-    print(f"receiver currently has {active_clients} active media clients; full-spec dual streaming may hit TCP backpressure")
+    print(f"receiver currently has {active_clients} active media clients; current one-stream delivery expectation may be impacted")
 
 conflicts = []
 for cam in status.get("cameras", []):
@@ -337,13 +337,13 @@ fi
 if [[ -n "$USBFS_MEMORY_MB" ]]; then
   echo "  usbfs_memory_mb: $USBFS_MEMORY_MB"
   if [[ "$USBFS_MEMORY_MB" =~ ^[0-9]+$ ]] && (( USBFS_MEMORY_MB < 256 )); then
-    echo "  warning: usbfs_memory_mb 低于双路满规格建议值 256，Orbbec SDK 可能无法分配 USB 传输缓冲"
+    echo "  warning: usbfs_memory_mb 低于多路满规格建议值 256，Orbbec SDK 可能无法分配 USB 传输缓冲"
   fi
 fi
 if [[ -n "$TCP_WMEM_MAX" ]]; then
   echo "  tcp_wmem: default=${TCP_WMEM_DEFAULT:-unknown} max=$TCP_WMEM_MAX"
   if [[ "$TCP_WMEM_MAX" =~ ^[0-9]+$ ]] && (( TCP_WMEM_MAX < 4194304 )); then
-    echo "  warning: net.core.wmem_max 低于配置发送缓冲，满规格双路发送可能出现 TCP 背压丢帧"
+    echo "  warning: net.core.wmem_max 低于配置发送缓冲，多路或最高 Depth 档发送可能出现 TCP 背压丢帧"
   fi
 fi
 

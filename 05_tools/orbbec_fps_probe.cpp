@@ -15,7 +15,7 @@
 namespace {
 
 struct Options {
-    std::string serial = "AY2M54302ZH";
+    std::string serial = "AY2MC31010W";
     std::string streams = "both";
     std::string aggregate = "any";
     int seconds = 12;

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_two_cameras.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender.log"

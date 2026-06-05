@@ -26,8 +26,8 @@
   },
   "cameras": [
     {
-      "camera_id": "cam01",
-      "serial_number": "AY2M54302ZH",
+      "camera_id": "cam02",
+      "serial_number": "AY2MC31010W",
       "device_index": 0,
       "validate_rgb_mjpeg": true,
       "rgb_profile": {

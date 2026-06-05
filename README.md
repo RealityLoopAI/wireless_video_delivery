@@ -119,15 +119,17 @@
 6. `04_docs/07_Orbbec交付导出说明_v3.md`
 7. `04_docs/06_发送端运行使用手册_v3.md`
 
-发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y12 -> uint16 depth frame -> zlib`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
+发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。当前交付预期收敛为一路 RGBD 稳定发送，默认入口使用 `06_configs/sender_rk3588-01_one_camera.json`。默认一路规格为 `cam02 / AY2MC31010W`，RGB `1920x1080@30 MJPG -> H.264 12Mbps`，Depth `320x200@30 y12 -> uint16 depth frame -> zlib`，本地预览按配置启用。发送端仍保留多路和热插拔能力，发现配置外新设备时可自动分配 `cam03` / `cam04` 并按同规格发送；但这属于扩展/实验能力，不作为当前默认运行目标。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
 
 2026-06-05 Orange Pi 5 Pro 现场单路配置必须保留历史相机 key：`sender_id=auto` 派生为 `orangepi5pro-b439137c`，`camera_id=cam02`，配置文件为 `06_configs/sender_orangepi5pro-01_depth_zlib.json`，热插拔关闭。不要为了适配本机 IP 临时改成 `orangepi5pro-66-206_cam01`；这样会改变接收端 key，网页主预览或录制控制如果还选中旧 key，就会表现为“看不到预览/像是没发”。排查时先看接收端 `/api/status` 中 `orangepi5pro-b439137c_cam02` 的 `rgb_packets/depth_packets` 是否增长，并用 `POST /api/preview/main-target?sender_id=orangepi5pro-b439137c&camera_id=cam02` 把主预览切回本机。
 
-2026-06-01 使用 `05_tools/orbbec_depth_probe.cpp` 对现场 `SV1301S_U3 / AY2MC31010W` 枚举确认：该相机最高 Depth profile 为 `1280x800@30 y11/y12`，当前默认 `640x400@30 y12` 是稳定发送档，不是最高深度分辨率档。`06_configs/sender_rk3588-01_cam02_depth_max.json` 提供单路最高 Depth 测试配置，用于容量验证，不作为默认双路稳定配置。
+2026-06-05 使用 `05_tools/orbbec_depth_probe.cpp` 对现场 `SV1301S_U3 / AY2MC31010W` 枚举确认：该相机最低 Depth profile 为 `320x200@5 y11/y12`，最高 Depth profile 为 `1280x800@30 y11/y12`。当前默认交付使用 `320x200@30 y12`，在保留 Depth 实时性的同时降低 USB、zlib、网络和接收端压力；`06_configs/sender_rk3588-01_cam02_depth_max.json` 提供单路最高 Depth 测试配置，用于容量验证，不作为默认交付配置。
 
-2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认双路稳定配置不变。
+2026-06-05 默认 Depth 档运行时，发送端会按 `depth_profile.fps` 对 Depth 压缩和媒体发送限流。运行状态判断以 `depth_sent_fps` 和 `depth_mbps` 为准，`depth_input_fps` 仅表示 SDK 输入到发送端的实际帧率。
 
-2026-05-29 当前现场容量结论：这台 RK3588 发送端本机算力按实测约可支撑 5-6 路同规格采集/编码/发送处理，但在当前 Wi-Fi 与接收端组合下，端到端稳定上限是 2 路满规格；3 路可运行但 TCP Send-Q 会接近 4 MiB 上限并出现 backpressure 丢包，4 路仅表示发送端逻辑支持，不建议在当前无线链路下作为稳定配置。
+2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认交付已改为 `320x200@30 y12`。
+
+2026-06-05 当前现场交付预期：默认运行一路 RGBD，降低对 Wi-Fi 上行、USB、中断和远程操作通道的抢占。2026-05-29 历史容量测试表明，这台 RK3588 本机算力按实测约可支撑 5-6 路同规格处理，但在当前 Wi-Fi 与接收端组合下，多路会先受无线链路或接收端吞吐限制；3 路曾出现 TCP Send-Q 接近 4 MiB 和 backpressure 丢包。因此 2 路以上只作为手动指定配置的扩展/实验场景，不作为当前默认交付预期。
 
 发送端开发人员重点阅读：
 
@@ -194,23 +196,23 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 当前 RK3588 发送端默认配置：
 
 ```text
-06_configs/sender_rk3588-01_two_cameras.json
+06_configs/sender_rk3588-01_one_camera.json
 ```
 
 默认规格：
 
 ```text
 sender_id: orangepi5pro-66-133
-camera_id: cam01 / cam02
+camera_id: cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 640x400@30 y12 -> zlib
-hotplug: scan every 2s, auto cam03/cam04, max active cameras 4
-field capacity: stable 2 full-spec streams on current Wi-Fi/receiver; 3 streams run with backpressure drops
+current expectation: stable 1 full-spec RGBD stream
+hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
 desktop idle-delay: 3600s
-dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
+multi-stream tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 ```
 
 最高 Depth 单路测试配置：
@@ -220,7 +222,7 @@ dual full spec tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 RGB: 1920x1080@30 H.264 12Mbps
 Depth: 1280x800@30 y12 -> zlib
 2026-06-05实测: RGB约30fps, Depth约30fps, 总网络约74.5Mbps, send failure为0
-用途: 单路容量和画质验证；双路默认配置仍保持 640x400@30 y12
+用途: 单路容量和画质验证；默认交付仍保持 640x400@30 y12 稳定档
 ```
 
 多发送端同时接入时，接收端以 `<sender_id>_<camera_id>` 作为唯一相机 key。固定 `sender_id` 必须和物理设备一一对应，不能为了本机 IP、当前网段或临时调试随意改名；同一个 key 被两台发送端复用会导致预览、录制控制和存储目录混写或互相覆盖。改动任何 `sender_id` / `camera_id` 前，先查接收端 `/api/status` 是否已有同名 live key，并以 `sender_preflight.sh` 的 ID conflict 提示为准。
