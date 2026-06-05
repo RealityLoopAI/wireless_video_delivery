@@ -31,3 +31,10 @@ Normal local URL:
 ```text
 http://127.0.0.1:8080
 ```
+
+Time display rule:
+
+```text
+Readable timestamps in the page are shown as Beijing time UTC+8 with second precision.
+Raw API fields such as *_timestamp_us and last_*_us remain Unix epoch microseconds.
+```

@@ -212,6 +212,8 @@ hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
 Wi-Fi guard: 土著拯救器-5G, min 5000MHz
 desktop idle-delay: 3600s
+desktop clock seconds: enabled
+monitor time display: Beijing time UTC+8, second precision
 multi-stream tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
 ```
 
@@ -228,7 +230,7 @@ Depth: 1280x800@30 y12 -> zlib
 多发送端同时接入时，接收端以 `<sender_id>_<camera_id>` 作为唯一相机 key。固定 `sender_id` 必须和物理设备一一对应，不能为了本机 IP、当前网段或临时调试随意改名；同一个 key 被两台发送端复用会导致预览、录制控制和存储目录混写或互相覆盖。改动任何 `sender_id` / `camera_id` 前，先查接收端 `/api/status` 是否已有同名 live key，并以 `sender_preflight.sh` 的 ID conflict 提示为准。
 实际运行参数和系统缓冲告警以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
 
-当前桌面熄屏时间设置为 3600 秒，可通过 `./05_tools/set_desktop_screen_timeout.sh 3600` 重新应用。
+当前桌面熄屏时间设置为 3600 秒，可通过 `./05_tools/set_desktop_screen_timeout.sh 3600` 重新应用。现场桌面时钟需要显示到秒，当前用户应保持 `org.gnome.desktop.interface clock-show-seconds=true`。Web Monitor 页面上的系统时间、Last media、Last status 统一按北京时间 UTC+8 显示到秒；接口和落盘中的 `*_timestamp_us` / `last_*_us` 仍保留 Unix epoch microseconds 原始值，用于跨流对齐。
 
 启动：
 
