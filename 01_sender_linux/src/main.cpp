@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -169,6 +170,7 @@ struct CameraRuntime {
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
+    CameraRuntime *depth_remap_target = nullptr;
     CameraPerfStats perf;
     CameraLiveStats live;
 };
@@ -1023,6 +1025,19 @@ std::string existing_usb_device_name(std::string uid) {
     return "";
 }
 
+bool usb_uid_matches(const std::string &configured_uid, const std::string &device_uid) {
+    if(configured_uid.empty() || device_uid.empty()) {
+        return false;
+    }
+    if(configured_uid == device_uid) {
+        return true;
+    }
+
+    const auto configured_device = existing_usb_device_name(configured_uid);
+    const auto actual_device = existing_usb_device_name(device_uid);
+    return !configured_device.empty() && configured_device == actual_device;
+}
+
 bool split_usb_device_name(const std::string &device_name, int &bus, std::string &port_path) {
     const auto dash = device_name.find('-');
     if(dash == std::string::npos || dash == 0 || dash + 1 >= device_name.size()) {
@@ -1115,7 +1130,7 @@ std::vector<OrbbecDeviceIdentity> enumerate_orbbec_devices(ob::Context &ctx) {
 }
 
 bool device_identity_matches_config(const OrbbecDeviceIdentity &identity, const CameraConfig &camera) {
-    if(!camera.uid.empty() && identity.uid == camera.uid) {
+    if(!camera.uid.empty() && usb_uid_matches(camera.uid, identity.uid)) {
         return true;
     }
     if(!camera.serial_number.empty()
@@ -1136,6 +1151,27 @@ std::string device_identity_summary(const OrbbecDeviceIdentity &identity) {
     return oss.str();
 }
 
+std::string device_info_serial_or_empty(const std::shared_ptr<ob::Device> &device) {
+    if(!device) {
+        return "";
+    }
+    try {
+        auto info = device->getDeviceInfo();
+        return info && info->serialNumber() ? info->serialNumber() : "";
+    }
+    catch(const std::exception &) {
+    }
+    catch(...) {
+    }
+    return "";
+}
+
+bool serial_matches_device(const std::string &configured_serial, const std::string &list_serial, const std::string &info_serial,
+                           const std::string &paired_rgb_serial) {
+    return !configured_serial.empty()
+           && (configured_serial == list_serial || configured_serial == info_serial || configured_serial == paired_rgb_serial);
+}
+
 std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devices) {
     if(!devices) {
         return "none";
@@ -1151,8 +1187,16 @@ std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devic
         }
         const std::string uid = devices->uid(i) ? devices->uid(i) : "";
         const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
-        oss << "index=" << i << " serial=" << (devices->serialNumber(i) ? devices->serialNumber(i) : "") << " uid=" << uid
-            << " paired_rgb_serial=" << paired_rgb_serial
+        std::string info_serial;
+        try {
+            info_serial = device_info_serial_or_empty(devices->getDevice(i));
+        }
+        catch(const std::exception &) {
+        }
+        catch(...) {
+        }
+        oss << "index=" << i << " serial=" << (devices->serialNumber(i) ? devices->serialNumber(i) : "")
+            << " info_serial=" << info_serial << " uid=" << uid << " paired_rgb_serial=" << paired_rgb_serial
             << " connection=" << (devices->connectionType(i) ? devices->connectionType(i) : "");
     }
     return oss.str();
@@ -1163,25 +1207,74 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
     if(devices->deviceCount() == 0) {
         throw std::runtime_error("no Orbbec device found");
     }
-    if(!camera.serial_number.empty() || !camera.uid.empty()) {
+    if(!camera.uid.empty()) {
         for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
             const std::string serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
             const std::string uid = devices->uid(i) ? devices->uid(i) : "";
             const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
-            if((!camera.serial_number.empty() && (serial == camera.serial_number || paired_rgb_serial == camera.serial_number))
-               || (!camera.uid.empty() && uid == camera.uid)) {
-                return devices->getDevice(i);
+            if(!usb_uid_matches(camera.uid, uid)) {
+                continue;
             }
+            auto device = devices->getDevice(i);
+            const auto info_serial = device_info_serial_or_empty(device);
+            if(camera.serial_number.empty() || serial_matches_device(camera.serial_number, serial, info_serial, paired_rgb_serial)) {
+                return device;
+            }
+            std::ostringstream oss;
+            oss << "configured camera uid matched but serial_number mismatched camera_id=" << camera.camera_id
+                << " uid=" << camera.uid << " matched_uid=" << uid
+                << " configured_serial=" << camera.serial_number
+                << " device_serial=" << serial
+                << " device_info_serial=" << info_serial
+                << " paired_rgb_serial=" << paired_rgb_serial;
+            throw std::runtime_error(oss.str());
         }
 
         std::ostringstream oss;
-        oss << "configured camera not found camera_id=" << camera.camera_id;
+        oss << "configured camera not found camera_id=" << camera.camera_id << " uid=" << camera.uid;
         if(!camera.serial_number.empty()) {
             oss << " serial=" << camera.serial_number;
         }
-        if(!camera.uid.empty()) {
-            oss << " uid=" << camera.uid;
+        oss << " available=[" << safe_device_list_string(devices) << "]";
+        throw std::runtime_error(oss.str());
+    }
+
+    if(!camera.serial_number.empty()) {
+        for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
+            const std::string serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
+            auto device = devices->getDevice(i);
+            const auto info_serial = device_info_serial_or_empty(device);
+            if(serial == camera.serial_number || info_serial == camera.serial_number) {
+                return device;
+            }
         }
+
+        std::shared_ptr<ob::Device> paired_match;
+        std::string paired_match_uid;
+        for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
+            const std::string uid = devices->uid(i) ? devices->uid(i) : "";
+            const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
+            if(paired_rgb_serial != camera.serial_number) {
+                continue;
+            }
+            if(paired_match) {
+                std::ostringstream oss;
+                oss << "configured serial_number is ambiguous camera_id=" << camera.camera_id
+                    << " serial=" << camera.serial_number
+                    << " first_uid=" << paired_match_uid
+                    << " second_uid=" << uid
+                    << " available=[" << safe_device_list_string(devices) << "]";
+                throw std::runtime_error(oss.str());
+            }
+            paired_match = devices->getDevice(i);
+            paired_match_uid = uid;
+        }
+        if(paired_match) {
+            return paired_match;
+        }
+
+        std::ostringstream oss;
+        oss << "configured camera not found camera_id=" << camera.camera_id << " serial=" << camera.serial_number;
         oss << " available=[" << safe_device_list_string(devices) << "]";
         throw std::runtime_error(oss.str());
     }
@@ -1650,6 +1743,9 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     device["model"] = info->name() ? info->name() : "";
     device["serial_number"] = info->serialNumber() ? info->serialNumber() : "";
     device["uid"] = info->uid() ? info->uid() : "";
+    device["paired_rgb_serial"] = paired_rgb_serial_for_depth_uid(device["uid"].asString());
+    device["configured_serial_number"] = camera.config.serial_number;
+    device["configured_uid"] = camera.config.uid;
     device["firmware_version"] = info->firmwareVersion() ? info->firmwareVersion() : "";
     device["connection_type"] = info->connectionType() ? info->connectionType() : "";
     msg["device"] = device;
@@ -1720,20 +1816,30 @@ bool send_status(Sender &sender, Logger &logger, const Json::Value &message) {
 void preview_frame(const CameraRuntime &camera, bool preview_enabled) {
     cv::Mat bgr;
     cv::Mat depth_color;
+    std::string label;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
         bgr = camera.latest_bgr.clone();
         depth_color = camera.latest_depth_color.clone();
+        label = camera.config.camera_id;
+        if(!camera.device_uid.empty()) {
+            label += " uid=" + camera.device_uid;
+        }
+        if(!camera.device_serial.empty()) {
+            label += " serial=" + camera.device_serial;
+        }
     }
     if(!preview_enabled || bgr.empty() || depth_color.empty()) {
         return;
     }
     const std::string window_name = "Gemini Sender " + camera.config.camera_id;
-    static std::set<std::string> initialized_windows;
-    if(initialized_windows.insert(window_name).second) {
+    static std::map<std::string, int> initialized_windows;
+    if(initialized_windows.find(window_name) == initialized_windows.end()) {
+        const int window_index = static_cast<int>(initialized_windows.size());
+        initialized_windows[window_name] = window_index;
         cv::namedWindow(window_name, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name, 960, 360);
-        cv::moveWindow(window_name, 80, 80);
+        cv::moveWindow(window_name, 80 + (window_index % 2) * 520, 80 + (window_index / 2) * 420);
     }
     cv::Mat rgb_small;
     cv::Mat depth_small;
@@ -1741,6 +1847,10 @@ void preview_frame(const CameraRuntime &camera, bool preview_enabled) {
     cv::resize(depth_color, depth_small, cv::Size(480, 360));
     cv::Mat wall;
     cv::hconcat(rgb_small, depth_small, wall);
+    cv::putText(wall, "RGB " + label, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2,
+                cv::LINE_AA);
+    cv::putText(wall, "DEPTH " + label, cv::Point(492, 28), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2,
+                cv::LINE_AA);
     cv::imshow(window_name, wall);
     cv::waitKey(1);
 }
@@ -1834,7 +1944,13 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     oss << "camera started camera_id=" << runtime.config.camera_id << " color=" << runtime.color_profile->width() << "x"
         << runtime.color_profile->height() << "@" << runtime.color_profile->fps() << " format=" << ob_format_name(runtime.color_profile->format())
         << " depth=" << runtime.depth_profile->width() << "x" << runtime.depth_profile->height() << "@" << runtime.depth_profile->fps()
-        << " format=" << ob_format_name(runtime.depth_profile->format());
+        << " format=" << ob_format_name(runtime.depth_profile->format())
+        << " configured_serial=" << runtime.config.serial_number
+        << " configured_uid=" << runtime.config.uid
+        << " device_serial=" << runtime.device_serial
+        << " device_uid=" << runtime.device_uid
+        << " paired_rgb_serial=" << paired_rgb_serial_for_depth_uid(runtime.device_uid)
+        << " connection=" << runtime.device_connection_type;
     logger.info(oss.str());
 }
 
@@ -1988,6 +2104,29 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
 }
 
 std::mutex g_encoder_create_mutex;
+
+CameraRuntime *depth_target_camera(const AppConfig &config, CameraRuntime &source) {
+    if(!config.swap_depth_between_cameras || !camera_is_online(source) || source.depth_remap_target == nullptr
+       || !camera_is_online(*source.depth_remap_target)) {
+        return &source;
+    }
+    return source.depth_remap_target;
+}
+
+void configure_depth_remap_targets(const AppConfig &config, const std::vector<std::unique_ptr<CameraRuntime>> &cameras, Logger &logger) {
+    if(!config.swap_depth_between_cameras) {
+        return;
+    }
+    if(cameras.size() != 2) {
+        logger.warn("depth stream remap requested but disabled at runtime because camera_count=" + std::to_string(cameras.size()));
+        return;
+    }
+    cameras[0]->depth_remap_target = cameras[1].get();
+    cameras[1]->depth_remap_target = cameras[0].get();
+    logger.warn("depth stream remap enabled: source " + cameras[0]->config.camera_id + " depth is sent/previewed as "
+                + cameras[1]->config.camera_id + "; source " + cameras[1]->config.camera_id + " depth is sent/previewed as "
+                + cameras[0]->config.camera_id);
+}
 
 template <typename Sender>
 void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &media_queue,
@@ -2163,8 +2302,10 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
         }
 
         if(depth) {
+            auto *depth_target = depth_target_camera(config, camera);
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
+            set_depth_scale_if_empty(*depth_target, depth->getValueScale());
             const bool publish_depth = depth_emit_due(camera, frame_now);
             if(publish_depth) {
                 std::vector<uint8_t> compressed_depth;
@@ -2182,7 +2323,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.stream_type = StreamType::depth_raw;
                 meta.flags = has_system_timestamp;
                 meta.sender_id = config.sender_id;
-                meta.camera_id = camera.config.camera_id;
+                meta.camera_id = depth_target->config.camera_id;
                 meta.codec_or_compression = camera.config.depth_transport.compression;
                 meta.frame_id = depth->index();
                 meta.timestamp_us = depth_system_timestamp_us;
@@ -2193,14 +2334,14 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
                 auto packet = build_media_packet(meta, depth_payload);
-                publish_media_packet(media_queue, depth_slot, camera, StreamType::depth_raw, std::move(packet));
-                record_depth_frame_done(camera);
+                publish_media_packet(media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(packet));
+                record_depth_frame_done(*depth_target);
 
                 if(preview_due) {
                     const auto depth_preview_started = std::chrono::steady_clock::now();
                     auto depth_color = depth_to_color(depth);
                     record_depth_preview_ms(camera, elapsed_ms(depth_preview_started, std::chrono::steady_clock::now()));
-                    set_latest_depth_color(camera, depth_color);
+                    set_latest_depth_color(*depth_target, depth_color);
                 }
             }
         }
@@ -2466,6 +2607,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
+    configure_depth_remap_targets(config, cameras, logger);
     LatestMediaQueue media_queue(cameras.size() * 2);
     std::mutex transport_mutex;
 

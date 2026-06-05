@@ -87,6 +87,7 @@ struct AppConfig {
     LoggingConfig logging;
     HotplugConfig hotplug;
     int heartbeat_interval_ms = 1000;
+    bool swap_depth_between_cameras = false;
     std::vector<CameraConfig> cameras;
 };
 

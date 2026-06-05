@@ -296,6 +296,7 @@ AppConfig load_config(const std::string &path) {
     }
     config.sender_version = optional_string(root, "sender_version", config.sender_version);
     config.heartbeat_interval_ms = optional_int(root, "heartbeat_interval_ms", config.heartbeat_interval_ms);
+    config.swap_depth_between_cameras = optional_bool(root, "swap_depth_between_cameras", config.swap_depth_between_cameras);
 
     const auto &receiver = root["receiver"];
     config.receiver.ip = required_string(receiver, "ip");
@@ -401,6 +402,9 @@ void validate_config(const AppConfig &config) {
     }
     if(config.transport.reconnect_interval_ms <= 0) {
         throw std::runtime_error("transport.reconnect_interval_ms must be positive");
+    }
+    if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
+        throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;

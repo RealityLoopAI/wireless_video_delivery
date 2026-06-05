@@ -145,6 +145,7 @@ values = {
     "SEND_BUFFER_BYTES": top_transport.get("send_buffer_bytes", ""),
     "RECONNECT_INTERVAL_MS": top_transport.get("reconnect_interval_ms", ""),
     "HEARTBEAT_INTERVAL_MS": cfg.get("heartbeat_interval_ms", ""),
+    "SWAP_DEPTH_BETWEEN_CAMERAS": cfg.get("swap_depth_between_cameras", False),
     "RGB_WIDTH": rgb.get("width", ""),
     "RGB_HEIGHT": rgb.get("height", ""),
     "RGB_FPS": rgb.get("fps", ""),
@@ -176,9 +177,10 @@ for item in cams:
         f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in controls_item.items()
     ) or "未配置"
     camera_summaries.append(
-        "{camera_id} serial={serial} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} color_controls={controls}".format(
+        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} color_controls={controls}".format(
             camera_id=item.get("camera_id", ""),
             serial=item.get("serial_number", "") or "未指定",
+            uid=item.get("uid", "") or "未指定",
             rgb_w=rgb_item.get("width", ""),
             rgb_h=rgb_item.get("height", ""),
             rgb_fps=rgb_item.get("fps", ""),
@@ -304,6 +306,7 @@ echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_time
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"
 echo "  camera_count: $CAMERA_COUNT"
 echo "  cameras: $CAMERA_SUMMARY"
+echo "  depth_remap: swap_depth_between_cameras=${SWAP_DEPTH_BETWEEN_CAMERAS:-false}"
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"

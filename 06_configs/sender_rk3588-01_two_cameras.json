@@ -1,5 +1,5 @@
 {
-  "sender_id": "orangepi5pro-66-133",
+  "sender_id": "rk3588-ubuntu",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -16,6 +16,10 @@
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
+  "swap_depth_between_cameras": true,
+  "hotplug": {
+    "enabled": false
+  },
   "preview": {
     "enabled": true,
     "fps": 10
@@ -26,9 +30,11 @@
   },
   "cameras": [
     {
-      "camera_id": "cam02",
-      "serial_number": "AY2MC31010W",
-      "device_index": 1,
+      "camera_id": "cam01",
+      "serial_number": "AY2M54302ZH",
+      "uid": "10-1.2",
+      "device_index": 0,
+      "validate_rgb_mjpeg": true,
       "rgb_profile": {
         "width": 1920,
         "height": 1080,
@@ -36,8 +42,8 @@
         "format": "mjpg"
       },
       "depth_profile": {
-        "width": 640,
-        "height": 400,
+        "width": 320,
+        "height": 200,
         "fps": 30,
         "format": "y12"
       },
@@ -55,9 +61,10 @@
       }
     },
     {
-      "camera_id": "cam01",
-      "serial_number": "AY2M5430050",
-      "device_index": 0,
+      "camera_id": "cam02",
+      "serial_number": "AY2MC3100Z8",
+      "uid": "8-1.4.2",
+      "device_index": 1,
       "validate_rgb_mjpeg": true,
       "rgb_profile": {
         "width": 1920,
@@ -66,8 +73,8 @@
         "format": "mjpg"
       },
       "depth_profile": {
-        "width": 640,
-        "height": 400,
+        "width": 320,
+        "height": 200,
         "fps": 30,
         "format": "y12"
       },

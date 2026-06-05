@@ -1,5 +1,5 @@
 {
-  "sender_id": "orangepi5pro-66-133",
+  "sender_id": "rk3588-ubuntu",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -16,6 +16,7 @@
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
+  "swap_depth_between_cameras": true,
   "preview": {
     "enabled": false,
     "fps": 30
