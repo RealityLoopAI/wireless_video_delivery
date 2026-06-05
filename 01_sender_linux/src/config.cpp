@@ -1,9 +1,16 @@
 #include "gwv3_sender/config.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <regex>
+#include <sstream>
 #include <set>
 #include <stdexcept>
+#include <vector>
+
+#include <unistd.h>
 
 #include <json/json.h>
 
@@ -46,6 +53,165 @@ bool optional_bool(const Json::Value &node, const char *key, bool fallback) {
         throw std::runtime_error(std::string("invalid boolean field: ") + key);
     }
     return node[key].asBool();
+}
+
+std::string trim_copy(std::string value) {
+    const auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+    return value;
+}
+
+std::string read_first_line(const std::filesystem::path &path) {
+    std::ifstream input(path);
+    std::string line;
+    if(input && std::getline(input, line)) {
+        return trim_copy(line);
+    }
+    return "";
+}
+
+std::string sanitize_protocol_part(std::string value) {
+    for(char &ch : value) {
+        const auto c = static_cast<unsigned char>(ch);
+        if(std::isalnum(c) || ch == '_' || ch == '-') {
+            ch = static_cast<char>(std::tolower(c));
+        }
+        else {
+            ch = '-';
+        }
+    }
+    while(!value.empty() && value.front() == '-') {
+        value.erase(value.begin());
+    }
+    while(!value.empty() && value.back() == '-') {
+        value.pop_back();
+    }
+    return value.empty() ? "sender" : value;
+}
+
+bool is_valid_mac_address(const std::string &value) {
+    static const std::regex pattern("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$");
+    if(!std::regex_match(value, pattern)) {
+        return false;
+    }
+
+    std::string compact;
+    for(char ch : value) {
+        if(ch != ':') {
+            compact.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        }
+    }
+    return compact != "000000000000";
+}
+
+std::string suffix_from_mac(std::string mac) {
+    std::string compact;
+    for(char ch : mac) {
+        if(ch != ':') {
+            compact.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        }
+    }
+    if(compact.size() <= 8) {
+        return compact;
+    }
+    return compact.substr(compact.size() - 8);
+}
+
+std::string mac_for_interface(const std::string &interface_name) {
+    const auto address = read_first_line(std::filesystem::path("/sys/class/net") / interface_name / "address");
+    return is_valid_mac_address(address) ? address : "";
+}
+
+std::string default_route_interface() {
+    std::ifstream input("/proc/net/route");
+    std::string line;
+    std::string iface;
+    std::string destination;
+    std::getline(input, line);
+    while(std::getline(input, line)) {
+        std::istringstream row(line);
+        row >> iface >> destination;
+        if(destination == "00000000") {
+            return iface;
+        }
+    }
+    return "";
+}
+
+std::string first_available_mac() {
+    const auto route_iface = default_route_interface();
+    if(!route_iface.empty()) {
+        const auto mac = mac_for_interface(route_iface);
+        if(!mac.empty()) {
+            return mac;
+        }
+    }
+
+    std::vector<std::string> names;
+    const std::filesystem::path net_dir("/sys/class/net");
+    if(std::filesystem::exists(net_dir)) {
+        for(const auto &entry : std::filesystem::directory_iterator(net_dir)) {
+            names.push_back(entry.path().filename().string());
+        }
+    }
+    std::sort(names.begin(), names.end());
+
+    for(const auto &name : names) {
+        if(name == "lo") {
+            continue;
+        }
+        const auto mac = mac_for_interface(name);
+        if(!mac.empty()) {
+            return mac;
+        }
+    }
+    return "";
+}
+
+std::string machine_id_suffix() {
+    auto machine_id = read_first_line("/etc/machine-id");
+    machine_id.erase(std::remove_if(machine_id.begin(), machine_id.end(), [](unsigned char c) { return !std::isxdigit(c); }),
+                     machine_id.end());
+    std::transform(machine_id.begin(), machine_id.end(), machine_id.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if(machine_id.empty()) {
+        return "";
+    }
+    if(machine_id.size() <= 8) {
+        return machine_id;
+    }
+    return machine_id.substr(machine_id.size() - 8);
+}
+
+std::string host_prefix() {
+    char buffer[256] = {};
+    if(gethostname(buffer, sizeof(buffer) - 1) == 0 && buffer[0] != '\0') {
+        return sanitize_protocol_part(buffer);
+    }
+    return "sender";
+}
+
+std::string derive_auto_sender_id() {
+    std::string suffix;
+    const auto mac = first_available_mac();
+    if(!mac.empty()) {
+        suffix = suffix_from_mac(mac);
+    }
+    if(suffix.empty()) {
+        suffix = machine_id_suffix();
+    }
+    if(suffix.empty()) {
+        throw std::runtime_error("cannot derive auto sender_id: no usable network MAC or /etc/machine-id");
+    }
+
+    auto prefix = host_prefix();
+    constexpr size_t max_id_len = 64;
+    if(prefix.size() + 1 + suffix.size() > max_id_len) {
+        prefix.resize(max_id_len - suffix.size() - 1);
+    }
+    return prefix + "-" + suffix;
 }
 
 std::optional<int> optional_int_value(const Json::Value &node, const char *key) {
@@ -125,6 +291,9 @@ AppConfig load_config(const std::string &path) {
 
     AppConfig config;
     config.sender_id = required_string(root, "sender_id");
+    if(config.sender_id == "auto") {
+        config.sender_id = derive_auto_sender_id();
+    }
     config.sender_version = optional_string(root, "sender_version", config.sender_version);
     config.heartbeat_interval_ms = optional_int(root, "heartbeat_interval_ms", config.heartbeat_interval_ms);
 

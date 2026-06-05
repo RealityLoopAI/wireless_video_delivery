@@ -28,6 +28,8 @@ command -v lsusb >/dev/null 2>&1 || fail "未找到 lsusb，无法检查相机 U
 config_exports="$(
   python3 - "$CONFIG" <<'PY'
 import json
+import os
+import re
 import shlex
 import sys
 
@@ -60,8 +62,75 @@ missing = [k for k, v in required.items() if v in ("", None)]
 if missing:
     raise SystemExit("配置缺少字段: " + ", ".join(missing))
 
+def _sanitize_protocol_part(value):
+    value = "".join(ch.lower() if ch.isalnum() or ch in "_-" else "-" for ch in value)
+    value = value.strip("-")
+    return value or "sender"
+
+def _read_first_line(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.readline().strip()
+    except Exception:
+        return ""
+
+def _default_route_interface():
+    try:
+        with open("/proc/net/route", "r", encoding="utf-8") as handle:
+            next(handle, None)
+            for line in handle:
+                fields = line.split()
+                if len(fields) >= 2 and fields[1] == "00000000":
+                    return fields[0]
+    except Exception:
+        pass
+    return ""
+
+def _valid_mac(value):
+    return bool(re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", value)) and value.replace(":", "") != "000000000000"
+
+def _mac_for_interface(name):
+    value = _read_first_line(f"/sys/class/net/{name}/address")
+    return value if _valid_mac(value) else ""
+
+def _first_available_mac():
+    route_iface = _default_route_interface()
+    if route_iface:
+        mac = _mac_for_interface(route_iface)
+        if mac:
+            return mac
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except Exception:
+        names = []
+    for name in names:
+        if name == "lo":
+            continue
+        mac = _mac_for_interface(name)
+        if mac:
+            return mac
+    return ""
+
+def _machine_id_suffix():
+    value = "".join(ch.lower() for ch in _read_first_line("/etc/machine-id") if ch.lower() in "0123456789abcdef")
+    return value[-8:] if value else ""
+
+def _derive_auto_sender_id():
+    mac = _first_available_mac()
+    suffix = mac.replace(":", "").lower()[-8:] if mac else _machine_id_suffix()
+    if not suffix:
+        return "auto"
+    prefix = _sanitize_protocol_part(os.uname().nodename)
+    if len(prefix) + 1 + len(suffix) > 64:
+        prefix = prefix[:64 - len(suffix) - 1]
+    return f"{prefix}-{suffix}"
+
+sender_id = cfg.get("sender_id", "")
+effective_sender_id = _derive_auto_sender_id() if sender_id == "auto" else sender_id
+
 values = {
-    "SENDER_ID": cfg.get("sender_id", ""),
+    "SENDER_ID": effective_sender_id,
+    "CONFIG_SENDER_ID": sender_id,
     "SENDER_VERSION": cfg.get("sender_version", ""),
     "CAMERA_COUNT": len(cams),
     "CAMERA_ID": cam.get("camera_id", ""),
@@ -227,6 +296,9 @@ PY
 echo "发送端${MODE}参数："
 echo "  config: $CONFIG"
 echo "  sender_id: $SENDER_ID  version: ${SENDER_VERSION:-未指定}"
+if [[ "${CONFIG_SENDER_ID:-}" == "auto" ]]; then
+  echo "  config_sender_id: auto"
+fi
 echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
 echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_timeout=${SEND_TIMEOUT_MS:-未指定}ms  send_buffer=${SEND_BUFFER_BYTES:-未指定}B  reconnect_interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"

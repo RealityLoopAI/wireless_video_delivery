@@ -1,5 +1,5 @@
 {
-  "sender_id": "orangepi5pro-66-206",
+  "sender_id": "auto",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -18,7 +18,7 @@
   "heartbeat_interval_ms": 1000,
   "preview": {
     "enabled": true,
-    "fps": 30
+    "fps": 10
   },
   "logging": {
     "directory": "08_reports/sender_logs",
@@ -29,7 +29,7 @@
   },
   "cameras": [
     {
-      "camera_id": "cam01",
+      "camera_id": "cam02",
       "serial_number": "AY2T7410103",
       "device_index": 0,
       "rgb_profile": {
