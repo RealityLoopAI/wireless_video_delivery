@@ -268,7 +268,7 @@ bool Transport::should_drop_before_write(int fd, size_t packet_size) {
         return false;
     }
     const size_t queued = static_cast<size_t>(pending);
-    if(queued >= capacity || packet_size > capacity - queued) {
+    if(queued >= capacity) {
         set_error("media TCP packet dropped under backpressure pending_bytes=" + std::to_string(queued)
                   + " packet_bytes=" + std::to_string(packet_size) + " capacity_bytes=" + std::to_string(capacity));
         return true;
