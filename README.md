@@ -121,6 +121,8 @@
 
 发送端默认配置当前使用固定 `sender_id=orangepi5pro-66-133`，接收端地址 `192.168.66.196`。RK3588 基础配置为 `cam01` / `cam02`，RGB 为 `1920x1080@30 MJPG -> H.264 12Mbps`，Depth 为 `640x400@30 y12 -> uint16 depth frame -> zlib`，本地预览按配置启用。发送端运行中每 2 秒扫描 Orbbec 设备，发现配置外新设备时自动分配 `cam03` / `cam04` 并按同规格发送；动态热插拔最多同时发送 4 路，超出设备会被忽略并上报 warning event。4 路是发送端逻辑上限，实际稳定路数取决于当前无线链路和接收端吞吐。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
 
+2026-06-05 Orange Pi 5 Pro 现场单路配置必须保留历史相机 key：`sender_id=auto` 派生为 `orangepi5pro-b439137c`，`camera_id=cam02`，配置文件为 `06_configs/sender_orangepi5pro-01_depth_zlib.json`，热插拔关闭。不要为了适配本机 IP 临时改成 `orangepi5pro-66-206_cam01`；这样会改变接收端 key，网页主预览或录制控制如果还选中旧 key，就会表现为“看不到预览/像是没发”。排查时先看接收端 `/api/status` 中 `orangepi5pro-b439137c_cam02` 的 `rgb_packets/depth_packets` 是否增长，并用 `POST /api/preview/main-target?sender_id=orangepi5pro-b439137c&camera_id=cam02` 把主预览切回本机。
+
 2026-06-01 使用 `05_tools/orbbec_depth_probe.cpp` 对现场 `SV1301S_U3 / AY2MC31010W` 枚举确认：该相机最高 Depth profile 为 `1280x800@30 y11/y12`，当前默认 `640x400@30 y12` 是稳定发送档，不是最高深度分辨率档。`06_configs/sender_rk3588-01_cam02_depth_max.json` 提供单路最高 Depth 测试配置，用于容量验证，不作为默认双路稳定配置。
 
 2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认双路稳定配置不变。
