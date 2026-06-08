@@ -53,7 +53,7 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 300,
-        "gain": 100
+        "gain": 50
       }
     }
   ]
