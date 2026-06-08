@@ -51,7 +51,9 @@
         "compression": "zlib"
       },
       "color_controls": {
-        "auto_exposure": true
+        "auto_exposure": false,
+        "exposure": 300,
+        "gain": 100
       }
     }
   ]

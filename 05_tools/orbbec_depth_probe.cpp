@@ -253,6 +253,14 @@ int main(int argc, char **argv) {
                   << safe(info->firmwareVersion()) << " hw=" << safe(info->hardwareVersion()) << " asic=" << safe(info->asicName())
                   << " conn=" << safe(info->connectionType()) << " uid=" << safe(info->uid()) << "\n";
 
+        print_bool_property(device, OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "color_auto_exposure");
+        print_int_property(device, OB_PROP_COLOR_EXPOSURE_INT, "color_exposure");
+        print_int_property(device, OB_PROP_COLOR_GAIN_INT, "color_gain");
+        print_int_property(device, OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT, "color_auto_exposure_priority");
+        print_int_property(device, OB_PROP_COLOR_AE_MAX_EXPOSURE_INT, "color_max_exposure");
+        print_int_property(device, OB_PROP_COLOR_MAXIMAL_GAIN_INT, "color_max_gain");
+        print_int_property(device, OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, "color_power_line_frequency");
+
         print_depth_work_modes(device);
         print_int_property(device, OB_PROP_DEPTH_PRECISION_LEVEL_INT, "depth_precision_level");
         print_float_property(device, OB_PROP_DEPTH_UNIT_FLEXIBLE_ADJUSTMENT_FLOAT, "depth_unit_flexible_adjustment");

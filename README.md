@@ -17,7 +17,7 @@
 4. 接收端需求文档。
 5. 中间传输数据格式文档。
 6. 第三方 SDK 放置说明。
-7. RK3588/香橙派 5 Pro 发送端 C++ 实现，包含本地预览、自动曝光配置、坏 MJPEG 帧过滤、TCP 背压丢包保护/自动重连、采集/媒体发送停滞自恢复和 watchdog 自动重启。
+7. RK3588/香橙派 5 Pro 发送端 C++ 实现，包含本地预览、曝光/增益配置、坏 MJPEG 帧过滤、TCP 背压丢包保护/自动重连、采集/媒体发送停滞自恢复和 watchdog 自动重启。
 8. Ubuntu 接收端 C++ 核心接收与录制服务。
 9. FastAPI Web/REST 监控服务。
 10. 接收端 CLI 控制工具。
@@ -127,7 +127,7 @@
 
 2026-06-05 默认 Depth 档运行时，发送端会按 `depth_profile.fps` 对 Depth 压缩和媒体发送限流。运行状态判断以 `depth_sent_fps` 和 `depth_mbps` 为准，`depth_input_fps` 仅表示 SDK 输入到发送端的实际帧率。
 
-2026-06-05 RK3588 双路现场配置为 `06_configs/sender_rk3588-01_two_cameras.json`，固定 `sender_id=rk3588-ubuntu`，接收端为 `192.168.66.196`。当前两路绑定为 `cam01 / AY2M54302ZH / uid=10-1.2` 和 `cam02 / AY2MC3100Z8 / uid=8-1.4.2`，RGB 保持 `1920x1080@30 H.264 12Mbps`，Depth 使用 `320x200@30 y12 -> zlib`，自动曝光开启。现场发现 Orbbec SDK 返回的两路 Depth 物理视角与 RGB 交叉，因此该配置启用 `swap_depth_between_cameras=true`：只交换 Depth 的发送和本地预览归属，RGB 仍按各自 `camera_id` 发送。验证时同时看发送端本地预览标签、接收端 `/api/status` 中 `rk3588-ubuntu_cam01/cam02` 的包计数，以及接收端 RGB/Depth 四宫格截图；不要只看网页主预览当前选中的旧 key。
+2026-06-05 RK3588 双路现场配置为 `06_configs/sender_rk3588-01_two_cameras.json`，固定 `sender_id=rk3588-ubuntu`，接收端为 `192.168.66.196`。当前两路绑定为 `cam01 / AY2M54302ZH / uid=10-1.2` 和 `cam02 / AY2MC3100Z8 / uid=8-1.4.2`，RGB 保持 `1920x1080@30 H.264 12Mbps`，Depth 使用 `320x200@30 y12 -> zlib`，RGB 手动曝光使用 `auto_exposure=false, exposure=300, gain=100`，这是现场短测中能保持约 30fps 的高增益档。现场发现 Orbbec SDK 返回的两路 Depth 物理视角与 RGB 交叉，因此该配置启用 `swap_depth_between_cameras=true`：只交换 Depth 的发送和本地预览归属，RGB 仍按各自 `camera_id` 发送。验证时同时看发送端本地预览标签、接收端 `/api/status` 中 `rk3588-ubuntu_cam01/cam02` 的包计数，以及接收端 RGB/Depth 四宫格截图；不要只看网页主预览当前选中的旧 key。
 
 2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认交付已改为 `320x200@30 y12`。
 
