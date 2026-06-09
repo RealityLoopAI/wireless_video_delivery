@@ -534,6 +534,14 @@
     let sideCameras = [];
     let mainKey = '';
     let mainTargetSyncKey = '';
+    let loopsStarted = false;
+
+    const STATUS_REFRESH_MS = 1000;
+    const MAIN_RGB_REFRESH_MS = 90;
+    const MAIN_DEPTH_REFRESH_MS = 180;
+    const THUMB_RGB_REFRESH_MS = 350;
+    const THUMB_DEPTH_REFRESH_MS = 650;
+    const HIDDEN_REFRESH_MS = 1000;
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -662,6 +670,20 @@
       refreshPreview(document.getElementById('mainRgbPane'), c, 'rgb', true);
       refreshPreview(document.getElementById('mainDepthPane'), c, 'depth', false);
     }
+    function refreshMainPreviewKind(kind) {
+      const c = cameras.find((item) => item.camera_key === mainKey);
+      if (!c) {
+        if (kind === 'rgb') {
+          clearPreview(document.getElementById('mainRgbPane'), 'rgb', cameras.length ? '等待实时画面' : '等待发送端连接');
+        }
+        else {
+          clearPreview(document.getElementById('mainDepthPane'), 'depth', cameras.length ? '等待实时画面' : '等待发送端连接');
+        }
+        return;
+      }
+      syncMainTarget();
+      refreshPreview(kind === 'rgb' ? document.getElementById('mainRgbPane') : document.getElementById('mainDepthPane'), c, kind, kind === 'rgb');
+    }
     function ensureThumb(c) {
       const thumbs = document.getElementById('thumbs');
       const id = cardId('thumb', c.camera_key);
@@ -754,6 +776,13 @@
         if (!card) return;
         refreshPreview(card, c, 'rgb');
         refreshPreview(card, c, 'depth');
+      });
+    }
+    function refreshThumbPreviews(kind) {
+      sideCameras.forEach((c) => {
+        const card = document.getElementById(cardId('thumb', c.camera_key));
+        if (!card) return;
+        refreshPreview(card, c, kind);
       });
     }
     function renderCameraPanels() {
@@ -898,10 +927,54 @@
       refreshMainPreview();
     }
 
-    load();
-    setInterval(load, 1000);
-    setInterval(refreshMainPreview, 80);
-    setInterval(refreshAllThumbPreviews, 250);
+    function loopStatus() {
+      load().finally(() => {
+        setTimeout(loopStatus, document.hidden ? HIDDEN_REFRESH_MS : STATUS_REFRESH_MS);
+      });
+    }
+    function loopMainRgb() {
+      if (!document.hidden) {
+        refreshMainPreviewKind('rgb');
+      }
+      setTimeout(loopMainRgb, document.hidden ? HIDDEN_REFRESH_MS : MAIN_RGB_REFRESH_MS);
+    }
+    function loopMainDepth() {
+      if (!document.hidden) {
+        refreshMainPreviewKind('depth');
+      }
+      setTimeout(loopMainDepth, document.hidden ? HIDDEN_REFRESH_MS : MAIN_DEPTH_REFRESH_MS);
+    }
+    function loopThumbRgb() {
+      if (!document.hidden) {
+        refreshThumbPreviews('rgb');
+      }
+      setTimeout(loopThumbRgb, document.hidden ? HIDDEN_REFRESH_MS : THUMB_RGB_REFRESH_MS);
+    }
+    function loopThumbDepth() {
+      if (!document.hidden) {
+        refreshThumbPreviews('depth');
+      }
+      setTimeout(loopThumbDepth, document.hidden ? HIDDEN_REFRESH_MS : THUMB_DEPTH_REFRESH_MS);
+    }
+    function startLoops() {
+      if (loopsStarted) return;
+      loopsStarted = true;
+      loopStatus();
+      loopMainRgb();
+      loopMainDepth();
+      loopThumbRgb();
+      loopThumbDepth();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        load();
+        refreshMainPreview();
+        refreshAllThumbPreviews();
+      }
+    });
+
+    startLoops();
   </script>
 </body>
 </html>
