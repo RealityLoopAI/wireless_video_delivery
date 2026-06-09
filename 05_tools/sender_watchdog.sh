@@ -12,8 +12,12 @@ SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20
 RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
+CHRONY_WAIT_ENABLED="${GEMINI_SENDER_CHRONY_WAIT_ENABLED:-1}"
+CHRONY_MAX_CORRECTION_S="${GEMINI_CHRONY_MAX_CORRECTION_S:-0.010}"
+DEFAULT_WIFI_CONNECTION="${GEMINI_SENDER_DEFAULT_WIFI_CONNECTION:-666666}"
+DEFAULT_WIFI_MIN_FREQ_MHZ="${GEMINI_SENDER_DEFAULT_WIFI_MIN_FREQ_MHZ:-5000}"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
-gemini_sender_wifi_apply_default_policy "土著拯救器-5G" "5000"
+gemini_sender_wifi_apply_default_policy "$DEFAULT_WIFI_CONNECTION" "$DEFAULT_WIFI_MIN_FREQ_MHZ"
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
 cd "$ROOT_DIR"
@@ -43,6 +47,26 @@ cleanup() {
 trap cleanup INT TERM HUP EXIT
 
 log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ wifi_guard=$(gemini_sender_wifi_policy_summary)"
+
+wait_for_time_sync_before_capture() {
+  if [[ "$CHRONY_WAIT_ENABLED" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$ROOT_DIR/05_tools/wait_chrony_sync.sh" ]]; then
+    log_watchdog "chrony wait enabled but wait script missing; retrying in ${RESTART_DELAY_SECONDS}s"
+    return 1
+  fi
+  if ! command -v chronyc >/dev/null 2>&1; then
+    log_watchdog "chrony wait enabled but chronyc is missing; retrying in ${RESTART_DELAY_SECONDS}s"
+    return 1
+  fi
+  if "$ROOT_DIR/05_tools/wait_chrony_sync.sh" "$CHRONY_MAX_CORRECTION_S" >> "$LOG_FILE" 2>&1; then
+    log_watchdog "chrony sync ready max_correction_s=$CHRONY_MAX_CORRECTION_S"
+    return 0
+  fi
+  log_watchdog "chrony sync wait failed max_correction_s=$CHRONY_MAX_CORRECTION_S; retrying in ${RESTART_DELAY_SECONDS}s"
+  return 1
+}
 
 monitor_child_health() {
   local pid="$1"
@@ -87,6 +111,11 @@ while [[ "$stopping" -eq 0 ]]; do
       sleep "$RESTART_DELAY_SECONDS"
       continue
     fi
+  fi
+
+  if ! wait_for_time_sync_before_capture; then
+    sleep "$RESTART_DELAY_SECONDS"
+    continue
   fi
 
   if [[ "$MODE" == "no-preview" ]]; then
