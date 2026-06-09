@@ -1,0 +1,61 @@
+{
+  "sender_id": "raspberrypi-01",
+  "sender_version": "3.0.0",
+  "receiver": {
+    "ip": "192.168.66.196",
+    "media_port": 50010,
+    "status_port": 50011
+  },
+  "transport": {
+    "enabled": true,
+    "status_protocol": "udp",
+    "media_protocol": "tcp",
+    "connect_timeout_ms": 250,
+    "send_timeout_ms": 80,
+    "send_buffer_bytes": 4194304,
+    "reconnect_interval_ms": 1000
+  },
+  "heartbeat_interval_ms": 1000,
+  "preview": {
+    "enabled": true,
+    "fps": 30
+  },
+  "logging": {
+    "directory": "08_reports/sender_logs",
+    "max_bytes": 10485760
+  },
+  "cameras": [
+    {
+      "camera_id": "cam01",
+      "serial_number": "",
+      "device_index": 0,
+      "rgb_profile": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "width": 640,
+        "height": 400,
+        "fps": 30,
+        "format": "y12"
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "software",
+        "gstreamer_encoder": "x264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "auto_exposure_priority": 0,
+        "exposure": 157,
+        "gain": 120
+      },
+      "depth_transport": {
+        "compression": "zlib"
+      }
+    }
+  ]
+}
