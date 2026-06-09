@@ -510,6 +510,44 @@ bool h264_payload_has_nal_type(const std::vector<uint8_t> &payload, uint8_t expe
     return false;
 }
 
+std::optional<size_t> h264_decodable_start_offset(const std::vector<uint8_t> &payload) {
+    size_t candidate_start = std::string::npos;
+    bool has_sps = false;
+    bool has_pps = false;
+    for(size_t i = 0; i + 4 < payload.size(); ++i) {
+        size_t nal_offset = std::string::npos;
+        size_t start_offset = i;
+        if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
+            nal_offset = i + 3;
+        }
+        else if(i + 4 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+            nal_offset = i + 4;
+        }
+        if(nal_offset == std::string::npos || nal_offset >= payload.size()) {
+            continue;
+        }
+
+        const uint8_t nal_type = payload[nal_offset] & 0x1fu;
+        if(nal_type == 7) {
+            candidate_start = start_offset;
+            has_sps = true;
+            has_pps = false;
+        }
+        else if(nal_type == 8 && has_sps) {
+            has_pps = true;
+        }
+        else if(nal_type == 5 && has_sps && has_pps && candidate_start != std::string::npos) {
+            return candidate_start;
+        }
+        else if(nal_type >= 1 && nal_type <= 5) {
+            candidate_start = std::string::npos;
+            has_sps = false;
+            has_pps = false;
+        }
+    }
+    return std::nullopt;
+}
+
 bool h264_payload_has_vcl_nal(const std::vector<uint8_t> &payload) {
     for(size_t i = 0; i + 4 < payload.size(); ++i) {
         size_t nal_offset = std::string::npos;
@@ -1540,6 +1578,7 @@ public:
         last_depth_ = {};
         rgb_pending_.clear();
         rgb_pending_has_vcl_ = false;
+        rgb_pending_has_decodable_start_ = false;
         depth_pending_.clear();
         depth_pending_bytes_ = 0;
         rgb_fps_probe_.reset();
@@ -1644,7 +1683,8 @@ private:
         const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
         const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
-                                    " -hide_banner -loglevel warning -y -r " + format_fps(fps) + " -f h264 -i pipe:0 -c:v copy " + rgb_mp4 +
+                                    " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps) +
+                                    " -f h264 -i pipe:0 -c:v copy -movflags +faststart " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
         rgb_pipe_.open(rgb_cmd, logger);
     }
@@ -1655,7 +1695,7 @@ private:
             return;
         }
 
-        if(rgb_pending_has_vcl_ && rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
+        if(rgb_pending_has_decodable_start_ && rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
             flush_rgb_pending(cfg, logger);
         }
         if(rgb_pipe_.active()) {
@@ -1665,6 +1705,7 @@ private:
         if(rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
             rgb_pending_.clear();
             rgb_pending_has_vcl_ = false;
+            rgb_pending_has_decodable_start_ = false;
             rgb_fps_probe_.reset();
         }
         rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
@@ -1674,9 +1715,17 @@ private:
             const uint64_t fps_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
             rgb_fps_probe_.add(fps_probe_us);
         }
+        if(!rgb_pending_has_decodable_start_) {
+            if(const auto decodable_start = h264_decodable_start_offset(rgb_pending_)) {
+                if(*decodable_start > 0) {
+                    rgb_pending_.erase(rgb_pending_.begin(), rgb_pending_.begin() + static_cast<std::ptrdiff_t>(*decodable_start));
+                }
+                rgb_pending_has_decodable_start_ = true;
+            }
+        }
 
         const uint64_t ready_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
-        if(rgb_pending_has_vcl_ && rgb_fps_probe_.ready(ready_probe_us)) {
+        if(rgb_pending_has_decodable_start_ && rgb_fps_probe_.ready(ready_probe_us)) {
             flush_rgb_pending(cfg, logger);
         }
     }
@@ -1713,7 +1762,7 @@ private:
     }
 
     void flush_rgb_pending(const Config &cfg, Logger &logger) {
-        if(rgb_pipe_.active() || rgb_pending_.empty() || !rgb_pending_has_vcl_) {
+        if(rgb_pipe_.active() || rgb_pending_.empty() || !rgb_pending_has_decodable_start_) {
             return;
         }
         rgb_record_fps_ = rgb_fps_probe_.estimate(30.0);
@@ -1772,7 +1821,7 @@ private:
     }
 
     static bool should_retime_media(double scale) {
-        return std::isfinite(scale) && scale >= 0.05 && scale <= 20.0 && std::fabs(scale - 1.0) >= 0.001;
+        return std::isfinite(scale) && scale >= 0.8 && scale <= 1.25 && std::fabs(scale - 1.0) >= 0.001;
     }
 
     static std::string format_scale(double scale) {
@@ -1854,7 +1903,7 @@ private:
             append_retime_log(task.log_path, entry.stream_name + " duration probe failed; fallback scale=" + format_scale(scale));
         }
         if(!should_retime_media(scale)) {
-            append_retime_log(task.log_path, entry.stream_name + " retime skipped: scale near 1 or out of range");
+            append_retime_log(task.log_path, entry.stream_name + " retime skipped: scale near 1 or outside 0.8..1.25");
             return false;
         }
 
@@ -2102,6 +2151,7 @@ private:
     FfmpegPipe depth_pipe_;
     std::vector<uint8_t> rgb_pending_;
     bool rgb_pending_has_vcl_ = false;
+    bool rgb_pending_has_decodable_start_ = false;
     std::vector<std::vector<uint8_t>> depth_pending_;
     size_t depth_pending_bytes_ = 0;
     uint32_t depth_width_ = 0;
