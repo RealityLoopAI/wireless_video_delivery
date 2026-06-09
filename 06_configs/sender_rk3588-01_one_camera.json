@@ -1,5 +1,5 @@
 {
-  "sender_id": "rk3588-ubuntu",
+  "sender_id": "auto",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.66.196",
@@ -53,8 +53,8 @@
       },
       "color_controls": {
         "auto_exposure": false,
-        "exposure": 300,
-        "gain": 50
+        "exposure": 333,
+        "gain": 80
       }
     }
   ]

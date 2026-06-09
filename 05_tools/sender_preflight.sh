@@ -9,6 +9,7 @@ PREVIEW_MODE="${3:-config}"
 SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 SDK_CONFIG="$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
+gemini_sender_wifi_apply_repo_defaults
 
 fail() {
   echo "发送端${MODE}检查失败：$1" >&2
@@ -327,7 +328,7 @@ fi
 echo "  route: $route_output"
 
 if echo "$route_output" | grep -q ' dev wlan0 '; then
-  iw dev wlan0 link 2>/dev/null | sed 's/^/  wifi: /' || true
+  gemini_sender_wifi_current_link | sed 's/^/  wifi: /' || true
 fi
 if [[ -n "$receiver_status_warning" ]]; then
   while IFS= read -r line; do

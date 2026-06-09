@@ -204,7 +204,7 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 默认规格：
 
 ```text
-sender_id: rk3588-ubuntu
+sender_id: auto (current machine derives orangepi5pro-c973b736)
 camera_id: cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
@@ -212,7 +212,7 @@ Depth: 320x200@30 y12 -> zlib
 current expectation: stable 1 full-spec RGBD stream
 hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
-Wi-Fi guard: 土著拯救器-5G, min 5000MHz
+Wi-Fi guard: default min 5000MHz, optional SSID via GEMINI_SENDER_DEFAULT_WIFI_CONNECTION
 desktop idle-delay: 3600s
 desktop clock seconds: enabled
 monitor time display: Beijing time UTC+8, second precision

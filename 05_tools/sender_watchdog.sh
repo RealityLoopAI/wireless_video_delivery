@@ -13,7 +13,7 @@ RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
-gemini_sender_wifi_apply_default_policy "土著拯救器-5G" "5000"
+gemini_sender_wifi_apply_repo_defaults
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
 cd "$ROOT_DIR"
