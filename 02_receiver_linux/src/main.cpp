@@ -1795,6 +1795,8 @@ private:
         std::string stream_name;
         double target_duration_seconds = 0.0;
         double fallback_scale = 1.0;
+        std::filesystem::path raw_h264_path;
+        double raw_h264_fps = 30.0;
     };
 
     struct RetimingTask {
@@ -1884,6 +1886,38 @@ private:
         utimensat(AT_FDCWD, path.c_str(), times, 0);
     }
 
+    static bool repair_mp4_from_h264(const RetimingTask &task, const RetimingEntry &entry) {
+        if(entry.raw_h264_path.empty() || !std::filesystem::exists(entry.raw_h264_path)) {
+            append_retime_log(task.log_path, entry.stream_name + " repair skipped: raw h264 missing");
+            return false;
+        }
+        const auto parent = entry.media_path.parent_path();
+        const auto tmp_path = parent / (entry.media_path.stem().string() + ".repair_tmp" + entry.media_path.extension().string());
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+
+        append_retime_log(task.log_path, entry.stream_name + " repair start from " + entry.raw_h264_path.filename().string());
+        const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -fflags +genpts -r " +
+                                format_fps(entry.raw_h264_fps) + " -f h264 -i " + shell_quote(entry.raw_h264_path.string()) +
+                                " -c:v copy " + shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
+        const int rc = std::system(cmd.c_str());
+        if(rc != 0 || !std::filesystem::exists(tmp_path) || std::filesystem::file_size(tmp_path, ec) == 0) {
+            append_retime_log(task.log_path, entry.stream_name + " repair failed");
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+
+        std::filesystem::rename(tmp_path, entry.media_path, ec);
+        if(ec) {
+            append_retime_log(task.log_path, entry.stream_name + " repair replace failed: " + ec.message());
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+        set_file_mtime_to_start(entry.media_path, task.start_us);
+        append_retime_log(task.log_path, entry.stream_name + " repair done");
+        return true;
+    }
+
     static bool retime_media_file(const RetimingTask &task, const RetimingEntry &entry) {
         if(!std::filesystem::exists(entry.media_path)) {
             append_retime_log(task.log_path, entry.stream_name + " retime skipped: media file missing");
@@ -1891,7 +1925,11 @@ private:
         }
 
         double scale = entry.fallback_scale;
-        if(const auto current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path)) {
+        auto current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path);
+        if(!current_duration && entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry)) {
+            current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path);
+        }
+        if(current_duration) {
             if(entry.target_duration_seconds > 0.0) {
                 scale = entry.target_duration_seconds / *current_duration;
             }
@@ -1951,12 +1989,12 @@ private:
         const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
         const double rgb_duration = media_duration_seconds(rgb_stats_);
         if(rgb_duration > 0.0) {
-            task.entries.push_back(RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale});
+            task.entries.push_back(RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale, file_path("rgb_debug.h264"), rgb_record_fps_});
         }
         const double depth_scale = media_retime_scale(depth_record_fps_, depth_stats_);
         const double depth_duration = media_duration_seconds(depth_stats_);
         if(depth_duration > 0.0) {
-            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale});
+            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale, {}, 0.0});
         }
         if(task.entries.empty()) {
             return;
