@@ -38,7 +38,14 @@ gemini_sender_wifi_policy_summary() {
 gemini_sender_wifi_current_link() {
   local iface
   iface="$(gemini_sender_wifi_iface)"
-  iw dev "$iface" link 2>/dev/null || true
+  if command -v iw >/dev/null 2>&1; then
+    iw dev "$iface" link 2>/dev/null || true
+    return
+  fi
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli --escape no -t -f ACTIVE,SSID,FREQ,DEVICE dev wifi list ifname "$iface" 2>/dev/null \
+      | awk -F: -v iface="$iface" '$1 == "yes" && $4 == iface {print "SSID: " $2; print "\tfreq: " $3; exit}'
+  fi
 }
 
 gemini_sender_wifi_current_ssid() {
@@ -86,8 +93,8 @@ gemini_sender_wifi_check_policy() {
   if ! gemini_sender_wifi_required; then
     return 0
   fi
-  if ! command -v iw >/dev/null 2>&1; then
-    GEMINI_SENDER_WIFI_LAST_ERROR="未找到 iw，无法检查 Wi-Fi 链路"
+  if ! command -v iw >/dev/null 2>&1 && ! command -v nmcli >/dev/null 2>&1; then
+    GEMINI_SENDER_WIFI_LAST_ERROR="未找到 iw/nmcli，无法检查 Wi-Fi 链路"
     return 1
   fi
 
