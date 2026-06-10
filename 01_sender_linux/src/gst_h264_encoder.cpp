@@ -83,7 +83,7 @@ GstH264Encoder::~GstH264Encoder() {
     }
 }
 
-std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr, uint64_t timestamp_us) {
+std::vector<EncodedH264Frame> GstH264Encoder::encode_bgr(const cv::Mat &bgr, uint64_t timestamp_us) {
     if(!ok_) {
         throw std::runtime_error("gstreamer encoder is not ready: " + error_);
     }
@@ -95,14 +95,14 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bgr(const cv::Mat &bgr,
     return encode_bytes(bgr.data, size, timestamp_us);
 }
 
-std::vector<std::vector<uint8_t>> GstH264Encoder::encode_jpeg(const void *data, size_t size, uint64_t timestamp_us) {
+std::vector<EncodedH264Frame> GstH264Encoder::encode_jpeg(const void *data, size_t size, uint64_t timestamp_us) {
     if(!data || size == 0) {
         return {};
     }
     return encode_bytes(static_cast<const uint8_t *>(data), size, timestamp_us);
 }
 
-std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us) {
+std::vector<EncodedH264Frame> GstH264Encoder::encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us) {
     if(!ok_) {
         throw std::runtime_error("gstreamer encoder is not ready: " + error_);
     }
@@ -119,7 +119,7 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bytes(const uint8_t *da
         throw std::runtime_error("gst_app_src_push_buffer failed");
     }
 
-    std::vector<std::vector<uint8_t>> outputs;
+    std::vector<EncodedH264Frame> outputs;
     GstClockTime timeout = 20 * GST_MSECOND;
     while(true) {
         GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), timeout);
@@ -129,7 +129,14 @@ std::vector<std::vector<uint8_t>> GstH264Encoder::encode_bytes(const uint8_t *da
         GstBuffer *encoded = gst_sample_get_buffer(sample);
         GstMapInfo map{};
         if(encoded && gst_buffer_map(encoded, &map, GST_MAP_READ)) {
-            outputs.emplace_back(map.data, map.data + map.size);
+            EncodedH264Frame frame;
+            frame.data.assign(map.data, map.data + map.size);
+            const GstClockTime pts = GST_BUFFER_PTS(encoded);
+            if(GST_CLOCK_TIME_IS_VALID(pts)) {
+                frame.pts_us = static_cast<uint64_t>(pts / GST_USECOND);
+                frame.has_pts = true;
+            }
+            outputs.push_back(std::move(frame));
             gst_buffer_unmap(encoded, &map);
         }
         gst_sample_unref(sample);

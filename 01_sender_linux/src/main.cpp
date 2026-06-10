@@ -14,11 +14,13 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -46,6 +48,7 @@ std::mutex g_camera_lifecycle_mutex;
 constexpr uint16_t kDepthPreviewMinMm = 250;
 constexpr uint16_t kDepthPreviewMaxMm = 2500;
 constexpr size_t kMaxActiveCameras = 4;
+constexpr size_t kMaxRgbEncodeTimingFrames = 64;
 constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
 constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
@@ -129,6 +132,14 @@ struct CameraLiveStats {
     int64_t color_exposure_priority = -1;
 };
 
+struct RgbEncodeTiming {
+    uint64_t frame_id = 0;
+    uint64_t device_timestamp_us = 0;
+    uint64_t system_timestamp_us = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct CameraRuntime {
     mutable std::mutex mutex;
     CameraConfig config;
@@ -171,6 +182,7 @@ struct CameraRuntime {
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
     CameraRuntime *depth_remap_target = nullptr;
+    std::deque<RgbEncodeTiming> rgb_encode_timings;
     CameraPerfStats perf;
     CameraLiveStats live;
 };
@@ -674,6 +686,55 @@ uint64_t frame_device_timestamp_us_or(const std::shared_ptr<FrameT> &frame, uint
     }
     const uint64_t timestamp = frame->timeStampUs();
     return timestamp == 0 ? fallback_us : timestamp;
+}
+
+uint64_t abs_diff_us(uint64_t lhs, uint64_t rhs) {
+    return lhs >= rhs ? lhs - rhs : rhs - lhs;
+}
+
+void remember_rgb_encode_timing(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color, uint64_t device_timestamp_us,
+                                uint64_t system_timestamp_us) {
+    if(!color) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    camera.rgb_encode_timings.push_back(RgbEncodeTiming{color->index(), device_timestamp_us, system_timestamp_us,
+                                                        static_cast<uint32_t>(color->width()), static_cast<uint32_t>(color->height())});
+    while(camera.rgb_encode_timings.size() > kMaxRgbEncodeTimingFrames) {
+        camera.rgb_encode_timings.pop_front();
+    }
+}
+
+RgbEncodeTiming resolve_rgb_encode_timing(CameraRuntime &camera, const EncodedH264Frame &encoded, const RgbEncodeTiming &fallback) {
+    if(!encoded.has_pts) {
+        return fallback;
+    }
+
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    if(camera.rgb_encode_timings.empty()) {
+        return fallback;
+    }
+
+    auto best = camera.rgb_encode_timings.end();
+    uint64_t best_delta_us = 0;
+    for(auto it = camera.rgb_encode_timings.begin(); it != camera.rgb_encode_timings.end(); ++it) {
+        const auto delta_us = abs_diff_us(it->system_timestamp_us, encoded.pts_us);
+        if(best == camera.rgb_encode_timings.end() || delta_us < best_delta_us) {
+            best = it;
+            best_delta_us = delta_us;
+        }
+        if(delta_us == 0) {
+            break;
+        }
+    }
+
+    if(best == camera.rgb_encode_timings.end() || best_delta_us > 1000) {
+        return fallback;
+    }
+
+    const auto timing = *best;
+    camera.rgb_encode_timings.erase(camera.rgb_encode_timings.begin(), std::next(best));
+    return timing;
 }
 
 template <typename FrameT>
@@ -2277,27 +2338,32 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                         else {
                             const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
                             const uint64_t rgb_device_timestamp_us = frame_device_timestamp_us_or(color, rgb_system_timestamp_us);
+                            const RgbEncodeTiming fallback_timing{color->index(), rgb_device_timestamp_us, rgb_system_timestamp_us,
+                                                                  static_cast<uint32_t>(color->width()),
+                                                                  static_cast<uint32_t>(color->height())};
+                            remember_rgb_encode_timing(camera, color, rgb_device_timestamp_us, rgb_system_timestamp_us);
                             const auto encode_started = std::chrono::steady_clock::now();
                             const auto encoded_units = input_format == GstH264InputFormat::Jpeg
                                                            ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), rgb_system_timestamp_us)
                                                            : camera.encoder->encode_bgr(bgr, rgb_system_timestamp_us);
                             record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
                             for(const auto &encoded : encoded_units) {
+                                const auto timing = resolve_rgb_encode_timing(camera, encoded, fallback_timing);
                                 MediaFrameMeta meta;
                                 meta.stream_type = StreamType::rgb;
-                                meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded) ? key_frame : 0u);
+                                meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded.data) ? key_frame : 0u);
                                 meta.sender_id = config.sender_id;
                                 meta.camera_id = camera.config.camera_id;
                                 meta.codec_or_compression = "h264";
-                                meta.frame_id = color->index();
-                                meta.timestamp_us = rgb_device_timestamp_us;
-                                meta.system_timestamp_us = rgb_system_timestamp_us;
-                                meta.width = color->width();
-                                meta.height = color->height();
+                                meta.frame_id = timing.frame_id;
+                                meta.timestamp_us = timing.device_timestamp_us;
+                                meta.system_timestamp_us = timing.system_timestamp_us;
+                                meta.width = timing.width;
+                                meta.height = timing.height;
                                 meta.pixel_format = PixelFormat::encoded_video;
-                                meta.payload_size = encoded.size();
-                                meta.uncompressed_size = encoded.size();
-                                auto packet = build_media_packet(meta, encoded.data());
+                                meta.payload_size = encoded.data.size();
+                                meta.uncompressed_size = encoded.data.size();
+                                auto packet = build_media_packet(meta, encoded.data.data());
                                 publish_media_packet(media_queue, rgb_slot, camera, StreamType::rgb, std::move(packet));
                             }
                         }
