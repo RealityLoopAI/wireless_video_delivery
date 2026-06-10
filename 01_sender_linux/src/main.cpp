@@ -14,6 +14,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -46,6 +47,9 @@ std::mutex g_camera_lifecycle_mutex;
 constexpr uint16_t kDepthPreviewMinMm = 250;
 constexpr uint16_t kDepthPreviewMaxMm = 2500;
 constexpr size_t kMaxActiveCameras = 4;
+constexpr uint64_t kAlignedRgbPreviewMaxDeltaUs = 15000;
+constexpr size_t kMaxRgbPreviewQueueFrames = 8;
+constexpr int kAlignedRgbPreviewMinFps = 30;
 constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
 constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
@@ -129,6 +133,12 @@ struct CameraLiveStats {
     int64_t color_exposure_priority = -1;
 };
 
+struct RgbPreviewFrame {
+    cv::Mat bgr;
+    uint64_t frame_id = 0;
+    uint64_t system_timestamp_us = 0;
+};
+
 struct CameraRuntime {
     mutable std::mutex mutex;
     CameraConfig config;
@@ -170,6 +180,9 @@ struct CameraRuntime {
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
+    uint64_t latest_rgb_frame_id = 0;
+    uint64_t latest_rgb_system_timestamp_us = 0;
+    std::deque<RgbPreviewFrame> rgb_preview_queue;
     CameraRuntime *depth_remap_target = nullptr;
     CameraPerfStats perf;
     CameraLiveStats live;
@@ -1539,12 +1552,19 @@ bool depth_emit_due(CameraRuntime &camera, std::chrono::steady_clock::time_point
     return true;
 }
 
-void set_latest_bgr(CameraRuntime &camera, const cv::Mat &bgr) {
+void set_latest_bgr(CameraRuntime &camera, const cv::Mat &bgr, uint64_t frame_id, uint64_t system_timestamp_us) {
     if(bgr.empty()) {
         return;
     }
+    const auto preview_bgr = bgr.clone();
     std::lock_guard<std::mutex> lock(camera.mutex);
-    camera.latest_bgr = bgr.clone();
+    camera.latest_bgr = preview_bgr;
+    camera.latest_rgb_frame_id = frame_id;
+    camera.latest_rgb_system_timestamp_us = system_timestamp_us;
+    camera.rgb_preview_queue.push_back(RgbPreviewFrame{preview_bgr, frame_id, system_timestamp_us});
+    while(camera.rgb_preview_queue.size() > kMaxRgbPreviewQueueFrames) {
+        camera.rgb_preview_queue.pop_front();
+    }
 }
 
 void set_latest_depth_color(CameraRuntime &camera, const cv::Mat &depth_color) {
@@ -1857,6 +1877,139 @@ void preview_frame(const CameraRuntime &camera, bool preview_enabled) {
                 cv::LINE_AA);
     cv::imshow(window_name, wall);
     cv::waitKey(1);
+}
+
+struct AlignedRgbPreviewPair {
+    RgbPreviewFrame cam01;
+    RgbPreviewFrame cam02;
+    std::string cam01_label;
+    std::string cam02_label;
+    int64_t cam01_minus_cam02_us = 0;
+};
+
+std::string camera_preview_label_locked(const CameraRuntime &camera) {
+    std::string label = camera.config.camera_id;
+    if(!camera.device_uid.empty()) {
+        label += " uid=" + camera.device_uid;
+    }
+    if(!camera.device_serial.empty()) {
+        label += " serial=" + camera.device_serial;
+    }
+    return label;
+}
+
+uint64_t abs_diff_us(uint64_t lhs, uint64_t rhs) {
+    return lhs >= rhs ? lhs - rhs : rhs - lhs;
+}
+
+std::optional<AlignedRgbPreviewPair> pop_aligned_rgb_preview_pair(CameraRuntime &cam01, CameraRuntime &cam02) {
+    std::scoped_lock lock(cam01.mutex, cam02.mutex);
+    while(!cam01.rgb_preview_queue.empty() && !cam02.rgb_preview_queue.empty()) {
+        const auto &left = cam01.rgb_preview_queue.front();
+        const auto &right = cam02.rgb_preview_queue.front();
+        const auto delta_us = abs_diff_us(left.system_timestamp_us, right.system_timestamp_us);
+        if(delta_us <= kAlignedRgbPreviewMaxDeltaUs) {
+            AlignedRgbPreviewPair pair;
+            pair.cam01 = left;
+            pair.cam02 = right;
+            pair.cam01_label = camera_preview_label_locked(cam01);
+            pair.cam02_label = camera_preview_label_locked(cam02);
+            pair.cam01_minus_cam02_us =
+                left.system_timestamp_us >= right.system_timestamp_us
+                    ? static_cast<int64_t>(left.system_timestamp_us - right.system_timestamp_us)
+                    : -static_cast<int64_t>(right.system_timestamp_us - left.system_timestamp_us);
+            cam01.rgb_preview_queue.pop_front();
+            cam02.rgb_preview_queue.pop_front();
+            return pair;
+        }
+        if(left.system_timestamp_us < right.system_timestamp_us) {
+            cam01.rgb_preview_queue.pop_front();
+        }
+        else {
+            cam02.rgb_preview_queue.pop_front();
+        }
+    }
+    return std::nullopt;
+}
+
+void put_text_with_outline(cv::Mat &image, const std::string &text, const cv::Point &origin, double scale,
+                           const cv::Scalar &color) {
+    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX, scale, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
+    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX, scale, color, 1, cv::LINE_AA);
+}
+
+void draw_rgb_preview_overlay(cv::Mat &panel, const std::string &label, const RgbPreviewFrame &frame, int64_t delta_us,
+                              const std::string &delta_label) {
+    const cv::Scalar text_color(255, 255, 255);
+    const cv::Scalar delta_color(std::abs(delta_us) <= static_cast<int64_t>(kAlignedRgbPreviewMaxDeltaUs) ? cv::Scalar(80, 255, 120)
+                                                                                                           : cv::Scalar(80, 80, 255));
+    std::ostringstream frame_line;
+    frame_line << label << " RGB frame=" << frame.frame_id;
+    std::ostringstream ts_line;
+    ts_line << "system_ts_us=" << frame.system_timestamp_us;
+    std::ostringstream delta_line;
+    delta_line << std::fixed << std::setprecision(2) << delta_label << "=" << static_cast<double>(delta_us) / 1000.0 << "ms";
+
+    put_text_with_outline(panel, frame_line.str(), cv::Point(12, 28), 0.55, text_color);
+    put_text_with_outline(panel, ts_line.str(), cv::Point(12, 54), 0.48, text_color);
+    put_text_with_outline(panel, delta_line.str(), cv::Point(12, 80), 0.52, delta_color);
+}
+
+CameraRuntime *find_camera_by_id(const std::vector<std::unique_ptr<CameraRuntime>> &cameras, const std::string &camera_id) {
+    for(const auto &camera : cameras) {
+        if(camera && camera->config.camera_id == camera_id) {
+            return camera.get();
+        }
+    }
+    return nullptr;
+}
+
+bool aligned_rgb_preview_configured(const AppConfig &config) {
+    bool has_cam01 = false;
+    bool has_cam02 = false;
+    for(const auto &camera : config.cameras) {
+        has_cam01 = has_cam01 || camera.camera_id == "cam01";
+        has_cam02 = has_cam02 || camera.camera_id == "cam02";
+    }
+    return has_cam01 && has_cam02;
+}
+
+bool preview_aligned_rgb_pair(const std::vector<std::unique_ptr<CameraRuntime>> &cameras) {
+    auto *cam01 = find_camera_by_id(cameras, "cam01");
+    auto *cam02 = find_camera_by_id(cameras, "cam02");
+    if(cam01 == nullptr || cam02 == nullptr) {
+        return false;
+    }
+
+    static bool window_initialized = false;
+    const auto pair = pop_aligned_rgb_preview_pair(*cam01, *cam02);
+    if(!pair) {
+        if(window_initialized) {
+            cv::waitKey(1);
+        }
+        return false;
+    }
+
+    cv::Mat left;
+    cv::Mat right;
+    cv::resize(pair->cam01.bgr, left, cv::Size(640, 360));
+    cv::resize(pair->cam02.bgr, right, cv::Size(640, 360));
+    draw_rgb_preview_overlay(left, pair->cam01_label, pair->cam01, pair->cam01_minus_cam02_us, "cam01-cam02");
+    draw_rgb_preview_overlay(right, pair->cam02_label, pair->cam02, -pair->cam01_minus_cam02_us, "cam02-cam01");
+
+    cv::Mat wall;
+    cv::hconcat(left, right, wall);
+    cv::line(wall, cv::Point(640, 0), cv::Point(640, wall.rows), cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    const std::string window_name = "Gemini Sender RGB Aligned cam01 cam02";
+    if(!window_initialized) {
+        cv::namedWindow(window_name, cv::WINDOW_NORMAL);
+        cv::resizeWindow(window_name, 1280, 360);
+        cv::moveWindow(window_name, 80, 80);
+        window_initialized = true;
+    }
+    cv::imshow(window_name, wall);
+    cv::waitKey(1);
+    return true;
 }
 
 std::string ob_error_text(const ob::Error &error) {
@@ -2191,6 +2344,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
         if(color) {
             record_rgb_input(camera, color);
             update_color_metadata(camera, color);
+            const uint64_t rgb_device_timestamp_us = color->timeStampUs();
+            const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
             const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
             bool rgb_usable = true;
             if(color_is_mjpg && !mjpg_has_complete_jpeg(color)) {
@@ -2210,14 +2365,14 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = color_to_preview_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
-                    set_latest_bgr(camera, preview_bgr);
+                    set_latest_bgr(camera, preview_bgr, color->index(), rgb_system_timestamp_us);
                 }
                 else if(!color_is_mjpg) {
                     const auto decode_started = std::chrono::steady_clock::now();
                     bgr = color_to_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
                     if(preview_due) {
-                        set_latest_bgr(camera, bgr);
+                        set_latest_bgr(camera, bgr, color->index(), rgb_system_timestamp_us);
                     }
                 }
 
@@ -2271,8 +2426,6 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                             record_queue_overwrite(camera, StreamType::rgb);
                         }
                         else {
-                            const uint64_t rgb_device_timestamp_us = color->timeStampUs();
-                            const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
                             const auto encode_started = std::chrono::steady_clock::now();
                             const auto encoded_units = input_format == GstH264InputFormat::Jpeg
                                                            ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), rgb_system_timestamp_us)
@@ -2611,8 +2764,14 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     if(!display_available && !args.no_preview) {
         logger.warn("DISPLAY/WAYLAND_DISPLAY not set; local preview disabled for this run");
     }
-    const auto preview_interval =
-        std::chrono::milliseconds(config.preview.fps > 0 ? std::max(1, 1000 / config.preview.fps) : 100);
+    int preview_fps = config.preview.fps > 0 ? config.preview.fps : 10;
+    if(config.preview.enabled && aligned_rgb_preview_configured(config) && preview_fps < kAlignedRgbPreviewMinFps) {
+        logger.info("aligned RGB preview enabled for cam01/cam02; raising local preview fps from " + std::to_string(preview_fps)
+                    + " to " + std::to_string(kAlignedRgbPreviewMinFps)
+                    + " max_delta_ms=" + std::to_string(kAlignedRgbPreviewMaxDeltaUs / 1000));
+        preview_fps = kAlignedRgbPreviewMinFps;
+    }
+    const auto preview_interval = std::chrono::milliseconds(std::max(1, 1000 / preview_fps));
 
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
@@ -2686,10 +2845,22 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             next_perf_log = now + std::chrono::seconds(1);
         }
         if(config.preview.enabled && now >= next_preview) {
-            for(auto &camera : cameras) {
-                const auto preview_started = std::chrono::steady_clock::now();
-                preview_frame(*camera, true);
-                record_preview_ms(*camera, elapsed_ms(preview_started, std::chrono::steady_clock::now()));
+            const auto preview_started = std::chrono::steady_clock::now();
+            const bool aligned_preview_drawn = preview_aligned_rgb_pair(cameras);
+            const double preview_ms = elapsed_ms(preview_started, std::chrono::steady_clock::now());
+            if(aligned_preview_drawn) {
+                for(auto &camera : cameras) {
+                    if(camera && (camera->config.camera_id == "cam01" || camera->config.camera_id == "cam02")) {
+                        record_preview_ms(*camera, preview_ms);
+                    }
+                }
+            }
+            else if(!find_camera_by_id(cameras, "cam01") || !find_camera_by_id(cameras, "cam02")) {
+                for(auto &camera : cameras) {
+                    const auto fallback_preview_started = std::chrono::steady_clock::now();
+                    preview_frame(*camera, true);
+                    record_preview_ms(*camera, elapsed_ms(fallback_preview_started, std::chrono::steady_clock::now()));
+                }
             }
             next_preview = now + preview_interval;
         }
