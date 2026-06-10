@@ -1600,8 +1600,10 @@ public:
             }
             frames_csv_ << packet.pair_id << ',';
             if(last_rgb_.valid && last_depth_.valid) {
-                const auto delta = last_rgb_.timestamp_us > last_depth_.timestamp_us ? last_rgb_.timestamp_us - last_depth_.timestamp_us
-                                                                                      : last_depth_.timestamp_us - last_rgb_.timestamp_us;
+                const bool use_system_pair_delta = last_rgb_.system_timestamp_us > 0 && last_depth_.system_timestamp_us > 0;
+                const uint64_t rgb_pair_us = use_system_pair_delta ? last_rgb_.system_timestamp_us : last_rgb_.timestamp_us;
+                const uint64_t depth_pair_us = use_system_pair_delta ? last_depth_.system_timestamp_us : last_depth_.timestamp_us;
+                const auto delta = rgb_pair_us > depth_pair_us ? rgb_pair_us - depth_pair_us : depth_pair_us - rgb_pair_us;
                 frames_csv_ << static_cast<double>(delta) / 1000.0;
             }
             frames_csv_ << ',' << packet.width << ',' << packet.height << ',' << packet.payload_size << ',' << packet.system_timestamp_us << ',';

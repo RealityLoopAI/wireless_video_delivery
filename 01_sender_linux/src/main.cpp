@@ -668,6 +668,15 @@ uint64_t frame_system_timestamp_us_or(const std::shared_ptr<FrameT> &frame, uint
 }
 
 template <typename FrameT>
+uint64_t frame_device_timestamp_us_or(const std::shared_ptr<FrameT> &frame, uint64_t fallback_us) {
+    if(!frame) {
+        return fallback_us;
+    }
+    const uint64_t timestamp = frame->timeStampUs();
+    return timestamp == 0 ? fallback_us : timestamp;
+}
+
+template <typename FrameT>
 void append_frame_time_sync(std::ostringstream &oss, const std::string &prefix, const std::shared_ptr<FrameT> &frame, uint64_t host_now_us) {
     if(!frame) {
         oss << " " << prefix << "_present=0";
@@ -2267,10 +2276,11 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                         }
                         else {
                             const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
+                            const uint64_t rgb_device_timestamp_us = frame_device_timestamp_us_or(color, rgb_system_timestamp_us);
                             const auto encode_started = std::chrono::steady_clock::now();
                             const auto encoded_units = input_format == GstH264InputFormat::Jpeg
-                                                           ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), color->timeStampUs())
-                                                           : camera.encoder->encode_bgr(bgr, color->timeStampUs());
+                                                           ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), rgb_system_timestamp_us)
+                                                           : camera.encoder->encode_bgr(bgr, rgb_system_timestamp_us);
                             record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
                             for(const auto &encoded : encoded_units) {
                                 MediaFrameMeta meta;
@@ -2280,7 +2290,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 meta.camera_id = camera.config.camera_id;
                                 meta.codec_or_compression = "h264";
                                 meta.frame_id = color->index();
-                                meta.timestamp_us = rgb_system_timestamp_us;
+                                meta.timestamp_us = rgb_device_timestamp_us;
                                 meta.system_timestamp_us = rgb_system_timestamp_us;
                                 meta.width = color->width();
                                 meta.height = color->height();
@@ -2319,6 +2329,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     depth_payload_size = compressed_depth.size();
                 }
                 const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
+                const uint64_t depth_device_timestamp_us = frame_device_timestamp_us_or(depth, depth_system_timestamp_us);
                 MediaFrameMeta meta;
                 meta.stream_type = StreamType::depth_raw;
                 meta.flags = has_system_timestamp;
@@ -2326,7 +2337,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.camera_id = depth_target->config.camera_id;
                 meta.codec_or_compression = camera.config.depth_transport.compression;
                 meta.frame_id = depth->index();
-                meta.timestamp_us = depth_system_timestamp_us;
+                meta.timestamp_us = depth_device_timestamp_us;
                 meta.system_timestamp_us = depth_system_timestamp_us;
                 meta.width = depth->width();
                 meta.height = depth->height();
