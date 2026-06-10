@@ -47,7 +47,8 @@ std::mutex g_camera_lifecycle_mutex;
 constexpr uint16_t kDepthPreviewMinMm = 250;
 constexpr uint16_t kDepthPreviewMaxMm = 2500;
 constexpr size_t kMaxActiveCameras = 4;
-constexpr uint64_t kAlignedRgbPreviewMaxDeltaUs = 15000;
+constexpr uint64_t kAlignedRgbPreviewTargetDeltaUs = 15000;
+constexpr uint64_t kAlignedRgbPreviewDisplayMaxDeltaUs = 33333;
 constexpr size_t kMaxRgbPreviewQueueFrames = 8;
 constexpr int kAlignedRgbPreviewMinFps = 30;
 constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
@@ -1908,7 +1909,7 @@ std::optional<AlignedRgbPreviewPair> pop_aligned_rgb_preview_pair(CameraRuntime 
         const auto &left = cam01.rgb_preview_queue.front();
         const auto &right = cam02.rgb_preview_queue.front();
         const auto delta_us = abs_diff_us(left.system_timestamp_us, right.system_timestamp_us);
-        if(delta_us <= kAlignedRgbPreviewMaxDeltaUs) {
+        if(delta_us <= kAlignedRgbPreviewDisplayMaxDeltaUs) {
             AlignedRgbPreviewPair pair;
             pair.cam01 = left;
             pair.cam02 = right;
@@ -1941,8 +1942,8 @@ void put_text_with_outline(cv::Mat &image, const std::string &text, const cv::Po
 void draw_rgb_preview_overlay(cv::Mat &panel, const std::string &label, const RgbPreviewFrame &frame, int64_t delta_us,
                               const std::string &delta_label) {
     const cv::Scalar text_color(255, 255, 255);
-    const cv::Scalar delta_color(std::abs(delta_us) <= static_cast<int64_t>(kAlignedRgbPreviewMaxDeltaUs) ? cv::Scalar(80, 255, 120)
-                                                                                                           : cv::Scalar(80, 80, 255));
+    const cv::Scalar delta_color(std::abs(delta_us) <= static_cast<int64_t>(kAlignedRgbPreviewTargetDeltaUs) ? cv::Scalar(80, 255, 120)
+                                                                                                             : cv::Scalar(40, 220, 255));
     std::ostringstream frame_line;
     frame_line << label << " RGB frame=" << frame.frame_id;
     std::ostringstream ts_line;
@@ -2768,7 +2769,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     if(config.preview.enabled && aligned_rgb_preview_configured(config) && preview_fps < kAlignedRgbPreviewMinFps) {
         logger.info("aligned RGB preview enabled for cam01/cam02; raising local preview fps from " + std::to_string(preview_fps)
                     + " to " + std::to_string(kAlignedRgbPreviewMinFps)
-                    + " max_delta_ms=" + std::to_string(kAlignedRgbPreviewMaxDeltaUs / 1000));
+                    + " target_delta_ms=" + std::to_string(kAlignedRgbPreviewTargetDeltaUs / 1000)
+                    + " display_max_delta_ms=" + std::to_string(kAlignedRgbPreviewDisplayMaxDeltaUs / 1000));
         preview_fps = kAlignedRgbPreviewMinFps;
     }
     const auto preview_interval = std::chrono::milliseconds(std::max(1, 1000 / preview_fps));
