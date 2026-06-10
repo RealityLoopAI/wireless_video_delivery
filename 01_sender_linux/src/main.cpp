@@ -689,7 +689,8 @@ void append_frame_time_sync(std::ostringstream &oss, const std::string &prefix, 
 }
 
 void log_time_sync(CameraRuntime &camera, Logger &logger, const std::shared_ptr<ob::ColorFrame> &color,
-                   const std::shared_ptr<ob::DepthFrame> &depth, std::chrono::steady_clock::time_point now) {
+                   const std::shared_ptr<ob::DepthFrame> &depth, const std::string &depth_output_camera_id,
+                   std::chrono::steady_clock::time_point now) {
     if(now < camera.next_time_sync_log) {
         return;
     }
@@ -699,6 +700,9 @@ void log_time_sync(CameraRuntime &camera, Logger &logger, const std::shared_ptr<
     oss << "time_sync camera_id=" << camera.config.camera_id << " host_now_us=" << host_now;
     append_frame_time_sync(oss, "rgb", color, host_now);
     append_frame_time_sync(oss, "depth", depth, host_now);
+    if(depth && !depth_output_camera_id.empty() && depth_output_camera_id != camera.config.camera_id) {
+        oss << " depth_output_camera_id=" << depth_output_camera_id;
+    }
     logger.info(oss.str());
 
     camera.next_time_sync_log = now + std::chrono::seconds(5);
@@ -2151,6 +2155,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
         std::shared_ptr<ob::FrameSet> frameset;
         std::shared_ptr<ob::ColorFrame> color;
         std::shared_ptr<ob::DepthFrame> depth;
+        CameraRuntime *depth_output_camera = nullptr;
         try {
             const auto wait_started = std::chrono::steady_clock::now();
             frameset = camera.pipeline->waitForFrames(100);
@@ -2266,11 +2271,12 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                             record_queue_overwrite(camera, StreamType::rgb);
                         }
                         else {
+                            const uint64_t rgb_device_timestamp_us = color->timeStampUs();
                             const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
                             const auto encode_started = std::chrono::steady_clock::now();
                             const auto encoded_units = input_format == GstH264InputFormat::Jpeg
-                                                           ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), color->timeStampUs())
-                                                           : camera.encoder->encode_bgr(bgr, color->timeStampUs());
+                                                           ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), rgb_system_timestamp_us)
+                                                           : camera.encoder->encode_bgr(bgr, rgb_system_timestamp_us);
                             record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
                             for(const auto &encoded : encoded_units) {
                                 MediaFrameMeta meta;
@@ -2280,7 +2286,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 meta.camera_id = camera.config.camera_id;
                                 meta.codec_or_compression = "h264";
                                 meta.frame_id = color->index();
-                                meta.timestamp_us = rgb_system_timestamp_us;
+                                meta.timestamp_us = rgb_device_timestamp_us;
                                 meta.system_timestamp_us = rgb_system_timestamp_us;
                                 meta.width = color->width();
                                 meta.height = color->height();
@@ -2303,6 +2309,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
 
         if(depth) {
             auto *depth_target = depth_target_camera(config, camera);
+            depth_output_camera = depth_target;
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
             set_depth_scale_if_empty(*depth_target, depth->getValueScale());
@@ -2318,6 +2325,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     depth_payload = compressed_depth.data();
                     depth_payload_size = compressed_depth.size();
                 }
+                const uint64_t depth_device_timestamp_us = depth->timeStampUs();
                 const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
                 MediaFrameMeta meta;
                 meta.stream_type = StreamType::depth_raw;
@@ -2326,7 +2334,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.camera_id = depth_target->config.camera_id;
                 meta.codec_or_compression = camera.config.depth_transport.compression;
                 meta.frame_id = depth->index();
-                meta.timestamp_us = depth_system_timestamp_us;
+                meta.timestamp_us = depth_device_timestamp_us;
                 meta.system_timestamp_us = depth_system_timestamp_us;
                 meta.width = depth->width();
                 meta.height = depth->height();
@@ -2355,7 +2363,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
             send_status_locked(transport, logger, transport_mutex, camera_announce(config, camera));
             set_camera_announced(camera, true);
         }
-        log_time_sync(camera, logger, color, depth, frame_now);
+        const std::string depth_output_camera_id = depth_output_camera ? depth_output_camera->config.camera_id : camera.config.camera_id;
+        log_time_sync(camera, logger, color, depth, depth_output_camera_id, frame_now);
         if(preview_due) {
             std::lock_guard<std::mutex> lock(camera.mutex);
             camera.next_preview = frame_now + preview_interval;
