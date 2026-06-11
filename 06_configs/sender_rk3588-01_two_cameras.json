@@ -32,7 +32,7 @@
     {
       "camera_id": "cam01",
       "serial_number": "AY2M54302ZH",
-      "uid": "10-1.2",
+      "uid": "",
       "device_index": 0,
       "validate_rgb_mjpeg": true,
       "rgb_profile": {
@@ -64,8 +64,8 @@
     },
     {
       "camera_id": "cam02",
-      "serial_number": "AY2MC3100Z8",
-      "uid": "8-1.4.2",
+      "serial_number": "AY2MC31010W",
+      "uid": "",
       "device_index": 1,
       "validate_rgb_mjpeg": true,
       "rgb_profile": {
