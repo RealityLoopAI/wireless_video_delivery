@@ -3017,6 +3017,10 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
         }
         if(config.preview.enabled && now >= next_preview) {
             const auto preview_started = std::chrono::steady_clock::now();
+            auto *cam01_preview = find_camera_by_id(cameras, "cam01");
+            auto *cam02_preview = find_camera_by_id(cameras, "cam02");
+            const bool aligned_preview_expected =
+                cam01_preview != nullptr && cam02_preview != nullptr && camera_online(*cam01_preview) && camera_online(*cam02_preview);
             const bool aligned_preview_drawn = preview_aligned_rgb_pair(cameras);
             const double preview_ms = elapsed_ms(preview_started, std::chrono::steady_clock::now());
             if(aligned_preview_drawn) {
@@ -3026,7 +3030,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                     }
                 }
             }
-            else if(!find_camera_by_id(cameras, "cam01") || !find_camera_by_id(cameras, "cam02")) {
+            else if(!aligned_preview_expected) {
                 for(auto &camera : cameras) {
                     const auto fallback_preview_started = std::chrono::steady_clock::now();
                     preview_frame(*camera, true);
