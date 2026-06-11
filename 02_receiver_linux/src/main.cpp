@@ -666,8 +666,8 @@ struct Config {
     std::string ffmpeg_path = "ffmpeg";
     int segment_seconds = 300;
     int depth_fps = 30;
-    bool write_debug_h264 = true;
-    bool write_debug_depth_raw = true;
+    bool write_debug_h264 = false;
+    bool write_debug_depth_raw = false;
     size_t max_payload_bytes = kMaxReasonablePayload;
 };
 

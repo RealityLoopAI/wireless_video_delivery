@@ -170,6 +170,8 @@ struct CameraRuntime {
     uint32_t disconnects = 0;
     uint64_t rgb_frames = 0;
     uint64_t depth_frames = 0;
+    bool rgb_waiting_for_keyframe_after_transport_loss = false;
+    uint64_t rgb_keyframe_guard_drops = 0;
     uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t depth_dropped = 0;
@@ -184,6 +186,7 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point next_time_sync_log = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_jpeg_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_media_warning = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_keyframe_guard_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_rgb_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_depth_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_capture_stall_reconnect = std::chrono::steady_clock::now();
@@ -1537,6 +1540,58 @@ void record_media_send_success(CameraRuntime &camera, StreamType stream_type, si
     }
 }
 
+void arm_rgb_keyframe_guard(CameraRuntime &camera, Logger &logger, const std::string &reason) {
+    bool should_log = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(!camera.rgb_waiting_for_keyframe_after_transport_loss) {
+            should_log = true;
+            camera.rgb_keyframe_guard_drops = 0;
+        }
+        camera.rgb_waiting_for_keyframe_after_transport_loss = true;
+        camera.last_error = reason.empty() ? "rgb transport loss; waiting for next keyframe" : reason;
+    }
+    if(should_log) {
+        logger.warn("rgb transport loss camera_id=" + camera.config.camera_id + "; dropping non-IDR frames until next IDR");
+    }
+}
+
+bool should_drop_rgb_until_keyframe(CameraRuntime &camera, bool is_keyframe, std::chrono::steady_clock::time_point now, Logger &logger) {
+    bool drop = false;
+    bool log_drop = false;
+    bool log_recovered = false;
+    uint64_t dropped = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(!camera.rgb_waiting_for_keyframe_after_transport_loss) {
+            return false;
+        }
+        if(is_keyframe) {
+            log_recovered = true;
+            dropped = camera.rgb_keyframe_guard_drops;
+            camera.rgb_keyframe_guard_drops = 0;
+            camera.rgb_waiting_for_keyframe_after_transport_loss = false;
+        }
+        else {
+            drop = true;
+            camera.rgb_dropped++;
+            camera.rgb_keyframe_guard_drops++;
+            dropped = camera.rgb_keyframe_guard_drops;
+            if(now >= camera.next_keyframe_guard_warning) {
+                camera.next_keyframe_guard_warning = now + std::chrono::seconds(1);
+                log_drop = true;
+            }
+        }
+    }
+    if(log_drop) {
+        logger.warn("rgb keyframe guard dropping non-IDR camera_id=" + camera.config.camera_id + " dropped=" + std::to_string(dropped));
+    }
+    if(log_recovered) {
+        logger.info("rgb keyframe guard recovered camera_id=" + camera.config.camera_id + " dropped=" + std::to_string(dropped));
+    }
+    return drop;
+}
+
 void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType stream_type, double send_ms,
                                std::chrono::steady_clock::time_point frame_now, const std::string &reason) {
     const std::string message = reason.empty() ? "unknown media transport error" : reason;
@@ -2212,6 +2267,9 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         }
         else {
             record_media_send_failure(*job->camera, logger, job->stream_type, send_ms, send_ended, error);
+            if(job->stream_type == StreamType::rgb) {
+                arm_rgb_keyframe_guard(*job->camera, logger, error);
+            }
         }
     }
 }
@@ -2392,11 +2450,14 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                                            : camera.encoder->encode_bgr(bgr, rgb_system_timestamp_us);
                             record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
                             for(const auto &encoded : encoded_units) {
+                                const bool is_key_frame = h264_payload_has_idr(encoded.data);
+                                if(should_drop_rgb_until_keyframe(camera, is_key_frame, frame_now, logger)) {
+                                    continue;
+                                }
                                 const auto timing = resolve_rgb_encode_timing(camera, encoded, fallback_timing);
                                 MediaFrameMeta meta;
                                 meta.stream_type = StreamType::rgb;
-                                meta.flags = has_system_timestamp | has_rgb_diagnostics
-                                             | (h264_payload_has_idr(encoded.data) ? key_frame : 0u);
+                                meta.flags = has_system_timestamp | has_rgb_diagnostics | (is_key_frame ? key_frame : 0u);
                                 meta.sender_id = config.sender_id;
                                 meta.camera_id = camera.config.camera_id;
                                 meta.codec_or_compression = "h264";
