@@ -1252,6 +1252,10 @@ struct MediaPacket {
     PixelFormat pixel_format = PixelFormat::encoded_video;
     uint64_t payload_size = 0;
     uint64_t uncompressed_size = 0;
+    int32_t rgb_exposure_us = -1;
+    int32_t rgb_gain = -1;
+    int32_t rgb_auto_exposure = -1;
+    int32_t rgb_actual_fps = -1;
     std::vector<uint8_t> payload;
 };
 
@@ -1288,6 +1292,12 @@ MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
     packet.pixel_format = static_cast<PixelFormat>(read_le16(header + 60));
     packet.payload_size = payload_size;
     packet.uncompressed_size = read_le64(header + 70);
+    if((packet.flags & has_rgb_diagnostics) != 0u) {
+        packet.rgb_exposure_us = static_cast<int32_t>(read_le32(header + 78));
+        packet.rgb_gain = static_cast<int32_t>(read_le32(header + 82));
+        packet.rgb_auto_exposure = static_cast<int32_t>(read_le32(header + 86));
+        packet.rgb_actual_fps = static_cast<int32_t>(read_le32(header + 90));
+    }
 
     std::vector<char> text(sender_id_len + camera_id_len + codec_len);
     if(!text.empty() && !read_exact(fd, text.data(), text.size())) {
@@ -1394,6 +1404,17 @@ struct FrameInfo {
     uint64_t frame_id = 0;
     uint64_t timestamp_us = 0;
     uint64_t system_timestamp_us = 0;
+    int32_t exposure_us = -1;
+    int32_t gain = -1;
+    int32_t auto_exposure = -1;
+    int32_t actual_fps = -1;
+};
+
+struct PendingRgbPacketInfo {
+    MediaPacket packet;
+    uint64_t local_time_us = 0;
+    size_t payload_size = 0;
+    bool has_vcl = false;
 };
 
 struct StreamRecordStats {
@@ -1525,7 +1546,11 @@ public:
         frames_csv_.open(file_path("frames.csv"), std::ios::out | std::ios::trunc);
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
                        "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
-                       "codec_or_compression\n";
+                       "rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,rgb_frame_interval_us,codec_or_compression\n";
+        rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
+        rgb_recorded_frames_csv_
+            << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
+               "packet_system_timestamp_us,rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,codec_or_compression\n";
 
         if(cfg.write_debug_h264) {
             rgb_debug_.open(file_path("rgb_debug.h264"), std::ios::binary | std::ios::out | std::ios::trunc);
@@ -1547,6 +1572,10 @@ public:
         if(frames_csv_) {
             frames_csv_.flush();
             frames_csv_.close();
+        }
+        if(rgb_recorded_frames_csv_) {
+            rgb_recorded_frames_csv_.flush();
+            rgb_recorded_frames_csv_.close();
         }
         if(rgb_debug_) {
             rgb_debug_.close();
@@ -1577,10 +1606,13 @@ public:
         last_rgb_ = {};
         last_depth_ = {};
         rgb_pending_.clear();
+        rgb_pending_infos_.clear();
         rgb_pending_has_vcl_ = false;
         rgb_pending_has_decodable_start_ = false;
+        rgb_recorded_frame_index_ = 0;
         depth_pending_.clear();
         depth_pending_bytes_ = 0;
+        last_rgb_frame_interval_us_.reset();
         rgb_fps_probe_.reset();
         depth_fps_probe_.reset();
         rgb_record_fps_ = 0.0;
@@ -1607,11 +1639,19 @@ public:
         const uint64_t packet_local_us = now_us();
         const auto stream = packet.stream_type == StreamType::rgb ? std::string("rgb") : std::string("depth");
         if(packet.stream_type == StreamType::rgb) {
+            std::optional<int64_t> frame_interval_us;
+            if(last_rgb_.valid && last_rgb_.system_timestamp_us > 0 && packet.system_timestamp_us > 0) {
+                frame_interval_us = packet.system_timestamp_us >= last_rgb_.system_timestamp_us
+                                        ? static_cast<int64_t>(packet.system_timestamp_us - last_rgb_.system_timestamp_us)
+                                        : -static_cast<int64_t>(last_rgb_.system_timestamp_us - packet.system_timestamp_us);
+            }
             if(rgb_debug_) {
                 rgb_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
             write_rgb_packet(cfg, packet, packet_local_us, logger);
-            last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
+            last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.rgb_exposure_us,
+                                  packet.rgb_gain, packet.rgb_auto_exposure, packet.rgb_actual_fps};
+            last_rgb_frame_interval_us_ = frame_interval_us;
             rgb_stats_.add(packet, packet_local_us);
         }
         else if(packet.stream_type == StreamType::depth_raw) {
@@ -1653,14 +1693,90 @@ public:
             if(last_depth_.valid) {
                 frames_csv_ << last_depth_.system_timestamp_us;
             }
-            frames_csv_ << ',' << packet.frame_id << ',' << packet.timestamp_us << ',' << packet.system_timestamp_us << ','
-                        << packet.codec_or_compression << '\n';
+            frames_csv_ << ',' << packet.frame_id << ',' << packet.timestamp_us << ',' << packet.system_timestamp_us << ',';
+            if(last_rgb_.valid && last_rgb_.exposure_us >= 0) {
+                frames_csv_ << last_rgb_.exposure_us;
+            }
+            frames_csv_ << ',';
+            if(last_rgb_.valid && last_rgb_.gain >= 0) {
+                frames_csv_ << last_rgb_.gain;
+            }
+            frames_csv_ << ',';
+            if(last_rgb_.valid && last_rgb_.auto_exposure >= 0) {
+                frames_csv_ << last_rgb_.auto_exposure;
+            }
+            frames_csv_ << ',';
+            if(last_rgb_.valid && last_rgb_.actual_fps >= 0) {
+                frames_csv_ << last_rgb_.actual_fps;
+            }
+            frames_csv_ << ',';
+            if(last_rgb_frame_interval_us_) {
+                frames_csv_ << *last_rgb_frame_interval_us_;
+            }
+            frames_csv_ << ',' << packet.codec_or_compression << '\n';
         }
     }
 
 private:
     std::filesystem::path file_path(const std::string &basename) const {
         return std::filesystem::path(directory_) / prefixed_filename(file_prefix_, basename);
+    }
+
+    void write_rgb_recorded_frame(const MediaPacket &packet, uint64_t packet_local_us, size_t recorded_payload_size) {
+        if(!rgb_recorded_frames_csv_ || !h264_payload_has_vcl_nal(packet.payload)) {
+            return;
+        }
+        rgb_recorded_frames_csv_ << rgb_recorded_frame_index_++ << ',' << packet_local_us << ',' << packet.frame_id << ','
+                                 << packet.timestamp_us << ',' << packet.system_timestamp_us << ',' << packet.width << ','
+                                 << packet.height << ',' << recorded_payload_size << ',' << packet.system_timestamp_us << ',';
+        if(packet.rgb_exposure_us >= 0) {
+            rgb_recorded_frames_csv_ << packet.rgb_exposure_us;
+        }
+        rgb_recorded_frames_csv_ << ',';
+        if(packet.rgb_gain >= 0) {
+            rgb_recorded_frames_csv_ << packet.rgb_gain;
+        }
+        rgb_recorded_frames_csv_ << ',';
+        if(packet.rgb_auto_exposure >= 0) {
+            rgb_recorded_frames_csv_ << packet.rgb_auto_exposure;
+        }
+        rgb_recorded_frames_csv_ << ',';
+        if(packet.rgb_actual_fps >= 0) {
+            rgb_recorded_frames_csv_ << packet.rgb_actual_fps;
+        }
+        rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression << '\n';
+    }
+
+    void write_pending_rgb_recorded_frames() {
+        for(const auto &info : rgb_pending_infos_) {
+            if(info.has_vcl) {
+                write_rgb_recorded_frame(info.packet, info.local_time_us, info.payload_size);
+            }
+        }
+    }
+
+    void trim_pending_rgb_infos_to_offset(size_t byte_offset) {
+        size_t consumed = 0;
+        size_t erase_count = 0;
+        while(erase_count < rgb_pending_infos_.size()) {
+            const size_t next = consumed + rgb_pending_infos_[erase_count].payload_size;
+            if(next > byte_offset) {
+                break;
+            }
+            consumed = next;
+            ++erase_count;
+        }
+        if(erase_count > 0) {
+            rgb_pending_infos_.erase(rgb_pending_infos_.begin(),
+                                     rgb_pending_infos_.begin() + static_cast<std::ptrdiff_t>(erase_count));
+        }
+        if(!rgb_pending_infos_.empty() && byte_offset > consumed) {
+            const size_t trimmed_from_first = byte_offset - consumed;
+            auto &first = rgb_pending_infos_.front();
+            if(trimmed_from_first < first.payload_size) {
+                first.payload_size -= trimmed_from_first;
+            }
+        }
     }
 
     void ensure_depth_pipe(const Config &cfg, uint32_t width, uint32_t height, double fps, Logger &logger) {
@@ -1693,7 +1809,9 @@ private:
 
     void write_rgb_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
         if(rgb_pipe_.active()) {
-            rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
+            }
             return;
         }
 
@@ -1701,18 +1819,23 @@ private:
             flush_rgb_pending(cfg, logger);
         }
         if(rgb_pipe_.active()) {
-            rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
+            }
             return;
         }
         if(rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
             rgb_pending_.clear();
+            rgb_pending_infos_.clear();
             rgb_pending_has_vcl_ = false;
             rgb_pending_has_decodable_start_ = false;
             rgb_fps_probe_.reset();
         }
+        const bool packet_has_vcl = h264_payload_has_vcl_nal(packet.payload);
+        rgb_pending_infos_.push_back(PendingRgbPacketInfo{packet, packet_local_us, packet.payload.size(), packet_has_vcl});
         rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
 
-        if(h264_payload_has_vcl_nal(packet.payload)) {
+        if(packet_has_vcl) {
             rgb_pending_has_vcl_ = true;
             const uint64_t fps_probe_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet_local_us;
             rgb_fps_probe_.add(fps_probe_us);
@@ -1720,6 +1843,7 @@ private:
         if(!rgb_pending_has_decodable_start_) {
             if(const auto decodable_start = h264_decodable_start_offset(rgb_pending_)) {
                 if(*decodable_start > 0) {
+                    trim_pending_rgb_infos_to_offset(*decodable_start);
                     rgb_pending_.erase(rgb_pending_.begin(), rgb_pending_.begin() + static_cast<std::ptrdiff_t>(*decodable_start));
                 }
                 rgb_pending_has_decodable_start_ = true;
@@ -1771,8 +1895,11 @@ private:
         ensure_rgb_pipe(cfg, rgb_record_fps_, logger);
         if(rgb_pipe_.active()) {
             logger.info("rgb record fps estimated: " + format_fps(rgb_record_fps_));
-            rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger);
+            if(rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger)) {
+                write_pending_rgb_recorded_frames();
+            }
             rgb_pending_.clear();
+            rgb_pending_infos_.clear();
         }
     }
 
@@ -2139,6 +2266,7 @@ private:
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
         meta << "  \"rgb_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_debug.h264")) << "\",\n";
+        meta << "  \"rgb_recorded_frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_recorded_frames.csv")) << "\",\n";
         meta << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
         meta << "  \"depth_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_debug.raw")) << "\",\n";
         meta << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
@@ -2293,13 +2421,16 @@ private:
     std::string storage_key_;
     std::string file_prefix_;
     std::ofstream frames_csv_;
+    std::ofstream rgb_recorded_frames_csv_;
     std::ofstream rgb_debug_;
     std::ofstream depth_debug_;
     FfmpegPipe rgb_pipe_;
     FfmpegPipe depth_pipe_;
     std::vector<uint8_t> rgb_pending_;
+    std::vector<PendingRgbPacketInfo> rgb_pending_infos_;
     bool rgb_pending_has_vcl_ = false;
     bool rgb_pending_has_decodable_start_ = false;
+    uint64_t rgb_recorded_frame_index_ = 0;
     std::vector<std::vector<uint8_t>> depth_pending_;
     size_t depth_pending_bytes_ = 0;
     uint32_t depth_width_ = 0;
@@ -2312,6 +2443,7 @@ private:
     StreamRecordStats depth_stats_;
     FrameInfo last_rgb_;
     FrameInfo last_depth_;
+    std::optional<int64_t> last_rgb_frame_interval_us_;
 };
 
 struct CameraState {

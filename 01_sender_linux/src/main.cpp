@@ -142,12 +142,20 @@ struct RgbPreviewFrame {
     uint64_t system_timestamp_us = 0;
 };
 
+struct RgbFrameDiagnostics {
+    int32_t exposure_us = -1;
+    int32_t gain = -1;
+    int32_t auto_exposure = -1;
+    int32_t actual_fps = -1;
+};
+
 struct RgbEncodeTiming {
     uint64_t frame_id = 0;
     uint64_t device_timestamp_us = 0;
     uint64_t system_timestamp_us = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    RgbFrameDiagnostics diagnostics;
 };
 
 struct CameraRuntime {
@@ -321,6 +329,16 @@ int64_t metadata_or(const std::shared_ptr<FrameT> &frame, OBFrameMetadataType ty
     return fallback;
 }
 
+int32_t diagnostic_i32_or_unknown(int64_t value) {
+    if(value < 0) {
+        return -1;
+    }
+    if(value > INT32_MAX) {
+        return INT32_MAX;
+    }
+    return static_cast<int32_t>(value);
+}
+
 int64_t bool_property_or(const std::shared_ptr<ob::Device> &device, OBPropertyID property_id, int64_t fallback = -1) {
     try {
         if(device && device->isPropertySupported(property_id, OB_PERMISSION_READ)) {
@@ -439,6 +457,28 @@ void update_color_metadata(CameraRuntime &camera, const std::shared_ptr<ob::Colo
     camera.live.color_actual_fps = metadata_or(color, OB_FRAME_METADATA_TYPE_ACTUAL_FRAME_RATE, camera.live.color_actual_fps);
     camera.live.color_frame_rate = metadata_or(color, OB_FRAME_METADATA_TYPE_FRAME_RATE, camera.live.color_frame_rate);
     camera.live.color_exposure_priority = metadata_or(color, OB_FRAME_METADATA_TYPE_EXPOSURE_PRIORITY, camera.live.color_exposure_priority);
+}
+
+RgbFrameDiagnostics rgb_frame_diagnostics(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color) {
+    int64_t fallback_auto_exposure = -1;
+    int64_t fallback_exposure = -1;
+    int64_t fallback_gain = -1;
+    int64_t fallback_actual_fps = -1;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        fallback_auto_exposure = camera.live.color_auto_exposure;
+        fallback_exposure = camera.live.color_exposure;
+        fallback_gain = camera.live.color_gain;
+        fallback_actual_fps = camera.live.color_actual_fps;
+    }
+
+    RgbFrameDiagnostics diagnostics;
+    diagnostics.auto_exposure =
+        diagnostic_i32_or_unknown(metadata_or(color, OB_FRAME_METADATA_TYPE_AUTO_EXPOSURE, fallback_auto_exposure));
+    diagnostics.exposure_us = diagnostic_i32_or_unknown(metadata_or(color, OB_FRAME_METADATA_TYPE_EXPOSURE, fallback_exposure));
+    diagnostics.gain = diagnostic_i32_or_unknown(metadata_or(color, OB_FRAME_METADATA_TYPE_GAIN, fallback_gain));
+    diagnostics.actual_fps = diagnostic_i32_or_unknown(metadata_or(color, OB_FRAME_METADATA_TYPE_ACTUAL_FRAME_RATE, fallback_actual_fps));
+    return diagnostics;
 }
 
 void update_color_properties(CameraRuntime &camera) {
@@ -1915,13 +1955,14 @@ uint64_t abs_diff_us(uint64_t lhs, uint64_t rhs) {
 }
 
 void remember_rgb_encode_timing(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color, uint64_t device_timestamp_us,
-                                uint64_t system_timestamp_us) {
+                                uint64_t system_timestamp_us, const RgbFrameDiagnostics &diagnostics) {
     if(!color) {
         return;
     }
     std::lock_guard<std::mutex> lock(camera.mutex);
     camera.rgb_encode_timings.push_back(RgbEncodeTiming{color->index(), device_timestamp_us, system_timestamp_us,
-                                                        static_cast<uint32_t>(color->width()), static_cast<uint32_t>(color->height())});
+                                                        static_cast<uint32_t>(color->width()), static_cast<uint32_t>(color->height()),
+                                                        diagnostics});
     while(camera.rgb_encode_timings.size() > kMaxRgbEncodeTimingFrames) {
         camera.rgb_encode_timings.pop_front();
     }
@@ -2483,10 +2524,11 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                             record_queue_overwrite(camera, StreamType::rgb);
                         }
                         else {
+                            const auto rgb_diagnostics = rgb_frame_diagnostics(camera, color);
                             const RgbEncodeTiming fallback_timing{color->index(), rgb_device_timestamp_us, rgb_system_timestamp_us,
                                                                   static_cast<uint32_t>(color->width()),
-                                                                  static_cast<uint32_t>(color->height())};
-                            remember_rgb_encode_timing(camera, color, rgb_device_timestamp_us, rgb_system_timestamp_us);
+                                                                  static_cast<uint32_t>(color->height()), rgb_diagnostics};
+                            remember_rgb_encode_timing(camera, color, rgb_device_timestamp_us, rgb_system_timestamp_us, rgb_diagnostics);
                             const auto encode_started = std::chrono::steady_clock::now();
                             const auto encoded_units = input_format == GstH264InputFormat::Jpeg
                                                            ? camera.encoder->encode_jpeg(color->data(), color->dataSize(), rgb_system_timestamp_us)
@@ -2496,7 +2538,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 const auto timing = resolve_rgb_encode_timing(camera, encoded, fallback_timing);
                                 MediaFrameMeta meta;
                                 meta.stream_type = StreamType::rgb;
-                                meta.flags = has_system_timestamp | (h264_payload_has_idr(encoded.data) ? key_frame : 0u);
+                                meta.flags = has_system_timestamp | has_rgb_diagnostics
+                                             | (h264_payload_has_idr(encoded.data) ? key_frame : 0u);
                                 meta.sender_id = config.sender_id;
                                 meta.camera_id = camera.config.camera_id;
                                 meta.codec_or_compression = "h264";
@@ -2508,6 +2551,10 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 meta.pixel_format = PixelFormat::encoded_video;
                                 meta.payload_size = encoded.data.size();
                                 meta.uncompressed_size = encoded.data.size();
+                                meta.rgb_exposure_us = timing.diagnostics.exposure_us;
+                                meta.rgb_gain = timing.diagnostics.gain;
+                                meta.rgb_auto_exposure = timing.diagnostics.auto_exposure;
+                                meta.rgb_actual_fps = timing.diagnostics.actual_fps;
                                 auto packet = build_media_packet(meta, encoded.data.data());
                                 publish_media_packet(media_queue, rgb_slot, camera, StreamType::rgb, std::move(packet));
                             }

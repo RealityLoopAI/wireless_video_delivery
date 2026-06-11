@@ -27,6 +27,7 @@ enum MediaFlags : uint32_t {
     dropped_before = 1u << 1,
     end_of_segment_hint = 1u << 2,
     has_system_timestamp = 1u << 3,
+    has_rgb_diagnostics = 1u << 4,
 };
 
 struct MediaFrameMeta {
@@ -44,6 +45,10 @@ struct MediaFrameMeta {
     PixelFormat pixel_format;
     uint64_t payload_size = 0;
     uint64_t uncompressed_size = 0;
+    int32_t rgb_exposure_us = -1;
+    int32_t rgb_gain = -1;
+    int32_t rgb_auto_exposure = -1;
+    int32_t rgb_actual_fps = -1;
 };
 
 inline void append_u8(std::vector<uint8_t> &out, uint8_t value) {
@@ -103,9 +108,10 @@ inline std::vector<uint8_t> build_media_packet(const MediaFrameMeta &meta, const
     append_le16(out, static_cast<uint16_t>(meta.pixel_format));
     append_le64(out, meta.payload_size);
     append_le64(out, meta.uncompressed_size);
-    for(int i = 0; i < 16; ++i) {
-        append_u8(out, 0);
-    }
+    append_le32(out, static_cast<uint32_t>(meta.rgb_exposure_us));
+    append_le32(out, static_cast<uint32_t>(meta.rgb_gain));
+    append_le32(out, static_cast<uint32_t>(meta.rgb_auto_exposure));
+    append_le32(out, static_cast<uint32_t>(meta.rgb_actual_fps));
 
     append_bytes(out, meta.sender_id.data(), meta.sender_id.size());
     append_bytes(out, meta.camera_id.data(), meta.camera_id.size());
