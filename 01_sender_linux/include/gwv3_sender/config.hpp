@@ -67,6 +67,7 @@ struct TransportConfig {
 struct PreviewConfig {
     bool enabled = true;
     int fps = 10;
+    bool aligned_rgb = true;
 };
 
 struct LoggingConfig {

@@ -318,6 +318,7 @@ AppConfig load_config(const std::string &path) {
     if(!preview.isNull()) {
         config.preview.enabled = optional_bool(preview, "enabled", config.preview.enabled);
         config.preview.fps = optional_int(preview, "fps", config.preview.fps);
+        config.preview.aligned_rgb = optional_bool(preview, "aligned_rgb", config.preview.aligned_rgb);
     }
 
     const auto &logging = root["logging"];

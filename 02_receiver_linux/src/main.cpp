@@ -63,6 +63,7 @@ constexpr size_t kMaxPendingRgbRecordBytes = 8ull * 1024ull * 1024ull;
 constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
+constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 
@@ -383,6 +384,14 @@ void set_socket_timeout(int fd, int seconds) {
     tv.tv_sec = seconds;
     tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+bool set_socket_recv_buffer(int fd, int bytes) {
+    if(bytes <= 0) {
+        return true;
+    }
+    const int requested = bytes;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested, sizeof(requested)) == 0;
 }
 
 void set_fd_cloexec(int fd) {
@@ -3357,6 +3366,9 @@ private:
         set_fd_cloexec(fd);
         int yes = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        if(!set_socket_recv_buffer(fd, kMediaSocketReceiveBufferBytes)) {
+            logger_.warn(std::string("cannot set media listen SO_RCVBUF: ") + std::strerror(errno));
+        }
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.media_bind_ip, config_.media_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
@@ -3382,6 +3394,9 @@ private:
                 continue;
             }
             set_fd_cloexec(client);
+            if(!set_socket_recv_buffer(client, kMediaSocketReceiveBufferBytes)) {
+                logger_.warn(std::string("cannot set media client SO_RCVBUF: ") + std::strerror(errno));
+            }
             const auto peer_endpoint = socket_endpoint(peer);
             const int previous_clients = active_media_clients_.fetch_add(1);
             if(previous_clients >= kMaxActiveMediaClients) {

@@ -2118,6 +2118,9 @@ CameraRuntime *find_camera_by_id(const std::vector<std::unique_ptr<CameraRuntime
 }
 
 bool aligned_rgb_preview_configured(const AppConfig &config) {
+    if(!config.preview.aligned_rgb) {
+        return false;
+    }
     bool has_cam01 = false;
     bool has_cam02 = false;
     for(const auto &camera : config.cameras) {
@@ -2935,7 +2938,11 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
         logger.warn("DISPLAY/WAYLAND_DISPLAY not set; local preview disabled for this run");
     }
     int preview_fps = config.preview.fps > 0 ? config.preview.fps : 10;
-    if(config.preview.enabled && aligned_rgb_preview_configured(config) && preview_fps < kAlignedRgbPreviewMinFps) {
+    const bool aligned_rgb_preview_enabled = aligned_rgb_preview_configured(config);
+    if(config.preview.enabled && !aligned_rgb_preview_enabled && !config.preview.aligned_rgb) {
+        logger.info("aligned RGB preview disabled by config; using per-camera RGB/depth preview windows");
+    }
+    if(config.preview.enabled && aligned_rgb_preview_enabled && preview_fps < kAlignedRgbPreviewMinFps) {
         logger.info("aligned RGB preview enabled for cam01/cam02; raising local preview fps from " + std::to_string(preview_fps)
                     + " to " + std::to_string(kAlignedRgbPreviewMinFps)
                     + " target_delta_ms=" + std::to_string(kAlignedRgbPreviewTargetDeltaUs / 1000)
@@ -3017,11 +3024,15 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
         }
         if(config.preview.enabled && now >= next_preview) {
             const auto preview_started = std::chrono::steady_clock::now();
-            auto *cam01_preview = find_camera_by_id(cameras, "cam01");
-            auto *cam02_preview = find_camera_by_id(cameras, "cam02");
-            const bool aligned_preview_expected =
-                cam01_preview != nullptr && cam02_preview != nullptr && camera_online(*cam01_preview) && camera_online(*cam02_preview);
-            const bool aligned_preview_drawn = preview_aligned_rgb_pair(cameras);
+            bool aligned_preview_expected = false;
+            bool aligned_preview_drawn = false;
+            if(aligned_rgb_preview_enabled) {
+                auto *cam01_preview = find_camera_by_id(cameras, "cam01");
+                auto *cam02_preview = find_camera_by_id(cameras, "cam02");
+                aligned_preview_expected =
+                    cam01_preview != nullptr && cam02_preview != nullptr && camera_online(*cam01_preview) && camera_online(*cam02_preview);
+                aligned_preview_drawn = preview_aligned_rgb_pair(cameras);
+            }
             const double preview_ms = elapsed_ms(preview_started, std::chrono::steady_clock::now());
             if(aligned_preview_drawn) {
                 for(auto &camera : cameras) {

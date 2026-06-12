@@ -16,13 +16,14 @@
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
-  "swap_depth_between_cameras": true,
+  "swap_depth_between_cameras": false,
   "hotplug": {
     "enabled": false
   },
   "preview": {
     "enabled": true,
-    "fps": 10
+    "fps": 10,
+    "aligned_rgb": false
   },
   "logging": {
     "directory": "08_reports/sender_logs",
@@ -59,12 +60,12 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
-        "gain": 50
+        "gain": 80
       }
     },
     {
       "camera_id": "cam02",
-      "serial_number": "AY2MC31010W",
+      "serial_number": "AY2MC3100Z8",
       "uid": "",
       "device_index": 1,
       "validate_rgb_mjpeg": true,
@@ -92,7 +93,7 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
-        "gain": 30
+        "gain": 80
       }
     }
   ]
