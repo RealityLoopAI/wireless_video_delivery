@@ -53,6 +53,7 @@ constexpr uint32_t kRgbPreviewFps = 30;
 constexpr uint32_t kRgbMainPreviewFps = 30;
 constexpr int kRgbPreviewJpegQuality = 10;
 constexpr bool kEnableRgbThumbnailPreview = false;
+constexpr bool kEnableJpegMainPreview = false;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 12;
@@ -3095,6 +3096,9 @@ public:
         if(key == main_preview_key_) {
             cam.main_rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
         }
+        if(!kEnableJpegMainPreview) {
+            return std::nullopt;
+        }
         if(key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
             const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
             if(jpeg) {
@@ -3461,7 +3465,7 @@ private:
             cam.rgb_preview_us = 0;
         }
 
-        if(cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0)) {
+        if(kEnableJpegMainPreview && cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0)) {
             feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, kRgbMainPreviewFps, cam.key + ":main",
                                             cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }

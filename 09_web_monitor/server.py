@@ -226,6 +226,9 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait(timeout=2)
+            else:
+                proc.wait(timeout=2)
 
     return StreamingResponse(
         stream(),
