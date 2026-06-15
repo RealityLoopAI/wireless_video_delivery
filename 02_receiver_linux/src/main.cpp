@@ -50,6 +50,7 @@ constexpr uint32_t kRgbMainPreviewWidth = 640;
 constexpr uint32_t kRgbPreviewFps = 30;
 constexpr uint32_t kRgbMainPreviewFps = 30;
 constexpr int kRgbPreviewJpegQuality = 10;
+constexpr bool kEnableRgbThumbnailPreview = false;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 12;
@@ -2999,6 +3000,9 @@ public:
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
         if(it == cameras_.end() || !it->second->online) {
+            return std::nullopt;
+        }
+        if(!kEnableRgbThumbnailPreview) {
             return std::nullopt;
         }
         it->second->rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
