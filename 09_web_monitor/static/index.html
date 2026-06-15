@@ -547,6 +547,9 @@
     const HIDDEN_REFRESH_MS = 1000;
     const ENABLE_H264_VIDEO_PREVIEW = true;
     const ENABLE_THUMB_RGB_PREVIEW = true;
+    const RGB_VIDEO_TARGET_LAG_SEC = 0.12;
+    const RGB_VIDEO_FAST_LAG_SEC = 0.28;
+    const RGB_VIDEO_JUMP_LAG_SEC = 0.65;
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -760,6 +763,27 @@
       video.load();
       video.style.display = 'none';
     }
+    function trimRgbVideoLatency(video) {
+      if (!video || video.readyState < 2 || !video.buffered.length) return;
+      const last = video.buffered.length - 1;
+      const start = video.buffered.start(last);
+      const end = video.buffered.end(last);
+      const lag = end - video.currentTime;
+      if (!Number.isFinite(lag) || lag < 0) return;
+      if (lag > RGB_VIDEO_JUMP_LAG_SEC) {
+        video.currentTime = Math.max(start, end - RGB_VIDEO_TARGET_LAG_SEC);
+        video.playbackRate = 1;
+      }
+      else if (lag > RGB_VIDEO_FAST_LAG_SEC) {
+        video.playbackRate = 1.12;
+      }
+      else {
+        video.playbackRate = 1;
+      }
+      if (video.paused) {
+        video.play().catch(() => {});
+      }
+    }
     function refreshRgbVideo(root, c, high = false) {
       const video = root.querySelector('[data-video="rgb"]');
       const img = root.querySelector('[data-preview="rgb"]');
@@ -771,9 +795,13 @@
       const key = `${c.camera_key}:${high ? 'main' : 'thumb'}`;
       if (root.dataset.rgbVideoKey !== key || !video.getAttribute('src')) {
         root.dataset.rgbVideoKey = key;
+        video.preload = 'none';
         video.src = rgbVideoUrl(c);
+        video.onprogress = () => trimRgbVideoLatency(video);
+        video.ontimeupdate = () => trimRgbVideoLatency(video);
         video.play().catch(() => {});
       }
+      trimRgbVideoLatency(video);
       if (img) {
         img.removeAttribute('src');
         img.style.display = 'none';
