@@ -537,11 +537,11 @@
     let loopsStarted = false;
 
     const STATUS_REFRESH_MS = 1000;
-    const MAIN_RGB_REFRESH_MS = 90;
+    const MAIN_RGB_REFRESH_MS = 33;
     const MAIN_DEPTH_REFRESH_MS = 180;
-    const THUMB_RGB_REFRESH_MS = 350;
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
+    const ENABLE_THUMB_RGB_PREVIEW = false;
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -635,11 +635,15 @@
       const endpoint = high && kind === 'rgb' ? 'rgb-main' : kind;
       return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
     }
-    function previewAvailable(c, kind) {
-      return isLive(c) && (kind === 'rgb' ? c.rgb_preview_available : c.depth_preview_available);
+    function previewAvailable(c, kind, high = false) {
+      if (!isLive(c)) return false;
+      if (kind === 'rgb') {
+        return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : c.rgb_preview_available;
+      }
+      return c.depth_preview_available;
     }
     function hasAnyPreview(c) {
-      return previewAvailable(c, 'rgb') || previewAvailable(c, 'depth');
+      return isLive(c) && (previewAvailable(c, 'rgb') || previewAvailable(c, 'depth') || c.rgb_packets > 0 || c.depth_packets > 0);
     }
     function clearMainPreview(message = '等待主画面') {
       clearPreview(document.getElementById('mainRgbPane'), 'rgb', message === '等待主画面' ? '等待 RGB' : message);
@@ -737,7 +741,7 @@
     function refreshPreview(root, c, kind, high = false) {
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
-      if (!previewAvailable(c, kind)) {
+      if (!previewAvailable(c, kind, high)) {
         if (isLive(c) && img.getAttribute('src')) {
           placeholder.style.display = 'none';
           return;
@@ -774,7 +778,12 @@
       sideCameras.forEach((c) => {
         const card = document.getElementById(cardId('thumb', c.camera_key));
         if (!card) return;
-        refreshPreview(card, c, 'rgb');
+        if (ENABLE_THUMB_RGB_PREVIEW) {
+          refreshPreview(card, c, 'rgb');
+        }
+        else {
+          clearPreview(card, 'rgb', 'RGB');
+        }
         refreshPreview(card, c, 'depth');
       });
     }
@@ -782,6 +791,10 @@
       sideCameras.forEach((c) => {
         const card = document.getElementById(cardId('thumb', c.camera_key));
         if (!card) return;
+        if (kind === 'rgb' && !ENABLE_THUMB_RGB_PREVIEW) {
+          clearPreview(card, 'rgb', 'RGB');
+          return;
+        }
         refreshPreview(card, c, kind);
       });
     }
@@ -948,7 +961,7 @@
       if (!document.hidden) {
         refreshThumbPreviews('rgb');
       }
-      setTimeout(loopThumbRgb, document.hidden ? HIDDEN_REFRESH_MS : THUMB_RGB_REFRESH_MS);
+      setTimeout(loopThumbRgb, HIDDEN_REFRESH_MS);
     }
     function loopThumbDepth() {
       if (!document.hidden) {

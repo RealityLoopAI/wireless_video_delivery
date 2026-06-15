@@ -56,6 +56,8 @@ constexpr int kRgbPreviewWriteBudgetMs = 12;
 constexpr uint64_t kCameraOnlineTimeoutUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
+constexpr uint64_t kPreviewRequestKeepaliveUs = 2ull * 1000ull * 1000ull;
+constexpr uint64_t kPreviewDecoderIdleStopUs = 5ull * 1000ull * 1000ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
 constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
 constexpr double kMinRecordFps = 5.0;
@@ -2532,10 +2534,12 @@ struct CameraState {
     uint32_t rgb_preview_height = 0;
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
+    uint64_t rgb_preview_requested_until_us = 0;
     uint64_t main_rgb_preview_us = 0;
     uint32_t main_rgb_preview_width = 0;
     uint32_t main_rgb_preview_height = 0;
     std::unique_ptr<RgbPreviewDecoder> main_rgb_decoder;
+    uint64_t main_rgb_preview_requested_until_us = 0;
     uint64_t depth_preview_us = 0;
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
@@ -2994,8 +2998,11 @@ public:
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->rgb_preview_us, kPreviewFreshUs) ||
-           !it->second->rgb_decoder) {
+        if(it == cameras_.end() || !it->second->online) {
+            return std::nullopt;
+        }
+        it->second->rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
+        if(!is_recent_us(now, it->second->rgb_preview_us, kPreviewFreshUs) || !it->second->rgb_decoder) {
             return std::nullopt;
         }
         return it->second->rgb_decoder->latest_jpeg();
@@ -3015,6 +3022,7 @@ public:
             for(auto &item : cameras_) {
                 if(item.first != key) {
                     cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
+                    item.second->main_rgb_preview_requested_until_us = 0;
                     item.second->main_rgb_preview_us = 0;
                     item.second->main_rgb_preview_width = 0;
                     item.second->main_rgb_preview_height = 0;
@@ -3022,6 +3030,7 @@ public:
             }
         }
         main_preview_key_ = key;
+        it->second->main_rgb_preview_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
         std::ostringstream out;
         out << "{\"ok\":true,\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\"}";
         return out.str();
@@ -3040,6 +3049,9 @@ public:
             main_preview_key_ = key;
         }
         auto &cam = *it->second;
+        if(key == main_preview_key_) {
+            cam.main_rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
+        }
         if(key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
             const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
             if(jpeg) {
@@ -3079,9 +3091,11 @@ private:
         cam.rgb_preview_prefix_h264.clear();
         cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
         cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
+        cam.rgb_preview_requested_until_us = 0;
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
         cam.rgb_preview_height = 0;
+        cam.main_rgb_preview_requested_until_us = 0;
         cam.main_rgb_preview_us = 0;
         cam.main_rgb_preview_width = 0;
         cam.main_rgb_preview_height = 0;
@@ -3274,13 +3288,24 @@ private:
             return;
         }
 
-        feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, kRgbPreviewFps, cam.key, cam.rgb_preview_width,
-                                        cam.rgb_preview_height, cam.rgb_preview_us);
-        if(cam.key == main_preview_key_) {
+        const auto now = now_us();
+        if(is_recent_us(now, cam.rgb_preview_requested_until_us, 0)) {
+            feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, kRgbPreviewFps, cam.key, cam.rgb_preview_width,
+                                            cam.rgb_preview_height, cam.rgb_preview_us);
+        }
+        else if(cam.rgb_decoder && is_older_than_us(now, cam.rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs)) {
+            cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+            cam.rgb_preview_width = 0;
+            cam.rgb_preview_height = 0;
+            cam.rgb_preview_us = 0;
+        }
+
+        if(cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0)) {
             feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, kRgbMainPreviewFps, cam.key + ":main",
                                             cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }
-        else if(cam.main_rgb_decoder) {
+        else if(cam.main_rgb_decoder &&
+                (cam.key != main_preview_key_ || is_older_than_us(now, cam.main_rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs))) {
             cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
             cam.main_rgb_preview_width = 0;
             cam.main_rgb_preview_height = 0;
