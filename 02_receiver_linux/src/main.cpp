@@ -2440,7 +2440,7 @@ private:
             }
         }
 
-        std::string cmd = "touch -d " + shell_quote("@" + std::to_string(start_us_ / 1'000'000ull)) + " --";
+        std::string cmd = "touch -c -d " + shell_quote("@" + std::to_string(start_us_ / 1'000'000ull)) + " --";
         for(const auto &path : paths) {
             cmd += " " + shell_quote(path.string());
         }
@@ -2462,7 +2462,7 @@ private:
                 utimensat(AT_FDCWD, path.c_str(), delayed_times, 0);
             }
 
-            std::string delayed_cmd = "touch -d " + shell_quote("@" + std::to_string(delayed_start_us / 1'000'000ull)) + " --";
+            std::string delayed_cmd = "touch -c -d " + shell_quote("@" + std::to_string(delayed_start_us / 1'000'000ull)) + " --";
             for(const auto &path : delayed_paths) {
                 delayed_cmd += " " + shell_quote(path.string());
             }
