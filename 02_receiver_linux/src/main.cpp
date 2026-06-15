@@ -1408,6 +1408,22 @@ private:
     std::string command_;
 };
 
+std::string process_status_text(int status) {
+    if(status == 0) {
+        return "exit=0";
+    }
+    if(status == -1) {
+        return std::string("pclose failed: ") + std::strerror(errno);
+    }
+    if(WIFEXITED(status)) {
+        return "exit=" + std::to_string(WEXITSTATUS(status));
+    }
+    if(WIFSIGNALED(status)) {
+        return "signal=" + std::to_string(WTERMSIG(status));
+    }
+    return "status=" + std::to_string(status);
+}
+
 struct FrameInfo {
     bool valid = false;
     uint64_t frame_id = 0;
@@ -1561,8 +1577,10 @@ public:
             << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
                "packet_system_timestamp_us,rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,codec_or_compression\n";
 
-        if(cfg.write_debug_h264) {
-            rgb_debug_.open(file_path("rgb_debug.h264"), std::ios::binary | std::ios::out | std::ios::trunc);
+        rgb_debug_path_ = file_path("rgb_debug.h264");
+        rgb_debug_.open(rgb_debug_path_, std::ios::binary | std::ios::out | std::ios::trunc);
+        if(!rgb_debug_) {
+            logger.warn("failed to open RGB H264 recovery file: " + rgb_debug_path_.string());
         }
         if(cfg.write_debug_depth_raw) {
             depth_debug_.open(file_path("depth_debug.raw"), std::ios::binary | std::ios::out | std::ios::trunc);
@@ -1597,13 +1615,13 @@ public:
         end_us_ = now_us();
         write_meta(cfg, sender_id, camera_id, announce_json, true);
         set_segment_mtime_to_start(logger);
-        schedule_retime_completed_media(cfg);
         if(rgb_rc != 0) {
-            logger.warn("rgb ffmpeg exited with non-zero status for segment: " + directory_);
+            logger.warn("rgb ffmpeg exited with non-zero status (" + process_status_text(rgb_rc) + ") for segment: " + directory_);
         }
         if(depth_rc != 0) {
-            logger.warn("depth ffmpeg exited with non-zero status for segment: " + directory_);
+            logger.warn("depth ffmpeg exited with non-zero status (" + process_status_text(depth_rc) + ") for segment: " + directory_);
         }
+        finalize_completed_media(cfg);
         logger.info("recording segment closed: " + directory_);
         active_ = false;
         directory_.clear();
@@ -1619,6 +1637,7 @@ public:
         rgb_pending_has_vcl_ = false;
         rgb_pending_has_decodable_start_ = false;
         rgb_recorded_frame_index_ = 0;
+        rgb_debug_path_.clear();
         depth_pending_.clear();
         depth_pending_bytes_ = 0;
         last_rgb_frame_interval_us_.reset();
@@ -1653,9 +1672,6 @@ public:
                 frame_interval_us = packet.system_timestamp_us >= last_rgb_.system_timestamp_us
                                         ? static_cast<int64_t>(packet.system_timestamp_us - last_rgb_.system_timestamp_us)
                                         : -static_cast<int64_t>(last_rgb_.system_timestamp_us - packet.system_timestamp_us);
-            }
-            if(rgb_debug_) {
-                rgb_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
             write_rgb_packet(cfg, packet, packet_local_us, logger);
             last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.rgb_exposure_us,
@@ -1729,6 +1745,19 @@ public:
 private:
     std::filesystem::path file_path(const std::string &basename) const {
         return std::filesystem::path(directory_) / prefixed_filename(file_prefix_, basename);
+    }
+
+    bool write_rgb_recovery_bytes(const uint8_t *data, size_t size, Logger &logger) {
+        if(!rgb_debug_ || size == 0) {
+            return false;
+        }
+        rgb_debug_.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
+        if(!rgb_debug_) {
+            logger.warn("RGB H264 recovery write failed: " + rgb_debug_path_.string());
+            rgb_debug_.close();
+            return false;
+        }
+        return true;
     }
 
     void write_rgb_recorded_frame(const MediaPacket &packet, uint64_t packet_local_us, size_t recorded_payload_size) {
@@ -1818,7 +1847,9 @@ private:
 
     void write_rgb_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
         if(rgb_pipe_.active()) {
-            if(rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+            const bool recovery_ok = write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger);
+            const bool pipe_ok = rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(pipe_ok || recovery_ok) {
                 write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
             }
             return;
@@ -1828,7 +1859,9 @@ private:
             flush_rgb_pending(cfg, logger);
         }
         if(rgb_pipe_.active()) {
-            if(rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+            const bool recovery_ok = write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger);
+            const bool pipe_ok = rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(pipe_ok || recovery_ok) {
                 write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
             }
             return;
@@ -1904,7 +1937,9 @@ private:
         ensure_rgb_pipe(cfg, rgb_record_fps_, logger);
         if(rgb_pipe_.active()) {
             logger.info("rgb record fps estimated: " + format_fps(rgb_record_fps_));
-            if(rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger)) {
+            const bool recovery_ok = write_rgb_recovery_bytes(rgb_pending_.data(), rgb_pending_.size(), logger);
+            const bool pipe_ok = rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger);
+            if(pipe_ok || recovery_ok) {
                 write_pending_rgb_recorded_frames();
             }
             rgb_pending_.clear();
@@ -1935,6 +1970,7 @@ private:
         double fallback_scale = 1.0;
         std::filesystem::path raw_h264_path;
         double raw_h264_fps = 30.0;
+        bool keep_raw_h264 = false;
     };
 
     struct RetimingTask {
@@ -2220,12 +2256,24 @@ private:
 
     static void run_retime_task(RetimingTask task) {
         for(const auto &entry : task.entries) {
-            retime_media_file(task, entry);
+            const bool ok = retime_media_file(task, entry);
+            if(ok && entry.stream_name == "rgb" && !entry.keep_raw_h264 && !entry.raw_h264_path.empty()) {
+                std::error_code ec;
+                if(std::filesystem::exists(entry.raw_h264_path, ec)) {
+                    std::filesystem::remove(entry.raw_h264_path, ec);
+                    if(ec) {
+                        append_retime_log(task.log_path, "rgb recovery h264 remove failed: " + ec.message());
+                    }
+                    else {
+                        append_retime_log(task.log_path, "rgb recovery h264 removed after final validation");
+                    }
+                }
+            }
         }
         set_file_mtime_to_start(task.log_path, task.start_us);
     }
 
-    void schedule_retime_completed_media(const Config &cfg) const {
+    void finalize_completed_media(const Config &cfg) const {
         RetimingTask task;
         task.ffmpeg_path = cfg.ffmpeg_path;
         task.ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
@@ -2235,17 +2283,18 @@ private:
         const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
         const double rgb_duration = media_duration_seconds(rgb_stats_);
         if(rgb_duration > 0.0) {
-            task.entries.push_back(RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale, file_path("rgb_debug.h264"), rgb_record_fps_});
+            task.entries.push_back(
+                RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale, file_path("rgb_debug.h264"), rgb_record_fps_, cfg.write_debug_h264});
         }
         const double depth_scale = media_retime_scale(depth_record_fps_, depth_stats_);
         const double depth_duration = media_duration_seconds(depth_stats_);
         if(depth_duration > 0.0) {
-            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale, {}, 0.0});
+            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale, {}, 0.0, false});
         }
         if(task.entries.empty()) {
             return;
         }
-        std::thread([task = std::move(task)]() mutable { run_retime_task(std::move(task)); }).detach();
+        run_retime_task(std::move(task));
     }
 
     void write_meta(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) {
@@ -2432,6 +2481,7 @@ private:
     std::ofstream frames_csv_;
     std::ofstream rgb_recorded_frames_csv_;
     std::ofstream rgb_debug_;
+    std::filesystem::path rgb_debug_path_;
     std::ofstream depth_debug_;
     FfmpegPipe rgb_pipe_;
     FfmpegPipe depth_pipe_;
