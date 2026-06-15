@@ -45,10 +45,11 @@ namespace {
 constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
-constexpr uint32_t kRgbPreviewWidth = 480;
-constexpr uint32_t kRgbMainPreviewWidth = 960;
-constexpr uint32_t kRgbPreviewFps = 6;
-constexpr uint32_t kRgbMainPreviewFps = 8;
+constexpr uint32_t kRgbPreviewWidth = 320;
+constexpr uint32_t kRgbMainPreviewWidth = 640;
+constexpr uint32_t kRgbPreviewFps = 30;
+constexpr uint32_t kRgbMainPreviewFps = 30;
+constexpr int kRgbPreviewJpegQuality = 10;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 12;
@@ -1034,9 +1035,11 @@ public:
 
             const std::string scale = target_width == 0 ? "fps=" + std::to_string(preview_fps)
                                                         : "fps=" + std::to_string(preview_fps) + ",scale=" + std::to_string(target_width) + ":-2";
+            const std::string jpeg_quality = std::to_string(kRgbPreviewJpegQuality);
             execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
                    "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
-                   "-vf", scale.c_str(), "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
+                   "-vf", scale.c_str(), "-q:v", jpeg_quality.c_str(), "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+                   static_cast<char *>(nullptr));
             _exit(127);
         }
 
