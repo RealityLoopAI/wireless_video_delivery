@@ -45,10 +45,10 @@ namespace {
 constexpr size_t kMediaHeaderSize = 94;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
-constexpr uint32_t kRgbPreviewWidth = 640;
-constexpr uint32_t kRgbMainPreviewWidth = 0; // 0 keeps the source RGB resolution for the selected main preview.
-constexpr uint32_t kRgbPreviewFps = 10;
-constexpr uint32_t kRgbMainPreviewFps = 15;
+constexpr uint32_t kRgbPreviewWidth = 480;
+constexpr uint32_t kRgbMainPreviewWidth = 960;
+constexpr uint32_t kRgbPreviewFps = 6;
+constexpr uint32_t kRgbMainPreviewFps = 8;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 12;
