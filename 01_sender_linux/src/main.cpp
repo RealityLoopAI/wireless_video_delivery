@@ -57,9 +57,45 @@ constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
 constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
 constexpr auto kHotplugLimitEventInterval = std::chrono::seconds(30);
+constexpr size_t kMediaSlotsPerCamera = 3;
+
+const char *stream_type_name(StreamType stream_type) {
+    switch(stream_type) {
+    case StreamType::rgb:
+        return "rgb";
+    case StreamType::rgb_preview:
+        return "rgb_preview";
+    case StreamType::depth_raw:
+        return "depth";
+    }
+    return "unknown";
+}
 
 void handle_signal(int) {
     g_running = false;
+}
+
+int even_dimension(int value) {
+    value = std::max(2, value);
+    return value % 2 == 0 ? value : value - 1;
+}
+
+struct WebRgbPreviewShape {
+    int width = 0;
+    int height = 0;
+};
+
+WebRgbPreviewShape resolve_web_rgb_preview_shape(const WebRgbPreviewConfig &preview, int source_width, int source_height) {
+    if(!preview.enabled || source_width <= 0 || source_height <= 0) {
+        return {};
+    }
+    const double scale_x = static_cast<double>(preview.max_width) / static_cast<double>(source_width);
+    const double scale_y = static_cast<double>(preview.max_height) / static_cast<double>(source_height);
+    const double scale = std::min(1.0, std::min(scale_x, scale_y));
+    WebRgbPreviewShape shape;
+    shape.width = even_dimension(static_cast<int>(std::round(static_cast<double>(source_width) * scale)));
+    shape.height = even_dimension(static_cast<int>(std::round(static_cast<double>(source_height) * scale)));
+    return shape;
 }
 
 struct Args {
@@ -76,13 +112,16 @@ struct CameraPerfStats {
     uint64_t rgb_input_frames = 0;
     uint64_t depth_input_frames = 0;
     uint64_t rgb_sent_packets = 0;
+    uint64_t rgb_preview_sent_packets = 0;
     uint64_t depth_sent_frames = 0;
     uint64_t rgb_corrupt_jpeg_frames = 0;
     uint64_t rgb_send_failures = 0;
+    uint64_t rgb_preview_send_failures = 0;
     uint64_t depth_send_failures = 0;
     uint64_t rgb_input_bytes = 0;
     uint64_t depth_input_bytes = 0;
     uint64_t rgb_bytes = 0;
+    uint64_t rgb_preview_bytes = 0;
     uint64_t depth_bytes = 0;
     bool rgb_frame_id_seen = false;
     bool depth_frame_id_seen = false;
@@ -94,6 +133,7 @@ struct CameraPerfStats {
     double rgb_decode_ms = 0.0;
     double rgb_encode_ms = 0.0;
     double rgb_send_ms = 0.0;
+    double rgb_preview_send_ms = 0.0;
     double depth_compress_ms = 0.0;
     double depth_send_ms = 0.0;
     double depth_preview_ms = 0.0;
@@ -121,12 +161,15 @@ struct CameraLiveStats {
     double rgb_input_fps = 0.0;
     double depth_input_fps = 0.0;
     double rgb_sent_fps = 0.0;
+    double rgb_preview_sent_fps = 0.0;
     double depth_sent_fps = 0.0;
     double rgb_usb_mbps = 0.0;
     double depth_usb_mbps = 0.0;
     double rgb_mbps = 0.0;
+    double rgb_preview_mbps = 0.0;
     double depth_mbps = 0.0;
     double rgb_encode_ms = 0.0;
+    double rgb_preview_send_ms = 0.0;
     double depth_compress_ms = 0.0;
     int64_t color_auto_exposure = -1;
     int64_t color_exposure = -1;
@@ -169,7 +212,11 @@ struct CameraRuntime {
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     std::unique_ptr<GstH264Encoder> encoder;
+    std::unique_ptr<GstH264Encoder> web_preview_encoder;
     GstH264InputFormat encoder_input_format = GstH264InputFormat::Bgr;
+    GstH264InputFormat web_preview_encoder_input_format = GstH264InputFormat::Bgr;
+    uint32_t web_preview_width = 0;
+    uint32_t web_preview_height = 0;
     bool announced = false;
     bool online = false;
     bool hotplug_dynamic = false;
@@ -679,12 +726,15 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
     camera.live.rgb_input_fps = rate_per_second(perf.rgb_input_frames, seconds);
     camera.live.depth_input_fps = rate_per_second(perf.depth_input_frames, seconds);
     camera.live.rgb_sent_fps = rate_per_second(perf.rgb_sent_packets, seconds);
+    camera.live.rgb_preview_sent_fps = rate_per_second(perf.rgb_preview_sent_packets, seconds);
     camera.live.depth_sent_fps = rate_per_second(perf.depth_sent_frames, seconds);
     camera.live.rgb_usb_mbps = seconds > 0.0 ? static_cast<double>(perf.rgb_input_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.depth_usb_mbps = seconds > 0.0 ? static_cast<double>(perf.depth_input_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.rgb_mbps = seconds > 0.0 ? static_cast<double>(perf.rgb_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
+    camera.live.rgb_preview_mbps = seconds > 0.0 ? static_cast<double>(perf.rgb_preview_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.depth_mbps = seconds > 0.0 ? static_cast<double>(perf.depth_bytes) * 8.0 / seconds / 1000000.0 : 0.0;
     camera.live.rgb_encode_ms = avg_ms(perf.rgb_encode_ms, perf.rgb_input_frames);
+    camera.live.rgb_preview_send_ms = avg_ms(perf.rgb_preview_send_ms, perf.rgb_preview_sent_packets + perf.rgb_preview_send_failures);
     camera.live.depth_compress_ms = avg_ms(perf.depth_compress_ms, perf.depth_input_frames);
 
     std::ostringstream oss;
@@ -693,18 +743,21 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_input_fps=" << camera.live.rgb_input_fps
         << " depth_input_fps=" << camera.live.depth_input_fps
         << " rgb_sent_packets_s=" << camera.live.rgb_sent_fps
+        << " rgb_preview_sent_packets_s=" << camera.live.rgb_preview_sent_fps
         << " depth_sent_fps=" << camera.live.depth_sent_fps
         << " rgb_frame_id_delta=" << rgb_frame_id_delta
         << " depth_frame_id_delta=" << depth_frame_id_delta
         << " rgb_usb_mbps=" << camera.live.rgb_usb_mbps
         << " depth_usb_mbps=" << camera.live.depth_usb_mbps
         << " rgb_mbps=" << camera.live.rgb_mbps
+        << " rgb_preview_mbps=" << camera.live.rgb_preview_mbps
         << " depth_mbps=" << camera.live.depth_mbps
         << " wait_avg_ms=" << avg_ms(perf.wait_ms, perf.wait_calls)
         << " wait_timeouts=" << perf.wait_timeouts
         << " rgb_decode_avg_ms=" << avg_ms(perf.rgb_decode_ms, perf.rgb_input_frames)
         << " rgb_encode_avg_ms=" << camera.live.rgb_encode_ms
         << " rgb_send_avg_ms=" << avg_ms(perf.rgb_send_ms, perf.rgb_sent_packets + perf.rgb_send_failures)
+        << " rgb_preview_send_avg_ms=" << camera.live.rgb_preview_send_ms
         << " depth_compress_avg_ms=" << camera.live.depth_compress_ms
         << " depth_send_avg_ms=" << avg_ms(perf.depth_send_ms, perf.depth_sent_frames + perf.depth_send_failures)
         << " depth_preview_avg_ms=" << avg_ms(perf.depth_preview_ms, perf.depth_input_frames)
@@ -716,6 +769,7 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_exposure_priority=" << camera.live.color_exposure_priority
         << " rgb_corrupt_jpeg_frames=" << perf.rgb_corrupt_jpeg_frames
         << " rgb_send_failures=" << perf.rgb_send_failures
+        << " rgb_preview_send_failures=" << perf.rgb_preview_send_failures
         << " depth_send_failures=" << perf.depth_send_failures;
     logger.info(oss.str());
     update_capture_stall_guard(camera, logger, perf, now);
@@ -1477,7 +1531,7 @@ void record_queue_overwrite(CameraRuntime &camera, StreamType stream_type) {
     if(stream_type == StreamType::rgb) {
         camera.rgb_dropped++;
     }
-    else {
+    else if(stream_type == StreamType::depth_raw) {
         camera.depth_dropped++;
     }
 }
@@ -1489,7 +1543,12 @@ void record_media_send_success(CameraRuntime &camera, StreamType stream_type, si
         camera.perf.rgb_sent_packets++;
         camera.perf.rgb_bytes += packet_size;
     }
-    else {
+    else if(stream_type == StreamType::rgb_preview) {
+        camera.perf.rgb_preview_send_ms += send_ms;
+        camera.perf.rgb_preview_sent_packets++;
+        camera.perf.rgb_preview_bytes += packet_size;
+    }
+    else if(stream_type == StreamType::depth_raw) {
         camera.perf.depth_send_ms += send_ms;
         camera.perf.depth_sent_frames++;
         camera.perf.depth_bytes += packet_size;
@@ -1558,7 +1617,11 @@ void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType
             camera.perf.rgb_send_ms += send_ms;
             camera.perf.rgb_send_failures++;
         }
-        else {
+        else if(stream_type == StreamType::rgb_preview) {
+            camera.perf.rgb_preview_send_ms += send_ms;
+            camera.perf.rgb_preview_send_failures++;
+        }
+        else if(stream_type == StreamType::depth_raw) {
             camera.perf.depth_send_ms += send_ms;
             camera.perf.depth_send_failures++;
         }
@@ -1571,7 +1634,7 @@ void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType
     }
     if(should_log) {
         logger.warn("media send failed camera_id=" + camera.config.camera_id
-                    + " stream=" + (stream_type == StreamType::rgb ? "rgb" : "depth") + " error=" + message);
+                    + " stream=" + stream_type_name(stream_type) + " error=" + message);
     }
 }
 
@@ -1742,6 +1805,11 @@ GstH264InputFormat encoder_input_format_for(CameraRuntime &camera) {
     return camera.encoder_input_format;
 }
 
+GstH264InputFormat web_preview_encoder_input_format_for(CameraRuntime &camera) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    return camera.web_preview_encoder_input_format;
+}
+
 void set_camera_last_error(CameraRuntime &camera, const std::string &error) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     camera.last_error = error;
@@ -1857,6 +1925,7 @@ Json::Value sender_hello(const AppConfig &config) {
     depth.append("zlib");
     capabilities["depth_compression"] = depth;
     capabilities["local_preview"] = config.preview.enabled;
+    capabilities["web_rgb_preview"] = config.web_rgb_preview.enabled;
     capabilities["hotplug"] = config.hotplug.enabled;
     capabilities["media_protocol"] = config.transport.media_protocol;
     capabilities["status_protocol"] = config.transport.status_protocol;
@@ -1882,6 +1951,15 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     msg["device"] = device;
     msg["rgb_profile"] = profile_json(camera.color_profile, "encoded_video", camera.config.rgb_encoding.codec);
     msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
+    Json::Value web_preview;
+    web_preview["enabled"] = config.web_rgb_preview.enabled;
+    web_preview["max_width"] = config.web_rgb_preview.max_width;
+    web_preview["max_height"] = config.web_rgb_preview.max_height;
+    web_preview["fps"] = config.web_rgb_preview.fps;
+    web_preview["bitrate_bps"] = config.web_rgb_preview.bitrate_bps;
+    web_preview["width"] = Json::UInt(camera.web_preview_width);
+    web_preview["height"] = Json::UInt(camera.web_preview_height);
+    msg["web_rgb_preview"] = web_preview;
     msg["calibration"] = calibration_json(*camera.pipeline, camera.device, camera.color_profile, camera.depth_profile);
     return msg;
 }
@@ -1924,6 +2002,10 @@ Json::Value camera_heartbeat(const AppConfig &config, CameraRuntime &camera, std
     msg["rgb_measured_fps"] = camera.live.rgb_input_fps;
     msg["depth_measured_fps"] = camera.live.depth_input_fps;
     msg["rgb_mbps"] = camera.live.rgb_mbps;
+    msg["rgb_preview_mbps"] = camera.live.rgb_preview_mbps;
+    msg["rgb_preview_fps"] = camera.live.rgb_preview_sent_fps;
+    msg["rgb_preview_width"] = Json::UInt(camera.web_preview_width);
+    msg["rgb_preview_height"] = Json::UInt(camera.web_preview_height);
     msg["depth_mbps"] = camera.live.depth_mbps;
     msg["rgb_auto_exposure"] = Json::Int64(camera.live.color_auto_exposure);
     msg["rgb_exposure"] = Json::Int64(camera.live.color_exposure);
@@ -2192,6 +2274,9 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
         }
     }
     camera.encoder.reset();
+    camera.web_preview_encoder.reset();
+    camera.web_preview_width = 0;
+    camera.web_preview_height = 0;
     camera.pipeline.reset();
     camera.color_profile.reset();
     camera.depth_profile.reset();
@@ -2231,6 +2316,9 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
 
     const auto now = std::chrono::steady_clock::now();
     runtime.encoder.reset();
+    runtime.web_preview_encoder.reset();
+    runtime.web_preview_width = 0;
+    runtime.web_preview_height = 0;
     runtime.online = true;
     runtime.announced = false;
     runtime.hardware_encoder = false;
@@ -2449,6 +2537,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                         Sender &transport, Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
     const size_t rgb_slot = slot_base;
     const size_t depth_slot = slot_base + 1;
+    const size_t rgb_preview_slot = slot_base + 2;
 
     while(g_running) {
         const auto loop_now = std::chrono::steady_clock::now();
@@ -2572,6 +2661,53 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     }
                 }
 
+                if(config.web_rgb_preview.enabled && !camera.web_preview_encoder && (color_is_mjpg || !bgr.empty())) {
+                    auto input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
+                    const auto color_profile = camera_color_profile(camera);
+                    if(color_profile) {
+                        const auto shape = resolve_web_rgb_preview_shape(config.web_rgb_preview, color->width(), color->height());
+                        if(shape.width > 0 && shape.height > 0) {
+                            {
+                                std::lock_guard<std::mutex> encoder_lock(g_encoder_create_mutex);
+                                camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
+                                    color->width(), color->height(), color_profile->fps(), config.web_rgb_preview.bitrate_bps,
+                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                if(!camera.web_preview_encoder->ok() && color_is_mjpg) {
+                                    logger.warn("mppjpegdec web rgb preview path unavailable, falling back to BGR encode path: "
+                                                + camera.web_preview_encoder->error());
+                                    input_format = GstH264InputFormat::Bgr;
+                                    camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
+                                        color->width(), color->height(), color_profile->fps(), config.web_rgb_preview.bitrate_bps,
+                                        camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                }
+                            }
+                            {
+                                std::lock_guard<std::mutex> lock(camera.mutex);
+                                camera.web_preview_encoder_input_format = input_format;
+                                if(camera.web_preview_encoder->ok()) {
+                                    camera.web_preview_width = static_cast<uint32_t>(camera.web_preview_encoder->output_width());
+                                    camera.web_preview_height = static_cast<uint32_t>(camera.web_preview_encoder->output_height());
+                                }
+                                else {
+                                    camera.web_preview_width = 0;
+                                    camera.web_preview_height = 0;
+                                    camera.last_error = camera.web_preview_encoder->error();
+                                }
+                            }
+                            if(camera.web_preview_encoder->ok()) {
+                                logger.info("web rgb preview encoder ready camera_id=" + camera.config.camera_id
+                                            + " source=" + std::to_string(color->width()) + "x" + std::to_string(color->height())
+                                            + " preview=" + std::to_string(shape.width) + "x" + std::to_string(shape.height)
+                                            + " bitrate_bps=" + std::to_string(config.web_rgb_preview.bitrate_bps));
+                            }
+                            else {
+                                logger.warn("web rgb preview encoder init failed camera_id=" + camera.config.camera_id
+                                            + " error=" + camera.web_preview_encoder->error());
+                            }
+                        }
+                    }
+                }
+
                 if(camera.encoder && camera.encoder->ok()) {
                     try {
                         const auto input_format = encoder_input_format_for(camera);
@@ -2621,6 +2757,46 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 meta.rgb_actual_fps = timing.diagnostics.actual_fps;
                                 auto packet = build_media_packet(meta, encoded.data.data());
                                 publish_media_packet(media_queue, rgb_slot, camera, StreamType::rgb, std::move(packet));
+                            }
+                            if(camera.web_preview_encoder && camera.web_preview_encoder->ok()) {
+                                const auto preview_input_format = web_preview_encoder_input_format_for(camera);
+                                if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                    const auto decode_started = std::chrono::steady_clock::now();
+                                    bgr = color_to_bgr(color);
+                                    record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
+                                }
+                                if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                    set_camera_last_error(camera, "rgb preview decode produced empty frame");
+                                }
+                                else {
+                                    const auto preview_units = preview_input_format == GstH264InputFormat::Jpeg
+                                                                   ? camera.web_preview_encoder->encode_jpeg(color->data(), color->dataSize(),
+                                                                                                             rgb_system_timestamp_us)
+                                                                   : camera.web_preview_encoder->encode_bgr(bgr, rgb_system_timestamp_us);
+                                    for(const auto &encoded : preview_units) {
+                                        MediaFrameMeta meta;
+                                        const bool is_key_frame = h264_payload_has_idr(encoded.data);
+                                        meta.stream_type = StreamType::rgb_preview;
+                                        meta.flags = has_system_timestamp | has_rgb_diagnostics | (is_key_frame ? key_frame : 0u);
+                                        meta.sender_id = config.sender_id;
+                                        meta.camera_id = camera.config.camera_id;
+                                        meta.codec_or_compression = "h264";
+                                        meta.frame_id = fallback_timing.frame_id;
+                                        meta.timestamp_us = fallback_timing.device_timestamp_us;
+                                        meta.system_timestamp_us = fallback_timing.system_timestamp_us;
+                                        meta.width = static_cast<uint32_t>(camera.web_preview_encoder->output_width());
+                                        meta.height = static_cast<uint32_t>(camera.web_preview_encoder->output_height());
+                                        meta.pixel_format = PixelFormat::encoded_video;
+                                        meta.payload_size = encoded.data.size();
+                                        meta.uncompressed_size = encoded.data.size();
+                                        meta.rgb_exposure_us = fallback_timing.diagnostics.exposure_us;
+                                        meta.rgb_gain = fallback_timing.diagnostics.gain;
+                                        meta.rgb_auto_exposure = fallback_timing.diagnostics.auto_exposure;
+                                        meta.rgb_actual_fps = fallback_timing.diagnostics.actual_fps;
+                                        auto packet = build_media_packet(meta, encoded.data.data());
+                                        publish_media_packet(media_queue, rgb_preview_slot, camera, StreamType::rgb_preview, std::move(packet));
+                                    }
+                                }
                             }
                         }
                     }
@@ -2914,7 +3090,7 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
             continue;
         }
 
-        const size_t slot_base = media_queue.append_slots(2);
+        const size_t slot_base = media_queue.append_slots(kMediaSlotsPerCamera);
         CameraRuntime *camera_ptr = runtime.get();
         cameras.push_back(std::move(runtime));
         camera_threads.emplace_back([&, camera_ptr, slot_base] {
@@ -2954,7 +3130,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
     configure_depth_remap_targets(config, cameras, logger);
-    LatestMediaQueue media_queue(cameras.size() * 2);
+    LatestMediaQueue media_queue(cameras.size() * kMediaSlotsPerCamera);
     std::mutex transport_mutex;
 
     send_status_locked(transport, logger, transport_mutex, sender_hello(config));
@@ -2980,7 +3156,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     std::vector<std::thread> camera_threads;
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
-        const size_t slot_base = i * 2;
+        const size_t slot_base = i * kMediaSlotsPerCamera;
         camera_threads.emplace_back([&, i, slot_base] {
             camera_worker_loop(config, *cameras[i], slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
         });

@@ -82,6 +82,18 @@ void handle_signal(int) {
     g_running = false;
 }
 
+const char *stream_type_name(StreamType stream_type) {
+    switch(stream_type) {
+    case StreamType::rgb:
+        return "rgb";
+    case StreamType::rgb_preview:
+        return "rgb_preview";
+    case StreamType::depth_raw:
+        return "depth";
+    }
+    return "unknown";
+}
+
 uint64_t now_us() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
@@ -1696,7 +1708,7 @@ public:
         }
 
         const uint64_t packet_local_us = now_us();
-        const auto stream = packet.stream_type == StreamType::rgb ? std::string("rgb") : std::string("depth");
+        const auto stream = std::string(stream_type_name(packet.stream_type));
         if(packet.stream_type == StreamType::rgb) {
             std::optional<int64_t> frame_interval_us;
             if(last_rgb_.valid && last_rgb_.system_timestamp_us > 0 && packet.system_timestamp_us > 0) {
@@ -2543,6 +2555,17 @@ struct H264StreamPacket {
     std::vector<uint8_t> payload;
 };
 
+struct H264StreamBuffer {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<H264StreamPacket> packets;
+    std::vector<uint8_t> header_h264;
+    uint64_t next_seq = 1;
+    uint64_t last_us = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct CameraState {
     explicit CameraState(std::string sender, std::string camera)
         : sender_id(std::move(sender)), camera_id(std::move(camera)), key(camera_key(sender_id, camera_id)) {}
@@ -2568,12 +2591,8 @@ struct CameraState {
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
-    std::mutex rgb_stream_mutex;
-    std::condition_variable rgb_stream_cv;
-    std::deque<H264StreamPacket> rgb_stream_packets;
-    std::vector<uint8_t> rgb_stream_header_h264;
-    uint64_t rgb_stream_next_seq = 1;
-    uint64_t rgb_stream_last_us = 0;
+    H264StreamBuffer rgb_stream;
+    H264StreamBuffer rgb_preview_stream;
     uint64_t main_rgb_preview_us = 0;
     uint32_t main_rgb_preview_width = 0;
     uint32_t main_rgb_preview_height = 0;
@@ -3133,11 +3152,23 @@ public:
             cam = it->second;
         }
 
+        H264StreamBuffer *stream = &cam->rgb_stream;
+        bool using_preview_stream = false;
+        {
+            std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+            const auto now = now_us();
+            using_preview_stream = is_recent_us(now, cam->rgb_preview_stream.last_us, kPreviewFreshUs);
+            if(using_preview_stream) {
+                stream = &cam->rgb_preview_stream;
+            }
+        }
+
         std::ostringstream response;
         response << "HTTP/1.1 200 OK\r\n";
         response << "Content-Type: video/h264\r\n";
         response << "Cache-Control: no-store\r\n";
         response << "Connection: close\r\n";
+        response << "X-GWV3-Rgb-Stream: " << (using_preview_stream ? "preview" : "main") << "\r\n";
         response << "X-Accel-Buffering: no\r\n\r\n";
         if(!send_all(fd, response.str())) {
             return false;
@@ -3149,35 +3180,35 @@ public:
             std::vector<uint8_t> header;
             std::vector<H264StreamPacket> packets;
             {
-                std::unique_lock<std::mutex> stream_lock(cam->rgb_stream_mutex);
-                cam->rgb_stream_cv.wait_for(stream_lock, std::chrono::milliseconds(1000));
-                if(cam->rgb_stream_packets.empty()) {
+                std::unique_lock<std::mutex> stream_lock(stream->mutex);
+                stream->cv.wait_for(stream_lock, std::chrono::milliseconds(1000));
+                if(stream->packets.empty()) {
                     continue;
                 }
 
                 if(!started) {
-                    size_t start_index = cam->rgb_stream_packets.size();
-                    for(size_t i = cam->rgb_stream_packets.size(); i > 0; --i) {
-                        if(cam->rgb_stream_packets[i - 1].has_idr) {
+                    size_t start_index = stream->packets.size();
+                    for(size_t i = stream->packets.size(); i > 0; --i) {
+                        if(stream->packets[i - 1].has_idr) {
                             start_index = i - 1;
                             break;
                         }
                     }
-                    if(start_index == cam->rgb_stream_packets.size()) {
+                    if(start_index == stream->packets.size()) {
                         continue;
                     }
-                    header = cam->rgb_stream_header_h264;
-                    for(size_t i = start_index; i < cam->rgb_stream_packets.size(); ++i) {
-                        packets.push_back(cam->rgb_stream_packets[i]);
+                    header = stream->header_h264;
+                    for(size_t i = start_index; i < stream->packets.size(); ++i) {
+                        packets.push_back(stream->packets[i]);
                     }
-                    next_seq = packets.empty() ? cam->rgb_stream_next_seq : packets.back().seq + 1;
+                    next_seq = packets.empty() ? stream->next_seq : packets.back().seq + 1;
                     started = true;
                 }
                 else {
-                    if(next_seq < cam->rgb_stream_packets.front().seq) {
-                        next_seq = cam->rgb_stream_packets.front().seq;
+                    if(next_seq < stream->packets.front().seq) {
+                        next_seq = stream->packets.front().seq;
                     }
-                    for(const auto &packet : cam->rgb_stream_packets) {
+                    for(const auto &packet : stream->packets) {
                         if(packet.seq >= next_seq) {
                             packets.push_back(packet);
                         }
@@ -3228,12 +3259,23 @@ private:
         cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
         cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
         {
-            std::lock_guard<std::mutex> stream_lock(cam.rgb_stream_mutex);
-            cam.rgb_stream_packets.clear();
-            cam.rgb_stream_header_h264.clear();
-            cam.rgb_stream_last_us = 0;
+            std::lock_guard<std::mutex> stream_lock(cam.rgb_stream.mutex);
+            cam.rgb_stream.packets.clear();
+            cam.rgb_stream.header_h264.clear();
+            cam.rgb_stream.last_us = 0;
+            cam.rgb_stream.width = 0;
+            cam.rgb_stream.height = 0;
         }
-        cam.rgb_stream_cv.notify_all();
+        cam.rgb_stream.cv.notify_all();
+        {
+            std::lock_guard<std::mutex> stream_lock(cam.rgb_preview_stream.mutex);
+            cam.rgb_preview_stream.packets.clear();
+            cam.rgb_preview_stream.header_h264.clear();
+            cam.rgb_preview_stream.last_us = 0;
+            cam.rgb_preview_stream.width = 0;
+            cam.rgb_preview_stream.height = 0;
+        }
+        cam.rgb_preview_stream.cv.notify_all();
         cam.rgb_preview_requested_until_us = 0;
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
@@ -3273,26 +3315,28 @@ private:
         }
     }
 
-    void update_rgb_stream_buffer_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
+    void update_h264_stream_buffer_locked(H264StreamBuffer &stream, const MediaPacket &packet, bool has_idr, bool has_vcl) {
         if(packet.payload.empty()) {
             return;
         }
 
         {
-            std::lock_guard<std::mutex> stream_lock(cam.rgb_stream_mutex);
+            std::lock_guard<std::mutex> stream_lock(stream.mutex);
             if(!has_vcl) {
-                if(cam.rgb_stream_header_h264.size() + packet.payload.size() > kRgbH264StreamMaxHeaderBytes) {
-                    cam.rgb_stream_header_h264.clear();
+                if(stream.header_h264.size() + packet.payload.size() > kRgbH264StreamMaxHeaderBytes) {
+                    stream.header_h264.clear();
                 }
-                cam.rgb_stream_header_h264.insert(cam.rgb_stream_header_h264.end(), packet.payload.begin(), packet.payload.end());
+                stream.header_h264.insert(stream.header_h264.end(), packet.payload.begin(), packet.payload.end());
             }
-            cam.rgb_stream_packets.push_back(H264StreamPacket{cam.rgb_stream_next_seq++, has_idr, has_vcl, packet.payload});
-            while(cam.rgb_stream_packets.size() > kRgbH264StreamMaxPackets) {
-                cam.rgb_stream_packets.pop_front();
+            stream.packets.push_back(H264StreamPacket{stream.next_seq++, has_idr, has_vcl, packet.payload});
+            while(stream.packets.size() > kRgbH264StreamMaxPackets) {
+                stream.packets.pop_front();
             }
-            cam.rgb_stream_last_us = now_us();
+            stream.last_us = now_us();
+            stream.width = packet.width;
+            stream.height = packet.height;
         }
-        cam.rgb_stream_cv.notify_all();
+        stream.cv.notify_all();
     }
 
     std::shared_ptr<CameraState> ensure_camera_ptr_locked(const std::string &sender_id, const std::string &camera_id,
@@ -3499,9 +3543,10 @@ private:
         if(decoded_packet.stream_type == StreamType::depth_raw) {
             preview = build_depth_preview_bmp(decoded_packet.payload, decoded_packet.width, decoded_packet.height);
         }
-        const bool rgb_has_idr = packet.stream_type == StreamType::rgb &&
+        const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
+        const bool rgb_has_idr = rgb_stream_packet &&
                                  (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
-        const bool rgb_has_vcl = packet.stream_type == StreamType::rgb && h264_payload_has_vcl_nal(packet.payload);
+        const bool rgb_has_vcl = rgb_stream_packet && h264_payload_has_vcl_nal(packet.payload);
 
         std::shared_ptr<CameraState> cam;
         {
@@ -3511,8 +3556,14 @@ private:
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
-                update_rgb_stream_buffer_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
                 update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+            }
+            else if(packet.stream_type == StreamType::rgb_preview) {
+                update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
+                cam->rgb_preview_width = packet.width;
+                cam->rgb_preview_height = packet.height;
+                cam->rgb_preview_us = cam->last_media_us;
             }
             else if(packet.stream_type == StreamType::depth_raw) {
                 cam->depth_packets++;
@@ -3554,6 +3605,9 @@ private:
             }
         }
         if(!should_record) {
+            return;
+        }
+        if(packet.stream_type == StreamType::rgb_preview) {
             return;
         }
         cam->segment.write_packet(config_, decoded_packet, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger_);
@@ -3668,7 +3722,7 @@ private:
                 auto packet = read_media_packet(fd, config_.max_payload_bytes);
                 last_sender = packet.sender_id;
                 last_camera = packet.camera_id;
-                last_stream = packet.stream_type == StreamType::rgb ? "rgb" : "depth";
+                last_stream = stream_type_name(packet.stream_type);
                 last_frame_id = packet.frame_id;
                 handle_media_packet(packet);
             }

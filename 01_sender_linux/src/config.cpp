@@ -321,6 +321,18 @@ AppConfig load_config(const std::string &path) {
         config.preview.aligned_rgb = optional_bool(preview, "aligned_rgb", config.preview.aligned_rgb);
     }
 
+    const auto &web_rgb_preview = root["web_rgb_preview"];
+    if(!web_rgb_preview.isNull()) {
+        if(!web_rgb_preview.isObject()) {
+            throw std::runtime_error("invalid object field: web_rgb_preview");
+        }
+        config.web_rgb_preview.enabled = optional_bool(web_rgb_preview, "enabled", config.web_rgb_preview.enabled);
+        config.web_rgb_preview.max_width = optional_int(web_rgb_preview, "max_width", config.web_rgb_preview.max_width);
+        config.web_rgb_preview.max_height = optional_int(web_rgb_preview, "max_height", config.web_rgb_preview.max_height);
+        config.web_rgb_preview.fps = optional_int(web_rgb_preview, "fps", config.web_rgb_preview.fps);
+        config.web_rgb_preview.bitrate_bps = optional_int(web_rgb_preview, "bitrate_bps", config.web_rgb_preview.bitrate_bps);
+    }
+
     const auto &logging = root["logging"];
     if(!logging.isNull()) {
         config.logging.directory = optional_string(logging, "directory", config.logging.directory);
@@ -406,6 +418,18 @@ void validate_config(const AppConfig &config) {
     }
     if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
         throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
+    }
+    if(config.web_rgb_preview.max_width <= 0) {
+        throw std::runtime_error("web_rgb_preview.max_width must be positive");
+    }
+    if(config.web_rgb_preview.max_height <= 0) {
+        throw std::runtime_error("web_rgb_preview.max_height must be positive");
+    }
+    if(config.web_rgb_preview.fps <= 0) {
+        throw std::runtime_error("web_rgb_preview.fps must be positive");
+    }
+    if(config.web_rgb_preview.bitrate_bps <= 0) {
+        throw std::runtime_error("web_rgb_preview.bitrate_bps must be positive");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;

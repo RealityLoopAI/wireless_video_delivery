@@ -15,6 +15,7 @@ constexpr uint32_t kMediaMagic = 0x33565747;  // bytes: G W V 3
 enum class StreamType : uint8_t {
     rgb = 1,
     depth_raw = 2,
+    rgb_preview = 3,
 };
 
 enum class PixelFormat : uint16_t {

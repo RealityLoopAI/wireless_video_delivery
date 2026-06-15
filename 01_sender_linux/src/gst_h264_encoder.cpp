@@ -9,10 +9,17 @@
 namespace gwv3 {
 
 GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
-                               GstH264InputFormat input_format)
-    : fps_(fps) {
+                               GstH264InputFormat input_format, int output_width, int output_height)
+    : fps_(fps), output_width_(output_width > 0 ? output_width : width), output_height_(output_height > 0 ? output_height : height) {
     static std::once_flag gst_init_once;
     std::call_once(gst_init_once, [] { gst_init(nullptr, nullptr); });
+
+    const bool scale_output = output_width_ != width || output_height_ != height;
+    const std::string scale_stage =
+        scale_output ? ("! videoscale ! video/x-raw,format=NV12,width=" + std::to_string(output_width_)
+                        + ",height=" + std::to_string(output_height_) + ",framerate=" + std::to_string(fps) + "/1 ")
+                     : ("! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height)
+                        + ",framerate=" + std::to_string(fps) + "/1 ");
 
     std::string pipeline_text;
     if(input_format == GstH264InputFormat::Jpeg) {
@@ -22,7 +29,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
             "! queue max-size-buffers=2 leaky=downstream "
             "! jpegparse "
             "! mppjpegdec fast-mode=true format=NV12 "
-            "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
+            + scale_stage +
             "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "
@@ -34,7 +41,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
             "caps=video/x-raw,format=BGR,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
             "! queue max-size-buffers=2 leaky=downstream "
             "! videoconvert "
-            "! video/x-raw,format=NV12,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
+            + scale_stage +
             "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "

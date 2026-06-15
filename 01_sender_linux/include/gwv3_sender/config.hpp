@@ -70,6 +70,14 @@ struct PreviewConfig {
     bool aligned_rgb = true;
 };
 
+struct WebRgbPreviewConfig {
+    bool enabled = true;
+    int max_width = 1920;
+    int max_height = 1080;
+    int fps = 30;
+    int bitrate_bps = 1200000;
+};
+
 struct LoggingConfig {
     std::string directory = "08_reports/sender_logs";
     size_t max_bytes = 10485760;
@@ -85,6 +93,7 @@ struct AppConfig {
     ReceiverConfig receiver;
     TransportConfig transport;
     PreviewConfig preview;
+    WebRgbPreviewConfig web_rgb_preview;
     LoggingConfig logging;
     HotplugConfig hotplug;
     int heartbeat_interval_ms = 1000;
