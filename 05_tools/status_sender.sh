@@ -2,10 +2,42 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
+CONFIG="${1:-}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender.log"
+
+config_from_cmdline() {
+  local pid="$1"
+  local candidate=""
+  local prev=""
+
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+
+  while IFS= read -r arg; do
+    if [[ "$prev" == "--config" ]]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    if [[ "$arg" == *.json ]]; then
+      candidate="$arg"
+    fi
+    prev="$arg"
+  done < <(tr '\0' '\n' < "/proc/$pid/cmdline")
+
+  [[ -n "$candidate" ]] || return 1
+  printf '%s\n' "$candidate"
+}
+
+if [[ -z "$CONFIG" ]]; then
+  if [[ -f "$CHILD_PID_FILE" ]] && kill -0 "$(cat "$CHILD_PID_FILE")" 2>/dev/null; then
+    CONFIG="$(config_from_cmdline "$(cat "$CHILD_PID_FILE")" || true)"
+  fi
+  if [[ -z "$CONFIG" ]] && [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    CONFIG="$(config_from_cmdline "$(cat "$PID_FILE")" || true)"
+  fi
+  CONFIG="${CONFIG:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
+fi
 
 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "状态查看" "config" || true
 echo

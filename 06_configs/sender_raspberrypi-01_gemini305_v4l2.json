@@ -1,0 +1,70 @@
+{
+  "sender_id": "raspberrypi-01",
+  "sender_version": "3.0.0",
+  "receiver": {
+    "ip": "192.168.66.196",
+    "media_port": 50010,
+    "status_port": 50011
+  },
+  "transport": {
+    "enabled": true,
+    "status_protocol": "udp",
+    "media_protocol": "tcp",
+    "connect_timeout_ms": 250,
+    "send_timeout_ms": 80,
+    "send_buffer_bytes": 4194304,
+    "reconnect_interval_ms": 1000
+  },
+  "heartbeat_interval_ms": 1000,
+  "preview": {
+    "enabled": true,
+    "fps": 30
+  },
+  "hotplug": {
+    "enabled": false
+  },
+  "logging": {
+    "directory": "08_reports/sender_logs",
+    "max_bytes": 10485760
+  },
+  "cameras": [
+    {
+      "camera_id": "cam01",
+      "serial_number": "CV2R46P00091",
+      "uid": "gemini305-CV2R46P00091",
+      "capture_backend": "v4l2",
+      "device_model": "Orbbec Gemini 305",
+      "rgb_device_path": "/dev/video6",
+      "depth_device_path": "/dev/video0",
+      "depth_scale": 1.0,
+      "validate_rgb_mjpeg": true,
+      "rgb_profile": {
+        "width": 1280,
+        "height": 800,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "width": 320,
+        "height": 200,
+        "fps": 30,
+        "format": "z16"
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "software",
+        "gstreamer_encoder": "x264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "auto_exposure_priority": 0,
+        "exposure": 312,
+        "gain": 80
+      },
+      "depth_transport": {
+        "compression": "zlib"
+      }
+    }
+  ]
+}

@@ -234,6 +234,16 @@ std::optional<bool> optional_bool_value(const Json::Value &node, const char *key
     return node[key].asBool();
 }
 
+std::optional<double> optional_double_value(const Json::Value &node, const char *key) {
+    if(!node.isMember(key)) {
+        return std::nullopt;
+    }
+    if(!node[key].isNumeric()) {
+        throw std::runtime_error(std::string("invalid number field: ") + key);
+    }
+    return node[key].asDouble();
+}
+
 VideoProfileConfig load_profile(const Json::Value &node) {
     VideoProfileConfig profile;
     profile.width = optional_int(node, "width", 0);
@@ -347,6 +357,13 @@ AppConfig load_config(const std::string &path) {
         camera.serial_number = optional_string(item, "serial_number", "");
         camera.uid = optional_string(item, "uid", "");
         camera.device_index = optional_int(item, "device_index", camera.device_index);
+        camera.capture_backend = optional_string(item, "capture_backend", camera.capture_backend);
+        camera.rgb_device_path = optional_string(item, "rgb_device_path", "");
+        camera.depth_device_path = optional_string(item, "depth_device_path", "");
+        camera.device_model = optional_string(item, "device_model", "");
+        if(auto depth_scale = optional_double_value(item, "depth_scale")) {
+            camera.depth_scale = static_cast<float>(*depth_scale);
+        }
         camera.validate_rgb_mjpeg = optional_bool(item, "validate_rgb_mjpeg", camera.validate_rgb_mjpeg);
         camera.rgb_profile = load_profile(item["rgb_profile"]);
         camera.depth_profile = load_profile(item["depth_profile"]);
@@ -429,6 +446,32 @@ void validate_config(const AppConfig &config) {
         }
         if(!camera.uid.empty() && !uids.insert(camera.uid).second) {
             throw std::runtime_error("duplicate camera uid is not allowed: " + camera.uid);
+        }
+        if(camera.capture_backend != "orbbec_sdk" && camera.capture_backend != "v4l2") {
+            throw std::runtime_error("camera.capture_backend must be orbbec_sdk or v4l2: " + camera.camera_id);
+        }
+        if(camera.capture_backend == "v4l2") {
+            if(camera.rgb_device_path.empty()) {
+                throw std::runtime_error("v4l2 camera requires rgb_device_path: " + camera.camera_id);
+            }
+            if(camera.depth_device_path.empty()) {
+                throw std::runtime_error("v4l2 camera requires depth_device_path: " + camera.camera_id);
+            }
+            if(camera.rgb_profile.width <= 0 || camera.rgb_profile.height <= 0 || camera.rgb_profile.fps <= 0) {
+                throw std::runtime_error("v4l2 camera requires explicit rgb_profile width/height/fps: " + camera.camera_id);
+            }
+            if(camera.depth_profile.width <= 0 || camera.depth_profile.height <= 0 || camera.depth_profile.fps <= 0) {
+                throw std::runtime_error("v4l2 camera requires explicit depth_profile width/height/fps: " + camera.camera_id);
+            }
+            if(camera.rgb_profile.format != "mjpg" && camera.rgb_profile.format != "yuyv") {
+                throw std::runtime_error("v4l2 rgb_profile.format must be mjpg or yuyv: " + camera.camera_id);
+            }
+            if(camera.depth_profile.format != "z16" && camera.depth_profile.format != "y16") {
+                throw std::runtime_error("v4l2 depth_profile.format must be z16 or y16: " + camera.camera_id);
+            }
+            if(camera.depth_scale < 0.0f) {
+                throw std::runtime_error("v4l2 depth_scale must be non-negative: " + camera.camera_id);
+            }
         }
         if(camera.rgb_encoding.codec != "h264") {
             throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");

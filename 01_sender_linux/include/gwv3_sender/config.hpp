@@ -40,6 +40,11 @@ struct CameraConfig {
     std::string serial_number;
     std::string uid;
     int device_index = 0;
+    std::string capture_backend = "orbbec_sdk";
+    std::string rgb_device_path;
+    std::string depth_device_path;
+    std::string device_model;
+    float depth_scale = 0.0f;
     bool validate_rgb_mjpeg = false;
     VideoProfileConfig rgb_profile;
     VideoProfileConfig depth_profile;
