@@ -1,7 +1,6 @@
 import json
 import os
 import subprocess
-import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -165,7 +164,7 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
                 "-f",
                 "h264",
                 "-i",
-                "pipe:0",
+                raw_url,
                 "-an",
                 "-c:v",
                 "copy",
@@ -177,38 +176,10 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
                 "mp4",
                 "pipe:1",
             ],
-            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=0,
         )
-        stop = threading.Event()
-        raw_response: dict[str, Any] = {"resp": None}
-
-        def feed_h264() -> None:
-            try:
-                req = urllib.request.Request(raw_url, method="GET")
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    raw_response["resp"] = resp
-                    while not stop.is_set():
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        if proc.stdin is None:
-                            break
-                        proc.stdin.write(chunk)
-            except Exception:
-                pass
-            finally:
-                raw_response["resp"] = None
-                try:
-                    if proc.stdin:
-                        proc.stdin.close()
-                except Exception:
-                    pass
-
-        feeder = threading.Thread(target=feed_h264, daemon=True)
-        feeder.start()
         try:
             assert proc.stdout is not None
             while True:
@@ -217,19 +188,6 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
                     break
                 yield chunk
         finally:
-            stop.set()
-            resp = raw_response.get("resp")
-            if resp is not None:
-                try:
-                    resp.close()
-                except Exception:
-                    pass
-            try:
-                if proc.stdin:
-                    proc.stdin.close()
-            except Exception:
-                pass
-            feeder.join(timeout=1)
             if proc.poll() is None:
                 proc.terminate()
                 try:
