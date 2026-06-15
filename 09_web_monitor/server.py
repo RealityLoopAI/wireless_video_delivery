@@ -183,11 +183,13 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
             bufsize=0,
         )
         stop = threading.Event()
+        raw_response: dict[str, Any] = {"resp": None}
 
         def feed_h264() -> None:
             try:
                 req = urllib.request.Request(raw_url, method="GET")
                 with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw_response["resp"] = resp
                     while not stop.is_set():
                         chunk = resp.read(65536)
                         if not chunk:
@@ -198,6 +200,7 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
             except Exception:
                 pass
             finally:
+                raw_response["resp"] = None
                 try:
                     if proc.stdin:
                         proc.stdin.close()
@@ -215,11 +218,18 @@ def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) 
                 yield chunk
         finally:
             stop.set()
+            resp = raw_response.get("resp")
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
             try:
                 if proc.stdin:
                     proc.stdin.close()
             except Exception:
                 pass
+            feeder.join(timeout=1)
             if proc.poll() is None:
                 proc.terminate()
                 try:
