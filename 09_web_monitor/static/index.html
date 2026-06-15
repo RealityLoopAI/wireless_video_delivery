@@ -185,7 +185,9 @@
       letter-spacing: .02em;
     }
     .main-pane img,
-    .thumb-view img {
+    .main-pane video,
+    .thumb-view img,
+    .thumb-view video {
       position: absolute;
       inset: 0;
       width: 100%;
@@ -196,7 +198,8 @@
       object-position: center center;
       display: block;
     }
-    .main-pane img {
+    .main-pane img,
+    .main-pane video {
       object-fit: contain !important;
     }
     .placeholder {
@@ -491,6 +494,7 @@
       </div>
       <div class="main-dual">
         <div id="mainRgbPane" class="main-pane" data-title="RGB">
+          <video data-video="rgb" autoplay muted playsinline style="display:none"></video>
           <img alt="主 RGB 预览" data-preview="rgb" style="display:none" />
           <span data-placeholder="rgb" class="placeholder">等待 RGB</span>
         </div>
@@ -537,11 +541,12 @@
     let loopsStarted = false;
 
     const STATUS_REFRESH_MS = 1000;
-    const MAIN_RGB_REFRESH_MS = 33;
+    const MAIN_RGB_REFRESH_MS = 1000;
     const MAIN_DEPTH_REFRESH_MS = 180;
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
-    const ENABLE_THUMB_RGB_PREVIEW = false;
+    const ENABLE_H264_VIDEO_PREVIEW = true;
+    const ENABLE_THUMB_RGB_PREVIEW = true;
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -635,9 +640,13 @@
       const endpoint = high && kind === 'rgb' ? 'rgb-main' : kind;
       return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
     }
+    function rgbVideoUrl(c) {
+      return `/api/preview/rgb-video?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+    }
     function previewAvailable(c, kind, high = false) {
       if (!isLive(c)) return false;
       if (kind === 'rgb') {
+        if (ENABLE_H264_VIDEO_PREVIEW) return (c.rgb_packets || 0) > 0;
         return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : c.rgb_preview_available;
       }
       return c.depth_preview_available;
@@ -660,7 +669,7 @@
       title.textContent = displayName(c);
       const status = c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF');
       const dotClass = c.recording ? 'recording' : (isLive(c) ? 'ok' : '');
-      const rgb = `${c.main_rgb_preview_width || c.rgb_preview_width || 0}x${c.main_rgb_preview_height || c.rgb_preview_height || 0}`;
+      const rgb = `${c.main_rgb_preview_width || c.rgb_preview_width || c.announce_rgb_width || 0}x${c.main_rgb_preview_height || c.rgb_preview_height || c.announce_rgb_height || 0}`;
       const depth = `${c.depth_preview_width || 0}x${c.depth_preview_height || 0}`;
       state.innerHTML = `<span class="dot ${dotClass}"></span><span>${status}</span><span>RGB ${rgb}</span><span>DEPTH ${depth}</span>`;
     }
@@ -703,6 +712,7 @@
         </div>
         <div class="thumb-preview">
           <div class="thumb-view" data-title="RGB">
+            <video data-video="rgb" autoplay muted playsinline style="display:none"></video>
             <img alt="RGB preview" data-preview="rgb" style="display:none">
             <span data-placeholder="rgb">RGB</span>
           </div>
@@ -733,12 +743,49 @@
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       root.dataset[`${kind}Token`] = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
       root.dataset[`${kind}Loading`] = '0';
+      if (kind === 'rgb') {
+        clearRgbVideo(root);
+      }
       img.removeAttribute('src');
       img.style.display = 'none';
       placeholder.textContent = message || kind;
       placeholder.style.display = '';
     }
+    function clearRgbVideo(root) {
+      const video = root.querySelector('[data-video="rgb"]');
+      if (!video) return;
+      root.dataset.rgbVideoKey = '';
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.style.display = 'none';
+    }
+    function refreshRgbVideo(root, c, high = false) {
+      const video = root.querySelector('[data-video="rgb"]');
+      const img = root.querySelector('[data-preview="rgb"]');
+      const placeholder = root.querySelector('[data-placeholder="rgb"]');
+      if (!video || !previewAvailable(c, 'rgb', high)) {
+        clearPreview(root, 'rgb', 'RGB');
+        return;
+      }
+      const key = `${c.camera_key}:${high ? 'main' : 'thumb'}`;
+      if (root.dataset.rgbVideoKey !== key || !video.getAttribute('src')) {
+        root.dataset.rgbVideoKey = key;
+        video.src = rgbVideoUrl(c);
+        video.play().catch(() => {});
+      }
+      if (img) {
+        img.removeAttribute('src');
+        img.style.display = 'none';
+      }
+      video.style.display = 'block';
+      placeholder.style.display = 'none';
+    }
     function refreshPreview(root, c, kind, high = false) {
+      if (kind === 'rgb' && ENABLE_H264_VIDEO_PREVIEW) {
+        refreshRgbVideo(root, c, high);
+        return;
+      }
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       if (!previewAvailable(c, kind, high)) {

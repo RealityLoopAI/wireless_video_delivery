@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdlib>
 #include <csignal>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <cmath>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -59,6 +61,8 @@ constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewRequestKeepaliveUs = 2ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewDecoderIdleStopUs = 5ull * 1000ull * 1000ull;
+constexpr size_t kRgbH264StreamMaxPackets = 180;
+constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
 constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
 constexpr double kMinRecordFps = 5.0;
@@ -441,6 +445,26 @@ bool wait_fd_writable(int fd, int timeout_ms) {
         rc = poll(&pfd, 1, timeout_ms);
     } while(rc < 0 && errno == EINTR);
     return rc > 0 && (pfd.revents & POLLOUT) != 0;
+}
+
+bool send_all(int fd, const void *data, size_t size) {
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    size_t offset = 0;
+    while(offset < size) {
+        const ssize_t sent = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
+        if(sent < 0 && errno == EINTR) {
+            continue;
+        }
+        if(sent <= 0) {
+            return false;
+        }
+        offset += static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+bool send_all(int fd, const std::string &text) {
+    return send_all(fd, text.data(), text.size());
 }
 
 sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
@@ -2511,6 +2535,13 @@ private:
     std::optional<int64_t> last_rgb_frame_interval_us_;
 };
 
+struct H264StreamPacket {
+    uint64_t seq = 0;
+    bool has_idr = false;
+    bool has_vcl = false;
+    std::vector<uint8_t> payload;
+};
+
 struct CameraState {
     explicit CameraState(std::string sender, std::string camera)
         : sender_id(std::move(sender)), camera_id(std::move(camera)), key(camera_key(sender_id, camera_id)) {}
@@ -2536,6 +2567,12 @@ struct CameraState {
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
+    std::mutex rgb_stream_mutex;
+    std::condition_variable rgb_stream_cv;
+    std::deque<H264StreamPacket> rgb_stream_packets;
+    std::vector<uint8_t> rgb_stream_header_h264;
+    uint64_t rgb_stream_next_seq = 1;
+    uint64_t rgb_stream_last_us = 0;
     uint64_t main_rgb_preview_us = 0;
     uint32_t main_rgb_preview_width = 0;
     uint32_t main_rgb_preview_height = 0;
@@ -2643,7 +2680,7 @@ public:
             const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
             const bool rgb_preview_report_available =
-                kEnableRgbThumbnailPreview ? rgb_thumbnail_preview_available : (cam.key == main_preview_key_ && media_live && cam.rgb_packets > 0);
+                kEnableRgbThumbnailPreview ? rgb_thumbnail_preview_available : (media_live && cam.rgb_packets > 0);
             const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
             const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
             const bool calibration_available = cam.last_announce_live && cached_calibration_available;
@@ -3070,6 +3107,95 @@ public:
         return std::nullopt;
     }
 
+    bool stream_rgb_h264_preview(int fd, const std::string &sender_id, const std::string &camera_id) {
+        std::shared_ptr<CameraState> cam;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto now = now_us();
+            refresh_camera_liveness_locked(now);
+            const auto key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+                const std::string body = "{\"ok\":false,\"error\":\"rgb h264 stream not found\"}";
+                std::ostringstream response;
+                response << "HTTP/1.1 404 Not Found\r\n";
+                response << "Content-Type: application/json\r\n";
+                response << "Cache-Control: no-store\r\n";
+                response << "Content-Length: " << body.size() << "\r\n";
+                response << "Connection: close\r\n\r\n";
+                response << body;
+                return send_all(fd, response.str());
+            }
+            cam = it->second;
+        }
+
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n";
+        response << "Content-Type: video/h264\r\n";
+        response << "Cache-Control: no-store\r\n";
+        response << "Connection: close\r\n";
+        response << "X-Accel-Buffering: no\r\n\r\n";
+        if(!send_all(fd, response.str())) {
+            return false;
+        }
+
+        bool started = false;
+        uint64_t next_seq = 0;
+        while(running_ && g_running) {
+            std::vector<uint8_t> header;
+            std::vector<H264StreamPacket> packets;
+            {
+                std::unique_lock<std::mutex> stream_lock(cam->rgb_stream_mutex);
+                cam->rgb_stream_cv.wait_for(stream_lock, std::chrono::milliseconds(1000));
+                if(cam->rgb_stream_packets.empty()) {
+                    continue;
+                }
+
+                if(!started) {
+                    size_t start_index = cam->rgb_stream_packets.size();
+                    for(size_t i = cam->rgb_stream_packets.size(); i > 0; --i) {
+                        if(cam->rgb_stream_packets[i - 1].has_idr) {
+                            start_index = i - 1;
+                            break;
+                        }
+                    }
+                    if(start_index == cam->rgb_stream_packets.size()) {
+                        continue;
+                    }
+                    header = cam->rgb_stream_header_h264;
+                    for(size_t i = start_index; i < cam->rgb_stream_packets.size(); ++i) {
+                        packets.push_back(cam->rgb_stream_packets[i]);
+                    }
+                    next_seq = packets.empty() ? cam->rgb_stream_next_seq : packets.back().seq + 1;
+                    started = true;
+                }
+                else {
+                    if(next_seq < cam->rgb_stream_packets.front().seq) {
+                        next_seq = cam->rgb_stream_packets.front().seq;
+                    }
+                    for(const auto &packet : cam->rgb_stream_packets) {
+                        if(packet.seq >= next_seq) {
+                            packets.push_back(packet);
+                        }
+                    }
+                    if(!packets.empty()) {
+                        next_seq = packets.back().seq + 1;
+                    }
+                }
+            }
+
+            if(!header.empty() && !send_all(fd, header.data(), header.size())) {
+                return false;
+            }
+            for(const auto &packet : packets) {
+                if(!send_all(fd, packet.payload.data(), packet.payload.size())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
 private:
     static uint64_t camera_last_seen_us(const CameraState &cam) {
         return std::max(cam.last_status_us, cam.last_media_us);
@@ -3097,6 +3223,13 @@ private:
         cam.rgb_preview_prefix_h264.clear();
         cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
         cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
+        {
+            std::lock_guard<std::mutex> stream_lock(cam.rgb_stream_mutex);
+            cam.rgb_stream_packets.clear();
+            cam.rgb_stream_header_h264.clear();
+            cam.rgb_stream_last_us = 0;
+        }
+        cam.rgb_stream_cv.notify_all();
         cam.rgb_preview_requested_until_us = 0;
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
@@ -3134,6 +3267,28 @@ private:
             }
             ++it;
         }
+    }
+
+    void update_rgb_stream_buffer_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
+        if(packet.payload.empty()) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> stream_lock(cam.rgb_stream_mutex);
+            if(!has_vcl) {
+                if(cam.rgb_stream_header_h264.size() + packet.payload.size() > kRgbH264StreamMaxHeaderBytes) {
+                    cam.rgb_stream_header_h264.clear();
+                }
+                cam.rgb_stream_header_h264.insert(cam.rgb_stream_header_h264.end(), packet.payload.begin(), packet.payload.end());
+            }
+            cam.rgb_stream_packets.push_back(H264StreamPacket{cam.rgb_stream_next_seq++, has_idr, has_vcl, packet.payload});
+            while(cam.rgb_stream_packets.size() > kRgbH264StreamMaxPackets) {
+                cam.rgb_stream_packets.pop_front();
+            }
+            cam.rgb_stream_last_us = now_us();
+        }
+        cam.rgb_stream_cv.notify_all();
     }
 
     std::shared_ptr<CameraState> ensure_camera_ptr_locked(const std::string &sender_id, const std::string &camera_id,
@@ -3352,6 +3507,7 @@ private:
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
+                update_rgb_stream_buffer_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
                 update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
             }
             else if(packet.stream_type == StreamType::depth_raw) {
@@ -3561,8 +3717,10 @@ private:
             }
             set_fd_cloexec(client);
             set_socket_timeout(client, 2);
-            handle_admin_client(client);
-            close(client);
+            std::thread([this, client] {
+                handle_admin_client(client);
+                close(client);
+            }).detach();
         }
         close(fd);
     }
@@ -3665,6 +3823,11 @@ private:
                 body = "{\"ok\":false,\"error\":\"main rgb preview not found\"}";
             }
         }
+        else if(method == "GET" && path == "/api/preview/rgb-h264") {
+            stream_rgb_h264_preview(fd, args.count("sender_id") ? args.at("sender_id") : "",
+                                    args.count("camera_id") ? args.at("camera_id") : "");
+            return;
+        }
         else {
             status = 404;
             body = "{\"ok\":false,\"error\":\"not found\"}";
@@ -3678,7 +3841,7 @@ private:
         response << "Connection: close\r\n\r\n";
         response << body;
         const auto text = response.str();
-        send(fd, text.data(), text.size(), MSG_NOSIGNAL);
+        send_all(fd, text);
     }
 
     Config config_;

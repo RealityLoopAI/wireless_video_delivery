@@ -1,12 +1,14 @@
 import json
 import os
+import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response as FastAPIResponse
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -138,3 +140,95 @@ def rgb_main_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
+
+
+@app.get("/api/preview/rgb-video")
+def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
+    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
+    raw_url = ADMIN_BASE.rstrip("/") + f"/api/preview/rgb-h264?{query}"
+
+    def stream():
+        proc = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-f",
+                "h264",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                "-flush_packets",
+                "1",
+                "-f",
+                "mp4",
+                "pipe:1",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        stop = threading.Event()
+
+        def feed_h264() -> None:
+            try:
+                req = urllib.request.Request(raw_url, method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    while not stop.is_set():
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        if proc.stdin is None:
+                            break
+                        proc.stdin.write(chunk)
+            except Exception:
+                pass
+            finally:
+                try:
+                    if proc.stdin:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+
+        feeder = threading.Thread(target=feed_h264, daemon=True)
+        feeder.start()
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            stop.set()
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+    return StreamingResponse(
+        stream(),
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
