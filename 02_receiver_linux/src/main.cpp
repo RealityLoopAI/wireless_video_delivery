@@ -2588,6 +2588,7 @@ struct CameraState {
     uint64_t rgb_preview_us = 0;
     uint32_t rgb_preview_width = 0;
     uint32_t rgb_preview_height = 0;
+    StreamType rgb_preview_decoder_source = StreamType::rgb;
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
@@ -3488,6 +3489,18 @@ private:
         if(packet.payload.empty()) {
             return;
         }
+        if(cam.rgb_preview_decoder_source != packet.stream_type) {
+            cam.rgb_preview_decoder_source = packet.stream_type;
+            cam.rgb_preview_prefix_h264.clear();
+            cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+            cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
+            cam.rgb_preview_width = 0;
+            cam.rgb_preview_height = 0;
+            cam.rgb_preview_us = 0;
+            cam.main_rgb_preview_width = 0;
+            cam.main_rgb_preview_height = 0;
+            cam.main_rgb_preview_us = 0;
+        }
 
         if(!has_vcl) {
             if(cam.rgb_preview_prefix_h264.size() + packet.payload.size() > kMaxRgbPreviewPrefixBytes) {
@@ -3557,10 +3570,18 @@ private:
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
                 update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
-                update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                bool preview_stream_fresh = false;
+                {
+                    std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+                    preview_stream_fresh = is_recent_us(now_us(), cam->rgb_preview_stream.last_us, kPreviewFreshUs);
+                }
+                if(!preview_stream_fresh) {
+                    update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                }
             }
             else if(packet.stream_type == StreamType::rgb_preview) {
                 update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
+                update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
                 cam->rgb_preview_width = packet.width;
                 cam->rgb_preview_height = packet.height;
                 cam->rgb_preview_us = cam->last_media_us;
