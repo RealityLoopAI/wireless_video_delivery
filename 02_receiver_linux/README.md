@@ -8,7 +8,7 @@
 4. 录制时写入 NAS 根目录，默认 `/home/fz/Desktop/nas`。
 5. RGB 调用 `ffmpeg` 按实测到达帧率封装为 fragmented `rgb.mp4`，降低 NAS 收尾阶段缺 `moov` 的风险；录制期间同步写 `rgb_debug.h264` 作为 MP4 修复旁路，成功校验后默认删除，只有配置开启时长期保留。
 6. Depth 调用 `ffmpeg` 按实测到达帧率封装为 `depth.mkv + FFV1`；`depth_debug.raw` 仅在配置开启时保留。
-7. `frames.csv` 记录媒体包索引，并追加统一的当前帧字段 `frame_id` / `timestamp_us` / `frame_system_timestamp_us` / `codec_or_compression` 用于后续对齐。
+7. `frames.csv` 记录媒体包索引，并追加统一的当前帧字段和 RGB 视频帧索引字段；下游用 `rgb_recorded=1` 与 `rgb_video_frame_index` 对齐 `rgb.mp4`。
 8. `meta.json` 记录编码、分辨率、请求帧率、实际帧率、帧数和 `rgb_record_fps` / `depth_record_fps`。
 9. Web/REST 可持久化设置相机自命名和单路文件名前缀；录制停止返回整次录制任务的 `recording_start_us`。
 

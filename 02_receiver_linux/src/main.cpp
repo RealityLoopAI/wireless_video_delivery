@@ -1663,6 +1663,7 @@ public:
             rgb_recorded_frames_csv_.flush();
             rgb_recorded_frames_csv_.close();
         }
+        merge_rgb_recorded_frames_into_frames(logger);
         if(rgb_debug_) {
             rgb_debug_.close();
         }
@@ -1848,6 +1849,132 @@ private:
         for(const auto &info : rgb_pending_infos_) {
             if(info.has_vcl) {
                 write_rgb_recorded_frame(info.packet, info.local_time_us, info.payload_size);
+            }
+        }
+    }
+
+    static std::vector<std::string> split_csv_line(const std::string &line) {
+        std::vector<std::string> fields;
+        std::string field;
+        std::stringstream input(line);
+        while(std::getline(input, field, ',')) {
+            fields.push_back(field);
+        }
+        if(!line.empty() && line.back() == ',') {
+            fields.emplace_back();
+        }
+        return fields;
+    }
+
+    static std::map<std::string, size_t> csv_header_index(const std::vector<std::string> &header) {
+        std::map<std::string, size_t> index;
+        for(size_t i = 0; i < header.size(); ++i) {
+            index[header[i]] = i;
+        }
+        return index;
+    }
+
+    static std::string csv_value(const std::vector<std::string> &row, const std::map<std::string, size_t> &index,
+                                 const std::string &name) {
+        const auto found = index.find(name);
+        if(found == index.end() || found->second >= row.size()) {
+            return {};
+        }
+        return row[found->second];
+    }
+
+    static std::string rgb_record_key(const std::vector<std::string> &row, const std::map<std::string, size_t> &index) {
+        return csv_value(row, index, "frame_id") + "\t" + csv_value(row, index, "timestamp_us") + "\t" +
+               csv_value(row, index, "frame_system_timestamp_us");
+    }
+
+    void merge_rgb_recorded_frames_into_frames(Logger &logger) {
+        const auto frames_path = file_path("frames.csv");
+        const auto recorded_path = file_path("rgb_recorded_frames.csv");
+        std::error_code ec;
+        if(!std::filesystem::exists(frames_path, ec)) {
+            return;
+        }
+
+        std::ifstream frames_in(frames_path);
+        if(!frames_in) {
+            logger.warn("failed to reopen frames.csv for RGB frame index merge: " + frames_path.string());
+            return;
+        }
+
+        std::map<std::string, std::pair<std::string, std::string>> recorded_by_key;
+        if(std::filesystem::exists(recorded_path, ec)) {
+            std::ifstream recorded_in(recorded_path);
+            if(recorded_in) {
+                std::string recorded_header_line;
+                if(std::getline(recorded_in, recorded_header_line)) {
+                    const auto recorded_header = split_csv_line(recorded_header_line);
+                    const auto recorded_index = csv_header_index(recorded_header);
+                    std::string line;
+                    while(std::getline(recorded_in, line)) {
+                        const auto row = split_csv_line(line);
+                        const std::string key = rgb_record_key(row, recorded_index);
+                        if(!key.empty()) {
+                            recorded_by_key[key] = {csv_value(row, recorded_index, "video_frame_index"),
+                                                    csv_value(row, recorded_index, "payload_size")};
+                        }
+                    }
+                }
+            }
+            else {
+                logger.warn("failed to reopen rgb_recorded_frames.csv for merge: " + recorded_path.string());
+            }
+        }
+
+        const auto tmp_path = frames_path.string() + ".merge_tmp";
+        std::ofstream merged(tmp_path, std::ios::out | std::ios::trunc);
+        if(!merged) {
+            logger.warn("failed to create merged frames.csv tmp: " + tmp_path);
+            return;
+        }
+
+        std::string header_line;
+        if(!std::getline(frames_in, header_line)) {
+            logger.warn("frames.csv is empty during RGB frame index merge: " + frames_path.string());
+            return;
+        }
+        const auto header = split_csv_line(header_line);
+        const auto index = csv_header_index(header);
+        merged << header_line << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size\n";
+
+        std::string line;
+        while(std::getline(frames_in, line)) {
+            const auto row = split_csv_line(line);
+            const bool is_rgb = csv_value(row, index, "stream_type") == "rgb";
+            if(is_rgb) {
+                const auto found = recorded_by_key.find(rgb_record_key(row, index));
+                if(found != recorded_by_key.end()) {
+                    merged << line << ",1," << found->second.first << ',' << found->second.second << '\n';
+                }
+                else {
+                    merged << line << ",0,,\n";
+                }
+            }
+            else {
+                merged << line << ",,,\n";
+            }
+        }
+        merged.close();
+        if(!merged) {
+            logger.warn("failed to finish merged frames.csv tmp: " + tmp_path);
+            std::filesystem::remove(tmp_path, ec);
+            return;
+        }
+        std::filesystem::rename(tmp_path, frames_path, ec);
+        if(ec) {
+            logger.warn("failed to replace frames.csv with merged RGB frame index version: " + ec.message());
+            std::filesystem::remove(tmp_path, ec);
+            return;
+        }
+        if(std::filesystem::exists(recorded_path, ec)) {
+            std::filesystem::remove(recorded_path, ec);
+            if(ec) {
+                logger.warn("failed to remove merged rgb_recorded_frames.csv: " + ec.message());
             }
         }
     }
@@ -2387,7 +2514,8 @@ private:
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
         meta << "  \"rgb_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_debug.h264")) << "\",\n";
-        meta << "  \"rgb_recorded_frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_recorded_frames.csv")) << "\",\n";
+        meta << "  \"rgb_frame_index_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
+        meta << "  \"rgb_frame_index_mode\": \"frames_csv_rgb_recorded_columns\",\n";
         meta << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
         meta << "  \"depth_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_debug.raw")) << "\",\n";
         meta << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
