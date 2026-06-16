@@ -542,6 +542,7 @@
     const MAIN_DEPTH_REFRESH_MS = 180;
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
+    const PREVIEW_LOAD_TIMEOUT_MS = 1200;
     const ENABLE_THUMB_RGB_PREVIEW = true;
 
     const fmtBytes = (n) => {
@@ -755,7 +756,24 @@
       root.dataset[`${kind}Token`] = token;
       root.dataset[`${kind}Loading`] = '1';
       const next = new Image();
+      let settled = false;
+      const releaseLoading = () => {
+        if (root.dataset[`${kind}Token`] === token) {
+          root.dataset[`${kind}Loading`] = '0';
+        }
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        next.onload = null;
+        next.onerror = null;
+        next.removeAttribute('src');
+        releaseLoading();
+      }, PREVIEW_LOAD_TIMEOUT_MS);
       next.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (root.dataset[`${kind}Token`] !== token) return;
         img.src = next.src;
         img.style.display = 'block';
@@ -763,6 +781,9 @@
         root.dataset[`${kind}Loading`] = '0';
       };
       next.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (root.dataset[`${kind}Token`] === token) {
           root.dataset[`${kind}Loading`] = '0';
           if (!img.getAttribute('src')) {
