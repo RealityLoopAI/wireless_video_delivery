@@ -623,8 +623,20 @@ struct PreviewImage {
     uint32_t height = 0;
 };
 
-constexpr uint16_t kDepthPreviewMinMm = 250;
-constexpr uint16_t kDepthPreviewMaxMm = 2500;
+struct DepthPreviewRange {
+    uint16_t min_value = 250;
+    uint16_t max_value = 2500;
+};
+
+constexpr DepthPreviewRange kDefaultDepthPreviewRange{250, 2500};
+constexpr DepthPreviewRange kRaspberryPiGemini305DepthPreviewRange{1000, 12000};
+
+DepthPreviewRange depth_preview_range_for_camera(const std::string &sender_id, const std::string &camera_id) {
+    if(sender_id == "raspberrypi-01" && camera_id == "cam01") {
+        return kRaspberryPiGemini305DepthPreviewRange;
+    }
+    return kDefaultDepthPreviewRange;
+}
 
 uint8_t clamp_color(double value) {
     if(value <= 0.0) {
@@ -636,17 +648,17 @@ uint8_t clamp_color(double value) {
     return static_cast<uint8_t>(value);
 }
 
-void append_depth_color(std::vector<uint8_t> &out, uint16_t value) {
-    if(value == 0 || kDepthPreviewMaxMm <= kDepthPreviewMinMm) {
+void append_depth_color(std::vector<uint8_t> &out, uint16_t value, const DepthPreviewRange &range) {
+    if(value == 0 || range.max_value <= range.min_value) {
         out.push_back(12);
         out.push_back(16);
         out.push_back(24);
         return;
     }
-    const double clamped = std::clamp(static_cast<double>(value), static_cast<double>(kDepthPreviewMinMm),
-                                      static_cast<double>(kDepthPreviewMaxMm));
-    const double t = (clamped - static_cast<double>(kDepthPreviewMinMm))
-                     / static_cast<double>(kDepthPreviewMaxMm - kDepthPreviewMinMm);
+    const double clamped =
+        std::clamp(static_cast<double>(value), static_cast<double>(range.min_value), static_cast<double>(range.max_value));
+    const double t = (clamped - static_cast<double>(range.min_value))
+                     / static_cast<double>(range.max_value - range.min_value);
     const auto channel = [t](double center) {
         return clamp_color(255.0 * std::max(0.0, std::min(1.0, 1.5 - std::abs(4.0 * t - center))));
     };
@@ -714,7 +726,10 @@ PreviewImage build_bmp_from_rgb_pixels(const std::vector<uint8_t> &rgb, uint32_t
     return image;
 }
 
-PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32_t width, uint32_t height) {
+PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
+                                     uint32_t width,
+                                     uint32_t height,
+                                     const DepthPreviewRange &range) {
     PreviewImage image;
     if(width == 0 || height == 0 || payload.size() < static_cast<size_t>(width) * height * 2ull) {
         return image;
@@ -734,7 +749,7 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload, uint32
         for(uint32_t x = 0; x < width && x / stride < image.width; x += stride) {
             const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
             const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            append_depth_color(rgb, value);
+            append_depth_color(rgb, value, range);
         }
     }
 
@@ -3557,7 +3572,10 @@ private:
 
         PreviewImage preview;
         if(decoded_packet.stream_type == StreamType::depth_raw) {
-            preview = build_depth_preview_bmp(decoded_packet.payload, decoded_packet.width, decoded_packet.height);
+            preview = build_depth_preview_bmp(decoded_packet.payload,
+                                              decoded_packet.width,
+                                              decoded_packet.height,
+                                              depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id));
         }
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
         const bool rgb_has_idr = rgb_stream_packet &&
