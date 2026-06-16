@@ -56,7 +56,7 @@ constexpr bool kEnableRgbThumbnailPreview = true;
 constexpr bool kEnableJpegMainPreview = true;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
-constexpr int kRgbPreviewWriteBudgetMs = 12;
+constexpr int kRgbPreviewWriteBudgetMs = 25;
 constexpr uint64_t kCameraOnlineTimeoutUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
@@ -3459,10 +3459,12 @@ private:
             decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps, logger_);
             if(!cam.rgb_preview_prefix_h264.empty()) {
                 if(!decoder->write_packet(cam.rgb_preview_prefix_h264)) {
-                    cleanup_rgb_decoder_async(std::move(decoder));
-                    preview_width = 0;
-                    preview_height = 0;
-                    preview_us = 0;
+                    if(!decoder->has_frame()) {
+                        cleanup_rgb_decoder_async(std::move(decoder));
+                        preview_width = 0;
+                        preview_height = 0;
+                        preview_us = 0;
+                    }
                     return false;
                 }
             }
@@ -3472,10 +3474,12 @@ private:
         }
 
         if(!decoder->write_packet(packet.payload)) {
-            cleanup_rgb_decoder_async(std::move(decoder));
-            preview_width = 0;
-            preview_height = 0;
-            preview_us = 0;
+            if(!decoder->has_frame()) {
+                cleanup_rgb_decoder_async(std::move(decoder));
+                preview_width = 0;
+                preview_height = 0;
+                preview_us = 0;
+            }
             return false;
         }
         preview_width = decoder->preview_width();
