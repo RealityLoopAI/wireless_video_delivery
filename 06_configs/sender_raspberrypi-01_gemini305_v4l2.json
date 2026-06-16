@@ -12,13 +12,20 @@
     "media_protocol": "tcp",
     "connect_timeout_ms": 250,
     "send_timeout_ms": 80,
-    "send_buffer_bytes": 4194304,
+    "send_buffer_bytes": 16777216,
     "reconnect_interval_ms": 1000
   },
   "heartbeat_interval_ms": 1000,
   "preview": {
     "enabled": true,
     "fps": 30
+  },
+  "web_rgb_preview": {
+    "enabled": true,
+    "max_width": 640,
+    "max_height": 360,
+    "fps": 30,
+    "bitrate_bps": 500000
   },
   "hotplug": {
     "enabled": false
@@ -57,10 +64,11 @@
         "bitrate_bps": 6000000
       },
       "color_controls": {
-        "auto_exposure": false,
+        "auto_exposure": true,
         "auto_exposure_priority": 0,
-        "exposure": 312,
-        "gain": 80
+        "exposure": 156,
+        "gain": 16,
+        "power_line_frequency": 3
       },
       "depth_transport": {
         "compression": "zlib"
