@@ -75,6 +75,7 @@ constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
+constexpr const char *kRgbMp4MuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
 
 std::atomic<bool> g_running{true};
 
@@ -1898,7 +1899,8 @@ private:
         const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
                                     " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps) +
-                                    " -f h264 -i pipe:0 -c:v copy -movflags +faststart " + rgb_mp4 +
+                                    " -f h264 -i pipe:0 -c:v copy -movflags " + kRgbMp4MuxFlags +
+                                    " -flush_packets 1 " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
         rgb_pipe_.open(rgb_cmd, logger);
     }
@@ -2225,7 +2227,7 @@ private:
         append_retime_log(task.log_path, entry.stream_name + " repair start from " + entry.raw_h264_path.filename().string());
         const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -fflags +genpts -r " +
                                 format_fps(entry.raw_h264_fps) + " -f h264 -i " + shell_quote(entry.raw_h264_path.string()) +
-                                " -c:v copy -movflags +faststart " + shell_quote(tmp_path.string()) +
+                                " -c:v copy -movflags " + kRgbMp4MuxFlags + " -flush_packets 1 " + shell_quote(tmp_path.string()) +
                                 " 2>>" + shell_quote(task.log_path.string());
         const int rc = std::system(cmd.c_str());
         if(rc != 0 || !file_size_nonzero(tmp_path)) {
@@ -2286,7 +2288,10 @@ private:
         std::filesystem::remove(tmp_path, ec);
 
         append_retime_log(task.log_path, entry.stream_name + " retime start scale=" + format_scale(scale));
-        const std::string mp4_options = entry.media_path.extension().string() == ".mp4" ? " -movflags +faststart" : "";
+        const std::string mp4_options =
+            entry.media_path.extension().string() == ".mp4"
+                ? std::string(" -movflags ") + kRgbMp4MuxFlags + " -flush_packets 1"
+                : "";
         const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -itsscale " + format_scale(scale) +
                                 " -i " + shell_quote(entry.media_path.string()) + " -map 0 -c copy -avoid_negative_ts make_zero " +
                                 mp4_options + " " + shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
