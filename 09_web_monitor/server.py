@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -8,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response as FastAPIResponse
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 
@@ -152,71 +151,3 @@ def rgb_main_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
-
-
-@app.get("/api/preview/rgb-video")
-def rgb_video_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
-    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
-    raw_url = ADMIN_BASE.rstrip("/") + f"/api/preview/rgb-h264?{query}"
-
-    def stream():
-        proc = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-fflags",
-                "nobuffer",
-                "-flags",
-                "low_delay",
-                "-probesize",
-                "32",
-                "-analyzeduration",
-                "0",
-                "-f",
-                "h264",
-                "-i",
-                raw_url,
-                "-an",
-                "-c:v",
-                "copy",
-                "-muxdelay",
-                "0",
-                "-muxpreload",
-                "0",
-                "-movflags",
-                "frag_every_frame+empty_moov+default_base_moof+omit_tfhd_offset",
-                "-flush_packets",
-                "1",
-                "-f",
-                "mp4",
-                "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=0,
-        )
-        try:
-            assert proc.stdout is not None
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
-            else:
-                proc.wait(timeout=2)
-
-    return StreamingResponse(
-        stream(),
-        media_type="video/mp4",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-    )
