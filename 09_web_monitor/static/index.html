@@ -538,6 +538,7 @@
 
     const STATUS_REFRESH_MS = 1000;
     const MAIN_RGB_REFRESH_MS = 33;
+    const THUMB_RGB_REFRESH_MS = 33;
     const MAIN_DEPTH_REFRESH_MS = 180;
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
@@ -961,7 +962,7 @@
       if (!document.hidden) {
         refreshThumbPreviews('rgb');
       }
-      setTimeout(loopThumbRgb, HIDDEN_REFRESH_MS);
+      setTimeout(loopThumbRgb, document.hidden ? HIDDEN_REFRESH_MS : THUMB_RGB_REFRESH_MS);
     }
     function loopThumbDepth() {
       if (!document.hidden) {
