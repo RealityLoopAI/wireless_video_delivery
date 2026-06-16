@@ -541,7 +541,7 @@
     const MAIN_DEPTH_REFRESH_MS = 180;
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
-    const ENABLE_THUMB_RGB_PREVIEW = false;
+    const ENABLE_THUMB_RGB_PREVIEW = true;
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -638,7 +638,7 @@
     function previewAvailable(c, kind, high = false) {
       if (!isLive(c)) return false;
       if (kind === 'rgb') {
-        return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : c.rgb_preview_available;
+        return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : (c.rgb_preview_available || c.rgb_packets > 0);
       }
       return c.depth_preview_available;
     }

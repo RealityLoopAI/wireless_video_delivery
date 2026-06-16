@@ -52,7 +52,7 @@ constexpr uint32_t kRgbMainPreviewWidth = 640;
 constexpr uint32_t kRgbPreviewFps = 30;
 constexpr uint32_t kRgbMainPreviewFps = 30;
 constexpr int kRgbPreviewJpegQuality = 10;
-constexpr bool kEnableRgbThumbnailPreview = false;
+constexpr bool kEnableRgbThumbnailPreview = true;
 constexpr bool kEnableJpegMainPreview = true;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
@@ -2700,8 +2700,7 @@ public:
             const bool main_rgb_preview_fresh = media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
             const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
-            const bool rgb_preview_report_available =
-                kEnableRgbThumbnailPreview ? rgb_thumbnail_preview_available : (media_live && cam.rgb_packets > 0);
+            const bool rgb_preview_report_available = rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0);
             const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
             const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
             const bool calibration_available = cam.last_announce_live && cached_calibration_available;
