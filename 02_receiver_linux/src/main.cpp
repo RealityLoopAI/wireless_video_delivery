@@ -62,6 +62,8 @@ constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewRequestKeepaliveUs = 2ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewDecoderIdleStopUs = 5ull * 1000ull * 1000ull;
+constexpr uint64_t kMainPreviewRequestKeepaliveUs = 15ull * 1000ull * 1000ull;
+constexpr uint64_t kMainPreviewDecoderIdleStopUs = 30ull * 1000ull * 1000ull;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
@@ -2849,6 +2851,19 @@ public:
             const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
             const bool rgb_preview_report_available = rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0);
+            const bool main_rgb_native_preview_available =
+                cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame();
+            const bool main_rgb_preview_report_available =
+                cam.key == main_preview_key_ && (main_rgb_native_preview_available || rgb_thumbnail_preview_available);
+            const uint32_t main_rgb_report_width =
+                main_rgb_native_preview_available ? cam.main_rgb_preview_width
+                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_width : cam.main_rgb_preview_width);
+            const uint32_t main_rgb_report_height =
+                main_rgb_native_preview_available ? cam.main_rgb_preview_height
+                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_height : cam.main_rgb_preview_height);
+            const uint64_t main_rgb_report_us =
+                main_rgb_native_preview_available ? cam.main_rgb_preview_us
+                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_us : cam.main_rgb_preview_us);
             const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
             const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
             const bool calibration_available = cam.last_announce_live && cached_calibration_available;
@@ -2892,13 +2907,11 @@ public:
             out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
             out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
             out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.rgb_preview_us) << ',';
-            out << "\"main_rgb_preview_available\":"
-                << (cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame() ? "true" : "false")
-                << ',';
-            out << "\"main_rgb_preview_width\":" << cam.main_rgb_preview_width << ',';
-            out << "\"main_rgb_preview_height\":" << cam.main_rgb_preview_height << ',';
-            out << "\"main_rgb_preview_us\":" << cam.main_rgb_preview_us << ',';
-            out << "\"main_rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.main_rgb_preview_us) << ',';
+            out << "\"main_rgb_preview_available\":" << (main_rgb_preview_report_available ? "true" : "false") << ',';
+            out << "\"main_rgb_preview_width\":" << main_rgb_report_width << ',';
+            out << "\"main_rgb_preview_height\":" << main_rgb_report_height << ',';
+            out << "\"main_rgb_preview_us\":" << main_rgb_report_us << ',';
+            out << "\"main_rgb_preview_age_ms\":" << age_ms_or_negative(now, main_rgb_report_us) << ',';
             out << "\"depth_preview_available\":" << (depth_preview_fresh && !cam.depth_preview_ppm.empty() ? "true" : "false") << ',';
             out << "\"depth_preview_width\":" << cam.depth_preview_width << ',';
             out << "\"depth_preview_height\":" << cam.depth_preview_height << ',';
@@ -3241,7 +3254,7 @@ public:
             }
         }
         main_preview_key_ = key;
-        it->second->main_rgb_preview_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+        it->second->main_rgb_preview_requested_until_us = now_us() + kMainPreviewRequestKeepaliveUs;
         std::ostringstream out;
         out << "{\"ok\":true,\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\"}";
         return out.str();
@@ -3261,7 +3274,7 @@ public:
         }
         auto &cam = *it->second;
         if(key == main_preview_key_) {
-            cam.main_rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
+            cam.main_rgb_preview_requested_until_us = now + kMainPreviewRequestKeepaliveUs;
         }
         if(!kEnableJpegMainPreview) {
             return std::nullopt;
@@ -3678,7 +3691,7 @@ private:
                                             cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }
         else if(cam.main_rgb_decoder &&
-                (cam.key != main_preview_key_ || is_older_than_us(now, cam.main_rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs))) {
+                (cam.key != main_preview_key_ || is_older_than_us(now, cam.main_rgb_preview_requested_until_us, kMainPreviewDecoderIdleStopUs))) {
             cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
             cam.main_rgb_preview_width = 0;
             cam.main_rgb_preview_height = 0;
