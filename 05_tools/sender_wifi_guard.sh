@@ -21,6 +21,13 @@ gemini_sender_wifi_apply_default_policy() {
   fi
 }
 
+gemini_sender_wifi_apply_repo_defaults() {
+  local default_connection="${GEMINI_SENDER_DEFAULT_WIFI_CONNECTION:-}"
+  local default_min_freq="${GEMINI_SENDER_DEFAULT_WIFI_MIN_FREQ_MHZ:-5000}"
+
+  gemini_sender_wifi_apply_default_policy "$default_connection" "$default_min_freq"
+}
+
 gemini_sender_wifi_required() {
   [[ -n "${GEMINI_SENDER_WIFI_CONNECTION:-}" \
     || -n "${GEMINI_SENDER_WIFI_REQUIRED_SSID:-}" \

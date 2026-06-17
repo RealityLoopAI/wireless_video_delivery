@@ -212,7 +212,7 @@ Depth: 320x200@30 y12 -> zlib
 current expectation: stable 1 full-spec RGBD stream
 hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
-Wi-Fi guard: 土著拯救器-5G, min 5000MHz
+Wi-Fi guard: default min 5000MHz; set GEMINI_SENDER_DEFAULT_WIFI_CONNECTION only when a fixed SSID is required
 desktop idle-delay: 3600s
 desktop clock seconds: enabled
 monitor time display: Beijing time UTC+8, second precision

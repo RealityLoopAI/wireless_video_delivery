@@ -22,7 +22,7 @@ prepare_usb_for_orbbec() {
 }
 
 prepare_usb_for_orbbec
-gemini_sender_wifi_apply_default_policy "土著拯救器-5G" "5000"
+gemini_sender_wifi_apply_repo_defaults
 GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "预览启动" "config"
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
