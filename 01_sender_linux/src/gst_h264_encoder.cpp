@@ -8,6 +8,14 @@
 
 namespace gwv3 {
 
+std::string h264_encoder_stage(const std::string &encoder_name, int bitrate_bps, int fps) {
+    std::string stage = encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1";
+    if(encoder_name == "mpph264enc") {
+        stage += " max-pending=2";
+    }
+    return stage;
+}
+
 GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
                                GstH264InputFormat input_format, int output_width, int output_height)
     : fps_(fps), output_width_(output_width > 0 ? output_width : width), output_height_(output_height > 0 ? output_height : height) {
@@ -30,7 +38,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
             "! jpegparse "
             "! mppjpegdec fast-mode=true format=NV12 "
             + scale_stage +
-            "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
+            "! " + h264_encoder_stage(encoder_name, bitrate_bps, fps) + " "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "
             "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
@@ -42,7 +50,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
             "! queue max-size-buffers=2 leaky=downstream "
             "! videoconvert "
             + scale_stage +
-            "! " + encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1 "
+            "! " + h264_encoder_stage(encoder_name, bitrate_bps, fps) + " "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "
             "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";

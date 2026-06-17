@@ -23,6 +23,7 @@
 #include <mutex>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1887,8 +1888,13 @@ private:
     }
 
     static std::string rgb_record_key(const std::vector<std::string> &row, const std::map<std::string, size_t> &index) {
-        return csv_value(row, index, "frame_id") + "\t" + csv_value(row, index, "timestamp_us") + "\t" +
-               csv_value(row, index, "frame_system_timestamp_us");
+        const auto frame_id = csv_value(row, index, "frame_id");
+        const auto timestamp_us = csv_value(row, index, "timestamp_us");
+        const auto frame_system_timestamp_us = csv_value(row, index, "frame_system_timestamp_us");
+        if(frame_id.empty() || timestamp_us.empty() || frame_system_timestamp_us.empty()) {
+            return {};
+        }
+        return frame_id + "\t" + timestamp_us + "\t" + frame_system_timestamp_us;
     }
 
     void merge_rgb_recorded_frames_into_frames(Logger &logger) {
@@ -1906,6 +1912,8 @@ private:
         }
 
         std::map<std::string, std::pair<std::string, std::string>> recorded_by_key;
+        size_t duplicate_recorded_keys = 0;
+        std::string first_duplicate_recorded_key;
         if(std::filesystem::exists(recorded_path, ec)) {
             std::ifstream recorded_in(recorded_path);
             if(recorded_in) {
@@ -1918,8 +1926,15 @@ private:
                         const auto row = split_csv_line(line);
                         const std::string key = rgb_record_key(row, recorded_index);
                         if(!key.empty()) {
-                            recorded_by_key[key] = {csv_value(row, recorded_index, "video_frame_index"),
-                                                    csv_value(row, recorded_index, "payload_size")};
+                            auto inserted = recorded_by_key.emplace(
+                                key, std::make_pair(csv_value(row, recorded_index, "video_frame_index"),
+                                                    csv_value(row, recorded_index, "payload_size")));
+                            if(!inserted.second) {
+                                duplicate_recorded_keys++;
+                                if(first_duplicate_recorded_key.empty()) {
+                                    first_duplicate_recorded_key = key;
+                                }
+                            }
                         }
                     }
                 }
@@ -1927,6 +1942,11 @@ private:
             else {
                 logger.warn("failed to reopen rgb_recorded_frames.csv for merge: " + recorded_path.string());
             }
+        }
+        if(duplicate_recorded_keys > 0) {
+            logger.warn("duplicate RGB recorded frame keys ignored during merge path=" + recorded_path.string()
+                        + " duplicates=" + std::to_string(duplicate_recorded_keys)
+                        + " first_key=\"" + first_duplicate_recorded_key + "\"");
         }
 
         const auto tmp_path = frames_path.string() + ".merge_tmp";
@@ -1946,11 +1966,22 @@ private:
         merged << header_line << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size\n";
 
         std::string line;
+        std::set<std::string> merged_rgb_keys;
+        size_t duplicate_frame_rows = 0;
+        std::string first_duplicate_frame_key;
         while(std::getline(frames_in, line)) {
             const auto row = split_csv_line(line);
             const bool is_rgb = csv_value(row, index, "stream_type") == "rgb";
             if(is_rgb) {
-                const auto found = recorded_by_key.find(rgb_record_key(row, index));
+                const auto key = rgb_record_key(row, index);
+                const bool duplicate_frame_key = !key.empty() && !merged_rgb_keys.insert(key).second;
+                if(duplicate_frame_key) {
+                    duplicate_frame_rows++;
+                    if(first_duplicate_frame_key.empty()) {
+                        first_duplicate_frame_key = key;
+                    }
+                }
+                const auto found = duplicate_frame_key ? recorded_by_key.end() : recorded_by_key.find(key);
                 if(found != recorded_by_key.end()) {
                     merged << line << ",1," << found->second.first << ',' << found->second.second << '\n';
                 }
@@ -1961,6 +1992,11 @@ private:
             else {
                 merged << line << ",,,\n";
             }
+        }
+        if(duplicate_frame_rows > 0) {
+            logger.warn("duplicate RGB frame keys marked unrecorded during frames.csv merge path=" + frames_path.string()
+                        + " duplicates=" + std::to_string(duplicate_frame_rows)
+                        + " first_key=\"" + first_duplicate_frame_key + "\"");
         }
         merged.close();
         if(!merged) {
@@ -2257,7 +2293,8 @@ private:
             if(total >= 4) {
                 const char *begin = buffer.data();
                 const char *end = buffer.data() + total;
-                if(std::search(begin, end, "moov", "moov" + 4) != end) {
+                constexpr char kMoovAtom[] = {'m', 'o', 'o', 'v'};
+                if(std::search(begin, end, std::begin(kMoovAtom), std::end(kMoovAtom)) != end) {
                     return true;
                 }
                 carry = std::min<size_t>(3, total);
