@@ -77,7 +77,8 @@ constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
-constexpr const char *kRgbMp4MuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
+constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
+constexpr const char *kRgbMp4FinalMuxFlags = "+faststart";
 
 std::atomic<bool> g_running{true};
 
@@ -2028,7 +2029,7 @@ private:
         const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
                                     " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps) +
-                                    " -f h264 -i pipe:0 -c:v copy -movflags " + kRgbMp4MuxFlags +
+                                    " -f h264 -i pipe:0 -c:v copy -movflags " + kRgbMp4RecordMuxFlags +
                                     " -flush_packets 1 " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
         rgb_pipe_.open(rgb_cmd, logger);
@@ -2187,6 +2188,10 @@ private:
 
     static bool should_retime_media(double scale) {
         return std::isfinite(scale) && scale >= 0.8 && scale <= 1.25 && std::fabs(scale - 1.0) >= 0.001;
+    }
+
+    static bool is_mp4_file(const std::filesystem::path &path) {
+        return path.extension().string() == ".mp4";
     }
 
     static std::string format_scale(double scale) {
@@ -2356,7 +2361,7 @@ private:
         append_retime_log(task.log_path, entry.stream_name + " repair start from " + entry.raw_h264_path.filename().string());
         const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -fflags +genpts -r " +
                                 format_fps(entry.raw_h264_fps) + " -f h264 -i " + shell_quote(entry.raw_h264_path.string()) +
-                                " -c:v copy -movflags " + kRgbMp4MuxFlags + " -flush_packets 1 " + shell_quote(tmp_path.string()) +
+                                " -c:v copy -movflags " + kRgbMp4FinalMuxFlags + " " + shell_quote(tmp_path.string()) +
                                 " 2>>" + shell_quote(task.log_path.string());
         const int rc = std::system(cmd.c_str());
         if(rc != 0 || !file_size_nonzero(tmp_path)) {
@@ -2402,7 +2407,9 @@ private:
         else {
             append_retime_log(task.log_path, entry.stream_name + " duration probe failed; fallback scale=" + format_scale(scale));
         }
-        if(!should_retime_media(scale)) {
+        const bool should_retime = should_retime_media(scale);
+        const bool should_finalize_mp4 = is_mp4_file(entry.media_path);
+        if(!should_retime && !should_finalize_mp4) {
             append_retime_log(task.log_path, entry.stream_name + " retime skipped: scale near 1 or outside 0.8..1.25");
             if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
                 append_retime_log(task.log_path, entry.stream_name + " skipped retime final validation failed");
@@ -2416,14 +2423,17 @@ private:
         std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
 
-        append_retime_log(task.log_path, entry.stream_name + " retime start scale=" + format_scale(scale));
-        const std::string mp4_options =
-            entry.media_path.extension().string() == ".mp4"
-                ? std::string(" -movflags ") + kRgbMp4MuxFlags + " -flush_packets 1"
-                : "";
-        const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -itsscale " + format_scale(scale) +
-                                " -i " + shell_quote(entry.media_path.string()) + " -map 0 -c copy -avoid_negative_ts make_zero " +
-                                mp4_options + " " + shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
+        append_retime_log(task.log_path,
+                          entry.stream_name + (should_retime ? " retime start scale=" + format_scale(scale) : " finalize mp4 start"));
+        std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y ";
+        if(should_retime) {
+            cmd += "-itsscale " + format_scale(scale) + " ";
+        }
+        cmd += "-i " + shell_quote(entry.media_path.string()) + " -map 0 -c copy -avoid_negative_ts make_zero";
+        if(should_finalize_mp4) {
+            cmd += std::string(" -movflags ") + kRgbMp4FinalMuxFlags;
+        }
+        cmd += " " + shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
         const int rc = std::system(cmd.c_str());
         if(rc != 0 || !file_size_nonzero(tmp_path)) {
             append_retime_log(task.log_path, entry.stream_name + " retime failed");
@@ -2437,7 +2447,7 @@ private:
             append_retime_log(task.log_path, entry.stream_name + " retime replace failed");
             return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);
         }
-        append_retime_log(task.log_path, entry.stream_name + " retime done");
+        append_retime_log(task.log_path, entry.stream_name + (should_retime ? " retime done" : " finalize mp4 done"));
         if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
             append_retime_log(task.log_path, entry.stream_name + " retime final validation failed");
             return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);

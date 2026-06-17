@@ -544,6 +544,7 @@
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
     const ENABLE_THUMB_RGB_PREVIEW = true;
+    const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -611,9 +612,16 @@
       const node = root.querySelector(`[data-field="${field}"]`);
       if (node) node.textContent = value;
     }
-    function chooseMainCamera() {
+    function defaultMainCamera() {
+      return visibleCameras.find((c) => c.camera_key === DEFAULT_MAIN_CAMERA_KEY) ||
+        visibleCameras.find((c) => c.sender_id === 'raspberrypi-01') ||
+        null;
+    }
+    function chooseMainCamera(serverMainKey = '') {
       if (mainKey && visibleCameras.some((c) => c.camera_key === mainKey)) return;
-      mainKey = (visibleCameras[0] || {}).camera_key || '';
+      const preferred = defaultMainCamera();
+      const serverMain = visibleCameras.find((c) => c.camera_key === serverMainKey);
+      mainKey = (preferred || serverMain || visibleCameras[0] || {}).camera_key || '';
       mainTargetSyncKey = '';
     }
     function selectMainCamera(key) {
@@ -927,10 +935,7 @@
       const data = await res.json();
       cameras = data.cameras || [];
       visibleCameras = cameras.filter(hasAnyPreview);
-      if (!mainKey && data.main_preview_camera_key && visibleCameras.some((c) => c.camera_key === data.main_preview_camera_key)) {
-        mainKey = data.main_preview_camera_key;
-      }
-      chooseMainCamera();
+      chooseMainCamera(data.main_preview_camera_key || '');
 
       const online = cameras.filter(isLive).length;
       const recording = cameras.filter((c) => c.recording).length;
