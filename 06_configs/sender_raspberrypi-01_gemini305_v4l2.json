@@ -64,7 +64,7 @@
         "bitrate_bps": 6000000
       },
       "color_controls": {
-        "auto_exposure": true,
+        "auto_exposure": false,
         "auto_exposure_priority": 0,
         "exposure": 156,
         "gain": 16,
