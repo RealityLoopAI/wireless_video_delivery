@@ -8,9 +8,23 @@
 
 namespace gwv3 {
 
+namespace {
+
+bool gst_element_supports_property(const std::string &element_name, const char *property_name) {
+    GstElement *element = gst_element_factory_make(element_name.c_str(), nullptr);
+    if(!element) {
+        return false;
+    }
+    const bool supported = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name) != nullptr;
+    gst_object_unref(element);
+    return supported;
+}
+
+}  // namespace
+
 std::string h264_encoder_stage(const std::string &encoder_name, int bitrate_bps, int fps) {
     std::string stage = encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1";
-    if(encoder_name == "mpph264enc") {
+    if(encoder_name == "mpph264enc" && gst_element_supports_property(encoder_name, "max-pending")) {
         stage += " max-pending=2";
     }
     return stage;
