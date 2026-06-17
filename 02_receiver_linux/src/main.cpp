@@ -45,7 +45,8 @@
 namespace gwv3 {
 namespace {
 
-constexpr size_t kMediaHeaderSize = 94;
+constexpr size_t kMediaHeaderBaseSize = kMediaHeaderV1Size;
+constexpr size_t kMediaHeaderMaxSize = kMediaHeaderV2Size;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 320;
@@ -1328,47 +1329,67 @@ struct MediaPacket {
     int32_t rgb_gain = -1;
     int32_t rgb_auto_exposure = -1;
     int32_t rgb_actual_fps = -1;
+    uint64_t sender_capture_host_timestamp_us = 0;
+    uint64_t sender_timing_bound_timestamp_us = 0;
+    uint64_t sender_encode_start_timestamp_us = 0;
+    uint64_t sender_encode_done_timestamp_us = 0;
+    uint64_t sender_packet_queued_timestamp_us = 0;
     std::vector<uint8_t> payload;
 };
 
 MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
-    uint8_t header[kMediaHeaderSize] = {};
-    if(!read_exact(fd, header, sizeof(header))) {
+    std::vector<uint8_t> header(kMediaHeaderBaseSize);
+    if(!read_exact(fd, header.data(), header.size())) {
         throw std::runtime_error("connection closed");
     }
 
-    const uint32_t magic = read_le32(header + 0);
-    const uint16_t header_version = read_le16(header + 4);
-    const uint16_t header_size = read_le16(header + 6);
-    if(magic != kMediaMagic || header_version != kMediaHeaderVersion || header_size != kMediaHeaderSize) {
+    const uint32_t magic = read_le32(header.data() + 0);
+    const uint16_t header_version = read_le16(header.data() + 4);
+    const uint16_t header_size = read_le16(header.data() + 6);
+    if(magic != kMediaMagic || header_version < 1 || header_version > kMediaHeaderVersion || header_size < kMediaHeaderBaseSize
+       || header_size > kMediaHeaderMaxSize) {
         throw std::runtime_error("invalid media packet header");
     }
+    if(header_size > header.size()) {
+        const size_t already_read = header.size();
+        header.resize(header_size);
+        if(!read_exact(fd, header.data() + already_read, header_size - already_read)) {
+            throw std::runtime_error("connection closed");
+        }
+    }
 
-    const uint16_t sender_id_len = read_le16(header + 14);
-    const uint16_t camera_id_len = read_le16(header + 16);
-    const uint16_t codec_len = read_le16(header + 18);
-    const uint64_t payload_size = read_le64(header + 62);
+    const uint16_t sender_id_len = read_le16(header.data() + 14);
+    const uint16_t camera_id_len = read_le16(header.data() + 16);
+    const uint16_t codec_len = read_le16(header.data() + 18);
+    const uint64_t payload_size = read_le64(header.data() + 62);
     if(payload_size > max_payload_bytes) {
         throw std::runtime_error("media payload too large");
     }
 
     MediaPacket packet;
     packet.stream_type = static_cast<StreamType>(header[8]);
-    packet.flags = read_le32(header + 10);
-    packet.frame_id = read_le64(header + 20);
-    packet.timestamp_us = read_le64(header + 28);
-    packet.system_timestamp_us = read_le64(header + 36);
-    packet.pair_id = read_le64(header + 44);
-    packet.width = read_le32(header + 52);
-    packet.height = read_le32(header + 56);
-    packet.pixel_format = static_cast<PixelFormat>(read_le16(header + 60));
+    packet.flags = read_le32(header.data() + 10);
+    packet.frame_id = read_le64(header.data() + 20);
+    packet.timestamp_us = read_le64(header.data() + 28);
+    packet.system_timestamp_us = read_le64(header.data() + 36);
+    packet.pair_id = read_le64(header.data() + 44);
+    packet.width = read_le32(header.data() + 52);
+    packet.height = read_le32(header.data() + 56);
+    packet.pixel_format = static_cast<PixelFormat>(read_le16(header.data() + 60));
     packet.payload_size = payload_size;
-    packet.uncompressed_size = read_le64(header + 70);
+    packet.uncompressed_size = read_le64(header.data() + 70);
     if((packet.flags & has_rgb_diagnostics) != 0u) {
-        packet.rgb_exposure_us = static_cast<int32_t>(read_le32(header + 78));
-        packet.rgb_gain = static_cast<int32_t>(read_le32(header + 82));
-        packet.rgb_auto_exposure = static_cast<int32_t>(read_le32(header + 86));
-        packet.rgb_actual_fps = static_cast<int32_t>(read_le32(header + 90));
+        packet.rgb_exposure_us = static_cast<int32_t>(read_le32(header.data() + 78));
+        packet.rgb_gain = static_cast<int32_t>(read_le32(header.data() + 82));
+        packet.rgb_auto_exposure = static_cast<int32_t>(read_le32(header.data() + 86));
+        packet.rgb_actual_fps = static_cast<int32_t>(read_le32(header.data() + 90));
+    }
+    if(header_size >= kMediaHeaderV2Size && (packet.flags & has_pipeline_diagnostics) != 0u) {
+        packet.sender_capture_host_timestamp_us = read_le64(header.data() + 94);
+        packet.sender_timing_bound_timestamp_us = read_le64(header.data() + 102);
+        packet.sender_encode_start_timestamp_us = read_le64(header.data() + 110);
+        packet.sender_encode_done_timestamp_us = read_le64(header.data() + 118);
+        packet.sender_packet_queued_timestamp_us = read_le64(header.data() + 126);
     }
 
     std::vector<char> text(sender_id_len + camera_id_len + codec_len);
@@ -1566,6 +1587,19 @@ std::string format_fps(double fps) {
     return value;
 }
 
+void write_optional_us(std::ostream &out, uint64_t value) {
+    if(value > 0) {
+        out << value;
+    }
+}
+
+void write_optional_delta_us(std::ostream &out, uint64_t newer_us, uint64_t older_us) {
+    if(newer_us > 0 && older_us > 0) {
+        out << (newer_us >= older_us ? static_cast<int64_t>(newer_us - older_us)
+                                      : -static_cast<int64_t>(older_us - newer_us));
+    }
+}
+
 struct FpsProbe {
     uint64_t first_us = 0;
     uint64_t last_us = 0;
@@ -1634,11 +1668,19 @@ public:
         frames_csv_.open(file_path("frames.csv"), std::ios::out | std::ios::trunc);
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
                        "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
-                       "rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,rgb_frame_interval_us,codec_or_compression\n";
+                       "rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,rgb_frame_interval_us,codec_or_compression,"
+                       "sender_capture_host_timestamp_us,sender_timing_bound_timestamp_us,sender_encode_start_timestamp_us,"
+                       "sender_encode_done_timestamp_us,sender_packet_queued_timestamp_us,receiver_minus_frame_system_us,"
+                       "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
+                       "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us\n";
         rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
         rgb_recorded_frames_csv_
             << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
-               "packet_system_timestamp_us,rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,codec_or_compression\n";
+               "packet_system_timestamp_us,rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,codec_or_compression,"
+               "sender_capture_host_timestamp_us,sender_timing_bound_timestamp_us,sender_encode_start_timestamp_us,"
+               "sender_encode_done_timestamp_us,sender_packet_queued_timestamp_us,receiver_minus_frame_system_us,"
+               "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
+               "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us\n";
 
         rgb_debug_path_ = file_path("rgb_debug.h264");
         rgb_debug_.open(rgb_debug_path_, std::ios::binary | std::ios::out | std::ios::trunc);
@@ -1802,13 +1844,40 @@ public:
             if(last_rgb_frame_interval_us_) {
                 frames_csv_ << *last_rgb_frame_interval_us_;
             }
-            frames_csv_ << ',' << packet.codec_or_compression << '\n';
+            frames_csv_ << ',' << packet.codec_or_compression;
+            write_pipeline_diagnostics_columns(frames_csv_, packet, packet_local_us);
+            frames_csv_ << '\n';
         }
     }
 
 private:
     std::filesystem::path file_path(const std::string &basename) const {
         return std::filesystem::path(directory_) / prefixed_filename(file_prefix_, basename);
+    }
+
+    static void write_pipeline_diagnostics_columns(std::ostream &csv, const MediaPacket &packet, uint64_t packet_local_us) {
+        csv << ',';
+        write_optional_us(csv, packet.sender_capture_host_timestamp_us);
+        csv << ',';
+        write_optional_us(csv, packet.sender_timing_bound_timestamp_us);
+        csv << ',';
+        write_optional_us(csv, packet.sender_encode_start_timestamp_us);
+        csv << ',';
+        write_optional_us(csv, packet.sender_encode_done_timestamp_us);
+        csv << ',';
+        write_optional_us(csv, packet.sender_packet_queued_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet_local_us, packet.system_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet.sender_timing_bound_timestamp_us, packet.sender_capture_host_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet.sender_encode_start_timestamp_us, packet.sender_timing_bound_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet.sender_encode_done_timestamp_us, packet.sender_encode_start_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet.sender_packet_queued_timestamp_us, packet.sender_encode_done_timestamp_us);
+        csv << ',';
+        write_optional_delta_us(csv, packet_local_us, packet.sender_packet_queued_timestamp_us);
     }
 
     bool write_rgb_recovery_bytes(const uint8_t *data, size_t size, Logger &logger) {
@@ -1846,7 +1915,9 @@ private:
         if(packet.rgb_actual_fps >= 0) {
             rgb_recorded_frames_csv_ << packet.rgb_actual_fps;
         }
-        rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression << '\n';
+        rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression;
+        write_pipeline_diagnostics_columns(rgb_recorded_frames_csv_, packet, packet_local_us);
+        rgb_recorded_frames_csv_ << '\n';
     }
 
     void write_pending_rgb_recorded_frames() {

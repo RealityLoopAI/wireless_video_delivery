@@ -9,7 +9,9 @@
 namespace gwv3 {
 
 constexpr const char *kProtocolVersion = "3.0";
-constexpr uint16_t kMediaHeaderVersion = 1;
+constexpr uint16_t kMediaHeaderVersion = 2;
+constexpr uint16_t kMediaHeaderV1Size = 94;
+constexpr uint16_t kMediaHeaderV2Size = 134;
 constexpr uint32_t kMediaMagic = 0x33565747;  // bytes: G W V 3
 
 enum class StreamType : uint8_t {
@@ -29,6 +31,7 @@ enum MediaFlags : uint32_t {
     end_of_segment_hint = 1u << 2,
     has_system_timestamp = 1u << 3,
     has_rgb_diagnostics = 1u << 4,
+    has_pipeline_diagnostics = 1u << 5,
 };
 
 struct MediaFrameMeta {
@@ -50,6 +53,11 @@ struct MediaFrameMeta {
     int32_t rgb_gain = -1;
     int32_t rgb_auto_exposure = -1;
     int32_t rgb_actual_fps = -1;
+    uint64_t sender_capture_host_timestamp_us = 0;
+    uint64_t sender_timing_bound_timestamp_us = 0;
+    uint64_t sender_encode_start_timestamp_us = 0;
+    uint64_t sender_encode_done_timestamp_us = 0;
+    uint64_t sender_packet_queued_timestamp_us = 0;
 };
 
 inline void append_u8(std::vector<uint8_t> &out, uint8_t value) {
@@ -83,7 +91,7 @@ inline std::vector<uint8_t> build_media_header(const MediaFrameMeta &meta) {
         throw std::runtime_error("media packet string field is too long");
     }
 
-    constexpr uint16_t fixed_header_size = 94;
+    constexpr uint16_t fixed_header_size = kMediaHeaderV2Size;
     std::vector<uint8_t> out;
     out.reserve(fixed_header_size + meta.sender_id.size() + meta.camera_id.size() + meta.codec_or_compression.size());
 
@@ -109,6 +117,11 @@ inline std::vector<uint8_t> build_media_header(const MediaFrameMeta &meta) {
     append_le32(out, static_cast<uint32_t>(meta.rgb_gain));
     append_le32(out, static_cast<uint32_t>(meta.rgb_auto_exposure));
     append_le32(out, static_cast<uint32_t>(meta.rgb_actual_fps));
+    append_le64(out, meta.sender_capture_host_timestamp_us);
+    append_le64(out, meta.sender_timing_bound_timestamp_us);
+    append_le64(out, meta.sender_encode_start_timestamp_us);
+    append_le64(out, meta.sender_encode_done_timestamp_us);
+    append_le64(out, meta.sender_packet_queued_timestamp_us);
 
     append_bytes(out, meta.sender_id.data(), meta.sender_id.size());
     append_bytes(out, meta.camera_id.data(), meta.camera_id.size());

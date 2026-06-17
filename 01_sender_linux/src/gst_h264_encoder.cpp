@@ -1,5 +1,6 @@
 #include "gwv3_sender/gst_h264_encoder.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <stdexcept>
 
@@ -23,11 +24,25 @@ bool gst_element_supports_property(const std::string &element_name, const char *
 }  // namespace
 
 std::string h264_encoder_stage(const std::string &encoder_name, int bitrate_bps, int fps) {
+    if(encoder_name == "x264enc") {
+        const int bitrate_kbps = std::max(1, (bitrate_bps + 999) / 1000);
+        return encoder_name + " bitrate=" + std::to_string(bitrate_kbps)
+               + " key-int-max=" + std::to_string(fps)
+               + " speed-preset=ultrafast tune=zerolatency byte-stream=true";
+    }
+
     std::string stage = encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1";
     if(encoder_name == "mpph264enc" && gst_element_supports_property(encoder_name, "max-pending")) {
         stage += " max-pending=2";
     }
     return stage;
+}
+
+std::string jpeg_decoder_stage(const std::string &encoder_name) {
+    if(encoder_name == "x264enc") {
+        return "! jpegparse ! jpegdec ! videoconvert ";
+    }
+    return "! jpegparse ! mppjpegdec fast-mode=true format=NV12 ";
 }
 
 GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
@@ -49,8 +64,7 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
             "appsrc name=src is-live=true block=true format=time do-timestamp=false "
             "caps=image/jpeg,framerate=" + std::to_string(fps) + "/1 "
             "! queue max-size-buffers=2 leaky=downstream "
-            "! jpegparse "
-            "! mppjpegdec fast-mode=true format=NV12 "
+            + jpeg_decoder_stage(encoder_name)
             + scale_stage +
             "! " + h264_encoder_stage(encoder_name, bitrate_bps, fps) + " "
             "! h264parse "

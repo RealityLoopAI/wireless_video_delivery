@@ -152,6 +152,7 @@ values = {
     "RGB_FPS": rgb.get("fps", ""),
     "RGB_FORMAT": rgb.get("format", ""),
     "RGB_CODEC": encoding.get("codec", ""),
+    "RGB_ENCODER_MODE": encoding.get("mode", ""),
     "RGB_ENCODER": encoding.get("gstreamer_encoder", ""),
     "RGB_BITRATE": encoding.get("bitrate_bps", ""),
     "DEPTH_WIDTH": depth.get("width", ""),
@@ -208,12 +209,22 @@ PY
 eval "$config_exports"
 
 [[ -n "${RGB_ENCODER:-}" ]] || fail "配置中没有 rgb_encoding.gstreamer_encoder"
-rockchipmpp_features="$(gst-inspect-1.0 rockchipmpp 2>/dev/null || true)"
-if ! printf '%s\n' "$rockchipmpp_features" | grep -Fq "$RGB_ENCODER:"; then
-  fail "未找到硬件编码插件 $RGB_ENCODER"
-fi
-if [[ "$RGB_FORMAT" == "mjpg" ]] && ! printf '%s\n' "$rockchipmpp_features" | grep -Fq 'mppjpegdec:'; then
-  fail "RGB MJPG 直通需要 mppjpegdec，但当前 GStreamer 未发现该插件"
+RGB_ENCODER_MODE="${RGB_ENCODER_MODE:-hardware}"
+if [[ "$RGB_ENCODER_MODE" == "software" ]]; then
+  if ! gst-inspect-1.0 "$RGB_ENCODER" >/dev/null 2>&1; then
+    fail "未找到软件编码插件 $RGB_ENCODER"
+  fi
+  if [[ "$RGB_FORMAT" == "mjpg" ]] && ! gst-inspect-1.0 jpegdec >/dev/null 2>&1; then
+    fail "RGB MJPG 软件解码需要 jpegdec，但当前 GStreamer 未发现该插件"
+  fi
+else
+  rockchipmpp_features="$(gst-inspect-1.0 rockchipmpp 2>/dev/null || true)"
+  if ! printf '%s\n' "$rockchipmpp_features" | grep -Fq "$RGB_ENCODER:"; then
+    fail "未找到硬件编码插件 $RGB_ENCODER"
+  fi
+  if [[ "$RGB_FORMAT" == "mjpg" ]] && ! printf '%s\n' "$rockchipmpp_features" | grep -Fq 'mppjpegdec:'; then
+    fail "RGB MJPG 直通需要 mppjpegdec，但当前 GStreamer 未发现该插件"
+  fi
 fi
 
 validate_output="$(
