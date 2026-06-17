@@ -21,6 +21,13 @@
     "enabled": false,
     "fps": 30
   },
+  "web_rgb_preview": {
+    "enabled": true,
+    "max_width": 640,
+    "max_height": 360,
+    "fps": 30,
+    "bitrate_bps": 500000
+  },
   "logging": {
     "directory": "08_reports/sender_logs",
     "max_bytes": 10485760
