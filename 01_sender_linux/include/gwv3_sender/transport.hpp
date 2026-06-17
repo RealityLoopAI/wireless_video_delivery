@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -9,6 +10,15 @@
 
 namespace gwv3 {
 
+struct MediaPacketView {
+    const uint8_t *header_data = nullptr;
+    size_t header_size = 0;
+    const uint8_t *payload_data = nullptr;
+    size_t payload_size = 0;
+
+    size_t total_size() const { return header_size + payload_size; }
+};
+
 class Transport {
 public:
     explicit Transport(const AppConfig &config);
@@ -16,6 +26,7 @@ public:
 
     bool send_status(const std::string &json_message);
     bool send_media(const std::vector<uint8_t> &packet);
+    bool send_media(const MediaPacketView &packet);
     std::string last_error() const;
 
 private:
@@ -30,6 +41,7 @@ private:
     bool send_udp_status(const std::string &json_message);
     bool ensure_media_tcp_connected();
     SendResult send_all(int fd, const uint8_t *data, size_t size);
+    SendResult send_all(int fd, const MediaPacketView &packet);
     void close_media_socket();
     bool can_retry_media_connect() const;
     void set_error(const std::string &message);
@@ -49,6 +61,7 @@ class NullTransport {
 public:
     bool send_status(const std::string &) { return true; }
     bool send_media(const std::vector<uint8_t> &) { return true; }
+    bool send_media(const MediaPacketView &) { return true; }
     std::string last_error() const { return {}; }
 };
 

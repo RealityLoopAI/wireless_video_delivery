@@ -30,6 +30,7 @@ if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
 fi
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
+"$ROOT_DIR/05_tools/rotate_sender_logs.sh" || true
 cd "$ROOT_DIR"
 chmod +x "$WATCHDOG"
 rm -f "$CHILD_PID_FILE"

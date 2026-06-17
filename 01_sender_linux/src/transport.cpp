@@ -1,6 +1,7 @@
 #include "gwv3_sender/transport.hpp"
 
 #include <cerrno>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -13,6 +14,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace gwv3 {
@@ -93,13 +95,25 @@ bool Transport::send_status(const std::string &json_message) {
 }
 
 bool Transport::send_media(const std::vector<uint8_t> &packet) {
+    return send_media(MediaPacketView{packet.data(), packet.size(), nullptr, 0});
+}
+
+bool Transport::send_media(const MediaPacketView &packet) {
     if(!config_.transport.enabled) {
         return true;
+    }
+    if(packet.header_size > 0 && packet.header_data == nullptr) {
+        set_error("media TCP send failed: packet header is null");
+        return false;
+    }
+    if(packet.payload_size > 0 && packet.payload_data == nullptr) {
+        set_error("media TCP send failed: packet payload is null");
+        return false;
     }
     if(!ensure_media_tcp_connected()) {
         return false;
     }
-    if(should_drop_before_write(media_tcp_fd_, packet.size())) {
+    if(should_drop_before_write(media_tcp_fd_, packet.total_size())) {
         consecutive_media_backpressure_drops_++;
         if(consecutive_media_backpressure_drops_ >= 30) {
             const std::string previous = last_error_;
@@ -110,7 +124,7 @@ bool Transport::send_media(const std::vector<uint8_t> &packet) {
         }
         return false;
     }
-    const auto result = send_all(media_tcp_fd_, packet.data(), packet.size());
+    const auto result = send_all(media_tcp_fd_, packet);
     if(result == SendResult::sent) {
         consecutive_media_backpressure_drops_ = 0;
         return true;
@@ -234,6 +248,85 @@ Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t si
             set_error(std::string("media TCP send failed: ") + std::strerror(errno));
             return SendResult::failed;
         }
+    }
+    return SendResult::sent;
+}
+
+Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet) {
+    const size_t total_size = packet.total_size();
+    size_t offset = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.transport.send_timeout_ms);
+
+    while(offset < total_size) {
+        std::array<iovec, 2> iovs{};
+        int iov_count = 0;
+        size_t remaining_offset = offset;
+        if(remaining_offset < packet.header_size) {
+            iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.header_data + remaining_offset);
+            iovs[iov_count].iov_len = packet.header_size - remaining_offset;
+            ++iov_count;
+            remaining_offset = 0;
+        }
+        else {
+            remaining_offset -= packet.header_size;
+        }
+        if(packet.payload_size > remaining_offset) {
+            iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.payload_data + remaining_offset);
+            iovs[iov_count].iov_len = packet.payload_size - remaining_offset;
+            ++iov_count;
+        }
+
+        msghdr message{};
+        message.msg_iov = iovs.data();
+        message.msg_iovlen = static_cast<size_t>(iov_count);
+        const ssize_t sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+        if(sent > 0) {
+            offset += static_cast<size_t>(sent);
+            continue;
+        }
+        if(sent == 0) {
+            set_error("media TCP send failed: peer closed connection");
+            return SendResult::failed;
+        }
+        if(errno == EINTR) {
+            continue;
+        }
+        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+            const auto now = std::chrono::steady_clock::now();
+            if(now >= deadline) {
+                if(offset == 0) {
+                    set_error("media TCP packet dropped under backpressure before write");
+                    return SendResult::dropped_backpressure;
+                }
+                set_error("media TCP send timed out after partial write under backpressure");
+                return SendResult::failed;
+            }
+
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+            timeval timeout{};
+            timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
+            timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
+            const int rc = select(fd + 1, nullptr, &wfds, nullptr, &timeout);
+            if(rc > 0) {
+                continue;
+            }
+            if(rc < 0 && errno == EINTR) {
+                continue;
+            }
+            if(rc == 0 && offset == 0) {
+                set_error("media TCP packet dropped under backpressure before write");
+                return SendResult::dropped_backpressure;
+            }
+            set_error(rc == 0 ? "media TCP send timed out after partial write under backpressure"
+                              : std::string("media TCP send select failed: ") + std::strerror(errno));
+            return SendResult::failed;
+        }
+
+        set_error(std::string("media TCP send failed: ") + std::strerror(errno));
+        return SendResult::failed;
     }
     return SendResult::sent;
 }

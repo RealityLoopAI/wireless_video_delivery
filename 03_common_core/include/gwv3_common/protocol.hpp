@@ -78,18 +78,14 @@ inline void append_bytes(std::vector<uint8_t> &out, const void *data, size_t siz
     out.insert(out.end(), begin, begin + size);
 }
 
-inline std::vector<uint8_t> build_media_packet(const MediaFrameMeta &meta, const void *payload) {
+inline std::vector<uint8_t> build_media_header(const MediaFrameMeta &meta) {
     if(meta.sender_id.size() > UINT16_MAX || meta.camera_id.size() > UINT16_MAX || meta.codec_or_compression.size() > UINT16_MAX) {
         throw std::runtime_error("media packet string field is too long");
-    }
-    if(meta.payload_size > 0 && payload == nullptr) {
-        throw std::runtime_error("media packet payload is null");
     }
 
     constexpr uint16_t fixed_header_size = 94;
     std::vector<uint8_t> out;
-    out.reserve(fixed_header_size + meta.sender_id.size() + meta.camera_id.size() + meta.codec_or_compression.size()
-                + static_cast<size_t>(meta.payload_size));
+    out.reserve(fixed_header_size + meta.sender_id.size() + meta.camera_id.size() + meta.codec_or_compression.size());
 
     append_le32(out, kMediaMagic);
     append_le16(out, kMediaHeaderVersion);
@@ -117,6 +113,16 @@ inline std::vector<uint8_t> build_media_packet(const MediaFrameMeta &meta, const
     append_bytes(out, meta.sender_id.data(), meta.sender_id.size());
     append_bytes(out, meta.camera_id.data(), meta.camera_id.size());
     append_bytes(out, meta.codec_or_compression.data(), meta.codec_or_compression.size());
+    return out;
+}
+
+inline std::vector<uint8_t> build_media_packet(const MediaFrameMeta &meta, const void *payload) {
+    if(meta.payload_size > 0 && payload == nullptr) {
+        throw std::runtime_error("media packet payload is null");
+    }
+
+    auto out = build_media_header(meta);
+    out.reserve(out.size() + static_cast<size_t>(meta.payload_size));
     append_bytes(out, payload, static_cast<size_t>(meta.payload_size));
     return out;
 }

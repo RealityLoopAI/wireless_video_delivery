@@ -434,6 +434,11 @@ void validate_config(const AppConfig &config) {
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
     std::set<std::string> uids;
+    auto validate_profile = [](const VideoProfileConfig &profile, const std::string &name) {
+        if(profile.width < 0 || profile.height < 0 || profile.fps < 0) {
+            throw std::runtime_error(name + " width/height/fps must be non-negative");
+        }
+    };
     for(const auto &camera : config.cameras) {
         auto validate_nonnegative = [](const std::optional<int> &value, const char *name) {
             if(value && *value < 0) {
@@ -458,9 +463,20 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.codec != "h264") {
             throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");
         }
+        if(camera.rgb_encoding.mode != "hardware") {
+            throw std::runtime_error("only hardware rgb_encoding.mode is implemented in this sender build");
+        }
+        if(camera.rgb_encoding.gstreamer_encoder.empty()) {
+            throw std::runtime_error("rgb_encoding.gstreamer_encoder must not be empty");
+        }
+        if(camera.rgb_encoding.bitrate_bps <= 0) {
+            throw std::runtime_error("rgb_encoding.bitrate_bps must be positive");
+        }
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
             throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
         }
+        validate_profile(camera.rgb_profile, "rgb_profile");
+        validate_profile(camera.depth_profile, "depth_profile");
         validate_nonnegative(camera.color_controls.exposure, "color_controls.exposure");
         validate_nonnegative(camera.color_controls.gain, "color_controls.gain");
         validate_nonnegative(camera.color_controls.auto_exposure_priority, "color_controls.auto_exposure_priority");
