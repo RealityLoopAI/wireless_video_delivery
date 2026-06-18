@@ -1,6 +1,7 @@
 #include "gwv3_sender/transport.hpp"
 
 #include <cerrno>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -92,21 +93,23 @@ bool Transport::send_status(const std::string &json_message) {
     return send_udp_status(json_message);
 }
 
-bool Transport::send_media(const std::vector<uint8_t> &packet) {
+bool Transport::send_media(const std::vector<uint8_t> &packet, MediaPriority priority) {
     if(!config_.transport.enabled) {
         return true;
     }
     if(!ensure_media_tcp_connected()) {
         return false;
     }
-    if(should_drop_before_write(media_tcp_fd_, packet.size())) {
-        consecutive_media_backpressure_drops_++;
-        if(consecutive_media_backpressure_drops_ >= 30) {
-            const std::string previous = last_error_;
-            close_media_socket();
-            last_media_connect_attempt_ = {};
-            consecutive_media_backpressure_drops_ = 0;
-            set_error(previous + "; reconnecting after repeated backpressure drops");
+    if(should_drop_before_write(media_tcp_fd_, packet.size(), priority)) {
+        if(priority == MediaPriority::realtime) {
+            consecutive_media_backpressure_drops_++;
+            if(consecutive_media_backpressure_drops_ >= 30) {
+                const std::string previous = last_error_;
+                close_media_socket();
+                last_media_connect_attempt_ = {};
+                consecutive_media_backpressure_drops_ = 0;
+                set_error(previous + "; reconnecting after repeated backpressure drops");
+            }
         }
         return false;
     }
@@ -257,7 +260,7 @@ bool Transport::can_retry_media_connect() const {
     return elapsed >= std::chrono::milliseconds(config_.transport.reconnect_interval_ms);
 }
 
-bool Transport::should_drop_before_write(int fd, size_t packet_size) {
+bool Transport::should_drop_before_write(int fd, size_t packet_size, MediaPriority priority) {
 #ifdef TIOCOUTQ
     int pending = 0;
     if(ioctl(fd, TIOCOUTQ, &pending) != 0 || pending <= 0) {
@@ -268,14 +271,23 @@ bool Transport::should_drop_before_write(int fd, size_t packet_size) {
         return false;
     }
     const size_t queued = static_cast<size_t>(pending);
-    if(queued >= capacity) {
-        set_error("media TCP packet dropped under backpressure pending_bytes=" + std::to_string(queued)
-                  + " packet_bytes=" + std::to_string(packet_size) + " capacity_bytes=" + std::to_string(capacity));
+    size_t limit = capacity;
+    if(priority == MediaPriority::bulk) {
+        const size_t reserve = std::max<size_t>(256 * 1024, capacity / 4);
+        limit = capacity > reserve ? capacity - reserve : capacity;
+    }
+    const bool drop = priority == MediaPriority::bulk ? queued + packet_size >= limit : queued >= limit;
+    if(drop) {
+        const std::string kind = priority == MediaPriority::bulk ? "bulk media TCP packet dropped under backpressure "
+                                                                 : "media TCP packet dropped under backpressure ";
+        set_error(kind + "pending_bytes=" + std::to_string(queued) + " packet_bytes=" + std::to_string(packet_size)
+                  + " limit_bytes=" + std::to_string(limit) + " capacity_bytes=" + std::to_string(capacity));
         return true;
     }
 #else
     (void)fd;
     (void)packet_size;
+    (void)priority;
 #endif
     return false;
 }

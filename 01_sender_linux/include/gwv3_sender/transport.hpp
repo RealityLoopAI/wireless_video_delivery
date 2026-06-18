@@ -11,11 +11,16 @@ namespace gwv3 {
 
 class Transport {
 public:
+    enum class MediaPriority {
+        realtime,
+        bulk,
+    };
+
     explicit Transport(const AppConfig &config);
     ~Transport();
 
     bool send_status(const std::string &json_message);
-    bool send_media(const std::vector<uint8_t> &packet);
+    bool send_media(const std::vector<uint8_t> &packet, MediaPriority priority = MediaPriority::realtime);
     std::string last_error() const;
 
 private:
@@ -33,7 +38,7 @@ private:
     void close_media_socket();
     bool can_retry_media_connect() const;
     void set_error(const std::string &message);
-    bool should_drop_before_write(int fd, size_t packet_size);
+    bool should_drop_before_write(int fd, size_t packet_size, MediaPriority priority);
     size_t media_send_capacity_bytes() const;
 
     AppConfig config_;

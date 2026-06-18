@@ -965,10 +965,12 @@ int capture_stall_reconnect_cooldown_seconds() {
 
 void update_media_outage_guard(CameraRuntime &camera, Logger &logger, const CameraPerfStats &perf) {
     const bool rgb_outage = camera.live.rgb_input_fps >= capture_outage_fps_floor() && perf.rgb_sent_packets == 0 && perf.rgb_send_failures > 0;
+    const bool rgb_transport_healthy = camera.live.rgb_input_fps >= capture_outage_fps_floor() && perf.rgb_sent_packets > 0;
     const bool depth_outage = camera.live.depth_input_fps >= capture_outage_fps_floor()
                               && perf.depth_sent_frames == 0 && perf.depth_send_failures > 0;
+    const bool depth_outage_fatal = depth_outage && !rgb_transport_healthy;
 
-    if(rgb_outage || depth_outage) {
+    if(rgb_outage || depth_outage_fatal) {
         camera.media_outage_samples++;
     }
     else {
@@ -2943,6 +2945,16 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
 }
 
 template <typename Sender>
+bool send_media_packet(Sender &transport, const std::vector<uint8_t> &packet, StreamType) {
+    return transport.send_media(packet);
+}
+
+bool send_media_packet(Transport &transport, const std::vector<uint8_t> &packet, StreamType stream_type) {
+    const auto priority = stream_type == StreamType::depth_raw ? Transport::MediaPriority::bulk : Transport::MediaPriority::realtime;
+    return transport.send_media(packet, priority);
+}
+
+template <typename Sender>
 void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger &logger, std::mutex &transport_mutex) {
     while(g_running) {
         auto job = media_queue.wait_pop(std::chrono::milliseconds(100));
@@ -2955,7 +2967,7 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         std::string error;
         {
             std::lock_guard<std::mutex> lock(transport_mutex);
-            sent = transport.send_media(job->packet);
+            sent = send_media_packet(transport, job->packet, job->stream_type);
             if(!sent) {
                 error = transport.last_error();
             }
