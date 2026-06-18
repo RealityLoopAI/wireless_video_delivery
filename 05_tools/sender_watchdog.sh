@@ -7,18 +7,28 @@ CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 MODE="${2:-preview}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
+LOCK_FILE="$ROOT_DIR/12_build/sender.lock"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
 CHRONY_WAIT_ENABLED="${GEMINI_SENDER_CHRONY_WAIT_ENABLED:-1}"
 CHRONY_MAX_CORRECTION_S="${GEMINI_CHRONY_MAX_CORRECTION_S:-0.010}"
+source "$ROOT_DIR/05_tools/orbbec_sdk_env.sh"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
 cd "$ROOT_DIR"
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  printf '%s [WATCHDOG] another sender watchdog is already running; exiting pid=%s config=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$CONFIG" >> "$LOG_FILE"
+  exit 0
+fi
+
+SDK_LIB="$(gemini_sender_resolve_orbbec_sdk_lib "$ROOT_DIR")"
 
 echo "$$" > "$PID_FILE"
 child_pid=""

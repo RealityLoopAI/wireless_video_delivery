@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 CONFIG="${1:-${GEMINI_SENDER_CONFIG:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
+source "$ROOT_DIR/05_tools/orbbec_sdk_env.sh"
+SDK_LIB="$(gemini_sender_resolve_orbbec_sdk_lib "$ROOT_DIR")"
 
 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "前台启动" "config"
 

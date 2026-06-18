@@ -36,6 +36,13 @@
 #include <jpeglib.h>
 #include <libobsensor/ObSensor.hpp>
 #include <libobsensor/hpp/Error.hpp>
+
+#if defined(GWV3_ORBBEC_SDK_V2)
+#define GWV3_OB_PROP_COLOR_MAX_GAIN_INT OB_PROP_COLOR_AE_MAX_GAIN_INT
+#else
+#define GWV3_OB_PROP_COLOR_MAX_GAIN_INT OB_PROP_COLOR_MAXIMAL_GAIN_INT
+#endif
+
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <opencv2/highgui.hpp>
@@ -539,6 +546,72 @@ private:
     bool stopping_ = false;
 };
 
+struct DepthCompressionJob {
+    CameraRuntime *source_camera = nullptr;
+    CameraRuntime *output_camera = nullptr;
+    size_t media_slot_index = 0;
+    MediaFrameMeta meta;
+    std::vector<uint8_t> raw_payload;
+};
+
+class LatestDepthCompressionQueue {
+public:
+    explicit LatestDepthCompressionQueue(size_t slot_count) : slots_(slot_count) {}
+
+    size_t append_slots(size_t slot_count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const size_t first_slot = slots_.size();
+        slots_.resize(first_slot + slot_count);
+        return first_slot;
+    }
+
+    bool publish(size_t slot_index, DepthCompressionJob &&job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(stopping_ || slot_index >= slots_.size()) {
+            return false;
+        }
+        const bool overwritten = slots_[slot_index].has_value();
+        slots_[slot_index] = std::move(job);
+        cv_.notify_one();
+        return overwritten;
+    }
+
+    std::optional<DepthCompressionJob> wait_pop(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, timeout, [&] { return stopping_ || has_job_locked(); });
+        if(!has_job_locked()) {
+            return std::nullopt;
+        }
+        for(size_t offset = 0; offset < slots_.size(); ++offset) {
+            const size_t index = (next_slot_ + offset) % slots_.size();
+            if(slots_[index]) {
+                auto job = std::move(*slots_[index]);
+                slots_[index].reset();
+                next_slot_ = (index + 1) % slots_.size();
+                return job;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+        cv_.notify_all();
+    }
+
+private:
+    bool has_job_locked() const {
+        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) { return slot.has_value(); });
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<std::optional<DepthCompressionJob>> slots_;
+    size_t next_slot_ = 0;
+    bool stopping_ = false;
+};
+
 Args parse_args(int argc, char **argv) {
     Args args;
     for(int i = 1; i < argc; ++i) {
@@ -706,7 +779,7 @@ void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     set_int_property_if_configured(camera, logger, "auto_exposure_priority", OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT,
                                    controls.auto_exposure_priority);
     set_int_property_if_configured(camera, logger, "max_exposure", OB_PROP_COLOR_AE_MAX_EXPOSURE_INT, controls.max_exposure);
-    set_int_property_if_configured(camera, logger, "max_gain", OB_PROP_COLOR_MAXIMAL_GAIN_INT, controls.max_gain);
+    set_int_property_if_configured(camera, logger, "max_gain", GWV3_OB_PROP_COLOR_MAX_GAIN_INT, controls.max_gain);
     set_int_property_if_configured(camera, logger, "power_line_frequency", OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT,
                                    controls.power_line_frequency);
     set_int_property_if_configured(camera, logger, "exposure", OB_PROP_COLOR_EXPOSURE_INT, controls.exposure);
@@ -2901,6 +2974,30 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
     }
 }
 
+void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMediaQueue &media_queue, Logger &logger) {
+    while(g_running) {
+        auto job = depth_queue.wait_pop(std::chrono::milliseconds(100));
+        if(!job || !job->source_camera || !job->output_camera) {
+            continue;
+        }
+
+        try {
+            const auto compress_started = std::chrono::steady_clock::now();
+            auto compressed_depth = zlib_compress_payload(job->raw_payload.data(), job->raw_payload.size());
+            record_depth_compress_ms(*job->source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
+            job->meta.payload_size = compressed_depth.size();
+            job->meta.uncompressed_size = job->raw_payload.size();
+            auto packet = build_media_packet(job->meta, compressed_depth.data());
+            publish_media_packet(media_queue, job->media_slot_index, *job->output_camera, StreamType::depth_raw, std::move(packet));
+            record_depth_frame_done(*job->output_camera);
+        }
+        catch(const std::exception &e) {
+            set_camera_last_error(*job->source_camera, e.what());
+            logger.warn("depth compression failed camera_id=" + job->source_camera->config.camera_id + " error=" + e.what());
+        }
+    }
+}
+
 std::mutex g_encoder_create_mutex;
 
 CameraRuntime *depth_target_camera(const AppConfig &config, CameraRuntime &source) {
@@ -2928,7 +3025,8 @@ void configure_depth_remap_targets(const AppConfig &config, const std::vector<st
 
 template <typename Sender>
 void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &media_queue,
-                        Sender &transport, Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
+                        LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
+                        std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
     const size_t rgb_slot = slot_base;
     const size_t depth_slot = slot_base + 1;
 
@@ -3138,16 +3236,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
             set_depth_scale_if_empty(*depth_target, depth->getValueScale());
             const bool publish_depth = depth_emit_due(camera, frame_now);
             if(publish_depth) {
-                std::vector<uint8_t> compressed_depth;
                 const void *depth_payload = depth->data();
                 size_t depth_payload_size = depth->dataSize();
-                if(camera.config.depth_transport.compression == "zlib") {
-                    const auto compress_started = std::chrono::steady_clock::now();
-                    compressed_depth = zlib_compress_payload(depth->data(), depth->dataSize());
-                    record_depth_compress_ms(camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
-                    depth_payload = compressed_depth.data();
-                    depth_payload_size = compressed_depth.size();
-                }
                 const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
                 const uint64_t depth_device_timestamp_us = frame_device_timestamp_us_or(depth, depth_system_timestamp_us);
                 MediaFrameMeta meta;
@@ -3164,9 +3254,23 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.pixel_format = PixelFormat::depth_u16;
                 meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
-                auto packet = build_media_packet(meta, depth_payload);
-                publish_media_packet(media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(packet));
-                record_depth_frame_done(*depth_target);
+                if(camera.config.depth_transport.compression == "zlib") {
+                    DepthCompressionJob compress_job;
+                    compress_job.source_camera = &camera;
+                    compress_job.output_camera = depth_target;
+                    compress_job.media_slot_index = depth_slot;
+                    compress_job.meta = meta;
+                    const auto *depth_bytes = static_cast<const uint8_t *>(depth->data());
+                    compress_job.raw_payload.assign(depth_bytes, depth_bytes + depth->dataSize());
+                    if(depth_compression_queue.publish(depth_slot, std::move(compress_job))) {
+                        record_queue_overwrite(*depth_target, StreamType::depth_raw);
+                    }
+                }
+                else {
+                    auto packet = build_media_packet(meta, depth_payload);
+                    publish_media_packet(media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(packet));
+                    record_depth_frame_done(*depth_target);
+                }
 
                 if(preview_due) {
                     const auto depth_preview_started = std::chrono::steady_clock::now();
@@ -3621,9 +3725,10 @@ std::vector<OrbbecDeviceIdentity> query_hotplug_device_identities() {
 
 template <typename Sender>
 void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<CameraRuntime>> &cameras,
-                          std::vector<std::thread> &camera_threads, LatestMediaQueue &media_queue, Sender &transport,
-                          Logger &logger, std::mutex &transport_mutex, std::chrono::milliseconds preview_interval,
-                          int &next_hotplug_camera_number, std::vector<HotplugRetryCooldown> &retry_cooldowns,
+                          std::vector<std::thread> &camera_threads, LatestMediaQueue &media_queue,
+                          LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
+                          std::mutex &transport_mutex, std::chrono::milliseconds preview_interval, int &next_hotplug_camera_number,
+                          std::vector<HotplugRetryCooldown> &retry_cooldowns,
                           std::chrono::steady_clock::time_point &next_limit_event) {
     std::vector<OrbbecDeviceIdentity> identities;
     try {
@@ -3694,10 +3799,12 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
         }
 
         const size_t slot_base = media_queue.append_slots(2);
+        depth_compression_queue.append_slots(2);
         CameraRuntime *camera_ptr = runtime.get();
         cameras.push_back(std::move(runtime));
         camera_threads.emplace_back([&, camera_ptr, slot_base] {
-            camera_worker_loop(config, *camera_ptr, slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
+            camera_worker_loop(config, *camera_ptr, slot_base, media_queue, depth_compression_queue, transport, logger, transport_mutex,
+                               preview_interval);
         });
         logger.info("hotplug camera started camera_id=" + camera_id + " slot_base=" + std::to_string(slot_base)
                     + " device=" + device_identity_summary(identity));
@@ -3723,6 +3830,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     auto cameras = start_cameras(config, logger);
     configure_depth_remap_targets(config, cameras, logger);
     LatestMediaQueue media_queue(cameras.size() * 2);
+    LatestDepthCompressionQueue depth_compression_queue(cameras.size() * 2);
     std::mutex transport_mutex;
 
     send_status_locked(transport, logger, transport_mutex, sender_hello(config));
@@ -3745,6 +3853,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     }
 
     std::thread media_thread([&] { media_sender_loop(media_queue, transport, logger, transport_mutex); });
+    std::thread depth_compression_thread([&] { depth_compression_loop(depth_compression_queue, media_queue, logger); });
     std::vector<std::thread> camera_threads;
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
@@ -3754,7 +3863,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
                 v4l2_camera_worker_loop(config, *cameras[i], slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
             }
             else {
-                camera_worker_loop(config, *cameras[i], slot_base, media_queue, transport, logger, transport_mutex, preview_interval);
+                camera_worker_loop(config, *cameras[i], slot_base, media_queue, depth_compression_queue, transport, logger, transport_mutex,
+                                   preview_interval);
             }
         });
     }
@@ -3804,14 +3914,15 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             next_preview = now + preview_interval;
         }
         if(config.hotplug.enabled && now >= next_hotplug_scan) {
-            scan_hotplug_cameras(config, cameras, camera_threads, media_queue, transport, logger, transport_mutex, preview_interval,
-                                 next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
+            scan_hotplug_cameras(config, cameras, camera_threads, media_queue, depth_compression_queue, transport, logger, transport_mutex,
+                                 preview_interval, next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
             next_hotplug_scan = now + kHotplugScanInterval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     g_running = false;
+    depth_compression_queue.stop();
     media_queue.stop();
     for(auto &thread : camera_threads) {
         if(thread.joinable()) {
@@ -3820,6 +3931,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     }
     if(media_thread.joinable()) {
         media_thread.join();
+    }
+    if(depth_compression_thread.joinable()) {
+        depth_compression_thread.join();
     }
 
     for(auto &camera : cameras) {
