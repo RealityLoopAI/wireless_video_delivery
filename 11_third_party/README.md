@@ -5,6 +5,8 @@
 本目录用于说明和放置 `wireless_video_delivery` 工程需要的第三方依赖。
 当前只放说明文件，不直接内置大型 SDK 或动态库实体。
 
+项目总说明见 [../README.md](../README.md)，部署依赖见 [../04_docs/04_部署与运行手册.md](../04_docs/04_部署与运行手册.md)。
+
 ## 2. Orbbec SDK
 
 发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
@@ -72,17 +74,19 @@ OrbbecViewer_v1.10.27_202509260133_linux_x64_release.zip
 3. 不允许在发送端构建脚本中引用 `linux_x64` SDK。
 4. 不允许只放一个没有架构标识的 `SDK/` 目录。
 
-## 5. 还需要确认的第三方依赖
+## 5. 当前第三方依赖分工
 
-正式开发前还需要确认：
+当前主线已经围绕以下依赖组织：
 
-1. FFmpeg 或 GStreamer。
-2. H.264/H.265 硬件编码路径。
-3. Depth 无损压缩库，例如 LZ4 或 Zstd。
-4. Web 预览方案，例如 WebRTC 或备选方案。
-5. C++ HTTP/Web 框架。
-6. JSON 库。
-7. 日志库。
+1. Orbbec SDK：发送端相机采集和相机参数读取。
+2. GStreamer + Rockchip MPP：发送端 RGB H.264 硬件编码。
+3. FFmpeg：接收端 RGB/Depth 封装和导出工具依赖。
+4. OpenCV：发送端本地预览和部分图像处理。
+5. jsoncpp：C++ 配置和状态 JSON 处理。
+6. zlib：Depth 无损压缩传输。
+7. FastAPI：Web Monitor 服务。
+
+后续如果引入 LZ4、Zstd、SRT、WebRTC 或新的硬件编码路径，应先在技术路线文档中说明原因、收益、风险和当前实现状态。
 
 ## 6. 当前不内置 SDK 实体的原因
 
