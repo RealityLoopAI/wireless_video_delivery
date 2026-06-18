@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
+WATCHDOG="$ROOT_DIR/05_tools/sender_watchdog.sh"
 
 stop_pids() {
   local label="$1"
@@ -43,12 +44,22 @@ stop_orphan_children() {
   fi
 }
 
+stop_orphan_watchdogs() {
+  local watchdog_pids=()
+  mapfile -t watchdog_pids < <(ps -eww -o pid=,comm=,args= | awk -v w="$WATCHDOG" '$2 == "bash" && index($0, w) {print $1}')
+  if [[ "${#watchdog_pids[@]}" -gt 0 ]]; then
+    stop_pids "残留发送端守护进程" "${watchdog_pids[@]}"
+    echo "已停止残留发送端守护进程：${watchdog_pids[*]}"
+  fi
+}
+
 if [[ ! -f "$PID_FILE" ]]; then
   if [[ -f "$CHILD_PID_FILE" ]] && kill -0 "$(cat "$CHILD_PID_FILE")" 2>/dev/null; then
     stop_pids "发送端子进程" "$(cat "$CHILD_PID_FILE")"
     rm -f "$CHILD_PID_FILE"
     echo "发送端子进程已停止"
   else
+    stop_orphan_watchdogs
     stop_orphan_children
     echo "发送端未运行：没有 PID 文件"
   fi
@@ -66,5 +77,6 @@ else
   echo "发送端未运行：PID=$PID 不存在"
 fi
 
+stop_orphan_watchdogs
 stop_orphan_children
 rm -f "$PID_FILE" "$CHILD_PID_FILE"

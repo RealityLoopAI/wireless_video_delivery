@@ -7,6 +7,8 @@
 
 当前目录已包含发送端、接收端、Web 监控和控制脚本源码；发送端需要按 `11_third_party/README.md` 放置 Orbbec ARM64 SDK 后编译运行。
 
+当前交付实现的网络协议现状是：状态上报走 `UDP 50011`，媒体数据走 `TCP 50010`，管理接口走 `HTTP 8080`。需求和方案文档里提到的 `UDP/RTP`、`SRT` 目前仍属于候选技术路线，不是当前仓库已经启用的媒体传输实现。
+
 ## 2. 当前状态
 
 已完成：
@@ -127,7 +129,7 @@
 
 2026-06-05 默认 Depth 档运行时，发送端会按 `depth_profile.fps` 对 Depth 压缩和媒体发送限流。运行状态判断以 `depth_sent_fps` 和 `depth_mbps` 为准，`depth_input_fps` 仅表示 SDK 输入到发送端的实际帧率。
 
-2026-06-05 RK3588 双路现场配置为 `06_configs/sender_rk3588-01_two_cameras.json`，固定 `sender_id=rk3588-ubuntu`，接收端为 `192.168.66.196`。当前两路绑定为 `cam01 / AY2M54302ZH / uid=10-1.2` 和 `cam02 / AY2MC3100Z8 / uid=8-1.4.2`，RGB 保持 `1920x1080@30 H.264 12Mbps`，Depth 使用 `320x200@30 y12 -> zlib`，RGB 手动曝光使用 `auto_exposure=false, exposure=300, cam01 gain=50, cam02 gain=30`，这是现场按 30fps 约束调整后的中低增益档。现场发现 Orbbec SDK 返回的两路 Depth 物理视角与 RGB 交叉，因此该配置启用 `swap_depth_between_cameras=true`：只交换 Depth 的发送和本地预览归属，RGB 仍按各自 `camera_id` 发送。验证时同时看发送端本地预览标签、接收端 `/api/status` 中 `rk3588-ubuntu_cam01/cam02` 的包计数，以及接收端 RGB/Depth 四宫格截图；不要只看网页主预览当前选中的旧 key。
+2026-06-12 RK3588 双路现场配置为 `06_configs/sender_rk3588-01_two_cameras.json`，固定 `sender_id=rk3588-ubuntu`，接收端为 `192.168.66.196`。当前两路绑定为 `cam01 / AY2M54302ZH` 和 `cam02 / AY2MC3100Z8`，RGB 保持 `1920x1080@30 H.264 12Mbps`，Depth 使用 `320x200@30 y12 -> zlib`，RGB 手动曝光使用 `auto_exposure=false, exposure=312, gain=80`。当前实机验证 RGB 与 Depth 已按同一 `camera_id` 对应，因此默认配置必须保持 `swap_depth_between_cameras=false`；只有现场确认两路 Depth 物理视角与 RGB 交叉时，才使用 `06_configs/sender_rk3588-01_two_cameras_swapped_test.json` 做反向测试。发送端默认使用每路 RGB/Depth 本地预览窗口；需要调试双 RGB 时间戳对齐预览时再将配置中的 `preview.aligned_rgb` 改为 `true`。验证时同时看发送端本地预览标签、接收端 `/api/status` 中 `rk3588-ubuntu_cam01/cam02` 的包计数，以及接收端 RGB/Depth 四宫格截图；不要只看网页主预览当前选中的旧 key。
 
 2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认交付已改为 `320x200@30 y12`。
 
@@ -204,7 +206,7 @@ https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
 默认规格：
 
 ```text
-sender_id: rk3588-ubuntu
+sender_id: auto (current machine derives orangepi5pro-c973b736)
 camera_id: cam02
 receiver_ip: 192.168.66.196
 RGB: 1920x1080@30 H.264 12Mbps
@@ -212,7 +214,7 @@ Depth: 320x200@30 y12 -> zlib
 current expectation: stable 1 full-spec RGBD stream
 hotplug: retained as extension capability, not default delivery target
 transport.send_buffer_bytes: 4194304
-Wi-Fi guard: default min 5000MHz; set GEMINI_SENDER_DEFAULT_WIFI_CONNECTION only when a fixed SSID is required
+Wi-Fi guard: default min 5000MHz, optional SSID via GEMINI_SENDER_DEFAULT_WIFI_CONNECTION
 desktop idle-delay: 3600s
 desktop clock seconds: enabled
 monitor time display: Beijing time UTC+8, second precision

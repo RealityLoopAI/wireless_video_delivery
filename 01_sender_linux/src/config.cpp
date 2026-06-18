@@ -1,4 +1,5 @@
 #include "gwv3_sender/config.hpp"
+#include "gwv3_common/protocol.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -328,6 +329,23 @@ AppConfig load_config(const std::string &path) {
     if(!preview.isNull()) {
         config.preview.enabled = optional_bool(preview, "enabled", config.preview.enabled);
         config.preview.fps = optional_int(preview, "fps", config.preview.fps);
+        config.preview.aligned_rgb = optional_bool(preview, "aligned_rgb", config.preview.aligned_rgb);
+    }
+
+    const auto &web_rgb_preview = root["web_rgb_preview"];
+    if(!web_rgb_preview.isNull()) {
+        if(!web_rgb_preview.isObject()) {
+            throw std::runtime_error("invalid object field: web_rgb_preview");
+        }
+        config.web_rgb_preview.enabled = optional_bool(web_rgb_preview, "enabled", config.web_rgb_preview.enabled);
+        config.web_rgb_preview.max_width = optional_int(web_rgb_preview, "max_width", config.web_rgb_preview.max_width);
+        config.web_rgb_preview.max_height = optional_int(web_rgb_preview, "max_height", config.web_rgb_preview.max_height);
+        config.web_rgb_preview.fps = optional_int(web_rgb_preview, "fps", config.web_rgb_preview.fps);
+        config.web_rgb_preview.bitrate_bps = optional_int(web_rgb_preview, "bitrate_bps", config.web_rgb_preview.bitrate_bps);
+        config.web_rgb_preview.udp_enabled = optional_bool(web_rgb_preview, "udp_enabled", config.web_rgb_preview.udp_enabled);
+        config.web_rgb_preview.udp_port = parse_port(web_rgb_preview, "udp_port", config.web_rgb_preview.udp_port);
+        config.web_rgb_preview.udp_mtu_bytes =
+            optional_int(web_rgb_preview, "udp_mtu_bytes", config.web_rgb_preview.udp_mtu_bytes);
     }
 
     const auto &logging = root["logging"];
@@ -423,9 +441,32 @@ void validate_config(const AppConfig &config) {
     if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
         throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
     }
+    if(config.web_rgb_preview.max_width <= 0) {
+        throw std::runtime_error("web_rgb_preview.max_width must be positive");
+    }
+    if(config.web_rgb_preview.max_height <= 0) {
+        throw std::runtime_error("web_rgb_preview.max_height must be positive");
+    }
+    if(config.web_rgb_preview.fps <= 0) {
+        throw std::runtime_error("web_rgb_preview.fps must be positive");
+    }
+    if(config.web_rgb_preview.bitrate_bps <= 0) {
+        throw std::runtime_error("web_rgb_preview.bitrate_bps must be positive");
+    }
+    if(config.web_rgb_preview.udp_mtu_bytes < static_cast<int>(kPreviewUdpHeaderSize + 256)) {
+        throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must leave at least 256 bytes for payload");
+    }
+    if(config.web_rgb_preview.udp_mtu_bytes > 9000) {
+        throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be <= 9000");
+    }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
     std::set<std::string> uids;
+    auto validate_profile = [](const VideoProfileConfig &profile, const std::string &name) {
+        if(profile.width < 0 || profile.height < 0 || profile.fps < 0) {
+            throw std::runtime_error(name + " width/height/fps must be non-negative");
+        }
+    };
     for(const auto &camera : config.cameras) {
         auto validate_nonnegative = [](const std::optional<int> &value, const char *name) {
             if(value && *value < 0) {
@@ -476,9 +517,23 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.codec != "h264") {
             throw std::runtime_error("only h264 rgb_encoding.codec is implemented in this sender build");
         }
+        if(camera.rgb_encoding.mode != "hardware" && camera.rgb_encoding.mode != "software") {
+            throw std::runtime_error("rgb_encoding.mode must be hardware or software");
+        }
+        if(camera.rgb_encoding.gstreamer_encoder.empty()) {
+            throw std::runtime_error("rgb_encoding.gstreamer_encoder must not be empty");
+        }
+        if(camera.rgb_encoding.mode == "software" && camera.rgb_encoding.gstreamer_encoder != "x264enc") {
+            throw std::runtime_error("software rgb_encoding.mode requires x264enc");
+        }
+        if(camera.rgb_encoding.bitrate_bps <= 0) {
+            throw std::runtime_error("rgb_encoding.bitrate_bps must be positive");
+        }
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
             throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
         }
+        validate_profile(camera.rgb_profile, "rgb_profile");
+        validate_profile(camera.depth_profile, "depth_profile");
         validate_nonnegative(camera.color_controls.exposure, "color_controls.exposure");
         validate_nonnegative(camera.color_controls.gain, "color_controls.gain");
         validate_nonnegative(camera.color_controls.auto_exposure_priority, "color_controls.auto_exposure_priority");

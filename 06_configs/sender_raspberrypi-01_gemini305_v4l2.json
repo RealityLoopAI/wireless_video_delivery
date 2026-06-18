@@ -25,7 +25,10 @@
     "max_width": 640,
     "max_height": 360,
     "fps": 30,
-    "bitrate_bps": 500000
+    "bitrate_bps": 500000,
+    "udp_enabled": true,
+    "udp_port": 50012,
+    "udp_mtu_bytes": 1200
   },
   "hotplug": {
     "enabled": false

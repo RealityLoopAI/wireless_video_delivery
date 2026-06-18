@@ -534,6 +534,17 @@
     let sideCameras = [];
     let mainKey = '';
     let mainTargetSyncKey = '';
+    let loopsStarted = false;
+
+    const STATUS_REFRESH_MS = 1000;
+    const MAIN_RGB_REFRESH_MS = 33;
+    const THUMB_RGB_REFRESH_MS = 33;
+    const MAIN_DEPTH_REFRESH_MS = 180;
+    const THUMB_DEPTH_REFRESH_MS = 650;
+    const HIDDEN_REFRESH_MS = 1000;
+    const PREVIEW_LOAD_TIMEOUT_MS = 1200;
+    const ENABLE_THUMB_RGB_PREVIEW = true;
+    const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
     const fmtBytes = (n) => {
       if (!Number.isFinite(n)) return '0 B';
@@ -601,9 +612,16 @@
       const node = root.querySelector(`[data-field="${field}"]`);
       if (node) node.textContent = value;
     }
-    function chooseMainCamera() {
+    function defaultMainCamera() {
+      return visibleCameras.find((c) => c.camera_key === DEFAULT_MAIN_CAMERA_KEY) ||
+        visibleCameras.find((c) => c.sender_id === 'raspberrypi-01') ||
+        null;
+    }
+    function chooseMainCamera(serverMainKey = '') {
       if (mainKey && visibleCameras.some((c) => c.camera_key === mainKey)) return;
-      mainKey = (visibleCameras[0] || {}).camera_key || '';
+      const preferred = defaultMainCamera();
+      const serverMain = visibleCameras.find((c) => c.camera_key === serverMainKey);
+      mainKey = (preferred || serverMain || visibleCameras[0] || {}).camera_key || '';
       mainTargetSyncKey = '';
     }
     function selectMainCamera(key) {
@@ -627,11 +645,15 @@
       const endpoint = high && kind === 'rgb' ? 'rgb-main' : kind;
       return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
     }
-    function previewAvailable(c, kind) {
-      return isLive(c) && (kind === 'rgb' ? c.rgb_preview_available : c.depth_preview_available);
+    function previewAvailable(c, kind, high = false) {
+      if (!isLive(c)) return false;
+      if (kind === 'rgb') {
+        return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : (c.rgb_preview_available || c.rgb_packets > 0);
+      }
+      return c.depth_preview_available;
     }
     function hasAnyPreview(c) {
-      return previewAvailable(c, 'rgb') || previewAvailable(c, 'depth');
+      return isLive(c) && (previewAvailable(c, 'rgb') || previewAvailable(c, 'depth') || c.rgb_packets > 0 || c.depth_packets > 0);
     }
     function clearMainPreview(message = '等待主画面') {
       clearPreview(document.getElementById('mainRgbPane'), 'rgb', message === '等待主画面' ? '等待 RGB' : message);
@@ -661,6 +683,20 @@
       syncMainTarget();
       refreshPreview(document.getElementById('mainRgbPane'), c, 'rgb', true);
       refreshPreview(document.getElementById('mainDepthPane'), c, 'depth', false);
+    }
+    function refreshMainPreviewKind(kind) {
+      const c = cameras.find((item) => item.camera_key === mainKey);
+      if (!c) {
+        if (kind === 'rgb') {
+          clearPreview(document.getElementById('mainRgbPane'), 'rgb', cameras.length ? '等待实时画面' : '等待发送端连接');
+        }
+        else {
+          clearPreview(document.getElementById('mainDepthPane'), 'depth', cameras.length ? '等待实时画面' : '等待发送端连接');
+        }
+        return;
+      }
+      syncMainTarget();
+      refreshPreview(kind === 'rgb' ? document.getElementById('mainRgbPane') : document.getElementById('mainDepthPane'), c, kind, kind === 'rgb');
     }
     function ensureThumb(c) {
       const thumbs = document.getElementById('thumbs');
@@ -715,7 +751,7 @@
     function refreshPreview(root, c, kind, high = false) {
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
-      if (!previewAvailable(c, kind)) {
+      if (!previewAvailable(c, kind, high)) {
         if (isLive(c) && img.getAttribute('src')) {
           placeholder.style.display = 'none';
           return;
@@ -728,7 +764,24 @@
       root.dataset[`${kind}Token`] = token;
       root.dataset[`${kind}Loading`] = '1';
       const next = new Image();
+      let settled = false;
+      const releaseLoading = () => {
+        if (root.dataset[`${kind}Token`] === token) {
+          root.dataset[`${kind}Loading`] = '0';
+        }
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        next.onload = null;
+        next.onerror = null;
+        next.removeAttribute('src');
+        releaseLoading();
+      }, PREVIEW_LOAD_TIMEOUT_MS);
       next.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (root.dataset[`${kind}Token`] !== token) return;
         img.src = next.src;
         img.style.display = 'block';
@@ -736,6 +789,9 @@
         root.dataset[`${kind}Loading`] = '0';
       };
       next.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (root.dataset[`${kind}Token`] === token) {
           root.dataset[`${kind}Loading`] = '0';
           if (!img.getAttribute('src')) {
@@ -752,8 +808,24 @@
       sideCameras.forEach((c) => {
         const card = document.getElementById(cardId('thumb', c.camera_key));
         if (!card) return;
-        refreshPreview(card, c, 'rgb');
+        if (ENABLE_THUMB_RGB_PREVIEW) {
+          refreshPreview(card, c, 'rgb');
+        }
+        else {
+          clearPreview(card, 'rgb', 'RGB');
+        }
         refreshPreview(card, c, 'depth');
+      });
+    }
+    function refreshThumbPreviews(kind) {
+      sideCameras.forEach((c) => {
+        const card = document.getElementById(cardId('thumb', c.camera_key));
+        if (!card) return;
+        if (kind === 'rgb' && !ENABLE_THUMB_RGB_PREVIEW) {
+          clearPreview(card, 'rgb', 'RGB');
+          return;
+        }
+        refreshPreview(card, c, kind);
       });
     }
     function renderCameraPanels() {
@@ -863,10 +935,7 @@
       const data = await res.json();
       cameras = data.cameras || [];
       visibleCameras = cameras.filter(hasAnyPreview);
-      if (!mainKey && data.main_preview_camera_key && visibleCameras.some((c) => c.camera_key === data.main_preview_camera_key)) {
-        mainKey = data.main_preview_camera_key;
-      }
-      chooseMainCamera();
+      chooseMainCamera(data.main_preview_camera_key || '');
 
       const online = cameras.filter(isLive).length;
       const recording = cameras.filter((c) => c.recording).length;
@@ -898,10 +967,54 @@
       refreshMainPreview();
     }
 
-    load();
-    setInterval(load, 1000);
-    setInterval(refreshMainPreview, 80);
-    setInterval(refreshAllThumbPreviews, 250);
+    function loopStatus() {
+      load().finally(() => {
+        setTimeout(loopStatus, document.hidden ? HIDDEN_REFRESH_MS : STATUS_REFRESH_MS);
+      });
+    }
+    function loopMainRgb() {
+      if (!document.hidden) {
+        refreshMainPreviewKind('rgb');
+      }
+      setTimeout(loopMainRgb, document.hidden ? HIDDEN_REFRESH_MS : MAIN_RGB_REFRESH_MS);
+    }
+    function loopMainDepth() {
+      if (!document.hidden) {
+        refreshMainPreviewKind('depth');
+      }
+      setTimeout(loopMainDepth, document.hidden ? HIDDEN_REFRESH_MS : MAIN_DEPTH_REFRESH_MS);
+    }
+    function loopThumbRgb() {
+      if (!document.hidden) {
+        refreshThumbPreviews('rgb');
+      }
+      setTimeout(loopThumbRgb, document.hidden ? HIDDEN_REFRESH_MS : THUMB_RGB_REFRESH_MS);
+    }
+    function loopThumbDepth() {
+      if (!document.hidden) {
+        refreshThumbPreviews('depth');
+      }
+      setTimeout(loopThumbDepth, document.hidden ? HIDDEN_REFRESH_MS : THUMB_DEPTH_REFRESH_MS);
+    }
+    function startLoops() {
+      if (loopsStarted) return;
+      loopsStarted = true;
+      loopStatus();
+      loopMainRgb();
+      loopMainDepth();
+      loopThumbRgb();
+      loopThumbDepth();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        load();
+        refreshMainPreview();
+        refreshAllThumbPreviews();
+      }
+    });
+
+    startLoops();
   </script>
 </body>
 </html>

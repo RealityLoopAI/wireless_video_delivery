@@ -96,6 +96,9 @@ Environment=GWV3_RECEIVER_ADMIN=http://127.0.0.1:$ADMIN_PORT
 ExecStart=$VENV/bin/python -m uvicorn server:app --host $WEB_BIND_IP --port $WEB_PORT --no-access-log
 Restart=on-failure
 RestartSec=2
+KillMode=mixed
+TimeoutStopSec=5s
+SendSIGKILL=yes
 MemoryHigh=384M
 MemoryMax=512M
 StandardOutput=append:$WEB_STDOUT

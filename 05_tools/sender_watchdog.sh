@@ -19,6 +19,7 @@ source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
+"$ROOT_DIR/05_tools/rotate_sender_logs.sh" || true
 cd "$ROOT_DIR"
 
 exec 9>"$LOCK_FILE"

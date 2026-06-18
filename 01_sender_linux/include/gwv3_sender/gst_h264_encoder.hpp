@@ -24,7 +24,7 @@ struct EncodedH264Frame {
 class GstH264Encoder {
 public:
     GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
-                   GstH264InputFormat input_format = GstH264InputFormat::Bgr);
+                   GstH264InputFormat input_format = GstH264InputFormat::Bgr, int output_width = 0, int output_height = 0);
     ~GstH264Encoder();
 
     GstH264Encoder(const GstH264Encoder &) = delete;
@@ -34,6 +34,8 @@ public:
     std::vector<EncodedH264Frame> encode_jpeg(const void *data, size_t size, uint64_t timestamp_us);
     bool ok() const { return ok_; }
     std::string error() const { return error_; }
+    int output_width() const { return output_width_; }
+    int output_height() const { return output_height_; }
 
 private:
     std::vector<EncodedH264Frame> encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us);
@@ -45,6 +47,8 @@ private:
     std::string error_;
     uint64_t frame_index_ = 0;
     int fps_ = 30;
+    int output_width_ = 0;
+    int output_height_ = 0;
 };
 
 }  // namespace gwv3

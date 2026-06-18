@@ -6,6 +6,8 @@ BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 CONFIG="${1:-${GEMINI_SENDER_CONFIG:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 source "$ROOT_DIR/05_tools/orbbec_sdk_env.sh"
+source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
+gemini_sender_wifi_apply_repo_defaults
 SDK_LIB="$(gemini_sender_resolve_orbbec_sdk_lib "$ROOT_DIR")"
 
 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "前台启动" "config"

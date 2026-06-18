@@ -29,9 +29,11 @@ if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
 fi
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
+"$ROOT_DIR/05_tools/rotate_sender_logs.sh" || true
 cd "$ROOT_DIR"
 chmod +x "$WATCHDOG"
 rm -f "$CHILD_PID_FILE"
+export GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES="${GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES:-30}"
 setsid -f "$WATCHDOG" "$CONFIG" "no-preview" >>"$STDOUT_LOG" 2>&1 < /dev/null
 for _ in {1..20}; do
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then

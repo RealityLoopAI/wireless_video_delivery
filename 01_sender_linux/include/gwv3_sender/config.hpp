@@ -72,6 +72,18 @@ struct TransportConfig {
 struct PreviewConfig {
     bool enabled = true;
     int fps = 10;
+    bool aligned_rgb = true;
+};
+
+struct WebRgbPreviewConfig {
+    bool enabled = true;
+    int max_width = 1920;
+    int max_height = 1080;
+    int fps = 30;
+    int bitrate_bps = 1200000;
+    bool udp_enabled = false;
+    uint16_t udp_port = 50012;
+    int udp_mtu_bytes = 1200;
 };
 
 struct LoggingConfig {
@@ -89,6 +101,7 @@ struct AppConfig {
     ReceiverConfig receiver;
     TransportConfig transport;
     PreviewConfig preview;
+    WebRgbPreviewConfig web_rgb_preview;
     LoggingConfig logging;
     HotplugConfig hotplug;
     int heartbeat_interval_ms = 1000;

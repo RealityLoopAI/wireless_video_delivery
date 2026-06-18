@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -26,6 +27,9 @@ def _request(method: str, path: str) -> Any:
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = resp.read().decode("utf-8")
             return json.loads(data)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise HTTPException(status_code=502, detail=f"receiver admin unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"receiver admin unavailable: {exc}") from exc
 
@@ -110,6 +114,9 @@ def depth_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> R
         with urllib.request.urlopen(req, timeout=3) as resp:
             media_type = resp.headers.get_content_type() or "image/jpeg"
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise HTTPException(status_code=404, detail=f"depth preview unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"depth preview unavailable: {exc}") from exc
 
@@ -123,6 +130,9 @@ def rgb_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -> Res
         with urllib.request.urlopen(req, timeout=3) as resp:
             media_type = resp.headers.get_content_type() or "image/bmp"
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise HTTPException(status_code=404, detail=f"rgb preview unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"rgb preview unavailable: {exc}") from exc
 
@@ -136,5 +146,8 @@ def rgb_main_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -
         with urllib.request.urlopen(req, timeout=3) as resp:
             media_type = resp.headers.get_content_type() or "image/jpeg"
             return Response(content=resp.read(), media_type=media_type, headers={"Cache-Control": "no-store"})
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc

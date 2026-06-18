@@ -1,9 +1,12 @@
 #include "gwv3_sender/transport.hpp"
+#include "gwv3_common/protocol.hpp"
 
 #include <cerrno>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <stdexcept>
 
@@ -14,6 +17,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace gwv3 {
@@ -43,17 +47,39 @@ void set_nonblock(int fd, bool nonblock) {
     }
 }
 
+void append_packet_slice(std::vector<uint8_t> &out, const MediaPacketView &packet, size_t offset, size_t size) {
+    size_t remaining = size;
+    size_t payload_offset = 0;
+    if(offset < packet.header_size) {
+        const size_t take = std::min(remaining, packet.header_size - offset);
+        append_bytes(out, packet.header_data + offset, take);
+        remaining -= take;
+    }
+    else {
+        payload_offset = offset - packet.header_size;
+    }
+    if(remaining > 0) {
+        append_bytes(out, packet.payload_data + payload_offset, remaining);
+    }
+}
+
 }  // namespace
 
 Transport::Transport(const AppConfig &config) : config_(config) {
     if(config_.transport.enabled) {
         status_udp_fd_ = make_udp_socket();
+        if(rgb_preview_udp_enabled()) {
+            preview_udp_fd_ = make_udp_socket();
+        }
     }
 }
 
 Transport::~Transport() {
     if(status_udp_fd_ >= 0) {
         close(status_udp_fd_);
+    }
+    if(preview_udp_fd_ >= 0) {
+        close(preview_udp_fd_);
     }
     close_media_socket();
 }
@@ -93,14 +119,49 @@ bool Transport::send_status(const std::string &json_message) {
     return send_udp_status(json_message);
 }
 
+bool Transport::rgb_preview_udp_enabled() const {
+    return config_.transport.enabled && config_.web_rgb_preview.enabled && config_.web_rgb_preview.udp_enabled;
+}
+
+bool Transport::send_rgb_preview_udp(const MediaPacketView &packet) {
+    if(!rgb_preview_udp_enabled()) {
+        set_error("rgb preview UDP is disabled");
+        return false;
+    }
+    if(preview_udp_fd_ < 0) {
+        preview_udp_fd_ = make_udp_socket();
+    }
+    if(packet.header_size > 0 && packet.header_data == nullptr) {
+        set_error("rgb preview UDP send failed: packet header is null");
+        return false;
+    }
+    if(packet.payload_size > 0 && packet.payload_data == nullptr) {
+        set_error("rgb preview UDP send failed: packet payload is null");
+        return false;
+    }
+    return send_udp_preview_packet(packet);
+}
+
 bool Transport::send_media(const std::vector<uint8_t> &packet, MediaPriority priority) {
+    return send_media(MediaPacketView{packet.data(), packet.size(), nullptr, 0}, priority);
+}
+
+bool Transport::send_media(const MediaPacketView &packet, MediaPriority priority) {
     if(!config_.transport.enabled) {
         return true;
+    }
+    if(packet.header_size > 0 && packet.header_data == nullptr) {
+        set_error("media TCP send failed: packet header is null");
+        return false;
+    }
+    if(packet.payload_size > 0 && packet.payload_data == nullptr) {
+        set_error("media TCP send failed: packet payload is null");
+        return false;
     }
     if(!ensure_media_tcp_connected()) {
         return false;
     }
-    if(should_drop_before_write(media_tcp_fd_, packet.size(), priority)) {
+    if(should_drop_before_write(media_tcp_fd_, packet.total_size(), priority)) {
         if(priority == MediaPriority::realtime) {
             consecutive_media_backpressure_drops_++;
             if(consecutive_media_backpressure_drops_ >= 30) {
@@ -113,7 +174,7 @@ bool Transport::send_media(const std::vector<uint8_t> &packet, MediaPriority pri
         }
         return false;
     }
-    const auto result = send_all(media_tcp_fd_, packet.data(), packet.size());
+    const auto result = send_all(media_tcp_fd_, packet);
     if(result == SendResult::sent) {
         consecutive_media_backpressure_drops_ = 0;
         return true;
@@ -134,6 +195,57 @@ bool Transport::send_udp_status(const std::string &json_message) {
     if(sent < 0 || static_cast<size_t>(sent) != payload.size()) {
         set_error(std::string("status UDP send failed: ") + std::strerror(errno));
         return false;
+    }
+    return true;
+}
+
+bool Transport::send_udp_preview_packet(const MediaPacketView &packet) {
+    const size_t total_size = packet.total_size();
+    if(total_size == 0 || total_size > std::numeric_limits<uint32_t>::max()) {
+        set_error("rgb preview UDP packet size is invalid: " + std::to_string(total_size));
+        return false;
+    }
+
+    const size_t mtu = static_cast<size_t>(std::max(config_.web_rgb_preview.udp_mtu_bytes, static_cast<int>(kPreviewUdpHeaderSize + 256)));
+    const size_t chunk_capacity = mtu - kPreviewUdpHeaderSize;
+    const size_t chunk_count_size = (total_size + chunk_capacity - 1) / chunk_capacity;
+    if(chunk_count_size == 0 || chunk_count_size > std::numeric_limits<uint16_t>::max()) {
+        set_error("rgb preview UDP packet requires too many chunks: " + std::to_string(chunk_count_size));
+        return false;
+    }
+
+    auto addr = endpoint(config_.receiver.ip, config_.web_rgb_preview.udp_port);
+    uint32_t sequence = ++preview_udp_sequence_;
+    if(sequence == 0) {
+        sequence = ++preview_udp_sequence_;
+    }
+
+    const auto chunk_count = static_cast<uint16_t>(chunk_count_size);
+    for(uint16_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        const size_t chunk_offset = static_cast<size_t>(chunk_index) * chunk_capacity;
+        const size_t chunk_size = std::min(chunk_capacity, total_size - chunk_offset);
+
+        std::vector<uint8_t> datagram;
+        datagram.reserve(kPreviewUdpHeaderSize + chunk_size);
+        append_le32(datagram, kPreviewUdpMagic);
+        append_le16(datagram, kPreviewUdpHeaderVersion);
+        append_le16(datagram, kPreviewUdpHeaderSize);
+        append_le32(datagram, sequence);
+        append_le16(datagram, chunk_index);
+        append_le16(datagram, chunk_count);
+        append_le32(datagram, static_cast<uint32_t>(total_size));
+        append_le32(datagram, static_cast<uint32_t>(chunk_offset));
+        append_le16(datagram, static_cast<uint16_t>(chunk_size));
+        append_le16(datagram, 0);
+        append_le32(datagram, 0);
+        append_packet_slice(datagram, packet, chunk_offset, chunk_size);
+
+        const auto sent =
+            sendto(preview_udp_fd_, datagram.data(), datagram.size(), 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+        if(sent < 0 || static_cast<size_t>(sent) != datagram.size()) {
+            set_error(std::string("rgb preview UDP send failed: ") + std::strerror(errno));
+            return false;
+        }
     }
     return true;
 }
@@ -237,6 +349,85 @@ Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t si
             set_error(std::string("media TCP send failed: ") + std::strerror(errno));
             return SendResult::failed;
         }
+    }
+    return SendResult::sent;
+}
+
+Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet) {
+    const size_t total_size = packet.total_size();
+    size_t offset = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.transport.send_timeout_ms);
+
+    while(offset < total_size) {
+        std::array<iovec, 2> iovs{};
+        int iov_count = 0;
+        size_t remaining_offset = offset;
+        if(remaining_offset < packet.header_size) {
+            iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.header_data + remaining_offset);
+            iovs[iov_count].iov_len = packet.header_size - remaining_offset;
+            ++iov_count;
+            remaining_offset = 0;
+        }
+        else {
+            remaining_offset -= packet.header_size;
+        }
+        if(packet.payload_size > remaining_offset) {
+            iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.payload_data + remaining_offset);
+            iovs[iov_count].iov_len = packet.payload_size - remaining_offset;
+            ++iov_count;
+        }
+
+        msghdr message{};
+        message.msg_iov = iovs.data();
+        message.msg_iovlen = static_cast<size_t>(iov_count);
+        const ssize_t sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+        if(sent > 0) {
+            offset += static_cast<size_t>(sent);
+            continue;
+        }
+        if(sent == 0) {
+            set_error("media TCP send failed: peer closed connection");
+            return SendResult::failed;
+        }
+        if(errno == EINTR) {
+            continue;
+        }
+        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+            const auto now = std::chrono::steady_clock::now();
+            if(now >= deadline) {
+                if(offset == 0) {
+                    set_error("media TCP packet dropped under backpressure before write");
+                    return SendResult::dropped_backpressure;
+                }
+                set_error("media TCP send timed out after partial write under backpressure");
+                return SendResult::failed;
+            }
+
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+            timeval timeout{};
+            timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
+            timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
+            const int rc = select(fd + 1, nullptr, &wfds, nullptr, &timeout);
+            if(rc > 0) {
+                continue;
+            }
+            if(rc < 0 && errno == EINTR) {
+                continue;
+            }
+            if(rc == 0 && offset == 0) {
+                set_error("media TCP packet dropped under backpressure before write");
+                return SendResult::dropped_backpressure;
+            }
+            set_error(rc == 0 ? "media TCP send timed out after partial write under backpressure"
+                              : std::string("media TCP send select failed: ") + std::strerror(errno));
+            return SendResult::failed;
+        }
+
+        set_error(std::string("media TCP send failed: ") + std::strerror(errno));
+        return SendResult::failed;
     }
     return SendResult::sent;
 }
