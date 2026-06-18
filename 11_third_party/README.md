@@ -2,12 +2,12 @@
 
 ## 1. 目录定位
 
-本目录用于说明和放置 3.0 工程需要的第三方依赖。
+本目录用于说明和放置 `wireless_video_delivery` 工程需要的第三方依赖。
 当前只放说明文件，不直接内置大型 SDK 或动态库实体。
 
 ## 2. Orbbec SDK
 
-3.0 发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
+发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
 
 已确认 Orbbec SDK v1.10.27 release 中包含 Linux ARM64 包，可作为树莓派 5 / 香橙派发送端的优先候选版本：
 

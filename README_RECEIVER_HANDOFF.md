@@ -1,4 +1,4 @@
-# Gemini Wireless Video v3 Sender Handoff
+# wireless_video_delivery Sender Handoff
 
 This package is for receiver-side integration with the current sender implementation.
 

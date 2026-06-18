@@ -1,6 +1,6 @@
-# Gemini Wireless Video v3
+# wireless_video_delivery
 
-Gemini Wireless Video v3 是一套面向多路 Orbbec Gemini RGBD 相机的无线采集、传输、网页预览和录制工程。
+`wireless_video_delivery` 是一套面向多路 Orbbec Gemini RGBD 相机的无线采集、传输、网页预览和录制工程。
 
 仓库目标是把发送端、接收端、Web Monitor、配置模板、运行脚本和交付文档放在同一个工程里，方便在 Linux 设备上部署、联调和继续开发。README 只说明项目是什么、怎么进入、哪些边界需要遵守；设备现场配置、历史问题和测试数据统一放在 `04_docs/` 和 `08_reports/` 中维护。
 
@@ -48,7 +48,7 @@ Orbbec Gemini camera
 
 已具备的主要能力：
 
-1. v3 工程目录和 CMake 构建骨架。
+1. 工程目录和 CMake 构建骨架。
 2. RK3588 / Orange Pi / Raspberry Pi 等 Linux 发送端代码路径。
 3. RGB H.264 发送、Depth zlib 发送和基础本地预览。
 4. 发送端预检、watchdog、自恢复和运行状态脚本。
