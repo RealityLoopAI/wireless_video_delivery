@@ -37,21 +37,15 @@ OrbbecViewer_v1.10.27_202509260133_linux_x64_release.zip
 3. `OrbbecViewer` 是调试工具，不是项目运行时必须依赖；现场排查相机枚举、分辨率、帧率、固件状态时可以带上。
 4. Gitee 页面中 `C++` 可能被显示成空格，最终以实际下载文件名为准。
 
-## 3. 已知本地参考 SDK
+## 3. 本地参考 SDK 规则
 
-当前本机已有一个旧版 Linux x64 SDK 可用于参考 API 和示例：
-
-```text
-E:\Win10\Desktop\资料\奥比中光系列相机资料\奥比中光系列相机资料_2024.01.02\6.Orbbec SDK使用【Linux、Windows】\Linux_SDK\OrbbecSDK_C_C++_v1.5.7_linux_x64_release
-```
-
-该包只能用于：
+如果现场机器上已有旧版 Linux x64 SDK，只能用于：
 
 1. 查看 C/C++ API。
 2. 查看示例代码。
 3. 参考 Linux x86_64 环境下的编译方式。
 
-该包不应作为树莓派 5 / 香橙派发送端 SDK 使用。
+本仓库文档不记录个人 Windows 路径或某台机器上的临时 SDK 路径。旧版 x64 SDK 不应作为树莓派 5 / 香橙派发送端 SDK 使用。
 
 ## 4. 建议放置方式
 
