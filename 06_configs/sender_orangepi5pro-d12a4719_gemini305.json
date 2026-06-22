@@ -71,7 +71,7 @@
       },
       "depth_transport": {
         "compression": "lz4",
-        "quantization_step_mm": 16
+        "quantization_step_mm": 32
       },
       "color_controls": {
         "auto_exposure": true,

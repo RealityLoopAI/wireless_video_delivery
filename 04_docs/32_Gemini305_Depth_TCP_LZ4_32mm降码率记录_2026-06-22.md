@@ -1,4 +1,4 @@
-# Gemini305 Depth TCP LZ4 16mm 降码率记录
+# Gemini305 Depth TCP LZ4 32mm 降码率记录
 
 日期：2026-06-22
 
@@ -84,7 +84,7 @@ depth failures:   0
 
 ### 3.4 `lz4 + 16mm`
 
-当前部署结果：
+短窗口结果：
 
 ```text
 rgb_input_fps:        about 29.9-30.9fps
@@ -103,9 +103,35 @@ receiver CPU:         gemini_receiver about 28%
 结论：
 
 ```text
-16mm 是当前现场较稳的折中点。
-相比 2mm/4mm，TCP 队列不再长期顶满，Depth 能维持约 30fps。
-代价是 Depth 数值被按 16mm step 量化，理论最大量化误差约 8mm。
+16mm 短窗口可以恢复约 30fps。
+但后续更长窗口观察到 TCP Send-Q 又涨到约 23MB，并再次出现 Depth 回压丢包。
+因此 16mm 不是当前现场足够稳的最终档。
+```
+
+### 3.5 `lz4 + 32mm`
+
+当前部署结果：
+
+```text
+rgb_input_fps:        about 29.8-31.0fps
+depth_input_fps:      about 28.8-31.0fps
+rgb_sent_packets_s:   about 29.8-31.0fps
+depth_sent_fps:       mostly about 29.8-31.0fps
+rgb_mbps:             about 6Mbps
+depth_mbps:           about 125-143Mbps
+depth_compress_ms:    about 25-29ms/frame
+depth_send_failures:  0
+TCP Send-Q:           about 0.3-0.6MB
+sender CPU:           gemini_sender about 230%
+receiver:             active_media_clients=1, media_live=true
+```
+
+结论：
+
+```text
+32mm 是当前现场更稳的折中点。
+相比 16mm，Depth 码率进一步降到约 125-143Mbps，TCP 队列没有持续积压。
+代价是 Depth 数值被按 32mm step 量化，理论最大量化误差约 16mm。
 ```
 
 ## 4. 当前正式运行配置
@@ -121,7 +147,7 @@ receiver CPU:         gemini_receiver about 28%
   },
   "depth_transport": {
     "compression": "lz4",
-    "quantization_step_mm": 16
+    "quantization_step_mm": 32
   }
 }
 ```
@@ -136,9 +162,9 @@ Depth UDP 和 plz4 实验开关保留在代码中，但当前不作为正式运�
 
 ## 5. 后续建议
 
-如果 16mm 量化对下游 RGBD 对齐或可视化仍可接受，当前建议先保持该配置跑完整录制测试。
+如果 32mm 量化对下游 RGBD 对齐或可视化仍可接受，当前建议先保持该配置跑完整录制测试。
 
-如果下游认为 16mm 误差过大，可退到 `8mm`，但需要继续观察 Wi-Fi 抖动时 TCP 队列是否再次积压。
+如果下游认为 32mm 误差过大，可退到 `16mm` 或 `8mm`，但需要继续观察 Wi-Fi 抖动时 TCP 队列是否再次积压。当前现场已经观察到 `16mm` 长一点运行仍会回压。
 
 如果必须同时满足更低误差和更低码率，需要继续做 Depth 专用编码优化：
 
