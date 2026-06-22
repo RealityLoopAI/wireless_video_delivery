@@ -15,9 +15,11 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -38,11 +40,7 @@
 #include <libobsensor/ObSensor.hpp>
 #include <libobsensor/hpp/Error.hpp>
 
-#if defined(GWV3_ORBBEC_SDK_V2)
-#define GWV3_OB_PROP_COLOR_MAX_GAIN_INT OB_PROP_COLOR_AE_MAX_GAIN_INT
-#else
 #define GWV3_OB_PROP_COLOR_MAX_GAIN_INT OB_PROP_COLOR_MAXIMAL_GAIN_INT
-#endif
 
 #include <fcntl.h>
 #include <linux/videodev2.h>
@@ -639,6 +637,7 @@ struct DepthCompressionJob {
     size_t media_slot_index = 0;
     MediaFrameMeta meta;
     std::vector<uint8_t> raw_payload;
+    uint32_t quantization_raw_step = 0;
 };
 
 class LatestDepthCompressionQueue {
@@ -1504,7 +1503,7 @@ Json::Value base_message(const AppConfig &config, const std::string &type) {
 }
 
 Json::Value profile_json(const std::shared_ptr<ob::VideoStreamProfile> &profile, const std::string &pixel_format, const std::string &codec_or_compression,
-                         float depth_scale = 0.0f) {
+                         float depth_scale = 0.0f, int quantization_step_mm = 0) {
     Json::Value value;
     value["width"] = profile ? profile->width() : 0;
     value["height"] = profile ? profile->height() : 0;
@@ -1513,6 +1512,8 @@ Json::Value profile_json(const std::shared_ptr<ob::VideoStreamProfile> &profile,
     if(pixel_format == "uint16") {
         value["compression"] = codec_or_compression;
         value["depth_scale"] = depth_scale;
+        value["quantization_step_mm"] = quantization_step_mm;
+        value["quantization_max_error_mm"] = quantization_step_mm > 0 ? static_cast<double>(quantization_step_mm) / 2.0 : 0.0;
     }
     else {
         value["codec"] = codec_or_compression;
@@ -1521,7 +1522,7 @@ Json::Value profile_json(const std::shared_ptr<ob::VideoStreamProfile> &profile,
 }
 
 Json::Value profile_json(const VideoProfileConfig &profile, const std::string &pixel_format, const std::string &codec_or_compression,
-                         float depth_scale = 0.0f) {
+                         float depth_scale = 0.0f, int quantization_step_mm = 0) {
     Json::Value value;
     value["width"] = profile.width;
     value["height"] = profile.height;
@@ -1531,6 +1532,8 @@ Json::Value profile_json(const VideoProfileConfig &profile, const std::string &p
     if(pixel_format == "uint16") {
         value["compression"] = codec_or_compression;
         value["depth_scale"] = depth_scale;
+        value["quantization_step_mm"] = quantization_step_mm;
+        value["quantization_max_error_mm"] = quantization_step_mm > 0 ? static_cast<double>(quantization_step_mm) / 2.0 : 0.0;
     }
     else {
         value["codec"] = codec_or_compression;
@@ -2675,6 +2678,321 @@ std::vector<uint8_t> zlib_compress_payload(const void *data, size_t size) {
     return out;
 }
 
+struct Lz4Api {
+    using CompressBoundFn = int (*)(int);
+    using CompressFastFn = int (*)(const char *, char *, int, int, int);
+
+    void *handle = nullptr;
+    CompressBoundFn compress_bound = nullptr;
+    CompressFastFn compress_fast = nullptr;
+};
+
+Lz4Api &lz4_api() {
+    static Lz4Api api;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        api.handle = dlopen("liblz4.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if(!api.handle) {
+            throw std::runtime_error(std::string("cannot load liblz4.so.1: ") + dlerror());
+        }
+        api.compress_bound = reinterpret_cast<Lz4Api::CompressBoundFn>(dlsym(api.handle, "LZ4_compressBound"));
+        api.compress_fast = reinterpret_cast<Lz4Api::CompressFastFn>(dlsym(api.handle, "LZ4_compress_fast"));
+        if(!api.compress_bound || !api.compress_fast) {
+            throw std::runtime_error("liblz4.so.1 does not provide required compression symbols");
+        }
+    });
+    return api;
+}
+
+std::vector<uint8_t> lz4_compress_payload(const void *data, size_t size) {
+    if(size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("lz4 depth payload too large");
+    }
+    auto &api = lz4_api();
+    const int input_size = static_cast<int>(size);
+    const int bound = api.compress_bound(input_size);
+    if(bound <= 0) {
+        throw std::runtime_error("lz4 compression bound failed");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(bound));
+    const int compressed_size = api.compress_fast(static_cast<const char *>(data),
+                                                  reinterpret_cast<char *>(out.data()),
+                                                  input_size,
+                                                  bound,
+                                                  1);
+    if(compressed_size <= 0) {
+        throw std::runtime_error("lz4 depth compression failed");
+    }
+    out.resize(static_cast<size_t>(compressed_size));
+    return out;
+}
+
+struct Plz4Chunk {
+    uint32_t raw_offset = 0;
+    uint32_t raw_size = 0;
+    std::vector<uint8_t> compressed;
+};
+
+std::vector<uint8_t> plz4_compress_payload(const void *data, size_t size) {
+    if(size == 0 || size > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::runtime_error("plz4 depth payload size is invalid");
+    }
+    if(size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("plz4 depth compression requires uint16 payload");
+    }
+
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    const size_t target_chunks = std::min<size_t>(4, std::max<size_t>(1, sample_count / (256 * 1024)));
+    const size_t chunk_count = std::max<size_t>(1, target_chunks);
+    const size_t chunk_samples = (sample_count + chunk_count - 1) / chunk_count;
+
+    std::vector<std::future<Plz4Chunk>> futures;
+    futures.reserve(chunk_count);
+    for(size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        const size_t sample_offset = chunk_index * chunk_samples;
+        if(sample_offset >= sample_count) {
+            break;
+        }
+        const size_t samples = std::min(chunk_samples, sample_count - sample_offset);
+        const size_t raw_offset = sample_offset * sizeof(uint16_t);
+        const size_t raw_size = samples * sizeof(uint16_t);
+        futures.emplace_back(std::async(std::launch::async, [bytes, raw_offset, raw_size] {
+            Plz4Chunk chunk;
+            chunk.raw_offset = static_cast<uint32_t>(raw_offset);
+            chunk.raw_size = static_cast<uint32_t>(raw_size);
+            chunk.compressed = lz4_compress_payload(bytes + raw_offset, raw_size);
+            return chunk;
+        }));
+    }
+
+    std::vector<Plz4Chunk> chunks;
+    chunks.reserve(futures.size());
+    size_t compressed_total = 0;
+    for(auto &future : futures) {
+        auto chunk = future.get();
+        compressed_total += chunk.compressed.size();
+        chunks.push_back(std::move(chunk));
+    }
+    if(chunks.empty() || chunks.size() > std::numeric_limits<uint16_t>::max()) {
+        throw std::runtime_error("plz4 chunk count is invalid");
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(16 + chunks.size() * 12 + compressed_total);
+    append_le32(out, 0x345a4c50u);  // bytes: P L Z 4
+    append_le16(out, 1);
+    append_le16(out, static_cast<uint16_t>(chunks.size()));
+    append_le32(out, static_cast<uint32_t>(size));
+    append_le32(out, 0);
+    for(const auto &chunk : chunks) {
+        append_le32(out, chunk.raw_offset);
+        append_le32(out, chunk.raw_size);
+        append_le32(out, static_cast<uint32_t>(chunk.compressed.size()));
+    }
+    for(const auto &chunk : chunks) {
+        append_bytes(out, chunk.compressed.data(), chunk.compressed.size());
+    }
+    return out;
+}
+
+uint32_t depth_quantization_raw_step(int step_mm, float depth_scale_mm_per_unit) {
+    if(step_mm <= 0) {
+        return 0;
+    }
+    if(depth_scale_mm_per_unit <= 0.0f) {
+        return static_cast<uint32_t>(step_mm);
+    }
+    return static_cast<uint32_t>(std::max<int64_t>(1, std::llround(static_cast<double>(step_mm) / depth_scale_mm_per_unit)));
+}
+
+void quantize_depth_payload_inplace(std::vector<uint8_t> &payload, uint32_t raw_step) {
+    if(raw_step <= 1 || payload.size() < sizeof(uint16_t)) {
+        return;
+    }
+    const size_t sample_count = payload.size() / sizeof(uint16_t);
+    const uint32_t half_step = raw_step / 2;
+    for(size_t i = 0; i < sample_count; ++i) {
+        const size_t offset = i * sizeof(uint16_t);
+        const uint32_t value = static_cast<uint32_t>(payload[offset]) | (static_cast<uint32_t>(payload[offset + 1]) << 8u);
+        if(value == 0) {
+            continue;
+        }
+        const uint32_t rounded = ((value + half_step) / raw_step) * raw_step;
+        const uint16_t quantized = static_cast<uint16_t>(std::min<uint32_t>(rounded, std::numeric_limits<uint16_t>::max()));
+        payload[offset] = static_cast<uint8_t>(quantized & 0xffu);
+        payload[offset + 1] = static_cast<uint8_t>((quantized >> 8u) & 0xffu);
+    }
+}
+
+class NibbleWriter {
+public:
+    void write(uint8_t nibble) {
+        nibble &= 0x0fu;
+        if(write_low_) {
+            current_ = nibble;
+            write_low_ = false;
+            return;
+        }
+        out_.push_back(static_cast<uint8_t>(current_ | (nibble << 4u)));
+        current_ = 0;
+        write_low_ = true;
+    }
+
+    std::vector<uint8_t> finish() {
+        if(!write_low_) {
+            out_.push_back(current_);
+            current_ = 0;
+            write_low_ = true;
+        }
+        return std::move(out_);
+    }
+
+private:
+    std::vector<uint8_t> out_;
+    uint8_t current_ = 0;
+    bool write_low_ = true;
+};
+
+void rvl_write_vle(NibbleWriter &writer, uint32_t value) {
+    do {
+        uint8_t nibble = static_cast<uint8_t>(value & 0x7u);
+        value >>= 3u;
+        if(value != 0) {
+            nibble |= 0x8u;
+        }
+        writer.write(nibble);
+    } while(value != 0);
+}
+
+uint16_t read_depth_u16le(const uint8_t *data, size_t sample_index) {
+    const size_t offset = sample_index * sizeof(uint16_t);
+    return static_cast<uint16_t>(static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8u));
+}
+
+std::vector<uint8_t> rvl_compress_payload(const void *data, size_t size) {
+    if(size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("rvl depth compression requires uint16 payload");
+    }
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    NibbleWriter writer;
+    int32_t previous = 0;
+    size_t index = 0;
+    while(index < sample_count) {
+        uint32_t zeros = 0;
+        while(index < sample_count && read_depth_u16le(bytes, index) == 0) {
+            ++zeros;
+            ++index;
+        }
+        rvl_write_vle(writer, zeros);
+
+        const size_t nonzero_start = index;
+        uint32_t nonzeros = 0;
+        while(index < sample_count && read_depth_u16le(bytes, index) != 0) {
+            ++nonzeros;
+            ++index;
+        }
+        rvl_write_vle(writer, nonzeros);
+
+        for(size_t i = nonzero_start; i < nonzero_start + nonzeros; ++i) {
+            const int32_t current = static_cast<int32_t>(read_depth_u16le(bytes, i));
+            const int32_t delta = current - previous;
+            const uint32_t zigzag = delta >= 0 ? static_cast<uint32_t>(delta) << 1u
+                                               : (static_cast<uint32_t>(-delta) << 1u) - 1u;
+            rvl_write_vle(writer, zigzag);
+            previous = current;
+        }
+    }
+    return writer.finish();
+}
+
+void append_u16_le(std::vector<uint8_t> &out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+}
+
+void append_varuint(std::vector<uint8_t> &out, uint32_t value) {
+    while(value >= 0x80u) {
+        out.push_back(static_cast<uint8_t>((value & 0x7fu) | 0x80u));
+        value >>= 7u;
+    }
+    out.push_back(static_cast<uint8_t>(value & 0x7fu));
+}
+
+uint32_t zigzag_encode_i32(int32_t value) {
+    return (static_cast<uint32_t>(value) << 1u) ^ static_cast<uint32_t>(value >> 31);
+}
+
+std::vector<uint8_t> qdelta_compress_payload(const void *data, size_t size, uint32_t raw_step) {
+    if(size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("qdelta depth compression requires uint16 payload");
+    }
+    raw_step = std::max<uint32_t>(1, raw_step);
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    std::vector<uint8_t> out;
+    out.reserve(sample_count + 16);
+    out.push_back('Q');
+    out.push_back('D');
+    out.push_back('L');
+    out.push_back('1');
+    append_u16_le(out, static_cast<uint16_t>(std::min<uint32_t>(raw_step, std::numeric_limits<uint16_t>::max())));
+    append_u16_le(out, 0);
+
+    int32_t previous = 0;
+    size_t index = 0;
+    while(index < sample_count) {
+        uint32_t zeros = 0;
+        while(index < sample_count && read_depth_u16le(bytes, index) == 0) {
+            ++zeros;
+            ++index;
+        }
+        if(zeros > 0) {
+            out.push_back(0);
+            append_varuint(out, zeros);
+            previous = 0;
+        }
+        if(index >= sample_count) {
+            break;
+        }
+
+        const size_t run_count_offset = out.size();
+        out.push_back(1);
+        out.push_back(0);
+        uint32_t nonzeros = 0;
+        while(index < sample_count && read_depth_u16le(bytes, index) != 0 && nonzeros < 255u) {
+            const uint32_t raw_value = read_depth_u16le(bytes, index);
+            const int32_t quantized = static_cast<int32_t>((raw_value + raw_step / 2u) / raw_step);
+            append_varuint(out, zigzag_encode_i32(quantized - previous));
+            previous = quantized;
+            ++nonzeros;
+            ++index;
+        }
+        out[run_count_offset + 1] = static_cast<uint8_t>(nonzeros);
+    }
+    return out;
+}
+
+std::vector<uint8_t> compress_depth_payload(const std::string &compression, const void *data, size_t size, uint32_t raw_step) {
+    if(compression == "zlib") {
+        return zlib_compress_payload(data, size);
+    }
+    if(compression == "rvl") {
+        return rvl_compress_payload(data, size);
+    }
+    if(compression == "qdelta") {
+        return qdelta_compress_payload(data, size, raw_step);
+    }
+    if(compression == "lz4") {
+        return lz4_compress_payload(data, size);
+    }
+    if(compression == "plz4") {
+        return plz4_compress_payload(data, size);
+    }
+    throw std::runtime_error("unsupported depth compression: " + compression);
+}
+
 Json::Value sender_hello(const AppConfig &config) {
     Json::Value msg = base_message(config, "sender_hello");
     msg["sender_version"] = config.sender_version;
@@ -2688,11 +3006,23 @@ Json::Value sender_hello(const AppConfig &config) {
     Json::Value depth(Json::arrayValue);
     depth.append("none");
     depth.append("zlib");
+    depth.append("rvl");
+    depth.append("qdelta");
+    depth.append("lz4");
+    depth.append("plz4");
     capabilities["depth_compression"] = depth;
+    capabilities["depth_quantization"] = true;
     capabilities["local_preview"] = config.preview.enabled;
     capabilities["web_rgb_preview"] = config.web_rgb_preview.enabled;
     capabilities["hotplug"] = config.hotplug.enabled;
     capabilities["media_protocol"] = config.transport.media_protocol;
+    Json::Value media_udp;
+    media_udp["enabled"] = config.media_udp.enabled;
+    media_udp["rgb_enabled"] = config.media_udp.rgb_enabled;
+    media_udp["depth_enabled"] = config.media_udp.depth_enabled;
+    media_udp["port"] = config.media_udp.port;
+    media_udp["mtu_bytes"] = config.media_udp.mtu_bytes;
+    capabilities["media_udp"] = media_udp;
     capabilities["status_protocol"] = config.transport.status_protocol;
     msg["capabilities"] = capabilities;
     return msg;
@@ -2714,8 +3044,8 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
         device["depth_device_path"] = camera.config.depth_device_path;
         msg["device"] = device;
         msg["rgb_profile"] = profile_json(camera.config.rgb_profile, "encoded_video", camera.config.rgb_encoding.codec);
-        msg["depth_profile"] =
-            profile_json(camera.config.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
+        msg["depth_profile"] = profile_json(camera.config.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale,
+                                            camera.config.depth_transport.quantization_step_mm);
         Json::Value calibration;
         calibration["available"] = false;
         calibration["source"] = "v4l2_uvc";
@@ -2737,7 +3067,8 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     device["connection_type"] = info->connectionType() ? info->connectionType() : "";
     msg["device"] = device;
     msg["rgb_profile"] = profile_json(camera.color_profile, "encoded_video", camera.config.rgb_encoding.codec);
-    msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
+    msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale,
+                                        camera.config.depth_transport.quantization_step_mm);
     Json::Value web_preview;
     web_preview["enabled"] = config.web_rgb_preview.enabled;
     web_preview["max_width"] = config.web_rgb_preview.max_width;
@@ -2782,6 +3113,7 @@ Json::Value camera_heartbeat(const AppConfig &config, CameraRuntime &camera, std
     msg["depth_fps"] = static_cast<double>(camera.depth_frames) / seconds;
     msg["rgb_encoding"] = camera.config.rgb_encoding.codec;
     msg["depth_compression"] = camera.config.depth_transport.compression;
+    msg["depth_quantization_step_mm"] = camera.config.depth_transport.quantization_step_mm;
     msg["rgb_dropped_frames"] = Json::UInt64(camera.rgb_dropped);
     msg["rgb_corrupt_jpeg_frames"] = Json::UInt64(camera.rgb_corrupt_jpeg);
     msg["depth_dropped_frames"] = Json::UInt64(camera.depth_dropped);
@@ -3296,6 +3628,9 @@ bool send_media_packet(Transport &transport, const MediaPacketView &packet, Stre
     if(stream_type == StreamType::rgb_preview && transport.rgb_preview_udp_enabled()) {
         return transport.send_rgb_preview_udp(packet);
     }
+    if(transport.media_udp_enabled(stream_type)) {
+        return transport.send_media_udp(packet);
+    }
     const auto priority = stream_type == StreamType::depth_raw ? Transport::MediaPriority::bulk : Transport::MediaPriority::realtime;
     return transport.send_media(packet, priority);
 }
@@ -3342,7 +3677,11 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMedi
 
         try {
             const auto compress_started = std::chrono::steady_clock::now();
-            auto compressed_depth = zlib_compress_payload(job->raw_payload.data(), job->raw_payload.size());
+            if(job->meta.codec_or_compression != "qdelta") {
+                quantize_depth_payload_inplace(job->raw_payload, job->quantization_raw_step);
+            }
+            auto compressed_depth =
+                compress_depth_payload(job->meta.codec_or_compression, job->raw_payload.data(), job->raw_payload.size(), job->quantization_raw_step);
             record_depth_compress_ms(*job->source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
             job->meta.payload_size = compressed_depth.size();
             job->meta.uncompressed_size = job->raw_payload.size();
@@ -3697,6 +4036,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
             set_depth_scale_if_empty(*depth_target, depth->getValueScale());
+            const uint32_t quantization_raw_step =
+                depth_quantization_raw_step(camera.config.depth_transport.quantization_step_mm, depth->getValueScale());
             const bool publish_depth = depth_emit_due(camera, frame_now);
             if(publish_depth) {
                 const void *depth_payload = depth->data();
@@ -3717,12 +4058,15 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.pixel_format = PixelFormat::depth_u16;
                 meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
-                if(camera.config.depth_transport.compression == "zlib") {
+                if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
+                   || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
+                   || camera.config.depth_transport.compression == "plz4") {
                     DepthCompressionJob compress_job;
                     compress_job.source_camera = &camera;
                     compress_job.output_camera = depth_target;
                     compress_job.media_slot_index = depth_slot;
                     compress_job.meta = meta;
+                    compress_job.quantization_raw_step = quantization_raw_step;
                     const auto *depth_bytes = static_cast<const uint8_t *>(depth->data());
                     compress_job.raw_payload.assign(depth_bytes, depth_bytes + depth->dataSize());
                     if(depth_compression_queue.publish(depth_slot, std::move(compress_job))) {
@@ -3731,8 +4075,19 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 }
                 else {
                     MediaPacketJob job;
-                    auto owner = std::shared_ptr<const void>(depth, static_cast<const void *>(depth->data()));
-                    job = make_external_media_job(*depth_target, StreamType::depth_raw, meta, depth_payload, depth_payload_size, std::move(owner));
+                    if(quantization_raw_step > 1) {
+                        std::vector<uint8_t> quantized_depth;
+                        const auto *depth_bytes = static_cast<const uint8_t *>(depth_payload);
+                        quantized_depth.assign(depth_bytes, depth_bytes + depth_payload_size);
+                        quantize_depth_payload_inplace(quantized_depth, quantization_raw_step);
+                        meta.payload_size = quantized_depth.size();
+                        meta.uncompressed_size = quantized_depth.size();
+                        job = make_owned_media_job(*depth_target, StreamType::depth_raw, meta, std::move(quantized_depth));
+                    }
+                    else {
+                        auto owner = std::shared_ptr<const void>(depth, static_cast<const void *>(depth->data()));
+                        job = make_external_media_job(*depth_target, StreamType::depth_raw, meta, depth_payload, depth_payload_size, std::move(owner));
+                    }
                     publish_media_job(media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(job), logger);
                     record_depth_frame_done(*depth_target);
                 }
@@ -3997,17 +4352,33 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
 
         if(depth) {
             record_depth_input(camera, depth->data.size(), depth->frame_id);
-            set_depth_scale_if_empty(camera, camera.config.depth_scale > 0.0f ? camera.config.depth_scale : 1.0f);
+            const float depth_scale_mm_per_unit = camera.config.depth_scale > 0.0f ? camera.config.depth_scale : 1.0f;
+            set_depth_scale_if_empty(camera, depth_scale_mm_per_unit);
+            const uint32_t quantization_raw_step =
+                depth_quantization_raw_step(camera.config.depth_transport.quantization_step_mm, depth_scale_mm_per_unit);
             const bool publish_depth = depth_emit_due(camera, frame_now);
             if(publish_depth) {
                 std::vector<uint8_t> depth_payload;
-                if(camera.config.depth_transport.compression == "zlib") {
+                if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
+                   || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
+                   || camera.config.depth_transport.compression == "plz4") {
                     const auto compress_started = std::chrono::steady_clock::now();
-                    depth_payload = zlib_compress_payload(depth->data.data(), depth->data.size());
+                    if(quantization_raw_step > 1 && camera.config.depth_transport.compression != "qdelta") {
+                        std::vector<uint8_t> quantized_depth = depth->data;
+                        quantize_depth_payload_inplace(quantized_depth, quantization_raw_step);
+                        depth_payload =
+                            compress_depth_payload(camera.config.depth_transport.compression, quantized_depth.data(), quantized_depth.size(),
+                                                   quantization_raw_step);
+                    }
+                    else {
+                        depth_payload = compress_depth_payload(camera.config.depth_transport.compression, depth->data.data(), depth->data.size(),
+                                                               quantization_raw_step);
+                    }
                     record_depth_compress_ms(camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
                 }
                 else {
                     depth_payload = depth->data;
+                    quantize_depth_payload_inplace(depth_payload, quantization_raw_step);
                 }
                 MediaFrameMeta meta;
                 meta.stream_type = StreamType::depth_raw;

@@ -13,11 +13,14 @@
 #include <cstring>
 #include <ctime>
 #include <cmath>
+#include <dlfcn.h>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -273,6 +276,20 @@ std::optional<uint64_t> json_uint64_field(const std::string &json, const std::st
     return std::nullopt;
 }
 
+std::optional<double> json_double_field(const std::string &json, const std::string &key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*(-?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
+    std::smatch match;
+    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
+        try {
+            return std::stod(match[1].str());
+        }
+        catch(const std::exception &) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<bool> json_bool_field(const std::string &json, const std::string &key) {
     const std::regex pattern("\"" + key + "\"\\s*:\\s*(true|false)");
     std::smatch match;
@@ -348,6 +365,14 @@ std::optional<int> json_int_in_object(const std::string &json, const std::string
         return std::nullopt;
     }
     return json_int_field(*object, field_key);
+}
+
+std::optional<double> json_double_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
+    const auto object = json_object_field(json, object_key);
+    if(!object) {
+        return std::nullopt;
+    }
+    return json_double_field(*object, field_key);
 }
 
 std::string config_string(const std::string &json, const std::string &key, const std::string &fallback) {
@@ -633,18 +658,36 @@ struct PreviewImage {
 };
 
 struct DepthPreviewRange {
-    uint16_t min_value = 250;
-    uint16_t max_value = 2500;
+    double min_mm = 250.0;
+    double max_mm = 2500.0;
 };
 
 constexpr DepthPreviewRange kDefaultDepthPreviewRange{250, 2500};
-constexpr DepthPreviewRange kRaspberryPiGemini305DepthPreviewRange{1000, 12000};
+constexpr DepthPreviewRange kGemini305DepthPreviewRange{250, 6500};
 
 DepthPreviewRange depth_preview_range_for_camera(const std::string &sender_id, const std::string &camera_id) {
-    if(sender_id == "raspberrypi-01" && camera_id == "cam01") {
-        return kRaspberryPiGemini305DepthPreviewRange;
+    if(camera_id == "cam01" && (sender_id == "raspberrypi-01" || sender_id == "orangepi5pro-d12a4719")) {
+        return kGemini305DepthPreviewRange;
     }
     return kDefaultDepthPreviewRange;
+}
+
+double fallback_depth_scale_for_camera(const std::string &sender_id, const std::string &camera_id) {
+    if(camera_id == "cam01" && (sender_id == "raspberrypi-01" || sender_id == "orangepi5pro-d12a4719")) {
+        return 0.1;
+    }
+    return 1.0;
+}
+
+double depth_scale_from_announce_or_camera(const std::string &announce_json,
+                                           const std::string &sender_id,
+                                           const std::string &camera_id) {
+    const double fallback = fallback_depth_scale_for_camera(sender_id, camera_id);
+    const auto depth_scale = json_double_in_object(announce_json, "depth_profile", "depth_scale");
+    if(depth_scale && std::isfinite(*depth_scale) && *depth_scale > 0.0 && *depth_scale <= 1000.0) {
+        return *depth_scale;
+    }
+    return fallback;
 }
 
 uint8_t clamp_color(double value) {
@@ -657,17 +700,16 @@ uint8_t clamp_color(double value) {
     return static_cast<uint8_t>(value);
 }
 
-void append_depth_color(std::vector<uint8_t> &out, uint16_t value, const DepthPreviewRange &range) {
-    if(value == 0 || range.max_value <= range.min_value) {
+void append_depth_color(std::vector<uint8_t> &out, uint16_t raw_value, const DepthPreviewRange &range, double depth_scale) {
+    if(raw_value == 0 || raw_value == std::numeric_limits<uint16_t>::max() || depth_scale <= 0.0 || range.max_mm <= range.min_mm) {
         out.push_back(12);
         out.push_back(16);
         out.push_back(24);
         return;
     }
-    const double clamped =
-        std::clamp(static_cast<double>(value), static_cast<double>(range.min_value), static_cast<double>(range.max_value));
-    const double t = (clamped - static_cast<double>(range.min_value))
-                     / static_cast<double>(range.max_value - range.min_value);
+    const double value_mm = static_cast<double>(raw_value) * depth_scale;
+    const double clamped = std::clamp(value_mm, range.min_mm, range.max_mm);
+    const double t = (clamped - range.min_mm) / (range.max_mm - range.min_mm);
     const auto channel = [t](double center) {
         return clamp_color(255.0 * std::max(0.0, std::min(1.0, 1.5 - std::abs(4.0 * t - center))));
     };
@@ -738,7 +780,8 @@ PreviewImage build_bmp_from_rgb_pixels(const std::vector<uint8_t> &rgb, uint32_t
 PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
                                      uint32_t width,
                                      uint32_t height,
-                                     const DepthPreviewRange &range) {
+                                     const DepthPreviewRange &range,
+                                     double depth_scale) {
     PreviewImage image;
     if(width == 0 || height == 0 || payload.size() < static_cast<size_t>(width) * height * 2ull) {
         return image;
@@ -758,7 +801,7 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
         for(uint32_t x = 0; x < width && x / stride < image.width; x += stride) {
             const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
             const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            append_depth_color(rgb, value, range);
+            append_depth_color(rgb, value, range, depth_scale);
         }
     }
 
@@ -770,6 +813,9 @@ struct Config {
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
     uint16_t media_port = 50010;
+    bool media_udp_enabled = false;
+    std::string media_udp_bind_ip = "0.0.0.0";
+    uint16_t media_udp_port = 50013;
     bool preview_udp_enabled = false;
     std::string preview_udp_bind_ip = "0.0.0.0";
     uint16_t preview_udp_port = 50012;
@@ -798,6 +844,9 @@ Config load_config(const std::string &path) {
     cfg.status_port = config_port(json, "status_port", cfg.status_port);
     cfg.media_bind_ip = config_string(json, "media_bind_ip", cfg.media_bind_ip);
     cfg.media_port = config_port(json, "media_port", cfg.media_port);
+    cfg.media_udp_enabled = config_bool(json, "media_udp_enabled", cfg.media_udp_enabled);
+    cfg.media_udp_bind_ip = config_string(json, "media_udp_bind_ip", cfg.media_udp_bind_ip);
+    cfg.media_udp_port = config_port(json, "media_udp_port", cfg.media_udp_port);
     cfg.preview_udp_enabled = config_bool(json, "preview_udp_enabled", cfg.preview_udp_enabled);
     cfg.preview_udp_bind_ip = config_string(json, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
     cfg.preview_udp_port = config_port(json, "preview_udp_port", cfg.preview_udp_port);
@@ -1489,6 +1538,284 @@ std::vector<uint8_t> zlib_decompress_payload(const MediaPacket &packet) {
     return out;
 }
 
+struct Lz4Api {
+    using DecompressSafeFn = int (*)(const char *, char *, int, int);
+
+    void *handle = nullptr;
+    DecompressSafeFn decompress_safe = nullptr;
+};
+
+Lz4Api &lz4_api() {
+    static Lz4Api api;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        api.handle = dlopen("liblz4.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if(!api.handle) {
+            throw std::runtime_error(std::string("cannot load liblz4.so.1: ") + dlerror());
+        }
+        api.decompress_safe = reinterpret_cast<Lz4Api::DecompressSafeFn>(dlsym(api.handle, "LZ4_decompress_safe"));
+        if(!api.decompress_safe) {
+            throw std::runtime_error("liblz4.so.1 does not provide required decompression symbols");
+        }
+    });
+    return api;
+}
+
+std::vector<uint8_t> lz4_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.payload.size() > static_cast<size_t>(std::numeric_limits<int>::max())
+       || packet.uncompressed_size > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid lz4 uncompressed depth size");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size));
+    auto &api = lz4_api();
+    const int decoded_size = api.decompress_safe(reinterpret_cast<const char *>(packet.payload.data()),
+                                                 reinterpret_cast<char *>(out.data()),
+                                                 static_cast<int>(packet.payload.size()),
+                                                 static_cast<int>(out.size()));
+    if(decoded_size != static_cast<int>(out.size())) {
+        throw std::runtime_error("lz4 depth decompression failed");
+    }
+    return out;
+}
+
+struct Plz4ChunkEntry {
+    uint32_t raw_offset = 0;
+    uint32_t raw_size = 0;
+    uint32_t compressed_offset = 0;
+    uint32_t compressed_size = 0;
+};
+
+std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
+    if(packet.payload.size() < 16) {
+        throw std::runtime_error("invalid plz4 depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
+    const uint32_t raw_total = read_le32(packet.payload.data() + 8);
+    if(magic != 0x345a4c50u || version != 1 || chunk_count == 0 || raw_total == 0
+       || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
+        throw std::runtime_error("invalid plz4 depth header");
+    }
+    const size_t table_size = 16ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated plz4 depth table");
+    }
+
+    std::vector<Plz4ChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
+        Plz4ChunkEntry chunk;
+        chunk.raw_offset = read_le32(entry);
+        chunk.raw_size = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+           || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
+           || chunk.compressed_size > packet.payload.size() - compressed_offset) {
+            throw std::runtime_error("invalid plz4 depth chunk");
+        }
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("plz4 depth payload has trailing bytes");
+    }
+
+    std::vector<uint8_t> out(raw_total);
+    auto &api = lz4_api();
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &out, &api, chunk] {
+            const int rc = api.decompress_safe(
+                reinterpret_cast<const char *>(packet.payload.data() + chunk.compressed_offset),
+                reinterpret_cast<char *>(out.data() + chunk.raw_offset),
+                static_cast<int>(chunk.compressed_size),
+                static_cast<int>(chunk.raw_size));
+            if(rc != static_cast<int>(chunk.raw_size)) {
+                throw std::runtime_error("plz4 depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+    return out;
+}
+
+class NibbleReader {
+public:
+    explicit NibbleReader(const std::vector<uint8_t> &data) : data_(data) {}
+
+    uint8_t read() {
+        if(byte_index_ >= data_.size()) {
+            throw std::runtime_error("truncated rvl depth payload");
+        }
+        const uint8_t byte = data_[byte_index_];
+        uint8_t nibble = 0;
+        if(read_low_) {
+            nibble = byte & 0x0fu;
+            read_low_ = false;
+        }
+        else {
+            nibble = static_cast<uint8_t>((byte >> 4u) & 0x0fu);
+            read_low_ = true;
+            ++byte_index_;
+        }
+        return nibble;
+    }
+
+private:
+    const std::vector<uint8_t> &data_;
+    size_t byte_index_ = 0;
+    bool read_low_ = true;
+};
+
+uint32_t rvl_read_vle(NibbleReader &reader) {
+    uint32_t value = 0;
+    uint32_t shift = 0;
+    while(true) {
+        const uint8_t nibble = reader.read();
+        value |= static_cast<uint32_t>(nibble & 0x7u) << shift;
+        if((nibble & 0x8u) == 0) {
+            return value;
+        }
+        shift += 3u;
+        if(shift >= 32u) {
+            throw std::runtime_error("invalid rvl depth payload");
+        }
+    }
+}
+
+void write_depth_u16le(std::vector<uint8_t> &out, size_t sample_index, uint16_t value) {
+    const size_t offset = sample_index * sizeof(uint16_t);
+    out[offset] = static_cast<uint8_t>(value & 0xffu);
+    out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+}
+
+std::vector<uint8_t> rvl_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("invalid rvl uncompressed depth size");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    const size_t sample_count = out.size() / sizeof(uint16_t);
+    NibbleReader reader(packet.payload);
+    int32_t previous = 0;
+    size_t index = 0;
+    while(index < sample_count) {
+        const uint32_t zeros = rvl_read_vle(reader);
+        if(zeros > sample_count - index) {
+            throw std::runtime_error("invalid rvl zero run");
+        }
+        index += zeros;
+
+        const uint32_t nonzeros = rvl_read_vle(reader);
+        if(nonzeros > sample_count - index) {
+            throw std::runtime_error("invalid rvl nonzero run");
+        }
+        for(uint32_t i = 0; i < nonzeros; ++i) {
+            const uint32_t zigzag = rvl_read_vle(reader);
+            const int32_t delta = (zigzag & 1u) != 0u ? -static_cast<int32_t>((zigzag + 1u) >> 1u)
+                                                      : static_cast<int32_t>(zigzag >> 1u);
+            const int32_t current = previous + delta;
+            if(current < 0 || current > static_cast<int32_t>(std::numeric_limits<uint16_t>::max())) {
+                throw std::runtime_error("invalid rvl depth sample");
+            }
+            write_depth_u16le(out, index, static_cast<uint16_t>(current));
+            previous = current;
+            ++index;
+        }
+    }
+    return out;
+}
+
+uint16_t read_u16_le_checked(const std::vector<uint8_t> &data, size_t offset) {
+    if(offset + 1 >= data.size()) {
+        throw std::runtime_error("truncated qdelta depth payload");
+    }
+    return static_cast<uint16_t>(static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8u));
+}
+
+uint32_t read_varuint_checked(const std::vector<uint8_t> &data, size_t &offset) {
+    uint32_t value = 0;
+    uint32_t shift = 0;
+    while(offset < data.size()) {
+        const uint8_t byte = data[offset++];
+        value |= static_cast<uint32_t>(byte & 0x7fu) << shift;
+        if((byte & 0x80u) == 0) {
+            return value;
+        }
+        shift += 7u;
+        if(shift >= 32u) {
+            throw std::runtime_error("invalid qdelta varuint");
+        }
+    }
+    throw std::runtime_error("truncated qdelta varuint");
+}
+
+int32_t zigzag_decode_i32(uint32_t value) {
+    return static_cast<int32_t>((value >> 1u) ^ (~(value & 1u) + 1u));
+}
+
+std::vector<uint8_t> qdelta_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("invalid qdelta uncompressed depth size");
+    }
+    if(packet.payload.size() < 8 || packet.payload[0] != 'Q' || packet.payload[1] != 'D' || packet.payload[2] != 'L'
+       || packet.payload[3] != '1') {
+        throw std::runtime_error("invalid qdelta header");
+    }
+    const uint32_t raw_step = std::max<uint32_t>(1, read_u16_le_checked(packet.payload, 4));
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    const size_t sample_count = out.size() / sizeof(uint16_t);
+    size_t offset = 8;
+    size_t index = 0;
+    int32_t previous = 0;
+    while(index < sample_count) {
+        if(offset >= packet.payload.size()) {
+            throw std::runtime_error("truncated qdelta depth payload");
+        }
+        const uint8_t token = packet.payload[offset++];
+        if(token == 0) {
+            const uint32_t zeros = read_varuint_checked(packet.payload, offset);
+            if(zeros > sample_count - index) {
+                throw std::runtime_error("invalid qdelta zero run");
+            }
+            index += zeros;
+            previous = 0;
+            continue;
+        }
+        if(token != 1) {
+            throw std::runtime_error("invalid qdelta token");
+        }
+        if(offset >= packet.payload.size()) {
+            throw std::runtime_error("truncated qdelta run");
+        }
+        const uint32_t nonzeros = packet.payload[offset++];
+        if(nonzeros == 0 || nonzeros > sample_count - index) {
+            throw std::runtime_error("invalid qdelta nonzero run");
+        }
+        for(uint32_t i = 0; i < nonzeros; ++i) {
+            const int32_t delta = zigzag_decode_i32(read_varuint_checked(packet.payload, offset));
+            const int32_t quantized = previous + delta;
+            if(quantized < 0) {
+                throw std::runtime_error("invalid qdelta depth sample");
+            }
+            const uint32_t raw_value = std::min<uint32_t>(static_cast<uint32_t>(quantized) * raw_step, std::numeric_limits<uint16_t>::max());
+            write_depth_u16le(out, index, static_cast<uint16_t>(raw_value));
+            previous = quantized;
+            ++index;
+        }
+    }
+    return out;
+}
+
 MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.stream_type != StreamType::depth_raw) {
         return packet;
@@ -1499,6 +1826,34 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.codec_or_compression == "zlib") {
         MediaPacket decoded = packet;
         decoded.payload = zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "rvl") {
+        MediaPacket decoded = packet;
+        decoded.payload = rvl_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "qdelta") {
+        MediaPacket decoded = packet;
+        decoded.payload = qdelta_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "lz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = lz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "plz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = plz4_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
@@ -2940,6 +3295,7 @@ struct CameraState {
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
     std::vector<uint8_t> depth_preview_ppm;
+    double depth_scale = 1.0;
     std::string last_error;
     std::string last_announce_json;
     bool last_announce_live = false;
@@ -2982,6 +3338,9 @@ public:
     void start() {
         running_ = true;
         udp_thread_ = std::thread([this] { udp_loop(); });
+        if(config_.media_udp_enabled) {
+            media_udp_thread_ = std::thread([this] { media_udp_loop(); });
+        }
         if(config_.preview_udp_enabled) {
             preview_udp_thread_ = std::thread([this] { preview_udp_loop(); });
         }
@@ -2989,6 +3348,8 @@ public:
         admin_thread_ = std::thread([this] { admin_loop(); });
         logger_.info("receiver started: media tcp " + config_.media_bind_ip + ":" + std::to_string(config_.media_port) +
                      ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) +
+                     ", media udp " + (config_.media_udp_enabled ? config_.media_udp_bind_ip : std::string("disabled")) + ":" +
+                     std::to_string(config_.media_udp_port) +
                      ", preview udp " + (config_.preview_udp_enabled ? config_.preview_udp_bind_ip : std::string("disabled")) + ":" +
                      std::to_string(config_.preview_udp_port) + ", admin http " + config_.admin_bind_ip + ":" +
                      std::to_string(config_.admin_port));
@@ -2998,6 +3359,9 @@ public:
         running_ = false;
         if(udp_thread_.joinable()) {
             udp_thread_.join();
+        }
+        if(media_udp_thread_.joinable()) {
+            media_udp_thread_.join();
         }
         if(preview_udp_thread_.joinable()) {
             preview_udp_thread_.join();
@@ -3038,6 +3402,8 @@ public:
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
+        out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_port\":" << config_.media_udp_port << ',';
         out << "\"preview_udp_enabled\":" << (config_.preview_udp_enabled ? "true" : "false") << ',';
         out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
@@ -3146,6 +3512,9 @@ public:
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"media_bind_ip\":\"" << json_escape(config_.media_bind_ip) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
+        out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_bind_ip\":\"" << json_escape(config_.media_udp_bind_ip) << "\",";
+        out << "\"media_udp_port\":" << config_.media_udp_port << ',';
         out << "\"preview_udp_enabled\":" << (config_.preview_udp_enabled ? "true" : "false") << ',';
         out << "\"preview_udp_bind_ip\":\"" << json_escape(config_.preview_udp_bind_ip) << "\",";
         out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
@@ -3727,6 +4096,7 @@ private:
             if(announce != runtime_state_.camera_announces.end()) {
                 state->last_announce_json = announce->second;
             }
+            state->depth_scale = depth_scale_from_announce_or_camera(state->last_announce_json, sender_id, camera_id);
             state->recording_requested = recording_all_;
             if(recording_all_) {
                 state->recording_start_us = recording_all_start_us_;
@@ -3771,6 +4141,7 @@ private:
                 cam.last_announce_json = json;
                 cam.last_announce_live = true;
                 cam.last_announce_received_us = received_us;
+                cam.depth_scale = depth_scale_from_announce_or_camera(cam.last_announce_json, sender_id, camera_id);
                 const bool should_save_announce =
                     (runtime_state_.camera_announces.find(key) == runtime_state_.camera_announces.end() ||
                      runtime_state_.camera_announces[key] != json) &&
@@ -3927,10 +4298,17 @@ private:
 
         PreviewImage preview;
         if(decoded_packet.stream_type == StreamType::depth_raw) {
+            double depth_scale = fallback_depth_scale_for_camera(decoded_packet.sender_id, decoded_packet.camera_id);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto cam = ensure_camera_ptr_locked(decoded_packet.sender_id, decoded_packet.camera_id);
+                depth_scale = cam->depth_scale;
+            }
             preview = build_depth_preview_bmp(decoded_packet.payload,
                                               decoded_packet.width,
                                               decoded_packet.height,
-                                              depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id));
+                                              depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id),
+                                              depth_scale);
         }
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
         const bool rgb_has_idr = rgb_stream_packet &&
@@ -4040,7 +4418,7 @@ private:
         }
     }
 
-    void handle_preview_udp_datagram(const uint8_t *data, size_t size, const std::string &peer_endpoint) {
+    void handle_fragmented_udp_datagram(const uint8_t *data, size_t size, const std::string &peer_endpoint, bool media_udp) {
         if(size < kPreviewUdpHeaderSize) {
             return;
         }
@@ -4093,12 +4471,15 @@ private:
         }
         try {
             auto packet = parse_media_packet_buffer(completed.data(), completed.size(), config_.max_payload_bytes);
-            if(packet.stream_type == StreamType::rgb_preview) {
+            const bool accepted = media_udp ? (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw)
+                                            : (packet.stream_type == StreamType::rgb_preview);
+            if(accepted) {
                 handle_media_packet(packet);
             }
         }
         catch(const std::exception &e) {
-            logger_.warn(std::string("preview UDP packet rejected from ") + peer_endpoint + ": " + e.what());
+            logger_.warn(std::string(media_udp ? "media UDP packet rejected from " : "preview UDP packet rejected from ")
+                         + peer_endpoint + ": " + e.what());
         }
     }
 
@@ -4170,7 +4551,45 @@ private:
                 logger_.warn(std::string("preview UDP recv failed: ") + std::strerror(errno));
                 continue;
             }
-            handle_preview_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer));
+            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), false);
+        }
+        close(fd);
+    }
+
+    void media_udp_loop() {
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if(fd < 0) {
+            logger_.error(std::string("cannot create media UDP socket: ") + std::strerror(errno));
+            return;
+        }
+        set_fd_cloexec(fd);
+        int yes = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        if(!set_socket_recv_buffer(fd, kMediaSocketReceiveBufferBytes)) {
+            logger_.warn(std::string("cannot set media UDP SO_RCVBUF: ") + std::strerror(errno));
+        }
+        set_socket_timeout(fd, 1);
+        const auto addr = make_bind_addr(config_.media_udp_bind_ip, config_.media_udp_port);
+        if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            logger_.error(std::string("cannot bind media UDP: ") + std::strerror(errno));
+            close(fd);
+            return;
+        }
+        logger_.info("media UDP listening on " + config_.media_udp_bind_ip + ":" + std::to_string(config_.media_udp_port));
+
+        std::vector<uint8_t> buffer(65536);
+        while(running_ && g_running) {
+            sockaddr_in peer{};
+            socklen_t peer_len = sizeof(peer);
+            const ssize_t got = recvfrom(fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr *>(&peer), &peer_len);
+            if(got < 0) {
+                if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                logger_.warn(std::string("media UDP recv failed: ") + std::strerror(errno));
+                continue;
+            }
+            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), true);
         }
         close(fd);
     }
@@ -4428,6 +4847,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int> active_media_clients_{0};
     std::thread udp_thread_;
+    std::thread media_udp_thread_;
     std::thread preview_udp_thread_;
     std::thread tcp_thread_;
     std::thread admin_thread_;

@@ -71,6 +71,9 @@ Transport::Transport(const AppConfig &config) : config_(config) {
         if(rgb_preview_udp_enabled()) {
             preview_udp_fd_ = make_udp_socket();
         }
+        if(config_.media_udp.enabled) {
+            media_udp_fd_ = make_udp_socket();
+        }
     }
 }
 
@@ -81,6 +84,9 @@ Transport::~Transport() {
     if(preview_udp_fd_ >= 0) {
         close(preview_udp_fd_);
     }
+    if(media_udp_fd_ >= 0) {
+        close(media_udp_fd_);
+    }
     close_media_socket();
 }
 
@@ -88,6 +94,10 @@ int Transport::make_udp_socket() {
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if(fd < 0) {
         throw std::runtime_error(std::string("cannot create UDP socket: ") + std::strerror(errno));
+    }
+    if(config_.transport.send_buffer_bytes > 0) {
+        int requested = config_.transport.send_buffer_bytes;
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &requested, sizeof(requested));
     }
     return fd;
 }
@@ -121,6 +131,39 @@ bool Transport::send_status(const std::string &json_message) {
 
 bool Transport::rgb_preview_udp_enabled() const {
     return config_.transport.enabled && config_.web_rgb_preview.enabled && config_.web_rgb_preview.udp_enabled;
+}
+
+bool Transport::media_udp_enabled(StreamType stream_type) const {
+    if(!config_.transport.enabled || !config_.media_udp.enabled) {
+        return false;
+    }
+    if(stream_type == StreamType::rgb) {
+        return config_.media_udp.rgb_enabled;
+    }
+    if(stream_type == StreamType::depth_raw) {
+        return config_.media_udp.depth_enabled;
+    }
+    return false;
+}
+
+bool Transport::send_media_udp(const MediaPacketView &packet) {
+    if(!config_.media_udp.enabled) {
+        set_error("media UDP is disabled");
+        return false;
+    }
+    if(media_udp_fd_ < 0) {
+        media_udp_fd_ = make_udp_socket();
+    }
+    if(packet.header_size > 0 && packet.header_data == nullptr) {
+        set_error("media UDP send failed: packet header is null");
+        return false;
+    }
+    if(packet.payload_size > 0 && packet.payload_data == nullptr) {
+        set_error("media UDP send failed: packet payload is null");
+        return false;
+    }
+    return send_udp_fragmented_packet(media_udp_fd_, config_.media_udp.port, config_.media_udp.mtu_bytes, media_udp_sequence_, packet,
+                                      "media UDP");
 }
 
 bool Transport::send_rgb_preview_udp(const MediaPacketView &packet) {
@@ -200,24 +243,30 @@ bool Transport::send_udp_status(const std::string &json_message) {
 }
 
 bool Transport::send_udp_preview_packet(const MediaPacketView &packet) {
+    return send_udp_fragmented_packet(preview_udp_fd_, config_.web_rgb_preview.udp_port, config_.web_rgb_preview.udp_mtu_bytes,
+                                      preview_udp_sequence_, packet, "rgb preview UDP");
+}
+
+bool Transport::send_udp_fragmented_packet(int fd, uint16_t port, int mtu_bytes, uint32_t &sequence, const MediaPacketView &packet,
+                                           const char *label) {
     const size_t total_size = packet.total_size();
     if(total_size == 0 || total_size > std::numeric_limits<uint32_t>::max()) {
-        set_error("rgb preview UDP packet size is invalid: " + std::to_string(total_size));
+        set_error(std::string(label) + " packet size is invalid: " + std::to_string(total_size));
         return false;
     }
 
-    const size_t mtu = static_cast<size_t>(std::max(config_.web_rgb_preview.udp_mtu_bytes, static_cast<int>(kPreviewUdpHeaderSize + 256)));
+    const size_t mtu = static_cast<size_t>(std::max(mtu_bytes, static_cast<int>(kPreviewUdpHeaderSize + 256)));
     const size_t chunk_capacity = mtu - kPreviewUdpHeaderSize;
     const size_t chunk_count_size = (total_size + chunk_capacity - 1) / chunk_capacity;
     if(chunk_count_size == 0 || chunk_count_size > std::numeric_limits<uint16_t>::max()) {
-        set_error("rgb preview UDP packet requires too many chunks: " + std::to_string(chunk_count_size));
+        set_error(std::string(label) + " packet requires too many chunks: " + std::to_string(chunk_count_size));
         return false;
     }
 
-    auto addr = endpoint(config_.receiver.ip, config_.web_rgb_preview.udp_port);
-    uint32_t sequence = ++preview_udp_sequence_;
-    if(sequence == 0) {
-        sequence = ++preview_udp_sequence_;
+    auto addr = endpoint(config_.receiver.ip, port);
+    uint32_t packet_sequence = ++sequence;
+    if(packet_sequence == 0) {
+        packet_sequence = ++sequence;
     }
 
     const auto chunk_count = static_cast<uint16_t>(chunk_count_size);
@@ -230,7 +279,7 @@ bool Transport::send_udp_preview_packet(const MediaPacketView &packet) {
         append_le32(datagram, kPreviewUdpMagic);
         append_le16(datagram, kPreviewUdpHeaderVersion);
         append_le16(datagram, kPreviewUdpHeaderSize);
-        append_le32(datagram, sequence);
+        append_le32(datagram, packet_sequence);
         append_le16(datagram, chunk_index);
         append_le16(datagram, chunk_count);
         append_le32(datagram, static_cast<uint32_t>(total_size));
@@ -241,9 +290,9 @@ bool Transport::send_udp_preview_packet(const MediaPacketView &packet) {
         append_packet_slice(datagram, packet, chunk_offset, chunk_size);
 
         const auto sent =
-            sendto(preview_udp_fd_, datagram.data(), datagram.size(), 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+            sendto(fd, datagram.data(), datagram.size(), 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
         if(sent < 0 || static_cast<size_t>(sent) != datagram.size()) {
-            set_error(std::string("rgb preview UDP send failed: ") + std::strerror(errno));
+            set_error(std::string(label) + " send failed: " + std::strerror(errno));
             return false;
         }
     }

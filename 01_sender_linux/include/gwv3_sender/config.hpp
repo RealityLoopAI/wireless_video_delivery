@@ -23,6 +23,7 @@ struct RgbEncodingConfig {
 
 struct DepthTransportConfig {
     std::string compression = "none";
+    int quantization_step_mm = 0;
 };
 
 struct ColorControlsConfig {
@@ -69,6 +70,14 @@ struct TransportConfig {
     int reconnect_interval_ms = 1000;
 };
 
+struct MediaUdpConfig {
+    bool enabled = false;
+    bool rgb_enabled = false;
+    bool depth_enabled = false;
+    uint16_t port = 50013;
+    int mtu_bytes = 1200;
+};
+
 struct PreviewConfig {
     bool enabled = true;
     int fps = 10;
@@ -100,6 +109,7 @@ struct AppConfig {
     std::string sender_version = "3.0.0";
     ReceiverConfig receiver;
     TransportConfig transport;
+    MediaUdpConfig media_udp;
     PreviewConfig preview;
     WebRgbPreviewConfig web_rgb_preview;
     LoggingConfig logging;

@@ -325,6 +325,18 @@ AppConfig load_config(const std::string &path) {
         config.transport.reconnect_interval_ms = optional_int(transport, "reconnect_interval_ms", config.transport.reconnect_interval_ms);
     }
 
+    const auto &media_udp = root["media_udp"];
+    if(!media_udp.isNull()) {
+        if(!media_udp.isObject()) {
+            throw std::runtime_error("invalid object field: media_udp");
+        }
+        config.media_udp.enabled = optional_bool(media_udp, "enabled", config.media_udp.enabled);
+        config.media_udp.rgb_enabled = optional_bool(media_udp, "rgb_enabled", config.media_udp.rgb_enabled);
+        config.media_udp.depth_enabled = optional_bool(media_udp, "depth_enabled", config.media_udp.depth_enabled);
+        config.media_udp.port = parse_port(media_udp, "port", config.media_udp.port);
+        config.media_udp.mtu_bytes = optional_int(media_udp, "mtu_bytes", config.media_udp.mtu_bytes);
+    }
+
     const auto &preview = root["preview"];
     if(!preview.isNull()) {
         config.preview.enabled = optional_bool(preview, "enabled", config.preview.enabled);
@@ -397,6 +409,8 @@ AppConfig load_config(const std::string &path) {
         const auto &depth = item["depth_transport"];
         if(!depth.isNull()) {
             camera.depth_transport.compression = optional_string(depth, "compression", camera.depth_transport.compression);
+            camera.depth_transport.quantization_step_mm =
+                optional_int(depth, "quantization_step_mm", camera.depth_transport.quantization_step_mm);
         }
 
         camera.color_controls = load_color_controls(item["color_controls"]);
@@ -425,6 +439,12 @@ void validate_config(const AppConfig &config) {
     }
     if(config.transport.media_protocol != "tcp") {
         throw std::runtime_error("only tcp media_protocol is implemented in this sender build");
+    }
+    if(config.media_udp.mtu_bytes < static_cast<int>(kPreviewUdpHeaderSize + 256)) {
+        throw std::runtime_error("media_udp.mtu_bytes must leave at least 256 bytes for payload");
+    }
+    if(config.media_udp.mtu_bytes > 9000) {
+        throw std::runtime_error("media_udp.mtu_bytes must be <= 9000");
     }
     if(config.transport.connect_timeout_ms <= 0) {
         throw std::runtime_error("transport.connect_timeout_ms must be positive");
@@ -529,8 +549,16 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.bitrate_bps <= 0) {
             throw std::runtime_error("rgb_encoding.bitrate_bps must be positive");
         }
-        if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
-            throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
+        if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
+           && camera.depth_transport.compression != "rvl" && camera.depth_transport.compression != "qdelta"
+           && camera.depth_transport.compression != "lz4" && camera.depth_transport.compression != "plz4") {
+            throw std::runtime_error("only none/zlib/rvl/qdelta/lz4/plz4 depth compression is implemented in this sender build");
+        }
+        if(camera.depth_transport.quantization_step_mm < 0) {
+            throw std::runtime_error("depth_transport.quantization_step_mm must be non-negative");
+        }
+        if(camera.depth_transport.quantization_step_mm > 64) {
+            throw std::runtime_error("depth_transport.quantization_step_mm must be <= 64");
         }
         validate_profile(camera.rgb_profile, "rgb_profile");
         validate_profile(camera.depth_profile, "depth_profile");
