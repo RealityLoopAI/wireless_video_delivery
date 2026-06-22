@@ -2,6 +2,8 @@
 
 日期：2026-06-22
 
+追加结论：本文保留 `lz4` 量化试验过程。后续长时间观察确认 `lz4 + 32mm/64mm` 仍可能在 Wi-Fi/TCP 波动时触发回压，当前正式配置已改为 `q8zlib + 128mm`。最终配置和验收数据见 `04_docs/33_Gemini305_Depth_Q8ZLIB降码率记录_2026-06-22.md`。
+
 ## 1. 背景
 
 当前 Orange Pi Gemini305 发送端恢复主媒体 TCP 后，Depth `1280x800@30 Y16` 在 `lz4 + 2mm` 下仍会产生约 `150-230Mbps` 级别的发送压力。现场 Wi-Fi 虽然是 5GHz，但 TCP Send-Q 会积压到约 `24MB`，触发发送端 bulk depth 回压保护：
@@ -110,7 +112,7 @@ receiver CPU:         gemini_receiver about 28%
 
 ### 3.5 `lz4 + 32mm`
 
-当前部署结果：
+短窗口结果：
 
 ```text
 rgb_input_fps:        about 29.8-31.0fps
@@ -129,14 +131,14 @@ receiver:             active_media_clients=1, media_live=true
 结论：
 
 ```text
-32mm 是当前现场更稳的折中点。
-相比 16mm，Depth 码率进一步降到约 125-143Mbps，TCP 队列没有持续积压。
+32mm 在短窗口内比 16mm 更稳。
+但后续更长观察仍出现 TCP Send-Q 爬升和 Depth 回压风险，因此不再作为当前正式运行配置。
 代价是 Depth 数值被按 32mm step 量化，理论最大量化误差约 16mm。
 ```
 
-## 4. 当前正式运行配置
+## 4. 历史运行配置
 
-当前 `06_configs/sender_orangepi5pro-d12a4719_gemini305.json` 使用：
+该阶段曾在 `06_configs/sender_orangepi5pro-d12a4719_gemini305.json` 使用：
 
 ```json
 {
@@ -162,7 +164,7 @@ Depth UDP 和 plz4 实验开关保留在代码中，但当前不作为正式运�
 
 ## 5. 后续建议
 
-如果 32mm 量化对下游 RGBD 对齐或可视化仍可接受，当前建议先保持该配置跑完整录制测试。
+当前不再建议继续使用 `lz4 + 32mm` 作为正式配置。最终部署已改为 `q8zlib + 128mm`。
 
 如果下游认为 32mm 误差过大，可退到 `16mm` 或 `8mm`，但需要继续观察 Wi-Fi 抖动时 TCP 队列是否再次积压。当前现场已经观察到 `16mm` 长一点运行仍会回压。
 

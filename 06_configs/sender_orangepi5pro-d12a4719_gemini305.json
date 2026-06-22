@@ -70,8 +70,8 @@
         "bitrate_bps": 6000000
       },
       "depth_transport": {
-        "compression": "lz4",
-        "quantization_step_mm": 32
+        "compression": "q8zlib",
+        "quantization_step_mm": 128
       },
       "color_controls": {
         "auto_exposure": true,

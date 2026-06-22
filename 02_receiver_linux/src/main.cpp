@@ -1647,6 +1647,63 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
     return out;
 }
 
+std::vector<uint8_t> q8_decompress_payload(const MediaPacket &packet, uint32_t magic, bool use_lz4) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 16) {
+        throw std::runtime_error("invalid q8 depth payload");
+    }
+    const uint32_t packet_magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t raw_step = read_le16(packet.payload.data() + 6);
+    const uint32_t sample_count = read_le32(packet.payload.data() + 8);
+    const uint32_t compressed_size = read_le32(packet.payload.data() + 12);
+    const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
+    if(packet_magic != magic || version != 1 || raw_step == 0 || sample_count != expected_sample_count
+       || sample_count > static_cast<uint32_t>(std::numeric_limits<int>::max()) || compressed_size == 0
+       || static_cast<size_t>(compressed_size) != packet.payload.size() - 16
+       || compressed_size > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid q8 depth header");
+    }
+
+    std::vector<uint8_t> quantized(expected_sample_count);
+    if(use_lz4) {
+        auto &api = lz4_api();
+        const int decoded_size = api.decompress_safe(reinterpret_cast<const char *>(packet.payload.data() + 16),
+                                                     reinterpret_cast<char *>(quantized.data()),
+                                                     static_cast<int>(compressed_size),
+                                                     static_cast<int>(quantized.size()));
+        if(decoded_size != static_cast<int>(quantized.size())) {
+            throw std::runtime_error("q8 lz4 depth decompression failed");
+        }
+    }
+    else {
+        uLongf out_size = static_cast<uLongf>(quantized.size());
+        const int rc = uncompress(quantized.data(), &out_size, packet.payload.data() + 16, static_cast<uLong>(compressed_size));
+        if(rc != Z_OK || out_size != quantized.size()) {
+            throw std::runtime_error("q8 zlib depth decompression failed");
+        }
+    }
+
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    for(size_t i = 0; i < quantized.size(); ++i) {
+        const uint8_t index = quantized[i];
+        const uint32_t value = index == 0 ? 0u : std::min<uint32_t>(static_cast<uint32_t>(index) * raw_step,
+                                                                    std::numeric_limits<uint16_t>::max());
+        const size_t offset = i * sizeof(uint16_t);
+        out[offset] = static_cast<uint8_t>(value & 0xffu);
+        out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+    }
+    return out;
+}
+
+std::vector<uint8_t> q8lz4_decompress_payload(const MediaPacket &packet) {
+    return q8_decompress_payload(packet, 0x314c3851u, true);  // bytes: Q 8 L 1
+}
+
+std::vector<uint8_t> q8zlib_decompress_payload(const MediaPacket &packet) {
+    return q8_decompress_payload(packet, 0x315a3851u, false);  // bytes: Q 8 Z 1
+}
+
 class NibbleReader {
 public:
     explicit NibbleReader(const std::vector<uint8_t> &data) : data_(data) {}
@@ -1854,6 +1911,20 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.codec_or_compression == "plz4") {
         MediaPacket decoded = packet;
         decoded.payload = plz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "q8lz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = q8lz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "q8zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = q8zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;

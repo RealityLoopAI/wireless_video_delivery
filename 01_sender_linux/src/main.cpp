@@ -2974,6 +2974,62 @@ std::vector<uint8_t> qdelta_compress_payload(const void *data, size_t size, uint
     return out;
 }
 
+std::vector<uint8_t> q8_depth_indices_payload(const void *data, size_t size, uint32_t raw_step) {
+    if(size == 0 || size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("q8 depth compression requires uint16 payload");
+    }
+    const size_t sample_count = size / sizeof(uint16_t);
+    if(sample_count > static_cast<size_t>(std::numeric_limits<uint32_t>::max())
+       || sample_count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("q8 depth payload too large");
+    }
+
+    raw_step = std::max<uint32_t>(1, std::min<uint32_t>(raw_step, std::numeric_limits<uint16_t>::max()));
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    std::vector<uint8_t> quantized(sample_count);
+    const uint32_t half_step = raw_step / 2u;
+    for(size_t i = 0; i < sample_count; ++i) {
+        const uint32_t value = read_depth_u16le(bytes, i);
+        if(value == 0) {
+            quantized[i] = 0;
+            continue;
+        }
+        uint32_t index = (value + half_step) / raw_step;
+        index = std::max<uint32_t>(1, std::min<uint32_t>(index, 255));
+        quantized[i] = static_cast<uint8_t>(index);
+    }
+    return quantized;
+}
+
+std::vector<uint8_t> q8_compress_payload(const void *data, size_t size, uint32_t raw_step, uint32_t magic, bool use_lz4) {
+    raw_step = std::max<uint32_t>(1, std::min<uint32_t>(raw_step, std::numeric_limits<uint16_t>::max()));
+    auto quantized = q8_depth_indices_payload(data, size, raw_step);
+    auto compressed = use_lz4 ? lz4_compress_payload(quantized.data(), quantized.size())
+                              : zlib_compress_payload(quantized.data(), quantized.size());
+
+    if(compressed.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::runtime_error("q8 compressed depth payload too large");
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(16 + compressed.size());
+    append_le32(out, magic);
+    append_le16(out, 1);
+    append_le16(out, static_cast<uint16_t>(raw_step));
+    append_le32(out, static_cast<uint32_t>(quantized.size()));
+    append_le32(out, static_cast<uint32_t>(compressed.size()));
+    append_bytes(out, compressed.data(), compressed.size());
+    return out;
+}
+
+std::vector<uint8_t> q8lz4_compress_payload(const void *data, size_t size, uint32_t raw_step) {
+    return q8_compress_payload(data, size, raw_step, 0x314c3851u, true);  // bytes: Q 8 L 1
+}
+
+std::vector<uint8_t> q8zlib_compress_payload(const void *data, size_t size, uint32_t raw_step) {
+    return q8_compress_payload(data, size, raw_step, 0x315a3851u, false);  // bytes: Q 8 Z 1
+}
+
 std::vector<uint8_t> compress_depth_payload(const std::string &compression, const void *data, size_t size, uint32_t raw_step) {
     if(compression == "zlib") {
         return zlib_compress_payload(data, size);
@@ -2989,6 +3045,12 @@ std::vector<uint8_t> compress_depth_payload(const std::string &compression, cons
     }
     if(compression == "plz4") {
         return plz4_compress_payload(data, size);
+    }
+    if(compression == "q8lz4") {
+        return q8lz4_compress_payload(data, size, raw_step);
+    }
+    if(compression == "q8zlib") {
+        return q8zlib_compress_payload(data, size, raw_step);
     }
     throw std::runtime_error("unsupported depth compression: " + compression);
 }
@@ -3010,6 +3072,8 @@ Json::Value sender_hello(const AppConfig &config) {
     depth.append("qdelta");
     depth.append("lz4");
     depth.append("plz4");
+    depth.append("q8lz4");
+    depth.append("q8zlib");
     capabilities["depth_compression"] = depth;
     capabilities["depth_quantization"] = true;
     capabilities["local_preview"] = config.preview.enabled;
@@ -3677,7 +3741,8 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMedi
 
         try {
             const auto compress_started = std::chrono::steady_clock::now();
-            if(job->meta.codec_or_compression != "qdelta") {
+            if(job->meta.codec_or_compression != "qdelta" && job->meta.codec_or_compression != "q8lz4"
+               && job->meta.codec_or_compression != "q8zlib") {
                 quantize_depth_payload_inplace(job->raw_payload, job->quantization_raw_step);
             }
             auto compressed_depth =
@@ -4060,7 +4125,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.uncompressed_size = depth->dataSize();
                 if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
                    || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
-                   || camera.config.depth_transport.compression == "plz4") {
+                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "q8lz4"
+                   || camera.config.depth_transport.compression == "q8zlib") {
                     DepthCompressionJob compress_job;
                     compress_job.source_camera = &camera;
                     compress_job.output_camera = depth_target;
@@ -4361,9 +4427,12 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                 std::vector<uint8_t> depth_payload;
                 if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
                    || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
-                   || camera.config.depth_transport.compression == "plz4") {
+                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "q8lz4"
+                   || camera.config.depth_transport.compression == "q8zlib") {
                     const auto compress_started = std::chrono::steady_clock::now();
-                    if(quantization_raw_step > 1 && camera.config.depth_transport.compression != "qdelta") {
+                    if(quantization_raw_step > 1 && camera.config.depth_transport.compression != "qdelta"
+                       && camera.config.depth_transport.compression != "q8lz4"
+                       && camera.config.depth_transport.compression != "q8zlib") {
                         std::vector<uint8_t> quantized_depth = depth->data;
                         quantize_depth_payload_inplace(quantized_depth, quantization_raw_step);
                         depth_payload =
