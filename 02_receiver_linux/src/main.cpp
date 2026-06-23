@@ -663,7 +663,7 @@ struct DepthPreviewRange {
 };
 
 constexpr DepthPreviewRange kDefaultDepthPreviewRange{250, 2500};
-constexpr DepthPreviewRange kGemini305DepthPreviewRange{250, 6500};
+constexpr DepthPreviewRange kGemini305DepthPreviewRange{40, 1000};
 
 DepthPreviewRange depth_preview_range_for_camera(const std::string &sender_id, const std::string &camera_id) {
     if(camera_id == "cam01" && (sender_id == "raspberrypi-01" || sender_id == "orangepi5pro-d12a4719")) {
