@@ -767,6 +767,7 @@ struct Config {
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
     uint16_t media_port = 50010;
+    bool preview_enabled = true;
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
@@ -792,6 +793,7 @@ Config load_config(const std::string &path) {
     cfg.status_port = config_port(json, "status_port", cfg.status_port);
     cfg.media_bind_ip = config_string(json, "media_bind_ip", cfg.media_bind_ip);
     cfg.media_port = config_port(json, "media_port", cfg.media_port);
+    cfg.preview_enabled = config_bool(json, "preview_enabled", cfg.preview_enabled);
     cfg.admin_bind_ip = config_string(json, "admin_bind_ip", cfg.admin_bind_ip);
     cfg.admin_port = config_port(json, "admin_port", cfg.admin_port);
     cfg.nas_root = config_string(json, "nas_root", cfg.nas_root);
@@ -2908,7 +2910,8 @@ public:
         admin_thread_ = std::thread([this] { admin_loop(); });
         logger_.info("receiver started: media tcp " + config_.media_bind_ip + ":" + std::to_string(config_.media_port) +
                      ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) + ", admin http " +
-                     config_.admin_bind_ip + ":" + std::to_string(config_.admin_port));
+                     config_.admin_bind_ip + ":" + std::to_string(config_.admin_port) +
+                     ", preview " + (config_.preview_enabled ? "enabled" : "disabled"));
     }
 
     void stop() {
@@ -2955,6 +2958,7 @@ public:
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
+        out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
         out << "\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\",";
         out << "\"cameras\":[";
         bool first = true;
@@ -2964,11 +2968,12 @@ public:
             const bool status_live = cam.online && is_recent_us(now, cam.last_status_us, kCameraOnlineTimeoutUs);
             const bool media_live = cam.online && is_recent_us(now, cam.last_media_us, kCameraOnlineTimeoutUs);
             const bool live = media_live;
-            const bool rgb_preview_fresh = media_live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
-            const bool main_rgb_preview_fresh = media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
-            const bool depth_preview_fresh = media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
+            const bool preview_enabled = config_.preview_enabled;
+            const bool rgb_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
+            const bool main_rgb_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
+            const bool depth_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
-            const bool rgb_preview_report_available = rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0);
+            const bool rgb_preview_report_available = preview_enabled && (rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0));
             const bool main_rgb_native_preview_available =
                 cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame();
             const bool main_rgb_preview_report_available =
@@ -3058,6 +3063,7 @@ public:
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"media_bind_ip\":\"" << json_escape(config_.media_bind_ip) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
+        out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
         out << "\"admin_bind_ip\":\"" << json_escape(config_.admin_bind_ip) << "\",";
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
@@ -3320,6 +3326,9 @@ public:
 
     std::optional<std::vector<uint8_t>> depth_preview(const std::string &sender_id, const std::string &camera_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if(!config_.preview_enabled) {
+            return std::nullopt;
+        }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
@@ -3333,6 +3342,9 @@ public:
 
     std::optional<std::vector<uint8_t>> rgb_preview(const std::string &sender_id, const std::string &camera_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if(!config_.preview_enabled) {
+            return std::nullopt;
+        }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
@@ -3351,6 +3363,9 @@ public:
     }
 
     std::string set_main_preview_target(const std::string &sender_id, const std::string &camera_id) {
+        if(!config_.preview_enabled) {
+            return "{\"ok\":false,\"error\":\"preview disabled\"}";
+        }
         if(sender_id.empty() || camera_id.empty()) {
             return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
         }
@@ -3380,6 +3395,9 @@ public:
 
     std::optional<std::vector<uint8_t>> main_rgb_preview(const std::string &sender_id, const std::string &camera_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if(!config_.preview_enabled) {
+            return std::nullopt;
+        }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
@@ -3413,6 +3431,17 @@ public:
         std::shared_ptr<CameraState> cam;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if(!config_.preview_enabled) {
+                const std::string body = "{\"ok\":false,\"error\":\"preview disabled\"}";
+                std::ostringstream response;
+                response << "HTTP/1.1 404 Not Found\r\n";
+                response << "Content-Type: application/json\r\n";
+                response << "Cache-Control: no-store\r\n";
+                response << "Content-Length: " << body.size() << "\r\n";
+                response << "Connection: close\r\n\r\n";
+                response << body;
+                return send_all(fd, response.str());
+            }
             const auto now = now_us();
             refresh_camera_liveness_locked(now);
             const auto key = camera_key(sender_id, camera_id);
@@ -3768,6 +3797,20 @@ private:
     }
 
     void update_rgb_preview_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
+        if(!config_.preview_enabled) {
+            cam.rgb_preview_prefix_h264.clear();
+            cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
+            cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
+            cam.rgb_preview_requested_until_us = 0;
+            cam.rgb_preview_us = 0;
+            cam.rgb_preview_width = 0;
+            cam.rgb_preview_height = 0;
+            cam.main_rgb_preview_requested_until_us = 0;
+            cam.main_rgb_preview_us = 0;
+            cam.main_rgb_preview_width = 0;
+            cam.main_rgb_preview_height = 0;
+            return;
+        }
         if(packet.payload.empty()) {
             return;
         }
@@ -3835,7 +3878,7 @@ private:
         }
 
         PreviewImage preview;
-        if(decoded_packet.stream_type == StreamType::depth_raw) {
+        if(config_.preview_enabled && decoded_packet.stream_type == StreamType::depth_raw) {
             preview = build_depth_preview_bmp(decoded_packet.payload,
                                               decoded_packet.width,
                                               decoded_packet.height,
@@ -3854,27 +3897,31 @@ private:
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
-                update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
-                bool preview_stream_fresh = false;
-                {
-                    std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
-                    preview_stream_fresh = is_recent_us(now_us(), cam->rgb_preview_stream.last_us, kPreviewFreshUs);
-                }
-                if(!preview_stream_fresh) {
-                    update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                if(config_.preview_enabled) {
+                    update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
+                    bool preview_stream_fresh = false;
+                    {
+                        std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+                        preview_stream_fresh = is_recent_us(now_us(), cam->rgb_preview_stream.last_us, kPreviewFreshUs);
+                    }
+                    if(!preview_stream_fresh) {
+                        update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                    }
                 }
             }
             else if(packet.stream_type == StreamType::rgb_preview) {
-                update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
-                update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
-                cam->rgb_preview_width = packet.width;
-                cam->rgb_preview_height = packet.height;
-                cam->rgb_preview_us = cam->last_media_us;
+                if(config_.preview_enabled) {
+                    update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
+                    update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                    cam->rgb_preview_width = packet.width;
+                    cam->rgb_preview_height = packet.height;
+                    cam->rgb_preview_us = cam->last_media_us;
+                }
             }
             else if(packet.stream_type == StreamType::depth_raw) {
                 cam->depth_packets++;
                 cam->depth_bytes += packet.payload_size;
-                if(!preview.bytes.empty()) {
+                if(config_.preview_enabled && !preview.bytes.empty()) {
                     cam->depth_preview_ppm = std::move(preview.bytes);
                     cam->depth_preview_width = preview.width;
                     cam->depth_preview_height = preview.height;
