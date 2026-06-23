@@ -552,20 +552,26 @@ void validate_config(const AppConfig &config) {
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
            && camera.depth_transport.compression != "rvl" && camera.depth_transport.compression != "qdelta"
            && camera.depth_transport.compression != "lz4" && camera.depth_transport.compression != "plz4"
-           && camera.depth_transport.compression != "q8lz4" && camera.depth_transport.compression != "q8zlib") {
-            throw std::runtime_error("only none/zlib/rvl/qdelta/lz4/plz4/q8lz4/q8zlib depth compression is implemented in this sender build");
+           && camera.depth_transport.compression != "q8lz4" && camera.depth_transport.compression != "q8zlib"
+           && camera.depth_transport.compression != "pq8zlib") {
+            throw std::runtime_error(
+                "only none/zlib/rvl/qdelta/lz4/plz4/q8lz4/q8zlib/pq8zlib depth compression is implemented in this sender build");
         }
         if(camera.depth_transport.quantization_step_mm < 0) {
             throw std::runtime_error("depth_transport.quantization_step_mm must be non-negative");
         }
         const int max_depth_quantization_step_mm =
-            (camera.depth_transport.compression == "q8lz4" || camera.depth_transport.compression == "q8zlib") ? 256 : 64;
+            (camera.depth_transport.compression == "q8lz4" || camera.depth_transport.compression == "q8zlib"
+             || camera.depth_transport.compression == "pq8zlib")
+                ? 256
+                : 64;
         if(camera.depth_transport.quantization_step_mm > max_depth_quantization_step_mm) {
             throw std::runtime_error("depth_transport.quantization_step_mm is too large for the selected depth compression");
         }
-        if((camera.depth_transport.compression == "q8lz4" || camera.depth_transport.compression == "q8zlib")
+        if((camera.depth_transport.compression == "q8lz4" || camera.depth_transport.compression == "q8zlib"
+            || camera.depth_transport.compression == "pq8zlib")
            && camera.depth_transport.quantization_step_mm <= 0) {
-            throw std::runtime_error("depth_transport.quantization_step_mm must be positive when compression=q8lz4/q8zlib");
+            throw std::runtime_error("depth_transport.quantization_step_mm must be positive when compression=q8lz4/q8zlib/pq8zlib");
         }
         validate_profile(camera.rgb_profile, "rgb_profile");
         validate_profile(camera.depth_profile, "depth_profile");

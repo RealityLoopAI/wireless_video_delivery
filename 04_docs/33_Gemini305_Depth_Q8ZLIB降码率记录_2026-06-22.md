@@ -30,6 +30,7 @@ bulk media TCP packet dropped under backpressure
 ```text
 q8lz4
 q8zlib
+pq8zlib
 ```
 
 编码流程：
@@ -40,13 +41,15 @@ q8zlib
 3. 每个非零深度值四舍五入到 raw_step 对应的 8-bit index，0 仍表示无效深度。
 4. q8lz4 使用 LZ4 压缩 8-bit index 图。
 5. q8zlib 使用 zlib 压缩 8-bit index 图。
-6. payload 内部写入 16 字节小头：magic/version/raw_step/sample_count/compressed_size。
+6. pq8zlib 把 8-bit index 图切成最多 4 块，并行 zlib 压缩。
+7. q8lz4/q8zlib payload 内部写入 16 字节小头：magic/version/raw_step/sample_count/compressed_size。
+8. pq8zlib payload 写入 20 字节总头和每块 12 字节 chunk 表，接收端按 chunk 表并行解压后再还原 uint16。
 ```
 
 接收端新增对应解码：
 
 ```text
-1. 按 magic 识别 Q8L1 或 Q8Z1。
+1. 按 magic 识别 Q8L1、Q8Z1 或 PQ8Z。
 2. 解压出 8-bit index 图。
 3. 按 raw_step 还原为 uint16 little-endian Depth payload。
 4. 后续落盘、预览、CSV 仍走原来的 depth_u16 路径。
@@ -116,8 +119,35 @@ receiver CPU:         gemini_receiver about 60%
 结论：
 
 ```text
-q8zlib + 128mm 是当前现场最稳的低码率配置。
+q8zlib + 128mm 是上一版现场稳定低码率配置。
 相比 q8zlib + 64mm，Depth 码率从约 76Mbps 降到约 61Mbps，TCP 队列明显下降。
+```
+
+### 3.4 `pq8zlib + 128mm`
+
+结果：
+
+```text
+rgb_input_fps:        about 29.8-30.8fps
+depth_input_fps:      about 29.0-30.9fps
+rgb_sent_packets_s:   about 29.8-30.8fps
+depth_sent_fps:       about 29-30fps
+rgb_mbps:             about 6Mbps
+rgb_preview_mbps:     about 0.1-0.4Mbps
+depth_mbps:           about 36-53Mbps, latest recheck about 44-48Mbps
+depth_compress_ms:    about 20-24ms/frame
+depth_send_failures:  0 in 30s and 60s verification windows
+TCP Send-Q:           0 on both sender and receiver during the final window
+sender CPU:           gemini_sender about 325-381%, system still about 50-55% idle
+receiver CPU:         gemini_receiver about 50-70%
+```
+
+结论：
+
+```text
+pq8zlib + 128mm 是当前 Orange Pi Gemini305 的正式低码率配置。
+它的深度数值量化精度与 q8zlib + 128mm 相同，只把 zlib 压缩改为分块并行。
+相比 q8zlib + 128mm，Depth 压缩耗时从约 30-32ms 降到约 20-24ms，链路观察窗口内 TCP 队列为 0。
 ```
 
 ## 4. 当前正式配置
@@ -132,7 +162,7 @@ q8zlib + 128mm 是当前现场最稳的低码率配置。
     "depth_enabled": false
   },
   "depth_transport": {
-    "compression": "q8zlib",
+    "compression": "pq8zlib",
     "quantization_step_mm": 128
   }
 }

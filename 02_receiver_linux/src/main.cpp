@@ -1704,6 +1704,87 @@ std::vector<uint8_t> q8zlib_decompress_payload(const MediaPacket &packet) {
     return q8_decompress_payload(packet, 0x315a3851u, false);  // bytes: Q 8 Z 1
 }
 
+struct PQ8ZlibChunkEntry {
+    uint32_t sample_offset = 0;
+    uint32_t sample_count = 0;
+    uint32_t compressed_offset = 0;
+    uint32_t compressed_size = 0;
+};
+
+std::vector<uint8_t> pq8zlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 20) {
+        throw std::runtime_error("invalid pq8zlib depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t raw_step = read_le16(packet.payload.data() + 6);
+    const uint32_t sample_count = read_le32(packet.payload.data() + 8);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
+    const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
+    if(magic != 0x5a385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+        throw std::runtime_error("invalid pq8zlib depth header");
+    }
+    const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated pq8zlib depth table");
+    }
+
+    std::vector<PQ8ZlibChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    uint32_t expected_offset = 0;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 20ull + static_cast<size_t>(i) * 12ull;
+        PQ8ZlibChunkEntry chunk;
+        chunk.sample_offset = read_le32(entry);
+        chunk.sample_count = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.sample_offset != expected_offset || chunk.sample_count == 0 || chunk.sample_offset > sample_count
+           || chunk.sample_count > sample_count - chunk.sample_offset || chunk.compressed_size == 0
+           || compressed_offset > packet.payload.size() || chunk.compressed_size > packet.payload.size() - compressed_offset
+           || chunk.sample_count > static_cast<uint32_t>(std::numeric_limits<uLongf>::max())) {
+            throw std::runtime_error("invalid pq8zlib depth chunk");
+        }
+        expected_offset += chunk.sample_count;
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(expected_offset != sample_count || compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("invalid pq8zlib depth layout");
+    }
+
+    std::vector<uint8_t> quantized(expected_sample_count);
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &quantized, chunk] {
+            uLongf out_size = static_cast<uLongf>(chunk.sample_count);
+            const int rc =
+                uncompress(quantized.data() + chunk.sample_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
+                           static_cast<uLong>(chunk.compressed_size));
+            if(rc != Z_OK || out_size != chunk.sample_count) {
+                throw std::runtime_error("pq8zlib depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    for(size_t i = 0; i < quantized.size(); ++i) {
+        const uint8_t index = quantized[i];
+        const uint32_t value = index == 0 ? 0u : std::min<uint32_t>(static_cast<uint32_t>(index) * raw_step,
+                                                                    std::numeric_limits<uint16_t>::max());
+        const size_t offset = i * sizeof(uint16_t);
+        out[offset] = static_cast<uint8_t>(value & 0xffu);
+        out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+    }
+    return out;
+}
+
 class NibbleReader {
 public:
     explicit NibbleReader(const std::vector<uint8_t> &data) : data_(data) {}
@@ -1925,6 +2006,13 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.codec_or_compression == "q8zlib") {
         MediaPacket decoded = packet;
         decoded.payload = q8zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "pq8zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = pq8zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
