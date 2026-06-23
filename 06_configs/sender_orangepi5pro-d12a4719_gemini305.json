@@ -70,7 +70,7 @@
         "bitrate_bps": 6000000
       },
       "depth_transport": {
-        "compression": "plz4",
+        "compression": "pq8zlib",
         "quantization_step_mm": 4
       },
       "color_controls": {

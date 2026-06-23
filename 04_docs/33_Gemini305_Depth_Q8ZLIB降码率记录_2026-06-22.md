@@ -155,13 +155,20 @@ pq8zlib + 128mm 是当前 Orange Pi Gemini305 的正式低码率配置。
 
 ### 3.5 `4mm` 精度优先测试
 
-`128mm` 对可视化预览可用，但深度数值太粗。`4mm` 不能直接套用 `q8lz4/q8zlib/pq8zlib`，因为 8-bit index 的最大有效值是 255：
+`128mm` 对可视化预览可用，但深度数值太粗。最初按通用深度相机判断时，担心 `4mm` 不能直接套用 `q8lz4/q8zlib/pq8zlib`，因为 8-bit index 的最大有效值是 255：
 
 ```text
 4mm * 255 = 1020mm
 ```
 
-超过约 `1.02m` 的深度会被夹到 1 米左右，所以 4mm 必须走保留 `uint16` 全量程的路径。
+但 Gemini305 官方资料标称工作范围为 `4-100cm`，理想范围为 `7-50cm`。因此对当前这台 Gemini305 来说，`4mm * 255` 可以覆盖官方有效工作范围，不会像长距离相机那样把有效深度夹断。
+
+官方资料：
+
+```text
+https://www.orbbec.com/gemini-305/
+https://www.orbbec.com/compare-stereo-vision-cameras/
+```
 
 测试结果：
 
@@ -185,14 +192,22 @@ plz4 + 4mm:
   depth_send_failures: 0
   TCP Send-Q:          about 366KB at the end of the 30s window
   receiver errors:     no unsupported/decompression errors observed
+
+pq8zlib + 4mm:
+  depth_sent_fps:      mostly about 29-31fps, one sampled second about 25.9fps
+  depth_mbps:          about 24-29Mbps in the 30s verification window
+  depth_compress_ms:   about 17-21ms/frame
+  depth_send_failures: 0
+  TCP Send-Q:          about 138KB at the end of the 30s window
+  receiver errors:     no unsupported/decompression errors observed
 ```
 
 结论：
 
 ```text
-如果优先 4mm 深度数值精度，当前可运行配置为 plz4 + 4mm。
-它比 pq8zlib + 128mm 的网络压力大很多，但不会把远距离深度夹断。
-如果后续必须同时满足 4mm、稳定满 30fps 和低码率，需要继续做更专用的深度编码或降低链路其他负载。
+如果当前目标设备就是 Gemini305，4mm 精度优先配置应使用 pq8zlib + 4mm。
+该配置同时满足低码率、低压缩延迟和接近 30fps。
+若未来换成长距离深度相机，不能直接复用 q8 4mm，需要重新按相机最大有效深度评估。
 ```
 
 ## 4. 当前正式配置
@@ -207,7 +222,7 @@ plz4 + 4mm:
     "depth_enabled": false
   },
   "depth_transport": {
-    "compression": "plz4",
+    "compression": "pq8zlib",
     "quantization_step_mm": 4
   }
 }
@@ -219,7 +234,7 @@ plz4 + 4mm:
 主 RGB/Depth 媒体链路仍走 TCP。
 Depth 采集仍是 1280x800@30 Y16。
 接收端落盘前会解码回 uint16 Depth。
-当前配置是精度优先路线，网络压力高于 pq8zlib + 128mm。
+当前配置是 Gemini305 专用的 4mm 精度优先路线，网络压力低于 plz4 + 4mm。
 ```
 
 ## 5. 精度影响
