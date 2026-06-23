@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -103,6 +104,7 @@ struct Args {
     int run_seconds = 0;
     bool validate_only = false;
     bool no_preview = false;
+    bool no_local_preview = false;
     bool no_send = false;
 };
 
@@ -327,7 +329,7 @@ public:
             return std::nullopt;
         }
 
-        constexpr StreamType priorities[] = {StreamType::rgb, StreamType::depth_raw, StreamType::rgb_preview};
+        constexpr StreamType priorities[] = {StreamType::rgb, StreamType::rgb_preview, StreamType::depth_raw};
         for(const auto priority : priorities) {
             for(size_t offset = 0; offset < slots_.size(); ++offset) {
                 const size_t index = (next_slot_ + offset) % slots_.size();
@@ -365,6 +367,8 @@ struct DepthCompressionJob {
     CameraRuntime *output_camera = nullptr;
     size_t media_slot_index = 0;
     MediaFrameMeta meta;
+    float depth_scale = 1.0f;
+    double quantization_step_mm = 10.0;
     std::vector<uint8_t> raw_payload;
 };
 
@@ -439,6 +443,9 @@ Args parse_args(int argc, char **argv) {
         }
         else if(arg == "--no-preview") {
             args.no_preview = true;
+        }
+        else if(arg == "--no-local-preview") {
+            args.no_local_preview = true;
         }
         else if(arg == "--no-send") {
             args.no_send = true;
@@ -2053,6 +2060,275 @@ std::vector<uint8_t> zlib_compress_payload(const void *data, size_t size) {
     return out;
 }
 
+void append_varuint(std::vector<uint8_t> &out, uint32_t value) {
+    while(value >= 0x80u) {
+        append_u8(out, static_cast<uint8_t>((value & 0x7fu) | 0x80u));
+        value >>= 7u;
+    }
+    append_u8(out, static_cast<uint8_t>(value));
+}
+
+uint32_t zigzag_encode_i32(int32_t value) {
+    return static_cast<uint32_t>((value << 1) ^ (value >> 31));
+}
+
+std::vector<uint8_t> qdelta_compress_payload(const void *data, size_t size, uint16_t raw_step = 1) {
+    if(data == nullptr || size == 0 || size % sizeof(uint16_t) != 0 || raw_step == 0) {
+        throw std::runtime_error("invalid qdelta depth input");
+    }
+
+    const auto *samples = static_cast<const uint16_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    std::vector<uint8_t> out;
+    out.reserve(size / 2);
+    append_u8(out, 'Q');
+    append_u8(out, 'D');
+    append_u8(out, 'L');
+    append_u8(out, '1');
+    append_le16(out, raw_step);
+    append_le16(out, 0);
+
+    size_t index = 0;
+    int32_t previous = 0;
+    while(index < sample_count) {
+        if(samples[index] == 0) {
+            size_t zeros = 0;
+            while(index + zeros < sample_count && samples[index + zeros] == 0) {
+                ++zeros;
+            }
+            append_u8(out, 0);
+            append_varuint(out, static_cast<uint32_t>(zeros));
+            index += zeros;
+            previous = 0;
+            continue;
+        }
+
+        const size_t run_start = index;
+        uint8_t run = 0;
+        while(index < sample_count && samples[index] != 0 && run < std::numeric_limits<uint8_t>::max()) {
+            ++index;
+            ++run;
+        }
+        append_u8(out, 1);
+        append_u8(out, run);
+        for(size_t i = 0; i < run; ++i) {
+            const uint16_t value = samples[run_start + i];
+            uint32_t quantized = (static_cast<uint32_t>(value) + raw_step / 2u) / raw_step;
+            quantized = std::max<uint32_t>(1u, quantized);
+            if(quantized > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+                throw std::runtime_error("qdelta depth sample out of range");
+            }
+            const int32_t current = static_cast<int32_t>(quantized);
+            append_varuint(out, zigzag_encode_i32(current - previous));
+            previous = current;
+        }
+    }
+    return out;
+}
+
+uint16_t raw_step_for_depth_scale(float depth_scale, double quantization_mm = 1.0) {
+    if(!std::isfinite(depth_scale) || depth_scale <= 0.0f || quantization_mm <= 0.0) {
+        return 1;
+    }
+    const double raw_step = std::ceil(quantization_mm / static_cast<double>(depth_scale));
+    return static_cast<uint16_t>(std::clamp<double>(raw_step, 1.0, static_cast<double>(std::numeric_limits<uint16_t>::max())));
+}
+
+uint16_t quantize_depth12(uint16_t value, uint16_t raw_step) {
+    if(value == 0) {
+        return 0;
+    }
+    const uint32_t rounded = (static_cast<uint32_t>(value) + raw_step / 2u) / raw_step;
+    return static_cast<uint16_t>(std::clamp<uint32_t>(rounded, 1u, 4095u));
+}
+
+std::vector<uint8_t> pack_depth12_payload(const uint16_t *samples, size_t sample_count, uint16_t raw_step) {
+    std::vector<uint8_t> packed;
+    packed.reserve(((sample_count + 1u) / 2u) * 3u);
+    for(size_t i = 0; i < sample_count; i += 2) {
+        const uint16_t a = quantize_depth12(samples[i], raw_step);
+        const uint16_t b = (i + 1 < sample_count) ? quantize_depth12(samples[i + 1], raw_step) : 0;
+        packed.push_back(static_cast<uint8_t>(a & 0xffu));
+        packed.push_back(static_cast<uint8_t>(((a >> 8u) & 0x0fu) | ((b & 0x0fu) << 4u)));
+        packed.push_back(static_cast<uint8_t>((b >> 4u) & 0xffu));
+    }
+    return packed;
+}
+
+std::vector<uint8_t> pq12zlib_compress_payload(const void *data, size_t size, float depth_scale, double quantization_step_mm) {
+    if(data == nullptr || size == 0 || size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("invalid pq12zlib depth input");
+    }
+
+    constexpr size_t kSamplesPerChunk = 64 * 1024;
+    constexpr uint32_t kMagic = 0x5a323150u;  // bytes: P 1 2 Z
+    constexpr uint16_t kVersion = 1;
+    constexpr size_t kHeaderSize = 20;
+    constexpr size_t kChunkEntrySize = 12;
+
+    const auto *samples = static_cast<const uint16_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    if(sample_count > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("pq12zlib depth frame too large");
+    }
+    const size_t chunk_count = (sample_count + kSamplesPerChunk - 1) / kSamplesPerChunk;
+    if(chunk_count == 0 || chunk_count > std::numeric_limits<uint16_t>::max()) {
+        throw std::runtime_error("pq12zlib depth chunk count out of range");
+    }
+
+    const uint16_t raw_step = raw_step_for_depth_scale(depth_scale, quantization_step_mm);
+    struct CompressedChunk {
+        uint32_t sample_offset = 0;
+        uint32_t sample_count = 0;
+        std::vector<uint8_t> payload;
+    };
+
+    std::vector<CompressedChunk> chunks;
+    chunks.reserve(chunk_count);
+    for(size_t offset = 0; offset < sample_count; offset += kSamplesPerChunk) {
+        const size_t count = std::min(kSamplesPerChunk, sample_count - offset);
+        auto packed = pack_depth12_payload(samples + offset, count, raw_step);
+        const auto bound = compressBound(static_cast<uLong>(packed.size()));
+        CompressedChunk chunk;
+        chunk.sample_offset = static_cast<uint32_t>(offset);
+        chunk.sample_count = static_cast<uint32_t>(count);
+        chunk.payload.resize(bound);
+        uLongf out_size = bound;
+        const int rc = compress2(chunk.payload.data(), &out_size, packed.data(), static_cast<uLong>(packed.size()), Z_BEST_SPEED);
+        if(rc != Z_OK) {
+            throw std::runtime_error("pq12zlib depth compression failed");
+        }
+        chunk.payload.resize(static_cast<size_t>(out_size));
+        chunks.push_back(std::move(chunk));
+    }
+
+    size_t payload_size = kHeaderSize + chunks.size() * kChunkEntrySize;
+    for(const auto &chunk : chunks) {
+        payload_size += chunk.payload.size();
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(payload_size);
+    append_le32(out, kMagic);
+    append_le16(out, kVersion);
+    append_le16(out, raw_step);
+    append_le32(out, static_cast<uint32_t>(sample_count));
+    append_le16(out, static_cast<uint16_t>(chunks.size()));
+    for(size_t i = out.size(); i < kHeaderSize; ++i) {
+        append_u8(out, 0);
+    }
+    for(const auto &chunk : chunks) {
+        append_le32(out, chunk.sample_offset);
+        append_le32(out, chunk.sample_count);
+        append_le32(out, static_cast<uint32_t>(chunk.payload.size()));
+    }
+    for(const auto &chunk : chunks) {
+        append_bytes(out, chunk.payload.data(), chunk.payload.size());
+    }
+    return out;
+}
+
+std::vector<uint8_t> pq8zlib_compress_payload(const void *data, size_t size, uint16_t raw_step = 1) {
+    if(data == nullptr || size == 0 || size % sizeof(uint16_t) != 0 || raw_step == 0) {
+        throw std::runtime_error("invalid pq8zlib depth input");
+    }
+
+    constexpr size_t kSamplesPerChunk = 64 * 1024;
+    constexpr uint32_t kMagic = 0x5a385150u;  // bytes: P Q 8 Z
+    constexpr uint16_t kVersion = 1;
+    constexpr size_t kHeaderSize = 20;
+    constexpr size_t kChunkEntrySize = 12;
+
+    const auto *samples = static_cast<const uint16_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    if(sample_count > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("pq8zlib depth frame too large");
+    }
+    const size_t chunk_count = (sample_count + kSamplesPerChunk - 1) / kSamplesPerChunk;
+    if(chunk_count == 0 || chunk_count > std::numeric_limits<uint16_t>::max()) {
+        throw std::runtime_error("pq8zlib depth chunk count out of range");
+    }
+
+    struct CompressedChunk {
+        uint32_t sample_offset = 0;
+        uint32_t sample_count = 0;
+        std::vector<uint8_t> payload;
+    };
+
+    std::vector<CompressedChunk> chunks;
+    chunks.reserve(chunk_count);
+    for(size_t offset = 0; offset < sample_count; offset += kSamplesPerChunk) {
+        const size_t count = std::min(kSamplesPerChunk, sample_count - offset);
+        std::vector<uint8_t> quantized(count);
+        for(size_t i = 0; i < count; ++i) {
+            const uint16_t value = samples[offset + i];
+            if(value == 0) {
+                quantized[i] = 0;
+                continue;
+            }
+            const uint32_t rounded = (static_cast<uint32_t>(value) + raw_step / 2u) / raw_step;
+            quantized[i] = static_cast<uint8_t>(std::clamp<uint32_t>(rounded, 1u, 255u));
+        }
+
+        const auto bound = compressBound(static_cast<uLong>(quantized.size()));
+        CompressedChunk chunk;
+        chunk.sample_offset = static_cast<uint32_t>(offset);
+        chunk.sample_count = static_cast<uint32_t>(count);
+        chunk.payload.resize(bound);
+        uLongf out_size = bound;
+        const int rc = compress2(chunk.payload.data(), &out_size, quantized.data(), static_cast<uLong>(quantized.size()), Z_BEST_SPEED);
+        if(rc != Z_OK) {
+            throw std::runtime_error("pq8zlib depth compression failed");
+        }
+        chunk.payload.resize(static_cast<size_t>(out_size));
+        chunks.push_back(std::move(chunk));
+    }
+
+    size_t payload_size = kHeaderSize + chunks.size() * kChunkEntrySize;
+    for(const auto &chunk : chunks) {
+        payload_size += chunk.payload.size();
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(payload_size);
+    append_le32(out, kMagic);
+    append_le16(out, kVersion);
+    append_le16(out, raw_step);
+    append_le32(out, static_cast<uint32_t>(sample_count));
+    append_le16(out, static_cast<uint16_t>(chunks.size()));
+    for(size_t i = out.size(); i < kHeaderSize; ++i) {
+        append_u8(out, 0);
+    }
+    for(const auto &chunk : chunks) {
+        append_le32(out, chunk.sample_offset);
+        append_le32(out, chunk.sample_count);
+        append_le32(out, static_cast<uint32_t>(chunk.payload.size()));
+    }
+    for(const auto &chunk : chunks) {
+        append_bytes(out, chunk.payload.data(), chunk.payload.size());
+    }
+    return out;
+}
+
+std::vector<uint8_t> compress_depth_payload(const std::string &compression,
+                                            const std::vector<uint8_t> &raw_payload,
+                                            float depth_scale,
+                                            double quantization_step_mm) {
+    if(compression == "zlib") {
+        return zlib_compress_payload(raw_payload.data(), raw_payload.size());
+    }
+    if(compression == "qdelta") {
+        return qdelta_compress_payload(raw_payload.data(), raw_payload.size(), 1);
+    }
+    if(compression == "pq12zlib") {
+        return pq12zlib_compress_payload(raw_payload.data(), raw_payload.size(), depth_scale, quantization_step_mm);
+    }
+    if(compression == "pq8zlib") {
+        return pq8zlib_compress_payload(raw_payload.data(), raw_payload.size(), raw_step_for_depth_scale(depth_scale, quantization_step_mm));
+    }
+    throw std::runtime_error("unsupported depth compression: " + compression);
+}
+
 Json::Value sender_hello(const AppConfig &config) {
     Json::Value msg = base_message(config, "sender_hello");
     msg["sender_version"] = config.sender_version;
@@ -2066,6 +2342,9 @@ Json::Value sender_hello(const AppConfig &config) {
     Json::Value depth(Json::arrayValue);
     depth.append("none");
     depth.append("zlib");
+    depth.append("qdelta");
+    depth.append("pq12zlib");
+    depth.append("pq8zlib");
     capabilities["depth_compression"] = depth;
     capabilities["local_preview"] = config.preview.enabled;
     capabilities["web_rgb_preview"] = config.web_rgb_preview.enabled;
@@ -2804,7 +3083,8 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMedi
 
         try {
             const auto compress_started = std::chrono::steady_clock::now();
-            auto compressed_depth = zlib_compress_payload(job->raw_payload.data(), job->raw_payload.size());
+            auto compressed_depth =
+                compress_depth_payload(job->meta.codec_or_compression, job->raw_payload, job->depth_scale, job->quantization_step_mm);
             record_depth_compress_ms(*job->source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
             job->meta.payload_size = compressed_depth.size();
             job->meta.uncompressed_size = job->raw_payload.size();
@@ -3179,12 +3459,18 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.pixel_format = PixelFormat::depth_u16;
                 meta.payload_size = depth_payload_size;
                 meta.uncompressed_size = depth->dataSize();
-                if(camera.config.depth_transport.compression == "zlib") {
+                if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "qdelta"
+                   || camera.config.depth_transport.compression == "pq12zlib" || camera.config.depth_transport.compression == "pq8zlib") {
                     DepthCompressionJob compress_job;
                     compress_job.source_camera = &camera;
                     compress_job.output_camera = depth_target;
                     compress_job.media_slot_index = depth_slot;
                     compress_job.meta = meta;
+                    {
+                        std::lock_guard<std::mutex> lock(camera.mutex);
+                        compress_job.depth_scale = camera.depth_scale > 0.0f ? camera.depth_scale : 1.0f;
+                    }
+                    compress_job.quantization_step_mm = camera.config.depth_transport.quantization_step_mm;
                     const auto *depth_bytes = static_cast<const uint8_t *>(depth->data());
                     compress_job.raw_payload.assign(depth_bytes, depth_bytes + depth->dataSize());
                     if(depth_compression_queue.publish(depth_slot, std::move(compress_job))) {
@@ -3462,13 +3748,13 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
 template <typename Sender>
 void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &logger) {
     const bool display_available = std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
-    if(args.no_preview || !display_available) {
+    if(args.no_preview || args.no_local_preview || !display_available) {
         config.preview.enabled = false;
     }
     if(args.no_preview) {
         config.web_rgb_preview.enabled = false;
     }
-    if(!display_available && !args.no_preview) {
+    if(!display_available && !args.no_preview && !args.no_local_preview) {
         logger.warn("DISPLAY/WAYLAND_DISPLAY not set; local preview disabled for this run");
     }
     int preview_fps = config.preview.fps > 0 ? config.preview.fps : 10;

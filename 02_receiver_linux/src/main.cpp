@@ -13,11 +13,14 @@
 #include <cstring>
 #include <ctime>
 #include <cmath>
+#include <dlfcn.h>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -28,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -77,6 +81,8 @@ constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
+constexpr uint64_t kPreviewUdpAssemblyTimeoutUs = 1ull * 1000ull * 1000ull;
+constexpr size_t kPreviewUdpMaxAssemblies = 4096;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
@@ -270,6 +276,20 @@ std::optional<uint64_t> json_uint64_field(const std::string &json, const std::st
     return std::nullopt;
 }
 
+std::optional<double> json_double_field(const std::string &json, const std::string &key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*(-?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
+    std::smatch match;
+    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
+        try {
+            return std::stod(match[1].str());
+        }
+        catch(const std::exception &) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<bool> json_bool_field(const std::string &json, const std::string &key) {
     const std::regex pattern("\"" + key + "\"\\s*:\\s*(true|false)");
     std::smatch match;
@@ -345,6 +365,14 @@ std::optional<int> json_int_in_object(const std::string &json, const std::string
         return std::nullopt;
     }
     return json_int_field(*object, field_key);
+}
+
+std::optional<double> json_double_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
+    const auto object = json_object_field(json, object_key);
+    if(!object) {
+        return std::nullopt;
+    }
+    return json_double_field(*object, field_key);
 }
 
 std::string config_string(const std::string &json, const std::string &key, const std::string &fallback) {
@@ -623,6 +651,39 @@ bool h264_payload_has_vcl_nal(const std::vector<uint8_t> &payload) {
     return false;
 }
 
+std::optional<size_t> h264_first_vcl_start_offset(const std::vector<uint8_t> &payload) {
+    for(size_t i = 0; i + 4 < payload.size(); ++i) {
+        size_t nal_offset = std::string::npos;
+        size_t start_offset = i;
+        if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
+            nal_offset = i + 3;
+        }
+        else if(i + 4 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+            nal_offset = i + 4;
+        }
+        if(nal_offset == std::string::npos || nal_offset >= payload.size()) {
+            continue;
+        }
+        const uint8_t nal_type = payload[nal_offset] & 0x1fu;
+        if(nal_type >= 1 && nal_type <= 5) {
+            return start_offset;
+        }
+    }
+    return std::nullopt;
+}
+
+bool h264_payload_has_sps_and_pps(const std::vector<uint8_t> &payload) {
+    return h264_payload_has_nal_type(payload, 7) && h264_payload_has_nal_type(payload, 8);
+}
+
+std::vector<uint8_t> h264_non_vcl_prefix(const std::vector<uint8_t> &payload) {
+    const auto first_vcl = h264_first_vcl_start_offset(payload);
+    if(!first_vcl || *first_vcl == 0) {
+        return {};
+    }
+    return std::vector<uint8_t>(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(*first_vcl));
+}
+
 struct PreviewImage {
     std::vector<uint8_t> bytes;
     uint32_t width = 0;
@@ -630,18 +691,36 @@ struct PreviewImage {
 };
 
 struct DepthPreviewRange {
-    uint16_t min_value = 250;
-    uint16_t max_value = 2500;
+    double min_mm = 250.0;
+    double max_mm = 2500.0;
 };
 
 constexpr DepthPreviewRange kDefaultDepthPreviewRange{250, 2500};
-constexpr DepthPreviewRange kRaspberryPiGemini305DepthPreviewRange{1000, 12000};
+constexpr DepthPreviewRange kGemini305DepthPreviewRange{40, 1000};
 
 DepthPreviewRange depth_preview_range_for_camera(const std::string &sender_id, const std::string &camera_id) {
-    if(sender_id == "raspberrypi-01" && camera_id == "cam01") {
-        return kRaspberryPiGemini305DepthPreviewRange;
+    if(camera_id == "cam01" && (sender_id == "raspberrypi-01" || sender_id == "orangepi5pro-d12a4719")) {
+        return kGemini305DepthPreviewRange;
     }
     return kDefaultDepthPreviewRange;
+}
+
+double fallback_depth_scale_for_camera(const std::string &sender_id, const std::string &camera_id) {
+    if(camera_id == "cam01" && (sender_id == "raspberrypi-01" || sender_id == "orangepi5pro-d12a4719")) {
+        return 0.1;
+    }
+    return 1.0;
+}
+
+double depth_scale_from_announce_or_camera(const std::string &announce_json,
+                                           const std::string &sender_id,
+                                           const std::string &camera_id) {
+    const double fallback = fallback_depth_scale_for_camera(sender_id, camera_id);
+    const auto depth_scale = json_double_in_object(announce_json, "depth_profile", "depth_scale");
+    if(depth_scale && std::isfinite(*depth_scale) && *depth_scale > 0.0 && *depth_scale <= 1000.0) {
+        return *depth_scale;
+    }
+    return fallback;
 }
 
 uint8_t clamp_color(double value) {
@@ -654,17 +733,16 @@ uint8_t clamp_color(double value) {
     return static_cast<uint8_t>(value);
 }
 
-void append_depth_color(std::vector<uint8_t> &out, uint16_t value, const DepthPreviewRange &range) {
-    if(value == 0 || range.max_value <= range.min_value) {
+void append_depth_color(std::vector<uint8_t> &out, uint16_t raw_value, const DepthPreviewRange &range, double depth_scale) {
+    if(raw_value == 0 || raw_value == std::numeric_limits<uint16_t>::max() || depth_scale <= 0.0 || range.max_mm <= range.min_mm) {
         out.push_back(12);
         out.push_back(16);
         out.push_back(24);
         return;
     }
-    const double clamped =
-        std::clamp(static_cast<double>(value), static_cast<double>(range.min_value), static_cast<double>(range.max_value));
-    const double t = (clamped - static_cast<double>(range.min_value))
-                     / static_cast<double>(range.max_value - range.min_value);
+    const double value_mm = static_cast<double>(raw_value) * depth_scale;
+    const double clamped = std::clamp(value_mm, range.min_mm, range.max_mm);
+    const double t = (clamped - range.min_mm) / (range.max_mm - range.min_mm);
     const auto channel = [t](double center) {
         return clamp_color(255.0 * std::max(0.0, std::min(1.0, 1.5 - std::abs(4.0 * t - center))));
     };
@@ -680,6 +758,12 @@ void append_u16_le(std::vector<uint8_t> &out, uint16_t value) {
 
 void append_u32_le(std::vector<uint8_t> &out, uint32_t value) {
     for(int i = 0; i < 4; ++i) {
+        out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xffu));
+    }
+}
+
+void append_u64_le(std::vector<uint8_t> &out, uint64_t value) {
+    for(int i = 0; i < 8; ++i) {
         out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xffu));
     }
 }
@@ -735,7 +819,8 @@ PreviewImage build_bmp_from_rgb_pixels(const std::vector<uint8_t> &rgb, uint32_t
 PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
                                      uint32_t width,
                                      uint32_t height,
-                                     const DepthPreviewRange &range) {
+                                     const DepthPreviewRange &range,
+                                     double depth_scale) {
     PreviewImage image;
     if(width == 0 || height == 0 || payload.size() < static_cast<size_t>(width) * height * 2ull) {
         return image;
@@ -755,7 +840,7 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
         for(uint32_t x = 0; x < width && x / stride < image.width; x += stride) {
             const size_t offset = (static_cast<size_t>(y) * width + x) * 2ull;
             const uint16_t value = static_cast<uint16_t>(payload[offset]) | (static_cast<uint16_t>(payload[offset + 1]) << 8u);
-            append_depth_color(rgb, value, range);
+            append_depth_color(rgb, value, range, depth_scale);
         }
     }
 
@@ -768,6 +853,12 @@ struct Config {
     std::string media_bind_ip = "0.0.0.0";
     uint16_t media_port = 50010;
     bool preview_enabled = true;
+    bool media_udp_enabled = false;
+    std::string media_udp_bind_ip = "0.0.0.0";
+    uint16_t media_udp_port = 50013;
+    bool preview_udp_enabled = false;
+    std::string preview_udp_bind_ip = "0.0.0.0";
+    uint16_t preview_udp_port = 50012;
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
@@ -794,6 +885,12 @@ Config load_config(const std::string &path) {
     cfg.media_bind_ip = config_string(json, "media_bind_ip", cfg.media_bind_ip);
     cfg.media_port = config_port(json, "media_port", cfg.media_port);
     cfg.preview_enabled = config_bool(json, "preview_enabled", cfg.preview_enabled);
+    cfg.media_udp_enabled = config_bool(json, "media_udp_enabled", cfg.media_udp_enabled);
+    cfg.media_udp_bind_ip = config_string(json, "media_udp_bind_ip", cfg.media_udp_bind_ip);
+    cfg.media_udp_port = config_port(json, "media_udp_port", cfg.media_udp_port);
+    cfg.preview_udp_enabled = config_bool(json, "preview_udp_enabled", cfg.preview_udp_enabled);
+    cfg.preview_udp_bind_ip = config_string(json, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
+    cfg.preview_udp_port = config_port(json, "preview_udp_port", cfg.preview_udp_port);
     cfg.admin_bind_ip = config_string(json, "admin_bind_ip", cfg.admin_bind_ip);
     cfg.admin_port = config_port(json, "admin_port", cfg.admin_port);
     cfg.nas_root = config_string(json, "nas_root", cfg.nas_root);
@@ -1409,6 +1506,66 @@ MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
     return packet;
 }
 
+MediaPacket parse_media_packet_buffer(const uint8_t *data, size_t size, size_t max_payload_bytes) {
+    if(size < kMediaHeaderBaseSize) {
+        throw std::runtime_error("UDP media packet too small");
+    }
+
+    const uint32_t magic = read_le32(data + 0);
+    const uint16_t header_version = read_le16(data + 4);
+    const uint16_t header_size = read_le16(data + 6);
+    if(magic != kMediaMagic || header_version < 1 || header_version > kMediaHeaderVersion || header_size < kMediaHeaderBaseSize
+       || header_size > kMediaHeaderMaxSize || size < header_size) {
+        throw std::runtime_error("invalid UDP media packet header");
+    }
+
+    const uint16_t sender_id_len = read_le16(data + 14);
+    const uint16_t camera_id_len = read_le16(data + 16);
+    const uint16_t codec_len = read_le16(data + 18);
+    const uint64_t payload_size = read_le64(data + 62);
+    if(payload_size > max_payload_bytes) {
+        throw std::runtime_error("UDP media payload too large");
+    }
+    const size_t text_size = static_cast<size_t>(sender_id_len) + static_cast<size_t>(camera_id_len) + static_cast<size_t>(codec_len);
+    const size_t payload_offset = static_cast<size_t>(header_size) + text_size;
+    if(payload_offset > size || payload_size > size - payload_offset) {
+        throw std::runtime_error("truncated UDP media packet");
+    }
+
+    MediaPacket packet;
+    packet.stream_type = static_cast<StreamType>(data[8]);
+    packet.flags = read_le32(data + 10);
+    packet.frame_id = read_le64(data + 20);
+    packet.timestamp_us = read_le64(data + 28);
+    packet.system_timestamp_us = read_le64(data + 36);
+    packet.pair_id = read_le64(data + 44);
+    packet.width = read_le32(data + 52);
+    packet.height = read_le32(data + 56);
+    packet.pixel_format = static_cast<PixelFormat>(read_le16(data + 60));
+    packet.payload_size = payload_size;
+    packet.uncompressed_size = read_le64(data + 70);
+    if((packet.flags & has_rgb_diagnostics) != 0u) {
+        packet.rgb_exposure_us = static_cast<int32_t>(read_le32(data + 78));
+        packet.rgb_gain = static_cast<int32_t>(read_le32(data + 82));
+        packet.rgb_auto_exposure = static_cast<int32_t>(read_le32(data + 86));
+        packet.rgb_actual_fps = static_cast<int32_t>(read_le32(data + 90));
+    }
+    if(header_size >= kMediaHeaderV2Size && (packet.flags & has_pipeline_diagnostics) != 0u) {
+        packet.sender_capture_host_timestamp_us = read_le64(data + 94);
+        packet.sender_timing_bound_timestamp_us = read_le64(data + 102);
+        packet.sender_encode_start_timestamp_us = read_le64(data + 110);
+        packet.sender_encode_done_timestamp_us = read_le64(data + 118);
+        packet.sender_packet_queued_timestamp_us = read_le64(data + 126);
+    }
+
+    const char *text = reinterpret_cast<const char *>(data + header_size);
+    packet.sender_id.assign(text, sender_id_len);
+    packet.camera_id.assign(text + sender_id_len, camera_id_len);
+    packet.codec_or_compression.assign(text + sender_id_len + camera_id_len, codec_len);
+    packet.payload.assign(data + payload_offset, data + payload_offset + static_cast<size_t>(payload_size));
+    return packet;
+}
+
 std::vector<uint8_t> zlib_decompress_payload(const MediaPacket &packet) {
     if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload) {
         throw std::runtime_error("invalid zlib uncompressed depth size");
@@ -1418,6 +1575,578 @@ std::vector<uint8_t> zlib_decompress_payload(const MediaPacket &packet) {
     const int rc = uncompress(out.data(), &out_size, packet.payload.data(), static_cast<uLong>(packet.payload.size()));
     if(rc != Z_OK || out_size != packet.uncompressed_size) {
         throw std::runtime_error("zlib depth decompression failed");
+    }
+    return out;
+}
+
+struct Lz4Api {
+    using DecompressSafeFn = int (*)(const char *, char *, int, int);
+
+    void *handle = nullptr;
+    DecompressSafeFn decompress_safe = nullptr;
+};
+
+Lz4Api &lz4_api() {
+    static Lz4Api api;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        api.handle = dlopen("liblz4.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if(!api.handle) {
+            throw std::runtime_error(std::string("cannot load liblz4.so.1: ") + dlerror());
+        }
+        api.decompress_safe = reinterpret_cast<Lz4Api::DecompressSafeFn>(dlsym(api.handle, "LZ4_decompress_safe"));
+        if(!api.decompress_safe) {
+            throw std::runtime_error("liblz4.so.1 does not provide required decompression symbols");
+        }
+    });
+    return api;
+}
+
+std::vector<uint8_t> lz4_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.payload.size() > static_cast<size_t>(std::numeric_limits<int>::max())
+       || packet.uncompressed_size > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid lz4 uncompressed depth size");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size));
+    auto &api = lz4_api();
+    const int decoded_size = api.decompress_safe(reinterpret_cast<const char *>(packet.payload.data()),
+                                                 reinterpret_cast<char *>(out.data()),
+                                                 static_cast<int>(packet.payload.size()),
+                                                 static_cast<int>(out.size()));
+    if(decoded_size != static_cast<int>(out.size())) {
+        throw std::runtime_error("lz4 depth decompression failed");
+    }
+    return out;
+}
+
+struct Plz4ChunkEntry {
+    uint32_t raw_offset = 0;
+    uint32_t raw_size = 0;
+    uint32_t compressed_offset = 0;
+    uint32_t compressed_size = 0;
+};
+
+std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
+    if(packet.payload.size() < 16) {
+        throw std::runtime_error("invalid plz4 depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
+    const uint32_t raw_total = read_le32(packet.payload.data() + 8);
+    if(magic != 0x345a4c50u || version != 1 || chunk_count == 0 || raw_total == 0
+       || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
+        throw std::runtime_error("invalid plz4 depth header");
+    }
+    const size_t table_size = 16ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated plz4 depth table");
+    }
+
+    std::vector<Plz4ChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
+        Plz4ChunkEntry chunk;
+        chunk.raw_offset = read_le32(entry);
+        chunk.raw_size = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+           || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
+           || chunk.compressed_size > packet.payload.size() - compressed_offset) {
+            throw std::runtime_error("invalid plz4 depth chunk");
+        }
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("plz4 depth payload has trailing bytes");
+    }
+
+    std::vector<uint8_t> out(raw_total);
+    auto &api = lz4_api();
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &out, &api, chunk] {
+            const int rc = api.decompress_safe(
+                reinterpret_cast<const char *>(packet.payload.data() + chunk.compressed_offset),
+                reinterpret_cast<char *>(out.data() + chunk.raw_offset),
+                static_cast<int>(chunk.compressed_size),
+                static_cast<int>(chunk.raw_size));
+            if(rc != static_cast<int>(chunk.raw_size)) {
+                throw std::runtime_error("plz4 depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+    return out;
+}
+
+std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.payload.size() < 16) {
+        throw std::runtime_error("invalid pzlib depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
+    const uint32_t raw_total = read_le32(packet.payload.data() + 8);
+    if(magic != 0x424c5a50u || version != 1 || chunk_count == 0 || raw_total == 0
+       || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
+        throw std::runtime_error("invalid pzlib depth header");
+    }
+    const size_t table_size = 16ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated pzlib depth table");
+    }
+
+    std::vector<Plz4ChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
+        Plz4ChunkEntry chunk;
+        chunk.raw_offset = read_le32(entry);
+        chunk.raw_size = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+           || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
+           || chunk.compressed_size > packet.payload.size() - compressed_offset
+           || chunk.raw_size > static_cast<uint32_t>(std::numeric_limits<uLongf>::max())) {
+            throw std::runtime_error("invalid pzlib depth chunk");
+        }
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("pzlib depth payload has trailing bytes");
+    }
+
+    std::vector<uint8_t> out(raw_total);
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &out, chunk] {
+            uLongf out_size = static_cast<uLongf>(chunk.raw_size);
+            const int rc =
+                uncompress(out.data() + chunk.raw_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
+                           static_cast<uLong>(chunk.compressed_size));
+            if(rc != Z_OK || out_size != chunk.raw_size) {
+                throw std::runtime_error("pzlib depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+    return out;
+}
+
+std::vector<uint8_t> q8_decompress_payload(const MediaPacket &packet, uint32_t magic, bool use_lz4) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 16) {
+        throw std::runtime_error("invalid q8 depth payload");
+    }
+    const uint32_t packet_magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t raw_step = read_le16(packet.payload.data() + 6);
+    const uint32_t sample_count = read_le32(packet.payload.data() + 8);
+    const uint32_t compressed_size = read_le32(packet.payload.data() + 12);
+    const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
+    if(packet_magic != magic || version != 1 || raw_step == 0 || sample_count != expected_sample_count
+       || sample_count > static_cast<uint32_t>(std::numeric_limits<int>::max()) || compressed_size == 0
+       || static_cast<size_t>(compressed_size) != packet.payload.size() - 16
+       || compressed_size > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid q8 depth header");
+    }
+
+    std::vector<uint8_t> quantized(expected_sample_count);
+    if(use_lz4) {
+        auto &api = lz4_api();
+        const int decoded_size = api.decompress_safe(reinterpret_cast<const char *>(packet.payload.data() + 16),
+                                                     reinterpret_cast<char *>(quantized.data()),
+                                                     static_cast<int>(compressed_size),
+                                                     static_cast<int>(quantized.size()));
+        if(decoded_size != static_cast<int>(quantized.size())) {
+            throw std::runtime_error("q8 lz4 depth decompression failed");
+        }
+    }
+    else {
+        uLongf out_size = static_cast<uLongf>(quantized.size());
+        const int rc = uncompress(quantized.data(), &out_size, packet.payload.data() + 16, static_cast<uLong>(compressed_size));
+        if(rc != Z_OK || out_size != quantized.size()) {
+            throw std::runtime_error("q8 zlib depth decompression failed");
+        }
+    }
+
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    for(size_t i = 0; i < quantized.size(); ++i) {
+        const uint8_t index = quantized[i];
+        const uint32_t value = index == 0 ? 0u : std::min<uint32_t>(static_cast<uint32_t>(index) * raw_step,
+                                                                    std::numeric_limits<uint16_t>::max());
+        const size_t offset = i * sizeof(uint16_t);
+        out[offset] = static_cast<uint8_t>(value & 0xffu);
+        out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+    }
+    return out;
+}
+
+std::vector<uint8_t> q8lz4_decompress_payload(const MediaPacket &packet) {
+    return q8_decompress_payload(packet, 0x314c3851u, true);  // bytes: Q 8 L 1
+}
+
+std::vector<uint8_t> q8zlib_decompress_payload(const MediaPacket &packet) {
+    return q8_decompress_payload(packet, 0x315a3851u, false);  // bytes: Q 8 Z 1
+}
+
+struct PQ8ZlibChunkEntry {
+    uint32_t sample_offset = 0;
+    uint32_t sample_count = 0;
+    uint32_t compressed_offset = 0;
+    uint32_t compressed_size = 0;
+};
+
+size_t packed_depth12_size(uint32_t sample_count) {
+    return ((static_cast<size_t>(sample_count) + 1u) / 2u) * 3u;
+}
+
+void unpack_depth12_into(const std::vector<uint8_t> &packed, uint16_t raw_step, std::vector<uint8_t> &out, uint32_t sample_offset,
+                         uint32_t sample_count) {
+    size_t packed_index = 0;
+    for(uint32_t i = 0; i < sample_count; i += 2) {
+        if(packed_index + 2 >= packed.size()) {
+            throw std::runtime_error("truncated pq12zlib depth chunk");
+        }
+        const uint16_t a = static_cast<uint16_t>(packed[packed_index])
+                           | (static_cast<uint16_t>(packed[packed_index + 1] & 0x0fu) << 8u);
+        const uint16_t b = static_cast<uint16_t>((packed[packed_index + 1] >> 4u) & 0x0fu)
+                           | (static_cast<uint16_t>(packed[packed_index + 2]) << 4u);
+        packed_index += 3;
+        const auto write_sample = [&](uint32_t local_index, uint16_t quantized) {
+            const uint32_t value = quantized == 0 ? 0u : std::min<uint32_t>(static_cast<uint32_t>(quantized) * raw_step,
+                                                                            std::numeric_limits<uint16_t>::max());
+            const size_t offset = (static_cast<size_t>(sample_offset) + local_index) * sizeof(uint16_t);
+            out[offset] = static_cast<uint8_t>(value & 0xffu);
+            out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+        };
+        write_sample(i, a);
+        if(i + 1 < sample_count) {
+            write_sample(i + 1, b);
+        }
+    }
+}
+
+std::vector<uint8_t> pq12zlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 20) {
+        throw std::runtime_error("invalid pq12zlib depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t raw_step = read_le16(packet.payload.data() + 6);
+    const uint32_t sample_count = read_le32(packet.payload.data() + 8);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
+    const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
+    if(magic != 0x5a323150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+        throw std::runtime_error("invalid pq12zlib depth header");
+    }
+    const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated pq12zlib depth table");
+    }
+
+    std::vector<PQ8ZlibChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    uint32_t expected_offset = 0;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 20ull + static_cast<size_t>(i) * 12ull;
+        PQ8ZlibChunkEntry chunk;
+        chunk.sample_offset = read_le32(entry);
+        chunk.sample_count = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.sample_offset != expected_offset || chunk.sample_count == 0 || chunk.sample_offset > sample_count
+           || chunk.sample_count > sample_count - chunk.sample_offset || chunk.compressed_size == 0
+           || compressed_offset > packet.payload.size() || chunk.compressed_size > packet.payload.size() - compressed_offset
+           || packed_depth12_size(chunk.sample_count) > static_cast<size_t>(std::numeric_limits<uLongf>::max())) {
+            throw std::runtime_error("invalid pq12zlib depth chunk");
+        }
+        expected_offset += chunk.sample_count;
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(expected_offset != sample_count || compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("invalid pq12zlib depth layout");
+    }
+
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &out, raw_step, chunk] {
+            std::vector<uint8_t> packed(packed_depth12_size(chunk.sample_count));
+            uLongf out_size = static_cast<uLongf>(packed.size());
+            const int rc =
+                uncompress(packed.data(), &out_size, packet.payload.data() + chunk.compressed_offset,
+                           static_cast<uLong>(chunk.compressed_size));
+            if(rc != Z_OK || out_size != packed.size()) {
+                throw std::runtime_error("pq12zlib depth chunk decompression failed");
+            }
+            unpack_depth12_into(packed, raw_step, out, chunk.sample_offset, chunk.sample_count);
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+    return out;
+}
+
+std::vector<uint8_t> pq8zlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 20) {
+        throw std::runtime_error("invalid pq8zlib depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t raw_step = read_le16(packet.payload.data() + 6);
+    const uint32_t sample_count = read_le32(packet.payload.data() + 8);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
+    const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
+    if(magic != 0x5a385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+        throw std::runtime_error("invalid pq8zlib depth header");
+    }
+    const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated pq8zlib depth table");
+    }
+
+    std::vector<PQ8ZlibChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    uint32_t expected_offset = 0;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 20ull + static_cast<size_t>(i) * 12ull;
+        PQ8ZlibChunkEntry chunk;
+        chunk.sample_offset = read_le32(entry);
+        chunk.sample_count = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.sample_offset != expected_offset || chunk.sample_count == 0 || chunk.sample_offset > sample_count
+           || chunk.sample_count > sample_count - chunk.sample_offset || chunk.compressed_size == 0
+           || compressed_offset > packet.payload.size() || chunk.compressed_size > packet.payload.size() - compressed_offset
+           || chunk.sample_count > static_cast<uint32_t>(std::numeric_limits<uLongf>::max())) {
+            throw std::runtime_error("invalid pq8zlib depth chunk");
+        }
+        expected_offset += chunk.sample_count;
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(expected_offset != sample_count || compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("invalid pq8zlib depth layout");
+    }
+
+    std::vector<uint8_t> quantized(expected_sample_count);
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &quantized, chunk] {
+            uLongf out_size = static_cast<uLongf>(chunk.sample_count);
+            const int rc =
+                uncompress(quantized.data() + chunk.sample_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
+                           static_cast<uLong>(chunk.compressed_size));
+            if(rc != Z_OK || out_size != chunk.sample_count) {
+                throw std::runtime_error("pq8zlib depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    for(size_t i = 0; i < quantized.size(); ++i) {
+        const uint8_t index = quantized[i];
+        const uint32_t value = index == 0 ? 0u : std::min<uint32_t>(static_cast<uint32_t>(index) * raw_step,
+                                                                    std::numeric_limits<uint16_t>::max());
+        const size_t offset = i * sizeof(uint16_t);
+        out[offset] = static_cast<uint8_t>(value & 0xffu);
+        out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+    }
+    return out;
+}
+
+class NibbleReader {
+public:
+    explicit NibbleReader(const std::vector<uint8_t> &data) : data_(data) {}
+
+    uint8_t read() {
+        if(byte_index_ >= data_.size()) {
+            throw std::runtime_error("truncated rvl depth payload");
+        }
+        const uint8_t byte = data_[byte_index_];
+        uint8_t nibble = 0;
+        if(read_low_) {
+            nibble = byte & 0x0fu;
+            read_low_ = false;
+        }
+        else {
+            nibble = static_cast<uint8_t>((byte >> 4u) & 0x0fu);
+            read_low_ = true;
+            ++byte_index_;
+        }
+        return nibble;
+    }
+
+private:
+    const std::vector<uint8_t> &data_;
+    size_t byte_index_ = 0;
+    bool read_low_ = true;
+};
+
+uint32_t rvl_read_vle(NibbleReader &reader) {
+    uint32_t value = 0;
+    uint32_t shift = 0;
+    while(true) {
+        const uint8_t nibble = reader.read();
+        value |= static_cast<uint32_t>(nibble & 0x7u) << shift;
+        if((nibble & 0x8u) == 0) {
+            return value;
+        }
+        shift += 3u;
+        if(shift >= 32u) {
+            throw std::runtime_error("invalid rvl depth payload");
+        }
+    }
+}
+
+void write_depth_u16le(std::vector<uint8_t> &out, size_t sample_index, uint16_t value) {
+    const size_t offset = sample_index * sizeof(uint16_t);
+    out[offset] = static_cast<uint8_t>(value & 0xffu);
+    out[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+}
+
+std::vector<uint8_t> rvl_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("invalid rvl uncompressed depth size");
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    const size_t sample_count = out.size() / sizeof(uint16_t);
+    NibbleReader reader(packet.payload);
+    int32_t previous = 0;
+    size_t index = 0;
+    while(index < sample_count) {
+        const uint32_t zeros = rvl_read_vle(reader);
+        if(zeros > sample_count - index) {
+            throw std::runtime_error("invalid rvl zero run");
+        }
+        index += zeros;
+
+        const uint32_t nonzeros = rvl_read_vle(reader);
+        if(nonzeros > sample_count - index) {
+            throw std::runtime_error("invalid rvl nonzero run");
+        }
+        for(uint32_t i = 0; i < nonzeros; ++i) {
+            const uint32_t zigzag = rvl_read_vle(reader);
+            const int32_t delta = (zigzag & 1u) != 0u ? -static_cast<int32_t>((zigzag + 1u) >> 1u)
+                                                      : static_cast<int32_t>(zigzag >> 1u);
+            const int32_t current = previous + delta;
+            if(current < 0 || current > static_cast<int32_t>(std::numeric_limits<uint16_t>::max())) {
+                throw std::runtime_error("invalid rvl depth sample");
+            }
+            write_depth_u16le(out, index, static_cast<uint16_t>(current));
+            previous = current;
+            ++index;
+        }
+    }
+    return out;
+}
+
+uint16_t read_u16_le_checked(const std::vector<uint8_t> &data, size_t offset) {
+    if(offset + 1 >= data.size()) {
+        throw std::runtime_error("truncated qdelta depth payload");
+    }
+    return static_cast<uint16_t>(static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8u));
+}
+
+uint32_t read_varuint_checked(const std::vector<uint8_t> &data, size_t &offset) {
+    uint32_t value = 0;
+    uint32_t shift = 0;
+    while(offset < data.size()) {
+        const uint8_t byte = data[offset++];
+        value |= static_cast<uint32_t>(byte & 0x7fu) << shift;
+        if((byte & 0x80u) == 0) {
+            return value;
+        }
+        shift += 7u;
+        if(shift >= 32u) {
+            throw std::runtime_error("invalid qdelta varuint");
+        }
+    }
+    throw std::runtime_error("truncated qdelta varuint");
+}
+
+int32_t zigzag_decode_i32(uint32_t value) {
+    return static_cast<int32_t>((value >> 1u) ^ (~(value & 1u) + 1u));
+}
+
+std::vector<uint8_t> qdelta_decompress_payload(const MediaPacket &packet) {
+    if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
+       || packet.uncompressed_size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("invalid qdelta uncompressed depth size");
+    }
+    if(packet.payload.size() < 8 || packet.payload[0] != 'Q' || packet.payload[1] != 'D' || packet.payload[2] != 'L'
+       || packet.payload[3] != '1') {
+        throw std::runtime_error("invalid qdelta header");
+    }
+    const uint32_t raw_step = std::max<uint32_t>(1, read_u16_le_checked(packet.payload, 4));
+    std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
+    const size_t sample_count = out.size() / sizeof(uint16_t);
+    size_t offset = 8;
+    size_t index = 0;
+    int32_t previous = 0;
+    while(index < sample_count) {
+        if(offset >= packet.payload.size()) {
+            throw std::runtime_error("truncated qdelta depth payload");
+        }
+        const uint8_t token = packet.payload[offset++];
+        if(token == 0) {
+            const uint32_t zeros = read_varuint_checked(packet.payload, offset);
+            if(zeros > sample_count - index) {
+                throw std::runtime_error("invalid qdelta zero run");
+            }
+            index += zeros;
+            previous = 0;
+            continue;
+        }
+        if(token != 1) {
+            throw std::runtime_error("invalid qdelta token");
+        }
+        if(offset >= packet.payload.size()) {
+            throw std::runtime_error("truncated qdelta run");
+        }
+        const uint32_t nonzeros = packet.payload[offset++];
+        if(nonzeros == 0 || nonzeros > sample_count - index) {
+            throw std::runtime_error("invalid qdelta nonzero run");
+        }
+        for(uint32_t i = 0; i < nonzeros; ++i) {
+            const int32_t delta = zigzag_decode_i32(read_varuint_checked(packet.payload, offset));
+            const int32_t quantized = previous + delta;
+            if(quantized < 0) {
+                throw std::runtime_error("invalid qdelta depth sample");
+            }
+            const uint32_t raw_value = std::min<uint32_t>(static_cast<uint32_t>(quantized) * raw_step, std::numeric_limits<uint16_t>::max());
+            write_depth_u16le(out, index, static_cast<uint16_t>(raw_value));
+            previous = quantized;
+            ++index;
+        }
     }
     return out;
 }
@@ -1432,6 +2161,69 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.codec_or_compression == "zlib") {
         MediaPacket decoded = packet;
         decoded.payload = zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "rvl") {
+        MediaPacket decoded = packet;
+        decoded.payload = rvl_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "qdelta") {
+        MediaPacket decoded = packet;
+        decoded.payload = qdelta_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "lz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = lz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "plz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = plz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "pzlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = pzlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "q8lz4") {
+        MediaPacket decoded = packet;
+        decoded.payload = q8lz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "q8zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = q8zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "pq12zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = pq12zlib_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "pq8zlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = pq8zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
@@ -2822,6 +3614,9 @@ struct H264StreamPacket {
     uint64_t seq = 0;
     bool has_idr = false;
     bool has_vcl = false;
+    uint64_t timestamp_us = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
     std::vector<uint8_t> payload;
 };
 
@@ -2835,6 +3630,46 @@ struct H264StreamBuffer {
     uint32_t width = 0;
     uint32_t height = 0;
 };
+
+constexpr uint32_t kH264PreviewFrameFlagKey = 1u << 0u;
+constexpr uint32_t kH264PreviewFrameFlagConfig = 1u << 1u;
+
+std::vector<uint8_t> h264_preview_frame_header(uint32_t payload_size,
+                                               uint32_t flags,
+                                               uint32_t width,
+                                               uint32_t height,
+                                               uint64_t timestamp_us,
+                                               uint64_t seq) {
+    std::vector<uint8_t> header;
+    header.reserve(40);
+    header.push_back('G');
+    header.push_back('W');
+    header.push_back('H');
+    header.push_back('P');
+    append_u16_le(header, 1);
+    append_u16_le(header, 40);
+    append_u32_le(header, payload_size);
+    append_u32_le(header, flags);
+    append_u32_le(header, width);
+    append_u32_le(header, height);
+    append_u64_le(header, timestamp_us);
+    append_u64_le(header, seq);
+    return header;
+}
+
+bool send_h264_preview_frame(int fd,
+                             const std::vector<uint8_t> &payload,
+                             uint32_t flags,
+                             uint32_t width,
+                             uint32_t height,
+                             uint64_t timestamp_us,
+                             uint64_t seq) {
+    if(payload.empty() || payload.size() > std::numeric_limits<uint32_t>::max()) {
+        return true;
+    }
+    const auto header = h264_preview_frame_header(static_cast<uint32_t>(payload.size()), flags, width, height, timestamp_us, seq);
+    return send_all(fd, header.data(), header.size()) && send_all(fd, payload.data(), payload.size());
+}
 
 struct CameraState {
     explicit CameraState(std::string sender, std::string camera)
@@ -2862,6 +3697,7 @@ struct CameraState {
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
+    uint64_t last_rgb_preview_packet_us = 0;
     uint64_t rgb_stream_requested_until_us = 0;
     H264StreamBuffer rgb_stream;
     H264StreamBuffer rgb_preview_stream;
@@ -2875,6 +3711,7 @@ struct CameraState {
     uint32_t depth_preview_height = 0;
     uint64_t depth_preview_requested_until_us = 0;
     std::vector<uint8_t> depth_preview_ppm;
+    double depth_scale = 1.0;
     std::string last_error;
     std::string last_announce_json;
     bool last_announce_live = false;
@@ -2905,21 +3742,46 @@ public:
         std::string announce_json;
     };
 
+    struct PreviewUdpAssembly {
+        std::vector<uint8_t> bytes;
+        std::vector<uint8_t> received;
+        size_t received_count = 0;
+        uint32_t total_size = 0;
+        uint16_t chunk_count = 0;
+        uint64_t updated_us = 0;
+    };
+
     void start() {
         running_ = true;
         udp_thread_ = std::thread([this] { udp_loop(); });
+        if(config_.media_udp_enabled) {
+            media_udp_thread_ = std::thread([this] { media_udp_loop(); });
+        }
+        if(config_.preview_enabled && config_.preview_udp_enabled) {
+            preview_udp_thread_ = std::thread([this] { preview_udp_loop(); });
+        }
         tcp_thread_ = std::thread([this] { tcp_loop(); });
         admin_thread_ = std::thread([this] { admin_loop(); });
         logger_.info("receiver started: media tcp " + config_.media_bind_ip + ":" + std::to_string(config_.media_port) +
-                     ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) + ", admin http " +
-                     config_.admin_bind_ip + ":" + std::to_string(config_.admin_port) +
-                     ", preview " + (config_.preview_enabled ? "enabled" : "disabled"));
+                     ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) +
+                     ", media udp " + (config_.media_udp_enabled ? config_.media_udp_bind_ip : std::string("disabled")) + ":" +
+                     std::to_string(config_.media_udp_port) +
+                     ", preview udp " +
+                     (config_.preview_enabled && config_.preview_udp_enabled ? config_.preview_udp_bind_ip : std::string("disabled")) + ":" +
+                     std::to_string(config_.preview_udp_port) + ", admin http " + config_.admin_bind_ip + ":" +
+                     std::to_string(config_.admin_port) + ", preview " + (config_.preview_enabled ? "enabled" : "disabled"));
     }
 
     void stop() {
         running_ = false;
         if(udp_thread_.joinable()) {
             udp_thread_.join();
+        }
+        if(media_udp_thread_.joinable()) {
+            media_udp_thread_.join();
+        }
+        if(preview_udp_thread_.joinable()) {
+            preview_udp_thread_.join();
         }
         if(tcp_thread_.joinable()) {
             tcp_thread_.join();
@@ -2957,38 +3819,69 @@ public:
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
+        out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_port\":" << config_.media_udp_port << ',';
+        out << "\"preview_udp_enabled\":" << (config_.preview_enabled && config_.preview_udp_enabled ? "true" : "false") << ',';
+        out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
-        out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
         out << "\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\",";
         out << "\"cameras\":[";
         bool first = true;
         for(const auto &item : cameras_) {
-            const auto &cam = *item.second;
+            auto &cam = *item.second;
             const auto last_seen = camera_last_seen_us(cam);
             const bool status_live = cam.online && is_recent_us(now, cam.last_status_us, kCameraOnlineTimeoutUs);
             const bool media_live = cam.online && is_recent_us(now, cam.last_media_us, kCameraOnlineTimeoutUs);
             const bool live = media_live;
             const bool preview_enabled = config_.preview_enabled;
+            bool rgb_h264_preview_fresh = false;
+            uint32_t rgb_h264_preview_width = 0;
+            uint32_t rgb_h264_preview_height = 0;
+            uint64_t rgb_h264_preview_us = 0;
+            {
+                std::lock_guard<std::mutex> stream_lock(cam.rgb_preview_stream.mutex);
+                rgb_h264_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.rgb_preview_stream.last_us, kPreviewFreshUs);
+                rgb_h264_preview_width = cam.rgb_preview_stream.width;
+                rgb_h264_preview_height = cam.rgb_preview_stream.height;
+                rgb_h264_preview_us = cam.rgb_preview_stream.last_us;
+            }
             const bool rgb_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs);
             const bool main_rgb_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs);
             const bool depth_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
-            const bool rgb_preview_report_available = preview_enabled && (rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0));
+            const bool rgb_preview_report_available =
+                preview_enabled && (rgb_h264_preview_fresh || rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0));
             const bool main_rgb_native_preview_available =
                 cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame();
             const bool main_rgb_preview_report_available =
-                cam.key == main_preview_key_ && (main_rgb_native_preview_available || rgb_thumbnail_preview_available);
+                cam.key == main_preview_key_ && (rgb_h264_preview_fresh || main_rgb_native_preview_available || rgb_thumbnail_preview_available);
+            const int announce_rgb_width_for_preview = json_int_in_object(cam.last_announce_json, "rgb_profile", "width").value_or(0);
+            const int announce_rgb_height_for_preview = json_int_in_object(cam.last_announce_json, "rgb_profile", "height").value_or(0);
+            const uint32_t rgb_report_width =
+                rgb_h264_preview_fresh ? rgb_h264_preview_width
+                                       : (cam.rgb_preview_width > 0 ? cam.rgb_preview_width : static_cast<uint32_t>(announce_rgb_width_for_preview));
+            const uint32_t rgb_report_height =
+                rgb_h264_preview_fresh ? rgb_h264_preview_height
+                                       : (cam.rgb_preview_height > 0 ? cam.rgb_preview_height : static_cast<uint32_t>(announce_rgb_height_for_preview));
+            const uint64_t rgb_report_us = rgb_h264_preview_fresh ? rgb_h264_preview_us : cam.rgb_preview_us;
             const uint32_t main_rgb_report_width =
-                main_rgb_native_preview_available ? cam.main_rgb_preview_width
-                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_width : cam.main_rgb_preview_width);
+                rgb_h264_preview_fresh ? rgb_h264_preview_width
+                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_width
+                                                                           : (main_rgb_preview_report_available ? rgb_report_width
+                                                                                                                 : cam.main_rgb_preview_width));
             const uint32_t main_rgb_report_height =
-                main_rgb_native_preview_available ? cam.main_rgb_preview_height
-                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_height : cam.main_rgb_preview_height);
+                rgb_h264_preview_fresh ? rgb_h264_preview_height
+                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_height
+                                                                           : (main_rgb_preview_report_available ? rgb_report_height
+                                                                                                                 : cam.main_rgb_preview_height));
             const uint64_t main_rgb_report_us =
-                main_rgb_native_preview_available ? cam.main_rgb_preview_us
-                                                  : (main_rgb_preview_report_available ? cam.rgb_preview_us : cam.main_rgb_preview_us);
+                rgb_h264_preview_fresh ? rgb_h264_preview_us
+                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_us
+                                                                           : (main_rgb_preview_report_available ? cam.rgb_preview_us
+                                                                                                                 : cam.main_rgb_preview_us));
             const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
             const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
             const bool calibration_available = cam.last_announce_live && cached_calibration_available;
@@ -3028,10 +3921,10 @@ public:
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
             out << "\"rgb_preview_available\":" << (rgb_preview_report_available ? "true" : "false") << ',';
-            out << "\"rgb_preview_width\":" << cam.rgb_preview_width << ',';
-            out << "\"rgb_preview_height\":" << cam.rgb_preview_height << ',';
-            out << "\"rgb_preview_us\":" << cam.rgb_preview_us << ',';
-            out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, cam.rgb_preview_us) << ',';
+            out << "\"rgb_preview_width\":" << rgb_report_width << ',';
+            out << "\"rgb_preview_height\":" << rgb_report_height << ',';
+            out << "\"rgb_preview_us\":" << rgb_report_us << ',';
+            out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, rgb_report_us) << ',';
             out << "\"main_rgb_preview_available\":" << (main_rgb_preview_report_available ? "true" : "false") << ',';
             out << "\"main_rgb_preview_width\":" << main_rgb_report_width << ',';
             out << "\"main_rgb_preview_height\":" << main_rgb_report_height << ',';
@@ -3066,6 +3959,12 @@ public:
         out << "\"media_bind_ip\":\"" << json_escape(config_.media_bind_ip) << "\",";
         out << "\"media_port\":" << config_.media_port << ',';
         out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
+        out << "\"media_udp_bind_ip\":\"" << json_escape(config_.media_udp_bind_ip) << "\",";
+        out << "\"media_udp_port\":" << config_.media_udp_port << ',';
+        out << "\"preview_udp_enabled\":" << (config_.preview_udp_enabled ? "true" : "false") << ',';
+        out << "\"preview_udp_bind_ip\":\"" << json_escape(config_.preview_udp_bind_ip) << "\",";
+        out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
         out << "\"admin_bind_ip\":\"" << json_escape(config_.admin_bind_ip) << "\",";
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
@@ -3468,13 +4367,17 @@ public:
 
         H264StreamBuffer *stream = &cam->rgb_stream;
         bool using_preview_stream = false;
-        {
-            std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
-            const auto now = now_us();
-            using_preview_stream = is_recent_us(now, cam->rgb_preview_stream.last_us, kPreviewFreshUs);
-            if(using_preview_stream) {
-                stream = &cam->rgb_preview_stream;
+        for(int attempt = 0; attempt < 10; ++attempt) {
+            {
+                std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+                const auto now = now_us();
+                using_preview_stream = is_recent_us(now, cam->rgb_preview_stream.last_us, kPreviewFreshUs);
+                if(using_preview_stream) {
+                    stream = &cam->rgb_preview_stream;
+                    break;
+                }
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
 
         std::ostringstream response;
@@ -3542,6 +4445,143 @@ public:
             }
             for(const auto &packet : packets) {
                 if(!send_all(fd, packet.payload.data(), packet.payload.size())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool stream_rgb_h264_preview_frames(int fd, const std::string &sender_id, const std::string &camera_id) {
+        std::shared_ptr<CameraState> cam;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!config_.preview_enabled) {
+                const std::string body = "{\"ok\":false,\"error\":\"preview disabled\"}";
+                std::ostringstream response;
+                response << "HTTP/1.1 404 Not Found\r\n";
+                response << "Content-Type: application/json\r\n";
+                response << "Cache-Control: no-store\r\n";
+                response << "Content-Length: " << body.size() << "\r\n";
+                response << "Connection: close\r\n\r\n";
+                response << body;
+                return send_all(fd, response.str());
+            }
+            const auto now = now_us();
+            refresh_camera_liveness_locked(now);
+            const auto key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+                const std::string body = "{\"ok\":false,\"error\":\"rgb h264 stream not found\"}";
+                std::ostringstream response;
+                response << "HTTP/1.1 404 Not Found\r\n";
+                response << "Content-Type: application/json\r\n";
+                response << "Cache-Control: no-store\r\n";
+                response << "Content-Length: " << body.size() << "\r\n";
+                response << "Connection: close\r\n\r\n";
+                response << body;
+                return send_all(fd, response.str());
+            }
+            it->second->rgb_stream_requested_until_us = now + kPreviewRequestKeepaliveUs;
+            cam = it->second;
+        }
+
+        H264StreamBuffer *stream = &cam->rgb_stream;
+        bool using_preview_stream = false;
+        const auto preview_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        while(running_ && g_running && std::chrono::steady_clock::now() < preview_deadline) {
+            {
+                std::unique_lock<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+                const auto now = now_us();
+                if(is_recent_us(now, cam->rgb_preview_stream.last_us, kPreviewFreshUs) && !cam->rgb_preview_stream.packets.empty()) {
+                    stream = &cam->rgb_preview_stream;
+                    using_preview_stream = true;
+                    break;
+                }
+                stream_lock.unlock();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cam->rgb_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+            }
+            std::unique_lock<std::mutex> wait_lock(cam->rgb_preview_stream.mutex);
+            cam->rgb_preview_stream.cv.wait_for(wait_lock, std::chrono::milliseconds(50));
+        }
+
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n";
+        response << "Content-Type: application/octet-stream\r\n";
+        response << "Cache-Control: no-store\r\n";
+        response << "Connection: close\r\n";
+        response << "X-GWV3-Rgb-Stream: " << (using_preview_stream ? "preview" : "main") << "\r\n";
+        response << "X-Accel-Buffering: no\r\n\r\n";
+        if(!send_all(fd, response.str())) {
+            return false;
+        }
+
+        bool started = false;
+        uint64_t next_seq = 0;
+        while(running_ && g_running) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cam->rgb_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+            }
+            std::vector<uint8_t> header;
+            std::vector<H264StreamPacket> packets;
+            {
+                std::unique_lock<std::mutex> stream_lock(stream->mutex);
+                stream->cv.wait_for(stream_lock, std::chrono::milliseconds(1000));
+                if(stream->packets.empty()) {
+                    continue;
+                }
+
+                header = stream->header_h264;
+                if(!started) {
+                    size_t start_index = stream->packets.size();
+                    for(size_t i = stream->packets.size(); i > 0; --i) {
+                        if(stream->packets[i - 1].has_idr) {
+                            start_index = i - 1;
+                            break;
+                        }
+                    }
+                    if(start_index == stream->packets.size()) {
+                        continue;
+                    }
+                    for(size_t i = start_index; i < stream->packets.size(); ++i) {
+                        packets.push_back(stream->packets[i]);
+                    }
+                    next_seq = packets.empty() ? stream->next_seq : packets.back().seq + 1;
+                    started = true;
+                }
+                else {
+                    if(next_seq < stream->packets.front().seq) {
+                        next_seq = stream->packets.front().seq;
+                    }
+                    for(const auto &packet : stream->packets) {
+                        if(packet.seq >= next_seq) {
+                            packets.push_back(packet);
+                        }
+                    }
+                    if(!packets.empty()) {
+                        next_seq = packets.back().seq + 1;
+                    }
+                }
+            }
+
+            for(const auto &packet : packets) {
+                uint32_t flags = packet.has_idr ? kH264PreviewFrameFlagKey : 0u;
+                const auto timestamp_us = packet.timestamp_us > 0 ? packet.timestamp_us : now_us();
+                if(packet.has_idr && !header.empty()) {
+                    std::vector<uint8_t> payload;
+                    payload.reserve(header.size() + packet.payload.size());
+                    payload.insert(payload.end(), header.begin(), header.end());
+                    payload.insert(payload.end(), packet.payload.begin(), packet.payload.end());
+                    flags |= kH264PreviewFrameFlagConfig;
+                    if(!send_h264_preview_frame(fd, payload, flags, packet.width, packet.height, timestamp_us, packet.seq)) {
+                        return false;
+                    }
+                }
+                else if(!send_h264_preview_frame(fd, packet.payload, flags, packet.width, packet.height, timestamp_us, packet.seq)) {
                     return false;
                 }
             }
@@ -3642,13 +4682,18 @@ private:
 
         {
             std::lock_guard<std::mutex> stream_lock(stream.mutex);
-            if(!has_vcl) {
+            const auto non_vcl_prefix = h264_non_vcl_prefix(packet.payload);
+            if(!non_vcl_prefix.empty() && h264_payload_has_sps_and_pps(non_vcl_prefix)) {
+                stream.header_h264 = non_vcl_prefix;
+            }
+            else if(!has_vcl) {
                 if(stream.header_h264.size() + packet.payload.size() > kRgbH264StreamMaxHeaderBytes) {
                     stream.header_h264.clear();
                 }
                 stream.header_h264.insert(stream.header_h264.end(), packet.payload.begin(), packet.payload.end());
             }
-            stream.packets.push_back(H264StreamPacket{stream.next_seq++, has_idr, has_vcl, packet.payload});
+            stream.packets.push_back(
+                H264StreamPacket{stream.next_seq++, has_idr, has_vcl, packet.system_timestamp_us, packet.width, packet.height, packet.payload});
             while(stream.packets.size() > kRgbH264StreamMaxPackets) {
                 stream.packets.pop_front();
             }
@@ -3677,6 +4722,7 @@ private:
             if(announce != runtime_state_.camera_announces.end()) {
                 state->last_announce_json = announce->second;
             }
+            state->depth_scale = depth_scale_from_announce_or_camera(state->last_announce_json, sender_id, camera_id);
             state->recording_requested = recording_all_;
             if(recording_all_) {
                 state->recording_start_us = recording_all_start_us_;
@@ -3721,6 +4767,7 @@ private:
                 cam.last_announce_json = json;
                 cam.last_announce_live = true;
                 cam.last_announce_received_us = received_us;
+                cam.depth_scale = depth_scale_from_announce_or_camera(cam.last_announce_json, sender_id, camera_id);
                 const bool should_save_announce =
                     (runtime_state_.camera_announces.find(key) == runtime_state_.camera_announces.end() ||
                      runtime_state_.camera_announces[key] != json) &&
@@ -3777,8 +4824,13 @@ private:
                 decoder = std::make_unique<RgbPreviewDecoder>();
             }
             decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps, logger_);
-            if(!cam.rgb_preview_prefix_h264.empty()) {
-                if(!decoder->write_packet(cam.rgb_preview_prefix_h264)) {
+            auto decoder_prefix = cam.rgb_preview_prefix_h264;
+            const auto packet_prefix = h264_non_vcl_prefix(packet.payload);
+            if(!packet_prefix.empty() && h264_payload_has_sps_and_pps(packet_prefix)) {
+                decoder_prefix = packet_prefix;
+            }
+            if(!decoder_prefix.empty()) {
+                if(!decoder->write_packet(decoder_prefix)) {
                     if(!decoder->has_frame()) {
                         cleanup_rgb_decoder_async(std::move(decoder));
                         preview_width = 0;
@@ -3898,6 +4950,7 @@ private:
         std::shared_ptr<CameraState> cam;
         bool build_depth_preview = false;
         uint64_t depth_preview_media_us = 0;
+        double depth_preview_scale = fallback_depth_scale_for_camera(decoded_packet.sender_id, decoded_packet.camera_id);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
@@ -3915,17 +4968,14 @@ private:
                     if(stream_requested) {
                         update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
                     }
-                    bool preview_stream_fresh = false;
-                    {
-                        std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
-                        preview_stream_fresh = is_recent_us(now_us(), cam->rgb_preview_stream.last_us, kPreviewFreshUs);
-                    }
+                    const bool preview_stream_fresh = is_recent_us(media_now, cam->last_rgb_preview_packet_us, kPreviewFreshUs);
                     if(!preview_stream_fresh && (jpeg_requested || decoder_active)) {
                         update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
                     }
                 }
             }
             else if(packet.stream_type == StreamType::rgb_preview) {
+                cam->last_rgb_preview_packet_us = cam->last_media_us;
                 if(config_.preview_enabled) {
                     const auto media_now = cam->last_media_us;
                     const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
@@ -3949,6 +4999,7 @@ private:
                 cam->depth_bytes += packet.payload_size;
                 build_depth_preview = config_.preview_enabled && is_recent_us(cam->last_media_us, cam->depth_preview_requested_until_us, 0);
                 depth_preview_media_us = cam->last_media_us;
+                depth_preview_scale = cam->depth_scale;
             }
         }
 
@@ -3956,7 +5007,8 @@ private:
             auto preview = build_depth_preview_bmp(decoded_packet.payload,
                                                    decoded_packet.width,
                                                    decoded_packet.height,
-                                                   depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id));
+                                                   depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id),
+                                                   depth_preview_scale);
             if(!preview.bytes.empty()) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if(config_.preview_enabled && cam->online &&
@@ -4013,6 +5065,94 @@ private:
         }
     }
 
+    void cleanup_preview_udp_assemblies_locked(uint64_t now) {
+        for(auto it = preview_udp_assemblies_.begin(); it != preview_udp_assemblies_.end();) {
+            if(now > it->second.updated_us && now - it->second.updated_us > kPreviewUdpAssemblyTimeoutUs) {
+                it = preview_udp_assemblies_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+        if(preview_udp_assemblies_.size() <= kPreviewUdpMaxAssemblies) {
+            return;
+        }
+        while(preview_udp_assemblies_.size() > kPreviewUdpMaxAssemblies / 2) {
+            auto oldest = preview_udp_assemblies_.begin();
+            for(auto it = preview_udp_assemblies_.begin(); it != preview_udp_assemblies_.end(); ++it) {
+                if(it->second.updated_us < oldest->second.updated_us) {
+                    oldest = it;
+                }
+            }
+            preview_udp_assemblies_.erase(oldest);
+        }
+    }
+
+    void handle_fragmented_udp_datagram(const uint8_t *data, size_t size, const std::string &peer_endpoint, bool media_udp) {
+        if(size < kPreviewUdpHeaderSize) {
+            return;
+        }
+        const uint32_t magic = read_le32(data + 0);
+        const uint16_t version = read_le16(data + 4);
+        const uint16_t header_size = read_le16(data + 6);
+        if(magic != kPreviewUdpMagic || version != kPreviewUdpHeaderVersion || header_size != kPreviewUdpHeaderSize || size < header_size) {
+            return;
+        }
+
+        const uint32_t sequence = read_le32(data + 8);
+        const uint16_t chunk_index = read_le16(data + 12);
+        const uint16_t chunk_count = read_le16(data + 14);
+        const uint32_t total_size = read_le32(data + 16);
+        const uint32_t chunk_offset = read_le32(data + 20);
+        const uint16_t chunk_size = read_le16(data + 24);
+        if(chunk_count == 0 || chunk_index >= chunk_count || total_size == 0 || total_size > config_.max_payload_bytes
+           || chunk_offset > total_size || chunk_size > total_size - chunk_offset || size < header_size + chunk_size) {
+            return;
+        }
+
+        std::vector<uint8_t> completed;
+        const uint64_t now = now_us();
+        const std::string key = peer_endpoint + "#" + std::to_string(sequence);
+        {
+            std::lock_guard<std::mutex> lock(preview_udp_mutex_);
+            cleanup_preview_udp_assemblies_locked(now);
+            auto &assembly = preview_udp_assemblies_[key];
+            if(assembly.bytes.size() != total_size || assembly.chunk_count != chunk_count) {
+                assembly.bytes.assign(total_size, 0);
+                assembly.received.assign(chunk_count, 0);
+                assembly.received_count = 0;
+                assembly.total_size = total_size;
+                assembly.chunk_count = chunk_count;
+            }
+            assembly.updated_us = now;
+            if(!assembly.received[chunk_index]) {
+                std::memcpy(assembly.bytes.data() + chunk_offset, data + header_size, chunk_size);
+                assembly.received[chunk_index] = 1;
+                assembly.received_count++;
+            }
+            if(assembly.received_count == assembly.chunk_count) {
+                completed = std::move(assembly.bytes);
+                preview_udp_assemblies_.erase(key);
+            }
+        }
+
+        if(completed.empty()) {
+            return;
+        }
+        try {
+            auto packet = parse_media_packet_buffer(completed.data(), completed.size(), config_.max_payload_bytes);
+            const bool accepted = media_udp ? (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw)
+                                            : (packet.stream_type == StreamType::rgb_preview);
+            if(accepted) {
+                handle_media_packet(packet);
+            }
+        }
+        catch(const std::exception &e) {
+            logger_.warn(std::string(media_udp ? "media UDP packet rejected from " : "preview UDP packet rejected from ")
+                         + peer_endpoint + ": " + e.what());
+        }
+    }
+
     void udp_loop() {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if(fd < 0) {
@@ -4044,6 +5184,82 @@ private:
             }
             buffer[static_cast<size_t>(got)] = '\0';
             handle_status_message(std::string(buffer.data(), static_cast<size_t>(got)), socket_endpoint(peer));
+        }
+        close(fd);
+    }
+
+    void preview_udp_loop() {
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if(fd < 0) {
+            logger_.error(std::string("cannot create preview UDP socket: ") + std::strerror(errno));
+            return;
+        }
+        set_fd_cloexec(fd);
+        int yes = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        if(!set_socket_recv_buffer(fd, kMediaSocketReceiveBufferBytes)) {
+            logger_.warn(std::string("cannot set preview UDP SO_RCVBUF: ") + std::strerror(errno));
+        }
+        set_socket_timeout(fd, 1);
+        const auto addr = make_bind_addr(config_.preview_udp_bind_ip, config_.preview_udp_port);
+        if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            logger_.error(std::string("cannot bind preview UDP: ") + std::strerror(errno));
+            close(fd);
+            return;
+        }
+        logger_.info("preview UDP listening on " + config_.preview_udp_bind_ip + ":" + std::to_string(config_.preview_udp_port));
+
+        std::vector<uint8_t> buffer(65536);
+        while(running_ && g_running) {
+            sockaddr_in peer{};
+            socklen_t peer_len = sizeof(peer);
+            const ssize_t got = recvfrom(fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr *>(&peer), &peer_len);
+            if(got < 0) {
+                if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                logger_.warn(std::string("preview UDP recv failed: ") + std::strerror(errno));
+                continue;
+            }
+            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), false);
+        }
+        close(fd);
+    }
+
+    void media_udp_loop() {
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if(fd < 0) {
+            logger_.error(std::string("cannot create media UDP socket: ") + std::strerror(errno));
+            return;
+        }
+        set_fd_cloexec(fd);
+        int yes = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        if(!set_socket_recv_buffer(fd, kMediaSocketReceiveBufferBytes)) {
+            logger_.warn(std::string("cannot set media UDP SO_RCVBUF: ") + std::strerror(errno));
+        }
+        set_socket_timeout(fd, 1);
+        const auto addr = make_bind_addr(config_.media_udp_bind_ip, config_.media_udp_port);
+        if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            logger_.error(std::string("cannot bind media UDP: ") + std::strerror(errno));
+            close(fd);
+            return;
+        }
+        logger_.info("media UDP listening on " + config_.media_udp_bind_ip + ":" + std::to_string(config_.media_udp_port));
+
+        std::vector<uint8_t> buffer(65536);
+        while(running_ && g_running) {
+            sockaddr_in peer{};
+            socklen_t peer_len = sizeof(peer);
+            const ssize_t got = recvfrom(fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr *>(&peer), &peer_len);
+            if(got < 0) {
+                if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                logger_.warn(std::string("media UDP recv failed: ") + std::strerror(errno));
+                continue;
+            }
+            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), true);
         }
         close(fd);
     }
@@ -4279,6 +5495,11 @@ private:
                                     args.count("camera_id") ? args.at("camera_id") : "");
             return;
         }
+        else if(method == "GET" && path == "/api/preview/rgb-h264-frames") {
+            stream_rgb_h264_preview_frames(fd, args.count("sender_id") ? args.at("sender_id") : "",
+                                           args.count("camera_id") ? args.at("camera_id") : "");
+            return;
+        }
         else {
             status = 404;
             body = "{\"ok\":false,\"error\":\"not found\"}";
@@ -4301,15 +5522,19 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int> active_media_clients_{0};
     std::thread udp_thread_;
+    std::thread media_udp_thread_;
+    std::thread preview_udp_thread_;
     std::thread tcp_thread_;
     std::thread admin_thread_;
     std::mutex mutex_;
+    std::mutex preview_udp_mutex_;
     std::string main_preview_key_;
     bool recording_all_ = false;
     uint64_t recording_all_start_us_ = 0;
     bool recording_all_has_file_prefix_override_ = false;
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
+    std::unordered_map<std::string, PreviewUdpAssembly> preview_udp_assemblies_;
 };
 
 struct Args {

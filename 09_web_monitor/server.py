@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response as FastAPIResponse
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -151,3 +151,29 @@ def rgb_main_preview(sender_id: str = Query(...), camera_id: str = Query(...)) -
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"main rgb preview unavailable: {exc}") from exc
+
+
+@app.get("/api/preview/rgb-h264-frames")
+def rgb_h264_frames(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
+    query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
+    url = ADMIN_BASE.rstrip("/") + f"/api/preview/rgb-h264-frames?{query}"
+
+    def body():
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        body(),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/preview/rgb-video")
+def rgb_video(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
+    raise HTTPException(status_code=410, detail="mp4 rgb preview fallback disabled; refresh the page to use jpeg fallback")

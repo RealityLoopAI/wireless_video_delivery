@@ -333,6 +333,9 @@ case "$PREVIEW_MODE" in
   no-preview)
     echo "  launch_preview: local/web preview disabled by --no-preview"
     ;;
+  no-local-preview)
+    echo "  launch_preview: local OpenCV preview disabled; web RGB preview follows config"
+    ;;
   *)
     echo "  launch_preview: follows config"
     ;;

@@ -55,6 +55,16 @@ bool optional_bool(const Json::Value &node, const char *key, bool fallback) {
     return node[key].asBool();
 }
 
+double optional_double(const Json::Value &node, const char *key, double fallback) {
+    if(!node.isMember(key)) {
+        return fallback;
+    }
+    if(!node[key].isNumeric()) {
+        throw std::runtime_error(std::string("invalid numeric field: ") + key);
+    }
+    return node[key].asDouble();
+}
+
 std::string trim_copy(std::string value) {
     const auto not_space = [](unsigned char c) { return !std::isspace(c); };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
@@ -314,6 +324,18 @@ AppConfig load_config(const std::string &path) {
         config.transport.reconnect_interval_ms = optional_int(transport, "reconnect_interval_ms", config.transport.reconnect_interval_ms);
     }
 
+    const auto &media_udp = root["media_udp"];
+    if(!media_udp.isNull()) {
+        if(!media_udp.isObject()) {
+            throw std::runtime_error("invalid object field: media_udp");
+        }
+        config.media_udp.enabled = optional_bool(media_udp, "enabled", config.media_udp.enabled);
+        config.media_udp.rgb_enabled = optional_bool(media_udp, "rgb_enabled", config.media_udp.rgb_enabled);
+        config.media_udp.depth_enabled = optional_bool(media_udp, "depth_enabled", config.media_udp.depth_enabled);
+        config.media_udp.port = parse_port(media_udp, "port", config.media_udp.port);
+        config.media_udp.mtu_bytes = optional_int(media_udp, "mtu_bytes", config.media_udp.mtu_bytes);
+    }
+
     const auto &preview = root["preview"];
     if(!preview.isNull()) {
         config.preview.enabled = optional_bool(preview, "enabled", config.preview.enabled);
@@ -331,6 +353,9 @@ AppConfig load_config(const std::string &path) {
         config.web_rgb_preview.max_height = optional_int(web_rgb_preview, "max_height", config.web_rgb_preview.max_height);
         config.web_rgb_preview.fps = optional_int(web_rgb_preview, "fps", config.web_rgb_preview.fps);
         config.web_rgb_preview.bitrate_bps = optional_int(web_rgb_preview, "bitrate_bps", config.web_rgb_preview.bitrate_bps);
+        config.web_rgb_preview.udp_enabled = optional_bool(web_rgb_preview, "udp_enabled", config.web_rgb_preview.udp_enabled);
+        config.web_rgb_preview.udp_port = parse_port(web_rgb_preview, "udp_port", config.web_rgb_preview.udp_port);
+        config.web_rgb_preview.udp_mtu_bytes = optional_int(web_rgb_preview, "udp_mtu_bytes", config.web_rgb_preview.udp_mtu_bytes);
     }
 
     const auto &logging = root["logging"];
@@ -375,6 +400,8 @@ AppConfig load_config(const std::string &path) {
         const auto &depth = item["depth_transport"];
         if(!depth.isNull()) {
             camera.depth_transport.compression = optional_string(depth, "compression", camera.depth_transport.compression);
+            camera.depth_transport.quantization_step_mm =
+                optional_double(depth, "quantization_step_mm", camera.depth_transport.quantization_step_mm);
         }
 
         camera.color_controls = load_color_controls(item["color_controls"]);
@@ -416,6 +443,9 @@ void validate_config(const AppConfig &config) {
     if(config.transport.reconnect_interval_ms <= 0) {
         throw std::runtime_error("transport.reconnect_interval_ms must be positive");
     }
+    if(config.media_udp.mtu_bytes <= 0) {
+        throw std::runtime_error("media_udp.mtu_bytes must be positive");
+    }
     if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
         throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
     }
@@ -430,6 +460,9 @@ void validate_config(const AppConfig &config) {
     }
     if(config.web_rgb_preview.bitrate_bps <= 0) {
         throw std::runtime_error("web_rgb_preview.bitrate_bps must be positive");
+    }
+    if(config.web_rgb_preview.udp_mtu_bytes <= 0) {
+        throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be positive");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
@@ -472,8 +505,13 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.bitrate_bps <= 0) {
             throw std::runtime_error("rgb_encoding.bitrate_bps must be positive");
         }
-        if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib") {
-            throw std::runtime_error("only none/zlib depth compression is implemented in this sender build");
+        if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
+           && camera.depth_transport.compression != "qdelta" && camera.depth_transport.compression != "pq12zlib"
+           && camera.depth_transport.compression != "pq8zlib") {
+            throw std::runtime_error("only none/zlib/qdelta/pq12zlib/pq8zlib depth compression is implemented in this sender build");
+        }
+        if(camera.depth_transport.quantization_step_mm <= 0.0) {
+            throw std::runtime_error("depth_transport.quantization_step_mm must be positive");
         }
         validate_profile(camera.rgb_profile, "rgb_profile");
         validate_profile(camera.depth_profile, "depth_profile");

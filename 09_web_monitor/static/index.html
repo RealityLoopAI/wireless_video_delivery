@@ -185,7 +185,11 @@
       letter-spacing: .02em;
     }
     .main-pane img,
-    .thumb-view img {
+    .thumb-view img,
+    .main-pane canvas,
+    .thumb-view canvas,
+    .main-pane video,
+    .thumb-view video {
       position: absolute;
       inset: 0;
       width: 100%;
@@ -196,7 +200,9 @@
       object-position: center center;
       display: block;
     }
-    .main-pane img {
+    .main-pane img,
+    .main-pane canvas,
+    .main-pane video {
       object-fit: contain !important;
     }
     .placeholder {
@@ -536,6 +542,8 @@
     let mainTargetSyncKey = '';
     let loopsStarted = false;
     let receiverPreviewEnabled = true;
+    let previewSlotCounter = 0;
+    const rgbPreviewPlayers = new Map();
 
     const STATUS_REFRESH_MS = 1000;
     const MAIN_RGB_REFRESH_MS = 33;
@@ -597,6 +605,255 @@
       if (!res.ok || data.ok === false) alert(data.error || data.detail || text);
       await load();
       return data;
+    }
+    function rootSlot(root) {
+      if (!root.dataset.previewSlot) {
+        previewSlotCounter += 1;
+        root.dataset.previewSlot = `slot-${previewSlotCounter}`;
+      }
+      return root.dataset.previewSlot;
+    }
+    function setPlaceholder(root, kind, message, visible = true) {
+      const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
+      if (!placeholder) return;
+      placeholder.textContent = message || kind;
+      placeholder.style.display = visible ? '' : 'none';
+    }
+    function h264PreviewUrl(c) {
+      return `/api/preview/rgb-h264-frames?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+    }
+    function mp4PreviewUrl(c) {
+      return `/api/preview/rgb-video?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
+    }
+    function rgbH264PreviewSupported() {
+      return 'VideoDecoder' in window && 'EncodedVideoChunk' in window;
+    }
+    function codecFromAnnexB(data) {
+      const hex = (value) => value.toString(16).padStart(2, '0').toUpperCase();
+      for (let i = 0; i + 4 < data.length; i += 1) {
+        let nalOffset = -1;
+        if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+          nalOffset = i + 3;
+        }
+        else if (i + 4 < data.length && data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) {
+          nalOffset = i + 4;
+        }
+        if (nalOffset < 0 || nalOffset + 3 >= data.length) continue;
+        if ((data[nalOffset] & 0x1f) === 7) {
+          return `avc1.${hex(data[nalOffset + 1])}${hex(data[nalOffset + 2])}${hex(data[nalOffset + 3])}`;
+        }
+      }
+      return 'avc1.42E01E';
+    }
+    class H264PreviewPlayer {
+      constructor(root, camera, high) {
+        this.root = root;
+        this.camera = camera;
+        this.high = high;
+        this.key = `${camera.camera_key}:${high ? 'main' : 'thumb'}`;
+        this.abort = new AbortController();
+        this.buffer = new Uint8Array(0);
+        this.decoder = null;
+        this.configured = false;
+        this.stopped = false;
+        this.canvas = root.querySelector('canvas[data-rgb-video]');
+        if (!this.canvas) {
+          this.canvas = document.createElement('canvas');
+          this.canvas.dataset.rgbVideo = '1';
+          this.canvas.style.display = 'none';
+          root.appendChild(this.canvas);
+        }
+        this.ctx = this.canvas.getContext('2d', {alpha: false});
+      }
+      async start() {
+        const img = this.root.querySelector('[data-preview="rgb"]');
+        if (img) {
+          img.removeAttribute('src');
+          img.style.display = 'none';
+        }
+        if (!rgbH264PreviewSupported()) {
+          setPlaceholder(this.root, 'rgb', '等待 RGB');
+          return;
+        }
+        setPlaceholder(this.root, 'rgb', '等待 RGB 视频');
+        try {
+          const res = await fetch(h264PreviewUrl(this.camera), {signal: this.abort.signal, cache: 'no-store'});
+          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+          const reader = res.body.getReader();
+          while (!this.stopped) {
+            const {value, done} = await reader.read();
+            if (done) break;
+            if (value) this.append(value);
+          }
+        }
+        catch (_) {
+          if (!this.stopped) {
+            setPlaceholder(this.root, 'rgb', 'RGB 视频中断');
+            this.canvas.style.display = 'none';
+          }
+        }
+      }
+      append(chunk) {
+        const merged = new Uint8Array(this.buffer.length + chunk.length);
+        merged.set(this.buffer, 0);
+        merged.set(chunk, this.buffer.length);
+        this.buffer = merged;
+        this.consume();
+      }
+      consume() {
+        while (this.buffer.length >= 40) {
+          const view = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength);
+          if (view.getUint8(0) !== 0x47 || view.getUint8(1) !== 0x57 || view.getUint8(2) !== 0x48 || view.getUint8(3) !== 0x50) {
+            this.buffer = new Uint8Array(0);
+            throw new Error('bad h264 preview frame');
+          }
+          const headerSize = view.getUint16(6, true);
+          const payloadSize = view.getUint32(8, true);
+          const total = headerSize + payloadSize;
+          if (headerSize < 40 || this.buffer.length < total) return;
+          const flags = view.getUint32(12, true);
+          const width = view.getUint32(16, true);
+          const height = view.getUint32(20, true);
+          const timestampUs = Number(view.getBigUint64(24, true));
+          const payload = this.buffer.slice(headerSize, total);
+          this.buffer = this.buffer.slice(total);
+          this.decode(payload, flags, width, height, timestampUs);
+        }
+      }
+      configure(payload, width, height) {
+        if (this.configured) return;
+        this.decoder = new VideoDecoder({
+          output: (frame) => this.draw(frame),
+          error: () => {
+            if (!this.stopped) setPlaceholder(this.root, 'rgb', 'RGB 解码错误');
+          }
+        });
+        const baseConfig = {
+          codec: codecFromAnnexB(payload),
+          codedWidth: width || 640,
+          codedHeight: height || 360,
+          optimizeForLatency: true,
+          avc: {format: 'annexb'}
+        };
+        try {
+          this.decoder.configure(baseConfig);
+        }
+        catch (_) {
+          const fallback = {...baseConfig};
+          delete fallback.avc;
+          this.decoder.configure(fallback);
+        }
+        this.configured = true;
+      }
+      decode(payload, flags, width, height, timestampUs) {
+        const isKey = (flags & 1) !== 0;
+        if (!this.configured) {
+          if (!isKey) return;
+          this.configure(payload, width, height);
+        }
+        if (!this.decoder || this.decoder.state !== 'configured') return;
+        this.decoder.decode(new EncodedVideoChunk({
+          type: isKey ? 'key' : 'delta',
+          timestamp: timestampUs || Math.floor(performance.now() * 1000),
+          data: payload
+        }));
+      }
+      draw(frame) {
+        const width = frame.displayWidth || frame.codedWidth || this.camera.rgb_preview_width || 640;
+        const height = frame.displayHeight || frame.codedHeight || this.camera.rgb_preview_height || 360;
+        if (this.canvas.width !== width || this.canvas.height !== height) {
+          this.canvas.width = width;
+          this.canvas.height = height;
+        }
+        this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+        frame.close();
+        this.canvas.style.display = 'block';
+        setPlaceholder(this.root, 'rgb', '', false);
+      }
+      stop() {
+        this.stopped = true;
+        this.abort.abort();
+        if (this.decoder) {
+          try { this.decoder.close(); } catch (_) {}
+        }
+      }
+    }
+    function stopRgbPreview(root) {
+      const slot = rootSlot(root);
+      const player = rgbPreviewPlayers.get(slot);
+      if (player) {
+        player.stop();
+        rgbPreviewPlayers.delete(slot);
+      }
+      const canvas = root.querySelector('canvas[data-rgb-video]');
+      if (canvas) canvas.remove();
+      const video = root.querySelector('video[data-rgb-fallback-video]');
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        video.remove();
+      }
+    }
+    function ensureRgbMp4Preview(root, c, high = false) {
+      const slot = rootSlot(root);
+      const key = `${c.camera_key}:${high ? 'main-mp4' : 'thumb-mp4'}`;
+      const current = rgbPreviewPlayers.get(slot);
+      if (current) {
+        current.stop();
+        rgbPreviewPlayers.delete(slot);
+      }
+      const canvas = root.querySelector('canvas[data-rgb-video]');
+      if (canvas) canvas.remove();
+      const img = root.querySelector('[data-preview="rgb"]');
+      if (img) {
+        img.removeAttribute('src');
+        img.style.display = 'none';
+      }
+      let video = root.querySelector('video[data-rgb-fallback-video]');
+      if (!video) {
+        video = document.createElement('video');
+        video.dataset.rgbFallbackVideo = '1';
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.controls = false;
+        video.style.display = 'none';
+        root.appendChild(video);
+      }
+      if (video.dataset.previewKey !== key || !video.getAttribute('src')) {
+        video.dataset.previewKey = key;
+        video.src = mp4PreviewUrl(c);
+        video.load();
+        video.play().catch(() => {});
+      }
+      video.onloadeddata = () => {
+        video.style.display = 'block';
+        setPlaceholder(root, 'rgb', '', false);
+      };
+      video.onerror = () => {
+        video.style.display = 'none';
+        setPlaceholder(root, 'rgb', 'RGB 视频中断');
+      };
+      setPlaceholder(root, 'rgb', '等待 RGB 视频');
+    }
+    function ensureRgbVideoPreview(root, c, high = false) {
+      const slot = rootSlot(root);
+      const key = `${c.camera_key}:${high ? 'main' : 'thumb'}`;
+      const current = rgbPreviewPlayers.get(slot);
+      if (current && current.key === key) return;
+      if (current) current.stop();
+      const player = new H264PreviewPlayer(root, c, high);
+      rgbPreviewPlayers.set(slot, player);
+      player.start();
+    }
+    function stopDetachedRgbPlayers() {
+      for (const [slot, player] of rgbPreviewPlayers) {
+        if (!document.body.contains(player.root)) {
+          player.stop();
+          rgbPreviewPlayers.delete(slot);
+        }
+      }
     }
     function openSettings() {
       document.body.classList.add('drawer-open');
@@ -742,10 +999,15 @@
     function clearPreview(root, kind, message) {
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
+      if (kind === 'rgb') {
+        stopRgbPreview(root);
+      }
       root.dataset[`${kind}Token`] = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
       root.dataset[`${kind}Loading`] = '0';
-      img.removeAttribute('src');
-      img.style.display = 'none';
+      if (img) {
+        img.removeAttribute('src');
+        img.style.display = 'none';
+      }
       placeholder.textContent = message || kind;
       placeholder.style.display = '';
     }
@@ -763,6 +1025,14 @@
         }
         clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
         return;
+      }
+      if (kind === 'rgb' && rgbH264PreviewSupported()) {
+        root.dataset[`${kind}Loading`] = '0';
+        ensureRgbVideoPreview(root, c, high);
+        return;
+      }
+      if (kind === 'rgb') {
+        stopRgbPreview(root);
       }
       if (root.dataset[`${kind}Loading`] === '1') return;
       const token = String(Number(root.dataset[`${kind}Token`] || '0') + 1);
@@ -848,6 +1118,7 @@
         thumbs.querySelector('.empty')?.remove();
         sideCameras.forEach((c) => updateThumb(c));
       }
+      stopDetachedRgbPlayers();
     }
     function ensureSetting(c) {
       const list = document.getElementById('settingsList');

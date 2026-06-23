@@ -22,7 +22,7 @@ prepare_usb_for_orbbec() {
 
 prepare_usb_for_orbbec
 gemini_sender_wifi_apply_repo_defaults
-GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "后台启动" "no-preview"
+GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "后台启动" "no-local-preview"
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   echo "发送端已经在运行，PID=$(cat "$PID_FILE")"
@@ -35,7 +35,7 @@ cd "$ROOT_DIR"
 chmod +x "$WATCHDOG"
 rm -f "$CHILD_PID_FILE"
 export GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES="${GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES:-30}"
-setsid -f "$WATCHDOG" "$CONFIG" "no-preview" >>"$STDOUT_LOG" 2>&1 < /dev/null
+setsid -f "$WATCHDOG" "$CONFIG" "no-local-preview" >>"$STDOUT_LOG" 2>&1 < /dev/null
 for _ in {1..20}; do
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     break

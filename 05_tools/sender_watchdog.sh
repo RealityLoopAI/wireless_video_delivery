@@ -100,6 +100,8 @@ while [[ "$stopping" -eq 0 ]]; do
 
   if [[ "$MODE" == "no-preview" ]]; then
     LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
+  elif [[ "$MODE" == "no-local-preview" ]]; then
+    LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-local-preview &
   else
     DISPLAY="$DISPLAY_VALUE" LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" &
   fi
