@@ -11,7 +11,7 @@
 7. `frames.csv` 记录媒体包索引，并追加统一的当前帧字段和 RGB 视频帧索引字段；下游用 `rgb_recorded=1` 与 `rgb_video_frame_index` 对齐 `rgb.mp4`。
 8. `meta.json` 记录编码、分辨率、请求帧率、实际帧率、帧数和 `rgb_record_fps` / `depth_record_fps`。
 9. Web/REST 可持久化设置相机自命名和单路文件名前缀；录制停止返回整次录制任务的 `recording_start_us`。
-10. `preview_enabled=false` 可关闭接收端 RGB/Depth 预览解码与伪彩生成；多设备录制压力较高时建议关闭，仅保留采集、传输和落盘。
+10. `preview_enabled=false` 可关闭接收端 RGB/Depth 预览解码与伪彩生成；`preview_enabled=true` 时预览也按客户端请求触发，未打开网页或未访问预览接口时不主动解码/生成伪彩。多设备录制压力较高时建议关闭预览，仅保留采集、传输和落盘。
 
 构建：
 

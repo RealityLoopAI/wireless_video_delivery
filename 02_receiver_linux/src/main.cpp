@@ -2862,6 +2862,7 @@ struct CameraState {
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
+    uint64_t rgb_stream_requested_until_us = 0;
     H264StreamBuffer rgb_stream;
     H264StreamBuffer rgb_preview_stream;
     uint64_t main_rgb_preview_us = 0;
@@ -2872,6 +2873,7 @@ struct CameraState {
     uint64_t depth_preview_us = 0;
     uint32_t depth_preview_width = 0;
     uint32_t depth_preview_height = 0;
+    uint64_t depth_preview_requested_until_us = 0;
     std::vector<uint8_t> depth_preview_ppm;
     std::string last_error;
     std::string last_announce_json;
@@ -3333,8 +3335,11 @@ public:
         refresh_camera_liveness_locked(now);
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->depth_preview_us, kPreviewFreshUs) ||
-           it->second->depth_preview_ppm.empty()) {
+        if(it == cameras_.end() || !it->second->online) {
+            return std::nullopt;
+        }
+        it->second->depth_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
+        if(!is_recent_us(now, it->second->depth_preview_us, kPreviewFreshUs) || it->second->depth_preview_ppm.empty()) {
             return std::nullopt;
         }
         return it->second->depth_preview_ppm;
@@ -3457,6 +3462,7 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
+            it->second->rgb_stream_requested_until_us = now + kPreviewRequestKeepaliveUs;
             cam = it->second;
         }
 
@@ -3485,6 +3491,10 @@ public:
         bool started = false;
         uint64_t next_seq = 0;
         while(running_ && g_running) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cam->rgb_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+            }
             std::vector<uint8_t> header;
             std::vector<H264StreamPacket> packets;
             {
@@ -3585,6 +3595,7 @@ private:
         }
         cam.rgb_preview_stream.cv.notify_all();
         cam.rgb_preview_requested_until_us = 0;
+        cam.rgb_stream_requested_until_us = 0;
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
         cam.rgb_preview_height = 0;
@@ -3593,6 +3604,7 @@ private:
         cam.main_rgb_preview_width = 0;
         cam.main_rgb_preview_height = 0;
         cam.depth_preview_ppm.clear();
+        cam.depth_preview_requested_until_us = 0;
         cam.depth_preview_us = 0;
         cam.depth_preview_width = 0;
         cam.depth_preview_height = 0;
@@ -3802,6 +3814,7 @@ private:
             cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
             cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
             cam.rgb_preview_requested_until_us = 0;
+            cam.rgb_stream_requested_until_us = 0;
             cam.rgb_preview_us = 0;
             cam.rgb_preview_width = 0;
             cam.rgb_preview_height = 0;
@@ -3877,19 +3890,14 @@ private:
             }
         }
 
-        PreviewImage preview;
-        if(config_.preview_enabled && decoded_packet.stream_type == StreamType::depth_raw) {
-            preview = build_depth_preview_bmp(decoded_packet.payload,
-                                              decoded_packet.width,
-                                              decoded_packet.height,
-                                              depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id));
-        }
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
         const bool rgb_has_idr = rgb_stream_packet &&
                                  (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
         const bool rgb_has_vcl = rgb_stream_packet && h264_payload_has_vcl_nal(packet.payload);
 
         std::shared_ptr<CameraState> cam;
+        bool build_depth_preview = false;
+        uint64_t depth_preview_media_us = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
@@ -3898,34 +3906,66 @@ private:
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
                 if(config_.preview_enabled) {
-                    update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
+                    const auto media_now = cam->last_media_us;
+                    const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
+                    const bool jpeg_requested =
+                        is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0) ||
+                        (cam->key == main_preview_key_ && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0));
+                    const bool decoder_active = static_cast<bool>(cam->rgb_decoder) || static_cast<bool>(cam->main_rgb_decoder);
+                    if(stream_requested) {
+                        update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
+                    }
                     bool preview_stream_fresh = false;
                     {
                         std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
                         preview_stream_fresh = is_recent_us(now_us(), cam->rgb_preview_stream.last_us, kPreviewFreshUs);
                     }
-                    if(!preview_stream_fresh) {
+                    if(!preview_stream_fresh && (jpeg_requested || decoder_active)) {
                         update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
                     }
                 }
             }
             else if(packet.stream_type == StreamType::rgb_preview) {
                 if(config_.preview_enabled) {
-                    update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
-                    update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
-                    cam->rgb_preview_width = packet.width;
-                    cam->rgb_preview_height = packet.height;
-                    cam->rgb_preview_us = cam->last_media_us;
+                    const auto media_now = cam->last_media_us;
+                    const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
+                    const bool jpeg_requested =
+                        is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0) ||
+                        (cam->key == main_preview_key_ && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0));
+                    const bool decoder_active = static_cast<bool>(cam->rgb_decoder) || static_cast<bool>(cam->main_rgb_decoder);
+                    if(stream_requested) {
+                        update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
+                    }
+                    if(jpeg_requested || decoder_active) {
+                        update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
+                        cam->rgb_preview_width = packet.width;
+                        cam->rgb_preview_height = packet.height;
+                        cam->rgb_preview_us = cam->last_media_us;
+                    }
                 }
             }
             else if(packet.stream_type == StreamType::depth_raw) {
                 cam->depth_packets++;
                 cam->depth_bytes += packet.payload_size;
-                if(config_.preview_enabled && !preview.bytes.empty()) {
+                build_depth_preview = config_.preview_enabled && is_recent_us(cam->last_media_us, cam->depth_preview_requested_until_us, 0);
+                depth_preview_media_us = cam->last_media_us;
+            }
+        }
+
+        if(build_depth_preview) {
+            auto preview = build_depth_preview_bmp(decoded_packet.payload,
+                                                   decoded_packet.width,
+                                                   decoded_packet.height,
+                                                   depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id));
+            if(!preview.bytes.empty()) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(config_.preview_enabled && cam->online &&
+                   is_recent_us(now_us(), cam->depth_preview_requested_until_us, 0) &&
+                   cam->last_media_us >= depth_preview_media_us) {
                     cam->depth_preview_ppm = std::move(preview.bytes);
                     cam->depth_preview_width = preview.width;
                     cam->depth_preview_height = preview.height;
-                    cam->depth_preview_us = cam->last_media_us;
+                    cam->depth_preview_us = depth_preview_media_us;
                 }
             }
         }

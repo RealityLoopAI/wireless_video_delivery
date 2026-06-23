@@ -50,6 +50,7 @@ encoding = cam.get("rgb_encoding") or {}
 transport = cam.get("depth_transport") or {}
 color_controls = cam.get("color_controls") or {}
 preview = cfg.get("preview") or {}
+web_preview = cfg.get("web_rgb_preview") or {}
 hotplug = cfg.get("hotplug") or {}
 
 required = {
@@ -163,6 +164,9 @@ values = {
     "COLOR_CONTROLS": " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in color_controls.items()) or "未配置",
     "PREVIEW_ENABLED": preview.get("enabled", ""),
     "PREVIEW_FPS": preview.get("fps", ""),
+    "WEB_PREVIEW_ENABLED": web_preview.get("enabled", ""),
+    "WEB_PREVIEW_FPS": web_preview.get("fps", ""),
+    "WEB_PREVIEW_BITRATE": web_preview.get("bitrate_bps", ""),
     "HOTPLUG_ENABLED": hotplug.get("enabled", True),
     "LOG_DIRECTORY": (cfg.get("logging") or {}).get("directory", ""),
     "LOG_MAX_BYTES": (cfg.get("logging") or {}).get("max_bytes", ""),
@@ -323,10 +327,11 @@ echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"
+echo "  config_web_preview: enabled=${WEB_PREVIEW_ENABLED} fps=${WEB_PREVIEW_FPS} bitrate=${WEB_PREVIEW_BITRATE}bps"
 echo "  hotplug: enabled=${HOTPLUG_ENABLED:-true}"
 case "$PREVIEW_MODE" in
   no-preview)
-    echo "  launch_preview: disabled by --no-preview"
+    echo "  launch_preview: local/web preview disabled by --no-preview"
     ;;
   *)
     echo "  launch_preview: follows config"

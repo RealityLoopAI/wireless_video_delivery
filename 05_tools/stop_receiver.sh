@@ -76,5 +76,29 @@ stop_pid_file() {
   rm -f "$file"
 }
 
+stop_matching_processes() {
+  local name="$1"
+  local pattern="$2"
+  mapfile -t pids < <(pgrep -f "$pattern" 2>/dev/null || true)
+  if ((${#pids[@]} == 0)); then
+    return 0
+  fi
+  kill "${pids[@]}" 2>/dev/null || true
+  for _ in {1..20}; do
+    local alive=0
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    ((alive == 0)) && break
+    sleep 0.2
+  done
+  kill -9 "${pids[@]}" 2>/dev/null || true
+  echo "$name 残留进程已清理：${pids[*]}"
+}
+
 stop_unit_if_active "Web 监控" "$WEB_UNIT" "$BUILD_DIR/web_monitor.pid" || stop_pid_file "Web 监控" "$BUILD_DIR/web_monitor.pid"
+stop_matching_processes "Web 监控" "$ROOT_DIR/09_web_monitor/.venv/bin/python -m uvicorn server:app"
 stop_unit_if_active "C++ 接收端" "$RECEIVER_UNIT" "$BUILD_DIR/receiver.pid" || stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1

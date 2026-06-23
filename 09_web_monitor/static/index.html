@@ -535,6 +535,7 @@
     let mainKey = '';
     let mainTargetSyncKey = '';
     let loopsStarted = false;
+    let receiverPreviewEnabled = true;
 
     const STATUS_REFRESH_MS = 1000;
     const MAIN_RGB_REFRESH_MS = 33;
@@ -634,7 +635,7 @@
     }
     function syncMainTarget() {
       const c = cameras.find((item) => item.camera_key === mainKey);
-      if (!c || mainTargetSyncKey === mainKey) return;
+      if (!receiverPreviewEnabled || !c || mainTargetSyncKey === mainKey) return;
       mainTargetSyncKey = mainKey;
       const params = new URLSearchParams({sender_id: c.sender_id, camera_id: c.camera_id});
       fetch(`/api/preview/main-target?${params.toString()}`, {method: 'POST'}).catch(() => {
@@ -646,11 +647,11 @@
       return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
     }
     function previewAvailable(c, kind, high = false) {
-      if (!isLive(c)) return false;
+      if (!receiverPreviewEnabled || !isLive(c)) return false;
       if (kind === 'rgb') {
         return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : (c.rgb_preview_available || c.rgb_packets > 0);
       }
-      return c.depth_preview_available;
+      return c.depth_preview_available || c.depth_packets > 0;
     }
     function hasAnyPreview(c) {
       return isLive(c) && (previewAvailable(c, 'rgb') || previewAvailable(c, 'depth') || c.rgb_packets > 0 || c.depth_packets > 0);
@@ -752,6 +753,10 @@
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       if (!previewAvailable(c, kind, high)) {
+        if (!receiverPreviewEnabled) {
+          clearPreview(root, kind, '预览关闭');
+          return;
+        }
         if (isLive(c) && img.getAttribute('src')) {
           placeholder.style.display = 'none';
           return;
@@ -933,6 +938,7 @@
     async function load() {
       const res = await fetch('/api/status');
       const data = await res.json();
+      receiverPreviewEnabled = data.preview_enabled !== false;
       cameras = data.cameras || [];
       visibleCameras = cameras.filter(hasAnyPreview);
       chooseMainCamera(data.main_preview_camera_key || '');
@@ -948,6 +954,7 @@
         <div class="debug-item"><span class="debug-label">媒体端口</span><div class="debug-value">TCP ${data.media_port}</div></div>
         <div class="debug-item"><span class="debug-label">状态端口</span><div class="debug-value">UDP ${data.status_port}</div></div>
         <div class="debug-item"><span class="debug-label">管理端口</span><div class="debug-value">HTTP ${data.admin_port}</div></div>
+        <div class="debug-item"><span class="debug-label">实时预览</span><div class="debug-value">${receiverPreviewEnabled ? '开启' : '关闭'}</div></div>
         <div class="debug-item"><span class="debug-label">NAS</span><div class="debug-value">${escapeHtml(data.nas_root)}</div></div>
         <div class="debug-item"><span class="debug-label">全局录制</span><div class="debug-value">${data.recording_all ? '开启' : '关闭'}</div></div>`;
 

@@ -5,6 +5,9 @@ write_sysfs() {
   local path="$1"
   local value="$2"
   [[ -e "$path" ]] || return 0
+  if [[ -r "$path" ]] && [[ "$(<"$path")" == "$value" ]]; then
+    return 0
+  fi
   if [[ -w "$path" ]]; then
     if ! printf '%s\n' "$value" >"$path" 2>/dev/null; then
       printf 'prepare warning: failed to write %s=%s\n' "$path" "$value" >&2
@@ -43,8 +46,8 @@ fi
 
 write_sysfs /sys/module/usbcore/parameters/usbfs_memory_mb 256
 write_sysfs /sys/module/usbcore/parameters/autosuspend -1
-write_sysfs /proc/sys/net/core/wmem_max 8388608
-write_sysfs /proc/sys/net/core/wmem_default 1048576
+write_sysfs /proc/sys/net/core/wmem_max 33554432
+write_sysfs /proc/sys/net/core/wmem_default 4194304
 warn_if_less_than /sys/module/usbcore/parameters/usbfs_memory_mb 256 usbfs_memory_mb
 warn_if_less_than /proc/sys/net/core/wmem_max 4194304 net.core.wmem_max
 

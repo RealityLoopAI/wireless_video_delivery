@@ -3465,6 +3465,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     if(args.no_preview || !display_available) {
         config.preview.enabled = false;
     }
+    if(args.no_preview) {
+        config.web_rgb_preview.enabled = false;
+    }
     if(!display_available && !args.no_preview) {
         logger.warn("DISPLAY/WAYLAND_DISPLAY not set; local preview disabled for this run");
     }
