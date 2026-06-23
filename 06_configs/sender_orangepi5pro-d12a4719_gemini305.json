@@ -67,7 +67,7 @@
         "codec": "h264",
         "mode": "hardware",
         "gstreamer_encoder": "mpph264enc",
-        "bitrate_bps": 12000000
+        "bitrate_bps": 6000000
       },
       "depth_transport": {
         "compression": "pq8zlib",
