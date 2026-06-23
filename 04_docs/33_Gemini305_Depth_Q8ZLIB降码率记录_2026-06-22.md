@@ -31,6 +31,7 @@ bulk media TCP packet dropped under backpressure
 q8lz4
 q8zlib
 pq8zlib
+pzlib
 ```
 
 编码流程：
@@ -42,14 +43,16 @@ pq8zlib
 4. q8lz4 使用 LZ4 压缩 8-bit index 图。
 5. q8zlib 使用 zlib 压缩 8-bit index 图。
 6. pq8zlib 把 8-bit index 图切成最多 4 块，并行 zlib 压缩。
-7. q8lz4/q8zlib payload 内部写入 16 字节小头：magic/version/raw_step/sample_count/compressed_size。
-8. pq8zlib payload 写入 20 字节总头和每块 12 字节 chunk 表，接收端按 chunk 表并行解压后再还原 uint16。
+7. pzlib 保留量化后的 16-bit Depth 全量程，并行 zlib 压缩每个 chunk。
+8. q8lz4/q8zlib payload 内部写入 16 字节小头：magic/version/raw_step/sample_count/compressed_size。
+9. pq8zlib payload 写入 20 字节总头和每块 12 字节 chunk 表，接收端按 chunk 表并行解压后再还原 uint16。
+10. pzlib payload 写入 16 字节总头和每块 12 字节 chunk 表，接收端按 chunk 表并行解压回 uint16。
 ```
 
 接收端新增对应解码：
 
 ```text
-1. 按 magic 识别 Q8L1、Q8Z1 或 PQ8Z。
+1. 按 magic 识别 Q8L1、Q8Z1、PQ8Z 或 PZLB。
 2. 解压出 8-bit index 图。
 3. 按 raw_step 还原为 uint16 little-endian Depth payload。
 4. 后续落盘、预览、CSV 仍走原来的 depth_u16 路径。
@@ -150,6 +153,48 @@ pq8zlib + 128mm 是当前 Orange Pi Gemini305 的正式低码率配置。
 相比 q8zlib + 128mm，Depth 压缩耗时从约 30-32ms 降到约 20-24ms，链路观察窗口内 TCP 队列为 0。
 ```
 
+### 3.5 `4mm` 精度优先测试
+
+`128mm` 对可视化预览可用，但深度数值太粗。`4mm` 不能直接套用 `q8lz4/q8zlib/pq8zlib`，因为 8-bit index 的最大有效值是 255：
+
+```text
+4mm * 255 = 1020mm
+```
+
+超过约 `1.02m` 的深度会被夹到 1 米左右，所以 4mm 必须走保留 `uint16` 全量程的路径。
+
+测试结果：
+
+```text
+qdelta + 4mm:
+  depth_sent_fps:      about 18-20fps
+  depth_mbps:          about 122-132Mbps
+  depth_compress_ms:   about 32-35ms/frame
+  conclusion:          精度可保留，但无法 30fps
+
+pzlib + 4mm:
+  depth_sent_fps:      about 22-25fps
+  depth_mbps:          about 100-115Mbps
+  depth_compress_ms:   about 30-34ms/frame
+  conclusion:          码率比 plz4 低，但仍无法 30fps
+
+plz4 + 4mm:
+  depth_sent_fps:      mostly about 29-31fps, occasional about 27fps
+  depth_mbps:          about 137-190Mbps in the 30s verification window
+  depth_compress_ms:   about 21-32ms/frame
+  depth_send_failures: 0
+  TCP Send-Q:          about 366KB at the end of the 30s window
+  receiver errors:     no unsupported/decompression errors observed
+```
+
+结论：
+
+```text
+如果优先 4mm 深度数值精度，当前可运行配置为 plz4 + 4mm。
+它比 pq8zlib + 128mm 的网络压力大很多，但不会把远距离深度夹断。
+如果后续必须同时满足 4mm、稳定满 30fps 和低码率，需要继续做更专用的深度编码或降低链路其他负载。
+```
+
 ## 4. 当前正式配置
 
 当前 `06_configs/sender_orangepi5pro-d12a4719_gemini305.json`：
@@ -162,8 +207,8 @@ pq8zlib + 128mm 是当前 Orange Pi Gemini305 的正式低码率配置。
     "depth_enabled": false
   },
   "depth_transport": {
-    "compression": "pq8zlib",
-    "quantization_step_mm": 128
+    "compression": "plz4",
+    "quantization_step_mm": 4
   }
 }
 ```
@@ -174,6 +219,7 @@ pq8zlib + 128mm 是当前 Orange Pi Gemini305 的正式低码率配置。
 主 RGB/Depth 媒体链路仍走 TCP。
 Depth 采集仍是 1280x800@30 Y16。
 接收端落盘前会解码回 uint16 Depth。
+当前配置是精度优先路线，网络压力高于 pq8zlib + 128mm。
 ```
 
 ## 5. 精度影响

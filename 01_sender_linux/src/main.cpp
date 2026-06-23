@@ -2743,7 +2743,7 @@ std::vector<uint8_t> plz4_compress_payload(const void *data, size_t size) {
 
     const auto *bytes = static_cast<const uint8_t *>(data);
     const size_t sample_count = size / sizeof(uint16_t);
-    const size_t target_chunks = std::min<size_t>(4, std::max<size_t>(1, sample_count / (256 * 1024)));
+    const size_t target_chunks = std::min<size_t>(4, std::max<size_t>(1, (sample_count + 256 * 1024 - 1) / (256 * 1024)));
     const size_t chunk_count = std::max<size_t>(1, target_chunks);
     const size_t chunk_samples = (sample_count + chunk_count - 1) / chunk_count;
 
@@ -2781,6 +2781,69 @@ std::vector<uint8_t> plz4_compress_payload(const void *data, size_t size) {
     std::vector<uint8_t> out;
     out.reserve(16 + chunks.size() * 12 + compressed_total);
     append_le32(out, 0x345a4c50u);  // bytes: P L Z 4
+    append_le16(out, 1);
+    append_le16(out, static_cast<uint16_t>(chunks.size()));
+    append_le32(out, static_cast<uint32_t>(size));
+    append_le32(out, 0);
+    for(const auto &chunk : chunks) {
+        append_le32(out, chunk.raw_offset);
+        append_le32(out, chunk.raw_size);
+        append_le32(out, static_cast<uint32_t>(chunk.compressed.size()));
+    }
+    for(const auto &chunk : chunks) {
+        append_bytes(out, chunk.compressed.data(), chunk.compressed.size());
+    }
+    return out;
+}
+
+std::vector<uint8_t> pzlib_compress_payload(const void *data, size_t size) {
+    if(size == 0 || size > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::runtime_error("pzlib depth payload size is invalid");
+    }
+    if(size % sizeof(uint16_t) != 0) {
+        throw std::runtime_error("pzlib depth compression requires uint16 payload");
+    }
+
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    const size_t sample_count = size / sizeof(uint16_t);
+    const size_t target_chunks = std::min<size_t>(4, std::max<size_t>(1, (sample_count + 256 * 1024 - 1) / (256 * 1024)));
+    const size_t chunk_count = std::max<size_t>(1, target_chunks);
+    const size_t chunk_samples = (sample_count + chunk_count - 1) / chunk_count;
+
+    std::vector<std::future<Plz4Chunk>> futures;
+    futures.reserve(chunk_count);
+    for(size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        const size_t sample_offset = chunk_index * chunk_samples;
+        if(sample_offset >= sample_count) {
+            break;
+        }
+        const size_t samples = std::min(chunk_samples, sample_count - sample_offset);
+        const size_t raw_offset = sample_offset * sizeof(uint16_t);
+        const size_t raw_size = samples * sizeof(uint16_t);
+        futures.emplace_back(std::async(std::launch::async, [bytes, raw_offset, raw_size] {
+            Plz4Chunk chunk;
+            chunk.raw_offset = static_cast<uint32_t>(raw_offset);
+            chunk.raw_size = static_cast<uint32_t>(raw_size);
+            chunk.compressed = zlib_compress_payload(bytes + raw_offset, raw_size);
+            return chunk;
+        }));
+    }
+
+    std::vector<Plz4Chunk> chunks;
+    chunks.reserve(futures.size());
+    size_t compressed_total = 0;
+    for(auto &future : futures) {
+        auto chunk = future.get();
+        compressed_total += chunk.compressed.size();
+        chunks.push_back(std::move(chunk));
+    }
+    if(chunks.empty() || chunks.size() > std::numeric_limits<uint16_t>::max()) {
+        throw std::runtime_error("pzlib chunk count is invalid");
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(16 + chunks.size() * 12 + compressed_total);
+    append_le32(out, 0x424c5a50u);  // bytes: P Z L B
     append_le16(out, 1);
     append_le16(out, static_cast<uint16_t>(chunks.size()));
     append_le32(out, static_cast<uint32_t>(size));
@@ -3134,6 +3197,9 @@ std::vector<uint8_t> compress_depth_payload(const std::string &compression, cons
     if(compression == "plz4") {
         return plz4_compress_payload(data, size);
     }
+    if(compression == "pzlib") {
+        return pzlib_compress_payload(data, size);
+    }
     if(compression == "q8lz4") {
         return q8lz4_compress_payload(data, size, raw_step);
     }
@@ -3163,6 +3229,7 @@ Json::Value sender_hello(const AppConfig &config) {
     depth.append("qdelta");
     depth.append("lz4");
     depth.append("plz4");
+    depth.append("pzlib");
     depth.append("q8lz4");
     depth.append("q8zlib");
     depth.append("pq8zlib");
@@ -4217,8 +4284,9 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                 meta.uncompressed_size = depth->dataSize();
                 if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
                    || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
-                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "q8lz4"
-                   || camera.config.depth_transport.compression == "q8zlib" || camera.config.depth_transport.compression == "pq8zlib") {
+                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "pzlib"
+                   || camera.config.depth_transport.compression == "q8lz4" || camera.config.depth_transport.compression == "q8zlib"
+                   || camera.config.depth_transport.compression == "pq8zlib") {
                     DepthCompressionJob compress_job;
                     compress_job.source_camera = &camera;
                     compress_job.output_camera = depth_target;
@@ -4519,8 +4587,9 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                 std::vector<uint8_t> depth_payload;
                 if(camera.config.depth_transport.compression == "zlib" || camera.config.depth_transport.compression == "rvl"
                    || camera.config.depth_transport.compression == "qdelta" || camera.config.depth_transport.compression == "lz4"
-                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "q8lz4"
-                   || camera.config.depth_transport.compression == "q8zlib" || camera.config.depth_transport.compression == "pq8zlib") {
+                   || camera.config.depth_transport.compression == "plz4" || camera.config.depth_transport.compression == "pzlib"
+                   || camera.config.depth_transport.compression == "q8lz4" || camera.config.depth_transport.compression == "q8zlib"
+                   || camera.config.depth_transport.compression == "pq8zlib") {
                     const auto compress_started = std::chrono::steady_clock::now();
                     if(quantization_raw_step > 1 && camera.config.depth_transport.compression != "qdelta"
                        && camera.config.depth_transport.compression != "q8lz4"

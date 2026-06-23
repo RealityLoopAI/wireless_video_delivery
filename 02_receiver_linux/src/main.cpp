@@ -1647,6 +1647,66 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
     return out;
 }
 
+std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
+    if(packet.payload.size() < 16) {
+        throw std::runtime_error("invalid pzlib depth payload");
+    }
+    const uint32_t magic = read_le32(packet.payload.data());
+    const uint16_t version = read_le16(packet.payload.data() + 4);
+    const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
+    const uint32_t raw_total = read_le32(packet.payload.data() + 8);
+    if(magic != 0x424c5a50u || version != 1 || chunk_count == 0 || raw_total == 0
+       || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
+        throw std::runtime_error("invalid pzlib depth header");
+    }
+    const size_t table_size = 16ull + static_cast<size_t>(chunk_count) * 12ull;
+    if(table_size > packet.payload.size()) {
+        throw std::runtime_error("truncated pzlib depth table");
+    }
+
+    std::vector<Plz4ChunkEntry> chunks;
+    chunks.reserve(chunk_count);
+    size_t compressed_offset = table_size;
+    for(uint16_t i = 0; i < chunk_count; ++i) {
+        const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
+        Plz4ChunkEntry chunk;
+        chunk.raw_offset = read_le32(entry);
+        chunk.raw_size = read_le32(entry + 4);
+        chunk.compressed_size = read_le32(entry + 8);
+        chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
+        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+           || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
+           || chunk.compressed_size > packet.payload.size() - compressed_offset
+           || chunk.raw_size > static_cast<uint32_t>(std::numeric_limits<uLongf>::max())) {
+            throw std::runtime_error("invalid pzlib depth chunk");
+        }
+        compressed_offset += chunk.compressed_size;
+        chunks.push_back(chunk);
+    }
+    if(compressed_offset != packet.payload.size()) {
+        throw std::runtime_error("pzlib depth payload has trailing bytes");
+    }
+
+    std::vector<uint8_t> out(raw_total);
+    std::vector<std::future<void>> futures;
+    futures.reserve(chunks.size());
+    for(const auto &chunk : chunks) {
+        futures.emplace_back(std::async(std::launch::async, [&packet, &out, chunk] {
+            uLongf out_size = static_cast<uLongf>(chunk.raw_size);
+            const int rc =
+                uncompress(out.data() + chunk.raw_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
+                           static_cast<uLong>(chunk.compressed_size));
+            if(rc != Z_OK || out_size != chunk.raw_size) {
+                throw std::runtime_error("pzlib depth chunk decompression failed");
+            }
+        }));
+    }
+    for(auto &future : futures) {
+        future.get();
+    }
+    return out;
+}
+
 std::vector<uint8_t> q8_decompress_payload(const MediaPacket &packet, uint32_t magic, bool use_lz4) {
     if(packet.uncompressed_size == 0 || packet.uncompressed_size > kMaxReasonablePayload
        || packet.uncompressed_size % sizeof(uint16_t) != 0 || packet.payload.size() < 16) {
@@ -1992,6 +2052,13 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     if(packet.codec_or_compression == "plz4") {
         MediaPacket decoded = packet;
         decoded.payload = plz4_decompress_payload(packet);
+        decoded.payload_size = decoded.payload.size();
+        decoded.codec_or_compression = "none";
+        return decoded;
+    }
+    if(packet.codec_or_compression == "pzlib") {
+        MediaPacket decoded = packet;
+        decoded.payload = pzlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
