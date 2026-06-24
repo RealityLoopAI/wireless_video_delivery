@@ -94,6 +94,32 @@ bool Transport::send_status(const std::string &json_message) {
     return send_udp_status(json_message);
 }
 
+std::optional<std::string> Transport::receive_status_control(int timeout_ms) {
+    if(!config_.transport.enabled || status_udp_fd_ < 0) {
+        return std::nullopt;
+    }
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(status_udp_fd_, &rfds);
+    timeval timeout{};
+    timeout.tv_sec = std::max(0, timeout_ms) / 1000;
+    timeout.tv_usec = (std::max(0, timeout_ms) % 1000) * 1000;
+    const int rc = select(status_udp_fd_ + 1, &rfds, nullptr, nullptr, &timeout);
+    if(rc <= 0) {
+        return std::nullopt;
+    }
+
+    std::array<char, 4096> buffer{};
+    sockaddr_in peer{};
+    socklen_t peer_len = sizeof(peer);
+    const ssize_t got = recvfrom(status_udp_fd_, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr *>(&peer), &peer_len);
+    if(got <= 0) {
+        return std::nullopt;
+    }
+    return std::string(buffer.data(), static_cast<size_t>(got));
+}
+
 bool Transport::send_media(const std::vector<uint8_t> &packet) {
     return send_media(MediaPacketView{packet.data(), packet.size(), nullptr, 0});
 }

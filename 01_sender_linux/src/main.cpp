@@ -236,6 +236,8 @@ struct CameraRuntime {
     uint64_t depth_frames = 0;
     bool rgb_waiting_for_keyframe_after_transport_loss = false;
     uint64_t rgb_keyframe_guard_drops = 0;
+    uint64_t force_rgb_keyframe_requests = 0;
+    uint64_t force_rgb_keyframe_applied = 0;
     uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t rgb_timing_mismatch_drops = 0;
@@ -463,6 +465,21 @@ std::string json_to_string(const Json::Value &value) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
     return Json::writeString(builder, value);
+}
+
+std::optional<Json::Value> parse_json_object(const std::string &payload) {
+    Json::CharReaderBuilder builder;
+    Json::Value root;
+    std::string errors;
+    std::istringstream input(payload);
+    if(!Json::parseFromStream(builder, input, &root, &errors) || !root.isObject()) {
+        return std::nullopt;
+    }
+    return root;
+}
+
+std::string json_string_or(const Json::Value &value, const char *key, const std::string &fallback = "") {
+    return value.isMember(key) && value[key].isString() ? value[key].asString() : fallback;
 }
 
 double elapsed_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point ended) {
@@ -1696,6 +1713,26 @@ void arm_rgb_keyframe_guard(CameraRuntime &camera, Logger &logger, const std::st
     }
 }
 
+void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::string &reason) {
+    uint64_t request_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        request_id = ++camera.force_rgb_keyframe_requests;
+    }
+    logger.info("rgb keyframe requested camera_id=" + camera.config.camera_id + " request_id=" + std::to_string(request_id)
+                + (reason.empty() ? "" : " reason=" + reason));
+}
+
+bool consume_rgb_keyframe_request(CameraRuntime &camera, uint64_t &request_id) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    if(camera.force_rgb_keyframe_applied >= camera.force_rgb_keyframe_requests) {
+        return false;
+    }
+    camera.force_rgb_keyframe_applied = camera.force_rgb_keyframe_requests;
+    request_id = camera.force_rgb_keyframe_applied;
+    return true;
+}
+
 enum class RgbKeyframeDecision {
     send,
     drop,
@@ -2730,6 +2767,64 @@ CameraRuntime *find_camera_by_id(const std::vector<std::unique_ptr<CameraRuntime
     return nullptr;
 }
 
+void handle_receiver_control_message(const AppConfig &config,
+                                     const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                                     Logger &logger,
+                                     const std::string &payload) {
+    const auto root = parse_json_object(trim_copy(payload));
+    if(!root) {
+        return;
+    }
+    if(json_string_or(*root, "message_type") != "control") {
+        return;
+    }
+    const std::string control = json_string_or(*root, "control");
+    const std::string target_sender = json_string_or(*root, "sender_id");
+    const std::string target_camera = json_string_or(*root, "camera_id");
+    const std::string reason = json_string_or(*root, "reason");
+    if(!target_sender.empty() && target_sender != "*" && target_sender != config.sender_id) {
+        return;
+    }
+    if(control != "force_rgb_keyframe") {
+        logger.warn("unknown receiver control ignored: " + control);
+        return;
+    }
+
+    size_t matched = 0;
+    const bool all_cameras = target_camera.empty() || target_camera == "*";
+    for(const auto &camera : cameras) {
+        if(!camera) {
+            continue;
+        }
+        if(all_cameras || camera->config.camera_id == target_camera) {
+            request_rgb_keyframe(*camera, logger, reason.empty() ? "receiver_control" : reason);
+            ++matched;
+        }
+    }
+    if(matched == 0) {
+        logger.warn("force_rgb_keyframe control matched no camera sender_id=" + config.sender_id + " camera_id=" + target_camera);
+    }
+}
+
+template <typename Sender>
+void process_receiver_controls(Sender &transport,
+                               const AppConfig &config,
+                               const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                               Logger &logger,
+                               std::mutex &transport_mutex) {
+    for(int i = 0; i < 16; ++i) {
+        std::optional<std::string> payload;
+        {
+            std::lock_guard<std::mutex> lock(transport_mutex);
+            payload = transport.receive_status_control(0);
+        }
+        if(!payload) {
+            return;
+        }
+        handle_receiver_control_message(config, cameras, logger, *payload);
+    }
+}
+
 bool aligned_rgb_preview_configured(const AppConfig &config) {
     if(!config.preview.aligned_rgb) {
         return false;
@@ -3322,6 +3417,12 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                             record_queue_overwrite(camera, StreamType::rgb);
                         }
                         else {
+                            uint64_t force_keyframe_request_id = 0;
+                            if(consume_rgb_keyframe_request(camera, force_keyframe_request_id)) {
+                                camera.encoder->request_keyframe();
+                                logger.info("rgb keyframe force event queued camera_id=" + camera.config.camera_id
+                                            + " request_id=" + std::to_string(force_keyframe_request_id));
+                            }
                             RgbEncodeTiming submitted_timing = rgb_capture_timing;
                             submitted_timing.encode_start_timestamp_us = now_us();
                             remember_rgb_encode_timing(camera, submitted_timing);
@@ -3829,6 +3930,7 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
         const auto now = std::chrono::steady_clock::now();
+        process_receiver_controls(transport, config, cameras, logger, transport_mutex);
         if(now >= next_heartbeat) {
             for(auto &camera : cameras) {
                 send_status_locked(transport, logger, transport_mutex, camera_heartbeat(config, *camera, started));

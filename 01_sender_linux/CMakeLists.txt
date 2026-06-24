@@ -4,7 +4,7 @@ find_package(JPEG REQUIRED)
 find_package(ZLIB REQUIRED)
 
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
-pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0)
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
 
 set(ORBBEC_SDK_ROOT
     "${CMAKE_SOURCE_DIR}/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK"

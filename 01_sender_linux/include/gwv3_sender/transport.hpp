@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@ public:
     ~Transport();
 
     bool send_status(const std::string &json_message);
+    std::optional<std::string> receive_status_control(int timeout_ms);
     bool send_media(const std::vector<uint8_t> &packet);
     bool send_media(const MediaPacketView &packet);
     std::string last_error() const;
@@ -60,6 +62,7 @@ private:
 class NullTransport {
 public:
     bool send_status(const std::string &) { return true; }
+    std::optional<std::string> receive_status_control(int) { return std::nullopt; }
     bool send_media(const std::vector<uint8_t> &) { return true; }
     bool send_media(const MediaPacketView &) { return true; }
     std::string last_error() const { return {}; }

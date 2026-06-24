@@ -6,6 +6,7 @@
 
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/video/video-event.h>
 
 namespace gwv3 {
 
@@ -26,12 +27,12 @@ bool gst_element_supports_property(const std::string &element_name, const char *
 std::string h264_encoder_stage(const std::string &encoder_name, int bitrate_bps, int fps) {
     if(encoder_name == "x264enc") {
         const int bitrate_kbps = std::max(1, (bitrate_bps + 999) / 1000);
-        return encoder_name + " bitrate=" + std::to_string(bitrate_kbps)
+        return encoder_name + " name=enc bitrate=" + std::to_string(bitrate_kbps)
                + " key-int-max=" + std::to_string(fps)
                + " speed-preset=ultrafast tune=zerolatency byte-stream=true";
     }
 
-    std::string stage = encoder_name + " bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1";
+    std::string stage = encoder_name + " name=enc bps=" + std::to_string(bitrate_bps) + " gop=" + std::to_string(fps) + " header-mode=1";
     if(encoder_name == "mpph264enc" && gst_element_supports_property(encoder_name, "max-pending")) {
         stage += " max-pending=2";
     }
@@ -97,9 +98,10 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
     }
 
     appsrc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "src");
+    encoder_ = gst_bin_get_by_name(GST_BIN(pipeline_), "enc");
     appsink_ = gst_bin_get_by_name(GST_BIN(pipeline_), "sink");
-    if(!appsrc_ || !appsink_) {
-        error_ = "failed to get appsrc/appsink";
+    if(!appsrc_ || !encoder_ || !appsink_) {
+        error_ = "failed to get appsrc/encoder/appsink";
         return;
     }
 
@@ -117,6 +119,9 @@ GstH264Encoder::~GstH264Encoder() {
     }
     if(appsrc_) {
         gst_object_unref(appsrc_);
+    }
+    if(encoder_) {
+        gst_object_unref(encoder_);
     }
     if(appsink_) {
         gst_object_unref(appsink_);
@@ -145,10 +150,32 @@ std::vector<EncodedH264Frame> GstH264Encoder::encode_jpeg(const void *data, size
     return encode_bytes(static_cast<const uint8_t *>(data), size, timestamp_us);
 }
 
+void GstH264Encoder::request_keyframe() {
+    force_keyframe_pending_ = true;
+}
+
+void GstH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us) {
+    if(!force_keyframe_pending_ || !encoder_) {
+        return;
+    }
+    force_keyframe_pending_ = false;
+    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
+    GstEvent *event = gst_video_event_new_downstream_force_key_unit(running_time,
+                                                                    running_time,
+                                                                    running_time,
+                                                                    TRUE,
+                                                                    force_keyframe_count_++);
+    if(event && !gst_element_send_event(encoder_, event)) {
+        // Ownership is transferred to gst_element_send_event even when it returns false.
+    }
+}
+
 std::vector<EncodedH264Frame> GstH264Encoder::encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us) {
     if(!ok_) {
         throw std::runtime_error("gstreamer encoder is not ready: " + error_);
     }
+
+    send_pending_keyframe_event(timestamp_us);
 
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, data, size);

@@ -32,6 +32,7 @@ public:
 
     std::vector<EncodedH264Frame> encode_bgr(const cv::Mat &bgr, uint64_t timestamp_us);
     std::vector<EncodedH264Frame> encode_jpeg(const void *data, size_t size, uint64_t timestamp_us);
+    void request_keyframe();
     bool ok() const { return ok_; }
     std::string error() const { return error_; }
     int output_width() const { return output_width_; }
@@ -39,13 +40,17 @@ public:
 
 private:
     std::vector<EncodedH264Frame> encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us);
+    void send_pending_keyframe_event(uint64_t timestamp_us);
 
     GstElement *pipeline_ = nullptr;
     GstElement *appsrc_ = nullptr;
+    GstElement *encoder_ = nullptr;
     GstElement *appsink_ = nullptr;
     bool ok_ = false;
     std::string error_;
     uint64_t frame_index_ = 0;
+    uint32_t force_keyframe_count_ = 0;
+    bool force_keyframe_pending_ = false;
     int fps_ = 30;
     int output_width_ = 0;
     int output_height_ = 0;

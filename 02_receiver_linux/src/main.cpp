@@ -537,6 +537,46 @@ std::string socket_endpoint(const sockaddr_in &addr) {
     return out.str();
 }
 
+std::optional<sockaddr_in> parse_socket_endpoint(const std::string &endpoint) {
+    const auto colon = endpoint.rfind(':');
+    if(colon == std::string::npos || colon == 0 || colon + 1 >= endpoint.size()) {
+        return std::nullopt;
+    }
+    const auto ip_text = endpoint.substr(0, colon);
+    const auto port_text = endpoint.substr(colon + 1);
+    int port = 0;
+    try {
+        port = std::stoi(port_text);
+    }
+    catch(const std::exception &) {
+        return std::nullopt;
+    }
+    if(port <= 0 || port > 65535) {
+        return std::nullopt;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if(inet_pton(AF_INET, ip_text.c_str(), &addr.sin_addr) != 1) {
+        return std::nullopt;
+    }
+    return addr;
+}
+
+bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &payload) {
+    const auto addr = parse_socket_endpoint(endpoint);
+    if(!addr) {
+        return false;
+    }
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(fd < 0) {
+        return false;
+    }
+    const auto sent = sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr *>(&*addr), sizeof(*addr));
+    close(fd);
+    return sent >= 0 && static_cast<size_t>(sent) == payload.size();
+}
+
 std::string camera_key(const std::string &sender_id, const std::string &camera_id) {
     return sender_id + "_" + camera_id;
 }
@@ -3768,6 +3808,7 @@ struct CameraState {
     bool online = true;
     bool recording_requested = false;
     uint64_t last_status_us = 0;
+    std::string status_endpoint;
     uint64_t last_media_us = 0;
     uint64_t rgb_packets = 0;
     uint64_t depth_packets = 0;
@@ -3823,6 +3864,12 @@ public:
         std::string sender_id;
         std::string camera_id;
         std::string announce_json;
+    };
+
+    struct SenderControlTarget {
+        std::string sender_id;
+        std::string camera_id;
+        std::string endpoint;
     };
 
     struct PreviewUdpAssembly {
@@ -4073,6 +4120,31 @@ public:
         return cam.camera_file_prefix;
     }
 
+    void send_force_rgb_keyframe_controls(const std::vector<SenderControlTarget> &targets,
+                                          const std::string &reason,
+                                          uint64_t request_us) {
+        for(const auto &target : targets) {
+            if(target.endpoint.empty()) {
+                continue;
+            }
+            std::ostringstream payload;
+            payload << "{\"message_type\":\"control\","
+                    << "\"control\":\"force_rgb_keyframe\","
+                    << "\"sender_id\":\"" << json_escape(target.sender_id) << "\","
+                    << "\"camera_id\":\"" << json_escape(target.camera_id) << "\","
+                    << "\"reason\":\"" << json_escape(reason) << "\","
+                    << "\"request_us\":" << request_us << "}";
+            if(send_udp_text_to_endpoint(target.endpoint, payload.str())) {
+                logger_.info("force_rgb_keyframe control sent sender=" + target.sender_id + " camera=" + target.camera_id
+                             + " endpoint=" + target.endpoint + " reason=" + reason);
+            }
+            else {
+                logger_.warn("force_rgb_keyframe control send failed sender=" + target.sender_id + " camera=" + target.camera_id
+                             + " endpoint=" + target.endpoint);
+            }
+        }
+    }
+
     void close_segments_async(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
         if(close_tasks.empty()) {
             return;
@@ -4123,26 +4195,43 @@ public:
                 return json_error(*error);
             }
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        refresh_camera_liveness_locked(now_us());
-        const bool already_recording = recording_all_;
-        if(!already_recording) {
-            recording_all_start_us_ = now_us();
-            recording_all_has_file_prefix_override_ = file_prefix_override.has_value();
-            recording_all_file_prefix_ = file_prefix_override.value_or("");
-        }
-        recording_all_ = true;
-        for(auto &item : cameras_) {
-            if(!item.second->recording_requested && !item.second->segment_active) {
-                item.second->recording_start_us = recording_all_start_us_;
-                item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
+        uint64_t request_us = 0;
+        uint64_t response_start_us = 0;
+        bool response_has_override = false;
+        bool control_needed = false;
+        std::vector<SenderControlTarget> control_targets;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            refresh_camera_liveness_locked(now_us());
+            const bool already_recording = recording_all_;
+            if(!already_recording) {
+                recording_all_start_us_ = now_us();
+                recording_all_has_file_prefix_override_ = file_prefix_override.has_value();
+                recording_all_file_prefix_ = file_prefix_override.value_or("");
+                request_us = recording_all_start_us_;
+                control_needed = true;
             }
-            item.second->recording_requested = true;
+            recording_all_ = true;
+            for(auto &item : cameras_) {
+                if(!item.second->recording_requested && !item.second->segment_active) {
+                    item.second->recording_start_us = recording_all_start_us_;
+                    item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
+                }
+                item.second->recording_requested = true;
+                if(control_needed && item.second->online && !item.second->status_endpoint.empty()) {
+                    control_targets.push_back({item.second->sender_id, item.second->camera_id, item.second->status_endpoint});
+                }
+            }
+            response_start_us = recording_all_start_us_;
+            response_has_override = recording_all_has_file_prefix_override_;
+            logger_.info("recording start-all requested");
         }
-        logger_.info("recording start-all requested");
+        if(control_needed) {
+            send_force_rgb_keyframe_controls(control_targets, "record_start_all", request_us);
+        }
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << recording_all_start_us_
-            << ",\"file_prefix_scope\":\"" << (recording_all_has_file_prefix_override_ ? "override_all" : "per_camera") << "\"}";
+        out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << response_start_us
+            << ",\"file_prefix_scope\":\"" << (response_has_override ? "override_all" : "per_camera") << "\"}";
         return out.str();
     }
 
@@ -4195,21 +4284,35 @@ public:
                 return json_error(*error);
             }
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto &cam = ensure_camera_locked(sender_id, camera_id);
-        if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
-            cam.recording_start_us = now_us();
-            cam.recording_file_prefix = file_prefix_override.value_or(cam.camera_file_prefix);
+        uint64_t response_start_us = 0;
+        std::string response_file_prefix;
+        std::vector<SenderControlTarget> control_targets;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto &cam = ensure_camera_locked(sender_id, camera_id);
+            const bool was_recording = recording_all_ || cam.recording_requested || cam.segment_active;
+            if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
+                cam.recording_start_us = now_us();
+                cam.recording_file_prefix = file_prefix_override.value_or(cam.camera_file_prefix);
+            }
+            else if(cam.recording_start_us == 0) {
+                cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                cam.recording_file_prefix = recording_all_ ? effective_file_prefix_locked(cam) : file_prefix_override.value_or(cam.camera_file_prefix);
+            }
+            cam.recording_requested = true;
+            response_start_us = cam.recording_start_us;
+            response_file_prefix = cam.recording_file_prefix;
+            if(!was_recording && cam.online && !cam.status_endpoint.empty()) {
+                control_targets.push_back({cam.sender_id, cam.camera_id, cam.status_endpoint});
+            }
+            logger_.info("recording start requested: " + cam.key);
         }
-        else if(cam.recording_start_us == 0) {
-            cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
-            cam.recording_file_prefix = recording_all_ ? effective_file_prefix_locked(cam) : file_prefix_override.value_or(cam.camera_file_prefix);
+        if(!control_targets.empty()) {
+            send_force_rgb_keyframe_controls(control_targets, "record_start", response_start_us);
         }
-        cam.recording_requested = true;
-        logger_.info("recording start requested: " + cam.key);
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_start_us\":" << cam.recording_start_us << ",\"file_prefix\":\""
-            << json_escape(cam.recording_file_prefix) << "\"}";
+        out << "{\"ok\":true,\"recording_start_us\":" << response_start_us << ",\"file_prefix\":\""
+            << json_escape(response_file_prefix) << "\"}";
         return out.str();
     }
 
@@ -4867,6 +4970,7 @@ private:
             auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
             const auto received_us = now_us();
             cam.last_status_us = received_us;
+            cam.status_endpoint = peer_endpoint;
             if(type == "heartbeat" || type == "camera_announce" || type == "camera_offline") {
                 should_log_status = cam.last_status_log_us == 0 ||
                                     received_us >= cam.last_status_log_us + kRoutineStatusLogMinIntervalUs;
