@@ -3396,7 +3396,7 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
     }
 }
 
-void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMediaQueue &media_queue, Logger &logger, size_t worker_index) {
+void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMediaQueue &main_media_queue, Logger &logger, size_t worker_index) {
     while(g_running) {
         auto work = depth_queue.wait_pop(std::chrono::milliseconds(100));
         if(!work) {
@@ -3417,7 +3417,7 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMedi
             job.meta.payload_size = compressed_depth.size();
             job.meta.uncompressed_size = job.raw_payload_size;
             auto media_job = make_owned_media_job(*job.output_camera, StreamType::depth_raw, job.meta, std::move(compressed_depth));
-            publish_media_job(media_queue, job.media_slot_index, *job.output_camera, StreamType::depth_raw, std::move(media_job), logger);
+            publish_media_job(main_media_queue, job.media_slot_index, *job.output_camera, StreamType::depth_raw, std::move(media_job), logger);
             record_depth_frame_done(*job.output_camera);
         }
         catch(const std::exception &e) {
@@ -3464,8 +3464,8 @@ void configure_depth_remap_targets(const AppConfig &config, const std::vector<st
 }
 
 template <typename Sender>
-void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &media_queue,
-                        LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
+void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t slot_base, LatestMediaQueue &main_media_queue,
+                        LatestMediaQueue &preview_media_queue, LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
                         std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
     const size_t rgb_slot = slot_base;
     const size_t depth_slot = slot_base + 1;
@@ -3647,7 +3647,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     }
                 }
 
-                const bool web_preview_can_queue = web_preview_due && !media_queue.has_pending_primary();
+                const bool web_preview_can_queue = web_preview_due && !main_media_queue.has_pending_primary();
                 if(camera.encoder && camera.encoder->ok()) {
                     try {
                         const auto input_format = encoder_input_format_for(camera);
@@ -3719,7 +3719,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 set_rgb_pipeline_diagnostics(meta, timing);
                                 bool reject_if_occupied = !is_key_frame;
                                 auto job = make_owned_media_job(camera, StreamType::rgb, meta, std::move(encoded.data));
-                                if(publish_media_job(media_queue, rgb_slot, camera, StreamType::rgb, std::move(job), logger,
+                                if(publish_media_job(main_media_queue, rgb_slot, camera, StreamType::rgb, std::move(job), logger,
                                                      reject_if_occupied, is_key_frame)
                                    && encoded_has_vcl) {
                                     mark_rgb_encoded_timing_queued(camera, timing);
@@ -3766,7 +3766,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                         preview_timing.packet_queued_timestamp_us = now_us();
                                         set_rgb_pipeline_diagnostics(meta, preview_timing);
                                         auto job = make_owned_media_job(camera, StreamType::rgb_preview, meta, std::move(encoded.data));
-                                        publish_media_job(media_queue, rgb_preview_slot, camera, StreamType::rgb_preview, std::move(job), logger);
+                                        publish_media_job(preview_media_queue, rgb_preview_slot, camera, StreamType::rgb_preview, std::move(job), logger);
                                     }
                                 }
                             }
@@ -3830,7 +3830,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     MediaPacketJob job;
                     auto owner = std::shared_ptr<const void>(depth, static_cast<const void *>(depth->data()));
                     job = make_external_media_job(*depth_target, StreamType::depth_raw, meta, depth_payload, depth_payload_size, std::move(owner));
-                    publish_media_job(media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(job), logger);
+                    publish_media_job(main_media_queue, depth_slot, *depth_target, StreamType::depth_raw, std::move(job), logger);
                     record_depth_frame_done(*depth_target);
                 }
 
@@ -4005,8 +4005,8 @@ std::vector<OrbbecDeviceIdentity> query_hotplug_device_identities() {
 
 template <typename Sender>
 void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<CameraRuntime>> &cameras,
-                          std::vector<std::thread> &camera_threads, LatestMediaQueue &media_queue,
-                          LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
+                          std::vector<std::thread> &camera_threads, LatestMediaQueue &main_media_queue,
+                          LatestMediaQueue &preview_media_queue, LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
                           std::mutex &transport_mutex, std::chrono::milliseconds preview_interval,
                           int &next_hotplug_camera_number, std::vector<HotplugRetryCooldown> &retry_cooldowns,
                           std::chrono::steady_clock::time_point &next_limit_event) {
@@ -4078,13 +4078,14 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
             continue;
         }
 
-        const size_t slot_base = media_queue.append_slots(kMediaSlotsPerCamera);
+        const size_t slot_base = main_media_queue.append_slots(kMediaSlotsPerCamera);
+        preview_media_queue.append_slots(kMediaSlotsPerCamera);
         depth_compression_queue.append_slots(kMediaSlotsPerCamera);
         CameraRuntime *camera_ptr = runtime.get();
         cameras.push_back(std::move(runtime));
         camera_threads.emplace_back([&, camera_ptr, slot_base] {
-            camera_worker_loop(config, *camera_ptr, slot_base, media_queue, depth_compression_queue, transport, logger, transport_mutex,
-                               preview_interval);
+            camera_worker_loop(config, *camera_ptr, slot_base, main_media_queue, preview_media_queue, depth_compression_queue, transport, logger,
+                               transport_mutex, preview_interval);
         });
         logger.info("hotplug camera started camera_id=" + camera_id + " slot_base=" + std::to_string(slot_base)
                     + " device=" + device_identity_summary(identity));
@@ -4094,8 +4095,9 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
     }
 }
 
-template <typename Sender>
-void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &logger) {
+template <typename StatusSender, typename MainMediaSender, typename PreviewMediaSender>
+void run_sender(AppConfig config, const Args &args, StatusSender &status_transport, MainMediaSender &main_media_transport,
+                PreviewMediaSender &preview_media_transport, Logger &logger) {
     const bool display_available = std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
     if(args.no_preview || args.no_local_preview || !display_available) {
         config.preview.enabled = false;
@@ -4123,11 +4125,13 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     const auto started = std::chrono::steady_clock::now();
     auto cameras = start_cameras(config, logger);
     configure_depth_remap_targets(config, cameras, logger);
-    LatestMediaQueue media_queue(cameras.size() * kMediaSlotsPerCamera);
+    LatestMediaQueue main_media_queue(cameras.size() * kMediaSlotsPerCamera);
+    LatestMediaQueue preview_media_queue(cameras.size() * kMediaSlotsPerCamera);
     LatestDepthCompressionQueue depth_compression_queue(cameras.size() * kMediaSlotsPerCamera);
-    std::mutex transport_mutex;
+    std::mutex main_transport_mutex;
+    std::mutex preview_media_transport_mutex;
 
-    send_status_locked(transport, logger, transport_mutex, sender_hello(config));
+    send_status_locked(status_transport, logger, main_transport_mutex, sender_hello(config));
     for(const auto &camera : cameras) {
         bool online = false;
         std::string last_error;
@@ -4137,31 +4141,36 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             last_error = camera->last_error;
         }
         if(online) {
-            send_status_locked(transport, logger, transport_mutex,
+            send_status_locked(status_transport, logger, main_transport_mutex,
                                event_message(config, "info", "camera_connected", "camera pipeline started", camera->config.camera_id));
         }
         else {
-            send_status_locked(transport, logger, transport_mutex,
+            send_status_locked(status_transport, logger, main_transport_mutex,
                                camera_offline_message(config, camera->config.camera_id, last_error));
         }
     }
 
-    std::thread media_thread([&] { media_sender_loop(media_queue, transport, logger, transport_mutex); });
+    std::thread main_media_thread([&] { media_sender_loop(main_media_queue, main_media_transport, logger, main_transport_mutex); });
+    std::thread preview_media_thread([&] { media_sender_loop(preview_media_queue, preview_media_transport, logger, preview_media_transport_mutex); });
     const size_t depth_worker_count = depth_compression_worker_count(cameras.size());
     logger.info("depth compression workers=" + std::to_string(depth_worker_count));
     std::vector<std::thread> depth_compression_threads;
     depth_compression_threads.reserve(depth_worker_count);
     for(size_t worker = 0; worker < depth_worker_count; ++worker) {
-        depth_compression_threads.emplace_back([&, worker] { depth_compression_loop(depth_compression_queue, media_queue, logger, worker); });
+        depth_compression_threads.emplace_back([&, worker] { depth_compression_loop(depth_compression_queue, main_media_queue, logger, worker); });
     }
     std::vector<std::thread> camera_threads;
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
         const size_t slot_base = i * kMediaSlotsPerCamera;
         camera_threads.emplace_back([&, i, slot_base] {
-            camera_worker_loop(config, *cameras[i], slot_base, media_queue, depth_compression_queue, transport, logger, transport_mutex,
-                               preview_interval);
+            camera_worker_loop(config, *cameras[i], slot_base, main_media_queue, preview_media_queue, depth_compression_queue,
+                               status_transport, logger, main_transport_mutex, preview_interval);
         });
+    }
+
+    if(config.web_rgb_preview.enabled) {
+        logger.info("web rgb preview media uses separate tcp sender");
     }
 
     auto next_heartbeat = std::chrono::steady_clock::now();
@@ -4179,17 +4188,17 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
         const auto now = std::chrono::steady_clock::now();
-        process_receiver_controls(transport, config, cameras, logger, transport_mutex);
+        process_receiver_controls(status_transport, config, cameras, logger, main_transport_mutex);
         if(now >= next_heartbeat) {
             for(auto &camera : cameras) {
-                send_status_locked(transport, logger, transport_mutex, camera_heartbeat(config, *camera, started));
+                send_status_locked(status_transport, logger, main_transport_mutex, camera_heartbeat(config, *camera, started));
             }
             next_heartbeat = now + std::chrono::milliseconds(config.heartbeat_interval_ms);
         }
         if(now >= next_camera_announce) {
             for(auto &camera : cameras) {
                 if(camera_online(*camera)) {
-                    send_status_locked(transport, logger, transport_mutex, camera_announce(config, *camera));
+                    send_status_locked(status_transport, logger, main_transport_mutex, camera_announce(config, *camera));
                     set_camera_announced(*camera, true);
                 }
             }
@@ -4230,8 +4239,9 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             next_preview = now + preview_interval;
         }
         if(config.hotplug.enabled && now >= next_hotplug_scan) {
-            scan_hotplug_cameras(config, cameras, camera_threads, media_queue, depth_compression_queue, transport, logger, transport_mutex,
-                                 preview_interval, next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
+            scan_hotplug_cameras(config, cameras, camera_threads, main_media_queue, preview_media_queue, depth_compression_queue,
+                                 status_transport, logger, main_transport_mutex, preview_interval, next_hotplug_camera_number,
+                                 hotplug_retry_cooldowns, next_hotplug_limit_event);
             next_hotplug_scan = now + kHotplugScanInterval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -4239,7 +4249,8 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
 
     g_running = false;
     depth_compression_queue.stop();
-    media_queue.stop();
+    main_media_queue.stop();
+    preview_media_queue.stop();
     for(auto &thread : camera_threads) {
         if(thread.joinable()) {
             thread.join();
@@ -4250,8 +4261,11 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             thread.join();
         }
     }
-    if(media_thread.joinable()) {
-        media_thread.join();
+    if(main_media_thread.joinable()) {
+        main_media_thread.join();
+    }
+    if(preview_media_thread.joinable()) {
+        preview_media_thread.join();
     }
 
     for(auto &camera : cameras) {
@@ -4290,11 +4304,12 @@ int main(int argc, char **argv) {
         logger.info("gemini sender starting, sender_id=" + config.sender_id + ", receiver=" + config.receiver.ip);
         if(args.no_send) {
             NullTransport transport;
-            run_sender(config, args, transport, logger);
+            run_sender(config, args, transport, transport, transport, logger);
         }
         else {
             Transport transport(config);
-            run_sender(config, args, transport, logger);
+            Transport preview_transport(config);
+            run_sender(config, args, transport, transport, preview_transport, logger);
         }
         logger.info("gemini sender stopped");
         return 0;
