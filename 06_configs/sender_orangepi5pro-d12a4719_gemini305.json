@@ -33,7 +33,7 @@
     "max_height": 400,
     "fps": 30,
     "bitrate_bps": 500000,
-    "udp_enabled": true,
+    "udp_enabled": false,
     "udp_port": 50012,
     "udp_mtu_bytes": 1200
   },

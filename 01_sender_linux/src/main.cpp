@@ -369,7 +369,9 @@ struct DepthCompressionJob {
     MediaFrameMeta meta;
     float depth_scale = 1.0f;
     double quantization_step_mm = 10.0;
-    std::vector<uint8_t> raw_payload;
+    std::shared_ptr<const void> raw_payload_owner;
+    const uint8_t *raw_payload = nullptr;
+    size_t raw_payload_size = 0;
 };
 
 class LatestDepthCompressionQueue {
@@ -2048,6 +2050,25 @@ bool h264_payload_has_idr(const std::vector<uint8_t> &payload) {
     return false;
 }
 
+bool h264_payload_has_vcl_nal(const std::vector<uint8_t> &payload) {
+    for(size_t i = 0; i + 4 < payload.size(); ++i) {
+        size_t nal_offset = 0;
+        if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
+            nal_offset = i + 3;
+        }
+        else if(i + 5 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+            nal_offset = i + 4;
+        }
+        if(nal_offset > 0 && nal_offset < payload.size()) {
+            const uint8_t nal_type = payload[nal_offset] & 0x1fu;
+            if(nal_type >= 1 && nal_type <= 5) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::vector<uint8_t> zlib_compress_payload(const void *data, size_t size) {
     const auto bound = compressBound(static_cast<uLong>(size));
     std::vector<uint8_t> out(bound);
@@ -2311,20 +2332,24 @@ std::vector<uint8_t> pq8zlib_compress_payload(const void *data, size_t size, uin
 }
 
 std::vector<uint8_t> compress_depth_payload(const std::string &compression,
-                                            const std::vector<uint8_t> &raw_payload,
+                                            const uint8_t *raw_payload,
+                                            size_t raw_payload_size,
                                             float depth_scale,
                                             double quantization_step_mm) {
+    if(raw_payload == nullptr || raw_payload_size == 0) {
+        throw std::runtime_error("invalid depth compression input");
+    }
     if(compression == "zlib") {
-        return zlib_compress_payload(raw_payload.data(), raw_payload.size());
+        return zlib_compress_payload(raw_payload, raw_payload_size);
     }
     if(compression == "qdelta") {
-        return qdelta_compress_payload(raw_payload.data(), raw_payload.size(), 1);
+        return qdelta_compress_payload(raw_payload, raw_payload_size, 1);
     }
     if(compression == "pq12zlib") {
-        return pq12zlib_compress_payload(raw_payload.data(), raw_payload.size(), depth_scale, quantization_step_mm);
+        return pq12zlib_compress_payload(raw_payload, raw_payload_size, depth_scale, quantization_step_mm);
     }
     if(compression == "pq8zlib") {
-        return pq8zlib_compress_payload(raw_payload.data(), raw_payload.size(), raw_step_for_depth_scale(depth_scale, quantization_step_mm));
+        return pq8zlib_compress_payload(raw_payload, raw_payload_size, raw_step_for_depth_scale(depth_scale, quantization_step_mm));
     }
     throw std::runtime_error("unsupported depth compression: " + compression);
 }
@@ -2513,12 +2538,10 @@ uint64_t abs_diff_us(uint64_t lhs, uint64_t rhs) {
     return lhs >= rhs ? lhs - rhs : rhs - lhs;
 }
 
-constexpr uint64_t kRgbEncodedPtsMatchToleranceUs = 1000;
-
 struct RgbEncodeTimingResolution {
     RgbEncodeTiming timing;
-    bool matched_pts = false;
     bool used_fifo_fallback = false;
+    bool non_vcl = false;
     bool queue_empty = false;
     uint64_t pts_delta_us = 0;
 };
@@ -2532,37 +2555,20 @@ void remember_rgb_encode_timing(CameraRuntime &camera, const RgbEncodeTiming &ti
 }
 
 RgbEncodeTimingResolution resolve_rgb_encode_timing(CameraRuntime &camera, const EncodedH264Frame &encoded,
-                                                    const RgbEncodeTiming &fallback) {
+                                                    const RgbEncodeTiming &fallback, bool encoded_has_vcl) {
+    if(!encoded_has_vcl) {
+        RgbEncodeTimingResolution resolution;
+        resolution.timing = fallback;
+        resolution.non_vcl = true;
+        return resolution;
+    }
+
     std::lock_guard<std::mutex> lock(camera.mutex);
     if(camera.rgb_encode_timings.empty()) {
         RgbEncodeTimingResolution resolution;
         resolution.timing = fallback;
         resolution.queue_empty = true;
         return resolution;
-    }
-
-    if(encoded.has_pts) {
-        auto best = camera.rgb_encode_timings.end();
-        uint64_t best_delta_us = 0;
-        for(auto it = camera.rgb_encode_timings.begin(); it != camera.rgb_encode_timings.end(); ++it) {
-            const auto delta_us = abs_diff_us(it->system_timestamp_us, encoded.pts_us);
-            if(best == camera.rgb_encode_timings.end() || delta_us < best_delta_us) {
-                best = it;
-                best_delta_us = delta_us;
-            }
-            if(delta_us == 0) {
-                break;
-            }
-        }
-
-        if(best != camera.rgb_encode_timings.end() && best_delta_us <= kRgbEncodedPtsMatchToleranceUs) {
-            RgbEncodeTimingResolution resolution;
-            resolution.timing = *best;
-            resolution.matched_pts = true;
-            resolution.pts_delta_us = best_delta_us;
-            camera.rgb_encode_timings.erase(camera.rgb_encode_timings.begin(), std::next(best));
-            return resolution;
-        }
     }
 
     RgbEncodeTimingResolution resolution;
@@ -2575,9 +2581,9 @@ RgbEncodeTimingResolution resolve_rgb_encode_timing(CameraRuntime &camera, const
     return resolution;
 }
 
-void maybe_log_rgb_timing_resolution(CameraRuntime &camera, Logger &logger, const EncodedH264Frame &encoded,
+void maybe_log_rgb_timing_resolution(CameraRuntime &camera, Logger &logger, const EncodedH264Frame &,
                                      const RgbEncodeTimingResolution &resolution, std::chrono::steady_clock::time_point now) {
-    if(!resolution.used_fifo_fallback && !resolution.queue_empty) {
+    if(!resolution.queue_empty) {
         return;
     }
     bool should_log = false;
@@ -2596,12 +2602,6 @@ void maybe_log_rgb_timing_resolution(CameraRuntime &camera, Logger &logger, cons
     oss << "rgb encoder timing fallback camera_id=" << camera.config.camera_id;
     if(resolution.queue_empty) {
         oss << " reason=empty_timing_queue";
-    }
-    else if(!encoded.has_pts) {
-        oss << " reason=missing_encoded_pts";
-    }
-    else {
-        oss << " reason=pts_mismatch pts_delta_us=" << resolution.pts_delta_us << " encoded_pts_us=" << encoded.pts_us;
     }
     oss << " selected_frame_id=" << resolution.timing.frame_id
         << " selected_system_timestamp_us=" << resolution.timing.system_timestamp_us;
@@ -3084,10 +3084,11 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMedi
         try {
             const auto compress_started = std::chrono::steady_clock::now();
             auto compressed_depth =
-                compress_depth_payload(job->meta.codec_or_compression, job->raw_payload, job->depth_scale, job->quantization_step_mm);
+                compress_depth_payload(job->meta.codec_or_compression, job->raw_payload, job->raw_payload_size, job->depth_scale,
+                                       job->quantization_step_mm);
             record_depth_compress_ms(*job->source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
             job->meta.payload_size = compressed_depth.size();
-            job->meta.uncompressed_size = job->raw_payload.size();
+            job->meta.uncompressed_size = job->raw_payload_size;
             auto media_job = make_owned_media_job(*job->output_camera, StreamType::depth_raw, job->meta, std::move(compressed_depth));
             publish_media_job(media_queue, job->media_slot_index, *job->output_camera, StreamType::depth_raw, std::move(media_job), logger);
             record_depth_frame_done(*job->output_camera);
@@ -3332,19 +3333,20 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                             submitted_timing.encode_done_timestamp_us = encode_done_timestamp_us;
                             record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
                             for(auto &encoded : encoded_units) {
+                                const bool encoded_has_vcl = h264_payload_has_vcl_nal(encoded.data);
                                 const bool is_key_frame = h264_payload_has_idr(encoded.data);
                                 const auto send_decision = decide_rgb_keyframe_send(camera, is_key_frame, frame_now, logger);
                                 if(send_decision == RgbKeyframeDecision::drop) {
                                     continue;
                                 }
-                                const auto timing_resolution = resolve_rgb_encode_timing(camera, encoded, submitted_timing);
+                                const auto timing_resolution = resolve_rgb_encode_timing(camera, encoded, submitted_timing, encoded_has_vcl);
                                 maybe_log_rgb_timing_resolution(camera, logger, encoded, timing_resolution, frame_now);
                                 auto timing = timing_resolution.timing;
                                 if(timing.encode_start_timestamp_us == 0) {
                                     timing.encode_start_timestamp_us = submitted_timing.encode_start_timestamp_us;
                                 }
                                 timing.encode_done_timestamp_us = encode_done_timestamp_us;
-                                if(!rgb_encoded_timing_is_monotonic(camera, logger, timing, frame_now)) {
+                                if(encoded_has_vcl && !rgb_encoded_timing_is_monotonic(camera, logger, timing, frame_now)) {
                                     continue;
                                 }
                                 MediaFrameMeta meta;
@@ -3373,7 +3375,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                 bool reject_if_occupied = !is_key_frame;
                                 auto job = make_owned_media_job(camera, StreamType::rgb, meta, std::move(encoded.data));
                                 if(publish_media_job(media_queue, rgb_slot, camera, StreamType::rgb, std::move(job), logger,
-                                                     reject_if_occupied, is_key_frame)) {
+                                                     reject_if_occupied, is_key_frame)
+                                   && encoded_has_vcl) {
                                     mark_rgb_encoded_timing_queued(camera, timing);
                                 }
                             }
@@ -3472,7 +3475,9 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     }
                     compress_job.quantization_step_mm = camera.config.depth_transport.quantization_step_mm;
                     const auto *depth_bytes = static_cast<const uint8_t *>(depth->data());
-                    compress_job.raw_payload.assign(depth_bytes, depth_bytes + depth->dataSize());
+                    compress_job.raw_payload = depth_bytes;
+                    compress_job.raw_payload_size = depth->dataSize();
+                    compress_job.raw_payload_owner = std::shared_ptr<const void>(depth, static_cast<const void *>(depth->data()));
                     if(depth_compression_queue.publish(depth_slot, std::move(compress_job))) {
                         record_queue_overwrite(*depth_target, StreamType::depth_raw);
                     }

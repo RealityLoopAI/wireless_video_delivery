@@ -552,6 +552,7 @@
     const THUMB_DEPTH_REFRESH_MS = 650;
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
+    const PREVIEW_STALE_MS = 5000;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
@@ -672,6 +673,8 @@
           img.style.display = 'none';
         }
         if (!rgbH264PreviewSupported()) {
+          this.root.dataset.rgbH264Failed = '1';
+          this.root.dataset.rgbH264FailedKey = this.camera.camera_key;
           setPlaceholder(this.root, 'rgb', '等待 RGB');
           return;
         }
@@ -688,6 +691,8 @@
         }
         catch (_) {
           if (!this.stopped) {
+            this.root.dataset.rgbH264Failed = '1';
+            this.root.dataset.rgbH264FailedKey = this.camera.camera_key;
             setPlaceholder(this.root, 'rgb', 'RGB 视频中断');
             this.canvas.style.display = 'none';
           }
@@ -767,6 +772,8 @@
         }
         this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
         frame.close();
+        this.root.dataset.rgbH264Failed = '0';
+        this.root.dataset.rgbH264FailedKey = '';
         this.canvas.style.display = 'block';
         setPlaceholder(this.root, 'rgb', '', false);
       }
@@ -903,12 +910,19 @@
       const endpoint = high && kind === 'rgb' ? 'rgb-main' : kind;
       return `/api/preview/${endpoint}?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
     }
+    function previewFresh(ageMs) {
+      const age = Number(ageMs);
+      return Number.isFinite(age) && age >= 0 && age <= PREVIEW_STALE_MS;
+    }
     function previewAvailable(c, kind, high = false) {
       if (!receiverPreviewEnabled || !isLive(c)) return false;
       if (kind === 'rgb') {
-        return high ? (c.main_rgb_preview_available || c.rgb_preview_available || c.rgb_packets > 0) : (c.rgb_preview_available || c.rgb_packets > 0);
+        const h264Fresh = c.rgb_h264_preview_available && previewFresh(c.rgb_h264_preview_age_ms);
+        const jpegFresh = (c.rgb_jpeg_preview_available || c.rgb_preview_available) && previewFresh(c.rgb_preview_age_ms);
+        const mainFresh = c.main_rgb_preview_available && previewFresh(c.main_rgb_preview_age_ms);
+        return high ? (mainFresh || h264Fresh || jpegFresh || c.rgb_packets > 0) : (h264Fresh || jpegFresh || c.rgb_packets > 0);
       }
-      return c.depth_preview_available || c.depth_packets > 0;
+      return (c.depth_preview_available && previewFresh(c.depth_preview_age_ms)) || c.depth_packets > 0;
     }
     function hasAnyPreview(c) {
       return isLive(c) && (previewAvailable(c, 'rgb') || previewAvailable(c, 'depth') || c.rgb_packets > 0 || c.depth_packets > 0);
@@ -1026,7 +1040,8 @@
         clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
         return;
       }
-      if (kind === 'rgb' && rgbH264PreviewSupported()) {
+      if (kind === 'rgb' && rgbH264PreviewSupported() &&
+          !(root.dataset.rgbH264Failed === '1' && root.dataset.rgbH264FailedKey === c.camera_key)) {
         root.dataset[`${kind}Loading`] = '0';
         ensureRgbVideoPreview(root, c, high);
         return;

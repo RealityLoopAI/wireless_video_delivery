@@ -2566,18 +2566,21 @@ public:
 
         const uint64_t packet_local_us = now_us();
         const auto stream = std::string(stream_type_name(packet.stream_type));
+        const bool rgb_packet_has_vcl = packet.stream_type == StreamType::rgb && h264_payload_has_vcl_nal(packet.payload);
         if(packet.stream_type == StreamType::rgb) {
-            std::optional<int64_t> frame_interval_us;
-            if(last_rgb_.valid && last_rgb_.system_timestamp_us > 0 && packet.system_timestamp_us > 0) {
-                frame_interval_us = packet.system_timestamp_us >= last_rgb_.system_timestamp_us
-                                        ? static_cast<int64_t>(packet.system_timestamp_us - last_rgb_.system_timestamp_us)
-                                        : -static_cast<int64_t>(last_rgb_.system_timestamp_us - packet.system_timestamp_us);
-            }
             write_rgb_packet(cfg, packet, packet_local_us, logger);
-            last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.rgb_exposure_us,
-                                  packet.rgb_gain, packet.rgb_auto_exposure, packet.rgb_actual_fps};
-            last_rgb_frame_interval_us_ = frame_interval_us;
-            rgb_stats_.add(packet, packet_local_us);
+            if(rgb_packet_has_vcl) {
+                std::optional<int64_t> frame_interval_us;
+                if(last_rgb_.valid && last_rgb_.system_timestamp_us > 0 && packet.system_timestamp_us > 0) {
+                    frame_interval_us = packet.system_timestamp_us >= last_rgb_.system_timestamp_us
+                                            ? static_cast<int64_t>(packet.system_timestamp_us - last_rgb_.system_timestamp_us)
+                                            : -static_cast<int64_t>(last_rgb_.system_timestamp_us - packet.system_timestamp_us);
+                }
+                last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.rgb_exposure_us,
+                                      packet.rgb_gain, packet.rgb_auto_exposure, packet.rgb_actual_fps};
+                last_rgb_frame_interval_us_ = frame_interval_us;
+                rgb_stats_.add(packet, packet_local_us);
+            }
         }
         else if(packet.stream_type == StreamType::depth_raw) {
             if(depth_debug_) {
@@ -2588,7 +2591,7 @@ public:
             depth_stats_.add(packet, packet_local_us);
         }
 
-        if(frames_csv_) {
+        if(frames_csv_ && (packet.stream_type != StreamType::rgb || rgb_packet_has_vcl)) {
             frames_csv_ << packet_local_us << ',' << stream << ',';
             if(last_rgb_.valid) {
                 frames_csv_ << last_rgb_.frame_id << ',' << last_rgb_.timestamp_us << ',';
@@ -2833,6 +2836,7 @@ private:
         std::string line;
         std::set<std::string> merged_rgb_keys;
         size_t duplicate_frame_rows = 0;
+        size_t dropped_unrecorded_rgb_rows = 0;
         std::string first_duplicate_frame_key;
         while(std::getline(frames_in, line)) {
             const auto row = split_csv_line(line);
@@ -2851,7 +2855,7 @@ private:
                     merged << line << ",1," << found->second.first << ',' << found->second.second << '\n';
                 }
                 else {
-                    merged << line << ",0,,\n";
+                    dropped_unrecorded_rgb_rows++;
                 }
             }
             else {
@@ -2862,6 +2866,10 @@ private:
             logger.warn("duplicate RGB frame keys marked unrecorded during frames.csv merge path=" + frames_path.string()
                         + " duplicates=" + std::to_string(duplicate_frame_rows)
                         + " first_key=\"" + first_duplicate_frame_key + "\"");
+        }
+        if(dropped_unrecorded_rgb_rows > 0) {
+            logger.warn("unrecorded RGB frame rows dropped during frames.csv merge path=" + frames_path.string()
+                        + " dropped=" + std::to_string(dropped_unrecorded_rgb_rows));
         }
         merged.close();
         if(!merged) {
@@ -3853,7 +3861,7 @@ public:
             const bool depth_preview_fresh = preview_enabled && media_live && is_recent_us(now, cam.depth_preview_us, kPreviewFreshUs);
             const bool rgb_thumbnail_preview_available = rgb_preview_fresh && cam.rgb_decoder && cam.rgb_decoder->has_frame();
             const bool rgb_preview_report_available =
-                preview_enabled && (rgb_h264_preview_fresh || rgb_thumbnail_preview_available || (media_live && cam.rgb_packets > 0));
+                preview_enabled && (rgb_h264_preview_fresh || rgb_thumbnail_preview_available);
             const bool main_rgb_native_preview_available =
                 cam.key == main_preview_key_ && main_rgb_preview_fresh && cam.main_rgb_decoder && cam.main_rgb_decoder->has_frame();
             const bool main_rgb_preview_report_available =
@@ -3866,22 +3874,22 @@ public:
             const uint32_t rgb_report_height =
                 rgb_h264_preview_fresh ? rgb_h264_preview_height
                                        : (cam.rgb_preview_height > 0 ? cam.rgb_preview_height : static_cast<uint32_t>(announce_rgb_height_for_preview));
-            const uint64_t rgb_report_us = rgb_h264_preview_fresh ? rgb_h264_preview_us : cam.rgb_preview_us;
+            const uint64_t rgb_report_us = rgb_preview_report_available ? (rgb_h264_preview_fresh ? rgb_h264_preview_us : cam.rgb_preview_us) : 0;
             const uint32_t main_rgb_report_width =
-                rgb_h264_preview_fresh ? rgb_h264_preview_width
-                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_width
-                                                                           : (main_rgb_preview_report_available ? rgb_report_width
-                                                                                                                 : cam.main_rgb_preview_width));
+                !main_rgb_preview_report_available
+                    ? 0
+                    : (rgb_h264_preview_fresh ? rgb_h264_preview_width
+                                              : (main_rgb_native_preview_available ? cam.main_rgb_preview_width : rgb_report_width));
             const uint32_t main_rgb_report_height =
-                rgb_h264_preview_fresh ? rgb_h264_preview_height
-                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_height
-                                                                           : (main_rgb_preview_report_available ? rgb_report_height
-                                                                                                                 : cam.main_rgb_preview_height));
+                !main_rgb_preview_report_available
+                    ? 0
+                    : (rgb_h264_preview_fresh ? rgb_h264_preview_height
+                                              : (main_rgb_native_preview_available ? cam.main_rgb_preview_height : rgb_report_height));
             const uint64_t main_rgb_report_us =
-                rgb_h264_preview_fresh ? rgb_h264_preview_us
-                                       : (main_rgb_native_preview_available ? cam.main_rgb_preview_us
-                                                                           : (main_rgb_preview_report_available ? cam.rgb_preview_us
-                                                                                                                 : cam.main_rgb_preview_us));
+                !main_rgb_preview_report_available
+                    ? 0
+                    : (rgb_h264_preview_fresh ? rgb_h264_preview_us
+                                              : (main_rgb_native_preview_available ? cam.main_rgb_preview_us : cam.rgb_preview_us));
             const auto calibration_json = json_object_field(cam.last_announce_json, "calibration").value_or("");
             const bool cached_calibration_available = json_bool_field(calibration_json, "available").value_or(false);
             const bool calibration_available = cam.last_announce_live && cached_calibration_available;
@@ -3921,11 +3929,18 @@ public:
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
             out << "\"rgb_preview_available\":" << (rgb_preview_report_available ? "true" : "false") << ',';
+            out << "\"rgb_h264_preview_available\":" << (rgb_h264_preview_fresh ? "true" : "false") << ',';
+            out << "\"rgb_h264_preview_width\":" << rgb_h264_preview_width << ',';
+            out << "\"rgb_h264_preview_height\":" << rgb_h264_preview_height << ',';
+            out << "\"rgb_h264_preview_us\":" << rgb_h264_preview_us << ',';
+            out << "\"rgb_h264_preview_age_ms\":" << age_ms_or_negative(now, rgb_h264_preview_us) << ',';
+            out << "\"rgb_jpeg_preview_available\":" << (rgb_thumbnail_preview_available ? "true" : "false") << ',';
             out << "\"rgb_preview_width\":" << rgb_report_width << ',';
             out << "\"rgb_preview_height\":" << rgb_report_height << ',';
             out << "\"rgb_preview_us\":" << rgb_report_us << ',';
             out << "\"rgb_preview_age_ms\":" << age_ms_or_negative(now, rgb_report_us) << ',';
             out << "\"main_rgb_preview_available\":" << (main_rgb_preview_report_available ? "true" : "false") << ',';
+            out << "\"main_rgb_jpeg_preview_available\":" << (main_rgb_native_preview_available ? "true" : "false") << ',';
             out << "\"main_rgb_preview_width\":" << main_rgb_report_width << ',';
             out << "\"main_rgb_preview_height\":" << main_rgb_report_height << ',';
             out << "\"main_rgb_preview_us\":" << main_rgb_report_us << ',';
@@ -4006,6 +4021,27 @@ public:
         }).detach();
     }
 
+    void close_segments_sync(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
+        if(close_tasks.empty()) {
+            return;
+        }
+        for(auto &task : close_tasks) {
+            bool segment_active = false;
+            std::string segment_dir;
+            {
+                std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
+                task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+                segment_active = task.cam->segment.active();
+                segment_dir = task.cam->segment.directory();
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            task.cam->segment_active = segment_active;
+            task.cam->segment_finalizing = false;
+            task.cam->segment_dir = std::move(segment_dir);
+        }
+        logger_.info(done_log_message);
+    }
+
     std::string start_all(const std::optional<std::string> &file_prefix_override) {
         if(file_prefix_override) {
             if(const auto error = storage_text_error("file_prefix", *file_prefix_override)) {
@@ -4068,10 +4104,10 @@ public:
             refresh_camera_liveness_locked(now_us());
         }
         logger_.info("recording stop-all requested");
-        close_segments_async(std::move(close_tasks), "recording stop-all finalized");
+        close_segments_sync(std::move(close_tasks), "recording stop-all finalized");
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":"
-            << (finalizing ? "true" : "false") << "}";
+        out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us
+            << ",\"finalizing\":false,\"finalized\":" << (finalizing ? "true" : "false") << "}";
         return out.str();
     }
 
@@ -4135,9 +4171,9 @@ public:
         logger_.info("recording stop requested: " + key);
         std::vector<SegmentCloseTask> close_tasks;
         close_tasks.push_back({cam, cam->sender_id, cam->camera_id, announce_json});
-        close_segments_async(std::move(close_tasks), "recording stop finalized: " + key);
+        close_segments_sync(std::move(close_tasks), "recording stop finalized: " + key);
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":true}";
+        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":false,\"finalized\":true}";
         return out.str();
     }
 
