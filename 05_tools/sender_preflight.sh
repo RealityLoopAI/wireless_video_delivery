@@ -294,7 +294,7 @@ if not isinstance(status, dict):
 
 active_clients = status.get("active_media_clients")
 if isinstance(active_clients, int) and active_clients > 1:
-    print(f"receiver currently has {active_clients} active media clients; current one-stream delivery expectation may be impacted")
+    print(f"receiver currently has {active_clients} active media clients; split rgb/depth/preview links can make this normal; check sender_id conflict warnings below for duplicates")
 
 conflicts = []
 for cam in status.get("cameras", []):
