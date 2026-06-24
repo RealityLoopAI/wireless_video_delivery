@@ -349,6 +349,7 @@ AppConfig load_config(const std::string &path) {
             throw std::runtime_error("invalid object field: web_rgb_preview");
         }
         config.web_rgb_preview.enabled = optional_bool(web_rgb_preview, "enabled", config.web_rgb_preview.enabled);
+        config.web_rgb_preview.on_demand = optional_bool(web_rgb_preview, "on_demand", config.web_rgb_preview.on_demand);
         config.web_rgb_preview.max_width = optional_int(web_rgb_preview, "max_width", config.web_rgb_preview.max_width);
         config.web_rgb_preview.max_height = optional_int(web_rgb_preview, "max_height", config.web_rgb_preview.max_height);
         config.web_rgb_preview.fps = optional_int(web_rgb_preview, "fps", config.web_rgb_preview.fps);

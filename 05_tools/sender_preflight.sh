@@ -165,6 +165,7 @@ values = {
     "PREVIEW_ENABLED": preview.get("enabled", ""),
     "PREVIEW_FPS": preview.get("fps", ""),
     "WEB_PREVIEW_ENABLED": web_preview.get("enabled", ""),
+    "WEB_PREVIEW_ON_DEMAND": web_preview.get("on_demand", True),
     "WEB_PREVIEW_FPS": web_preview.get("fps", ""),
     "WEB_PREVIEW_BITRATE": web_preview.get("bitrate_bps", ""),
     "HOTPLUG_ENABLED": hotplug.get("enabled", True),
@@ -327,7 +328,7 @@ echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"
-echo "  config_web_preview: enabled=${WEB_PREVIEW_ENABLED} fps=${WEB_PREVIEW_FPS} bitrate=${WEB_PREVIEW_BITRATE}bps"
+echo "  config_web_preview: enabled=${WEB_PREVIEW_ENABLED} on_demand=${WEB_PREVIEW_ON_DEMAND} fps=${WEB_PREVIEW_FPS} bitrate=${WEB_PREVIEW_BITRATE}bps"
 echo "  hotplug: enabled=${HOTPLUG_ENABLED:-true}"
 case "$PREVIEW_MODE" in
   no-preview)

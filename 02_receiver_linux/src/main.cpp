@@ -70,6 +70,8 @@ constexpr uint64_t kPreviewRequestKeepaliveUs = 2ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewDecoderIdleStopUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kMainPreviewRequestKeepaliveUs = 15ull * 1000ull * 1000ull;
 constexpr uint64_t kMainPreviewDecoderIdleStopUs = 30ull * 1000ull * 1000ull;
+constexpr uint64_t kWebRgbPreviewControlIntervalUs = 500ull * 1000ull;
+constexpr int kWebRgbPreviewControlLeaseMs = 2500;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
@@ -3905,6 +3907,7 @@ struct CameraState {
     std::vector<uint8_t> rgb_preview_prefix_h264;
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
+    uint64_t last_web_rgb_preview_control_us = 0;
     uint64_t last_rgb_preview_packet_us = 0;
     uint64_t rgb_stream_requested_until_us = 0;
     H264StreamBuffer rgb_stream;
@@ -4224,6 +4227,40 @@ public:
             }
             else {
                 logger_.warn("force_rgb_keyframe control send failed sender=" + target.sender_id + " camera=" + target.camera_id
+                             + " endpoint=" + target.endpoint);
+            }
+        }
+    }
+
+    std::optional<SenderControlTarget> maybe_web_rgb_preview_control_target_locked(CameraState &cam, uint64_t now) {
+        const bool requested = is_recent_us(now, cam.rgb_stream_requested_until_us, 0)
+                               || is_recent_us(now, cam.rgb_preview_requested_until_us, 0)
+                               || (cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0));
+        if(!requested || cam.status_endpoint.empty()) {
+            return std::nullopt;
+        }
+        if(cam.last_web_rgb_preview_control_us != 0 && now < cam.last_web_rgb_preview_control_us + kWebRgbPreviewControlIntervalUs) {
+            return std::nullopt;
+        }
+        cam.last_web_rgb_preview_control_us = now;
+        return SenderControlTarget{cam.sender_id, cam.camera_id, cam.status_endpoint};
+    }
+
+    void send_web_rgb_preview_controls(const std::vector<SenderControlTarget> &targets, uint64_t request_us) {
+        for(const auto &target : targets) {
+            if(target.endpoint.empty()) {
+                continue;
+            }
+            std::ostringstream payload;
+            payload << "{\"message_type\":\"control\","
+                    << "\"control\":\"set_web_rgb_preview_active\","
+                    << "\"sender_id\":\"" << json_escape(target.sender_id) << "\","
+                    << "\"camera_id\":\"" << json_escape(target.camera_id) << "\","
+                    << "\"active\":true,"
+                    << "\"lease_ms\":" << kWebRgbPreviewControlLeaseMs << ','
+                    << "\"request_us\":" << request_us << "}";
+            if(!send_udp_text_to_endpoint(target.endpoint, payload.str())) {
+                logger_.warn("web rgb preview control send failed sender=" + target.sender_id + " camera=" + target.camera_id
                              + " endpoint=" + target.endpoint);
             }
         }
@@ -5252,6 +5289,8 @@ private:
         bool build_depth_preview = false;
         uint64_t depth_preview_media_us = 0;
         double depth_preview_scale = fallback_depth_scale_for_camera(record_packet->sender_id, record_packet->camera_id);
+        std::vector<SenderControlTarget> web_preview_control_targets;
+        uint64_t web_preview_control_request_us = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
@@ -5273,6 +5312,10 @@ private:
                     if(!preview_stream_fresh && (jpeg_requested || decoder_active)) {
                         update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
                     }
+                    if(auto target = maybe_web_rgb_preview_control_target_locked(*cam, media_now)) {
+                        web_preview_control_request_us = media_now;
+                        web_preview_control_targets.push_back(*target);
+                    }
                 }
             }
             else if(packet.stream_type == StreamType::rgb_preview) {
@@ -5293,6 +5336,10 @@ private:
                         cam->rgb_preview_height = packet.height;
                         cam->rgb_preview_us = cam->last_media_us;
                     }
+                    if(auto target = maybe_web_rgb_preview_control_target_locked(*cam, media_now)) {
+                        web_preview_control_request_us = media_now;
+                        web_preview_control_targets.push_back(*target);
+                    }
                 }
             }
             else if(packet.stream_type == StreamType::depth_raw) {
@@ -5302,6 +5349,9 @@ private:
                 depth_preview_media_us = cam->last_media_us;
                 depth_preview_scale = cam->depth_scale;
             }
+        }
+        if(!web_preview_control_targets.empty()) {
+            send_web_rgb_preview_controls(web_preview_control_targets, web_preview_control_request_us);
         }
 
         if(build_depth_preview) {

@@ -81,6 +81,7 @@ struct PreviewConfig {
 
 struct WebRgbPreviewConfig {
     bool enabled = true;
+    bool on_demand = true;
     int max_width = 1920;
     int max_height = 1080;
     int fps = 30;

@@ -60,6 +60,8 @@ constexpr auto kCameraAnnounceInterval = std::chrono::seconds(5);
 constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
 constexpr auto kHotplugLimitEventInterval = std::chrono::seconds(30);
+constexpr auto kWebRgbPreviewDefaultLease = std::chrono::milliseconds(2500);
+constexpr auto kWebRgbPreviewMaxLease = std::chrono::seconds(10);
 constexpr size_t kMediaSlotsPerCamera = 3;
 constexpr size_t kDepthMediaQueuePerSlot = 4;
 constexpr size_t kDepthCompressionQueuePerSlot = 4;
@@ -256,6 +258,7 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point stats_started = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_preview = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_web_rgb_preview = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point web_rgb_preview_requested_until = std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point next_depth_emit = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_reconnect = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_time_sync_log = std::chrono::steady_clock::now();
@@ -537,6 +540,14 @@ std::optional<Json::Value> parse_json_object(const std::string &payload) {
 
 std::string json_string_or(const Json::Value &value, const char *key, const std::string &fallback = "") {
     return value.isMember(key) && value[key].isString() ? value[key].asString() : fallback;
+}
+
+bool json_bool_or(const Json::Value &value, const char *key, bool fallback) {
+    return value.isMember(key) && value[key].isBool() ? value[key].asBool() : fallback;
+}
+
+int json_int_or(const Json::Value &value, const char *key, int fallback) {
+    return value.isMember(key) && value[key].isInt() ? value[key].asInt() : fallback;
 }
 
 double elapsed_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point ended) {
@@ -1958,6 +1969,9 @@ bool web_rgb_preview_emit_due(const AppConfig &config, CameraRuntime &camera, st
     }
 
     std::lock_guard<std::mutex> lock(camera.mutex);
+    if(config.web_rgb_preview.on_demand && now > camera.web_rgb_preview_requested_until) {
+        return false;
+    }
     if(now < camera.next_web_rgb_preview) {
         return false;
     }
@@ -2637,6 +2651,7 @@ Json::Value sender_hello(const AppConfig &config) {
     capabilities["depth_compression"] = depth;
     capabilities["local_preview"] = config.preview.enabled;
     capabilities["web_rgb_preview"] = config.web_rgb_preview.enabled;
+    capabilities["web_rgb_preview_on_demand"] = config.web_rgb_preview.on_demand;
     capabilities["hotplug"] = config.hotplug.enabled;
     capabilities["media_protocol"] = config.transport.media_protocol;
     capabilities["status_protocol"] = config.transport.status_protocol;
@@ -2664,6 +2679,7 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
     Json::Value web_preview;
     web_preview["enabled"] = config.web_rgb_preview.enabled;
+    web_preview["on_demand"] = config.web_rgb_preview.on_demand;
     web_preview["max_width"] = config.web_rgb_preview.max_width;
     web_preview["max_height"] = config.web_rgb_preview.max_height;
     web_preview["fps"] = config.web_rgb_preview.fps;
@@ -2994,6 +3010,37 @@ CameraRuntime *find_camera_by_id(const std::vector<std::unique_ptr<CameraRuntime
     return nullptr;
 }
 
+void set_web_rgb_preview_active(CameraRuntime &camera, bool active, int lease_ms, Logger &logger) {
+    const auto now = std::chrono::steady_clock::now();
+    bool became_active = false;
+    bool became_inactive = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        const bool was_active = now <= camera.web_rgb_preview_requested_until;
+        if(active) {
+            const auto clamped_lease =
+                std::chrono::milliseconds(std::clamp(lease_ms, 250, static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                                         kWebRgbPreviewMaxLease)
+                                                                                         .count())));
+            camera.web_rgb_preview_requested_until = now + clamped_lease;
+            if(camera.next_web_rgb_preview < now) {
+                camera.next_web_rgb_preview = now;
+            }
+            became_active = !was_active;
+        }
+        else {
+            camera.web_rgb_preview_requested_until = std::chrono::steady_clock::time_point::min();
+            became_inactive = was_active;
+        }
+    }
+    if(became_active) {
+        logger.info("web rgb preview requested camera_id=" + camera.config.camera_id);
+    }
+    else if(became_inactive) {
+        logger.info("web rgb preview request cleared camera_id=" + camera.config.camera_id);
+    }
+}
+
 void handle_receiver_control_message(const AppConfig &config,
                                      const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
                                      Logger &logger,
@@ -3012,13 +3059,34 @@ void handle_receiver_control_message(const AppConfig &config,
     if(!target_sender.empty() && target_sender != "*" && target_sender != config.sender_id) {
         return;
     }
+
+    size_t matched = 0;
+    const bool all_cameras = target_camera.empty() || target_camera == "*";
+    if(control == "set_web_rgb_preview_active") {
+        const bool active = json_bool_or(*root, "active", true);
+        const int lease_ms = json_int_or(*root, "lease_ms", static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                             kWebRgbPreviewDefaultLease)
+                                                             .count()));
+        for(const auto &camera : cameras) {
+            if(!camera) {
+                continue;
+            }
+            if(all_cameras || camera->config.camera_id == target_camera) {
+                set_web_rgb_preview_active(*camera, active, lease_ms, logger);
+                ++matched;
+            }
+        }
+        if(matched == 0) {
+            logger.warn("web preview control matched no camera sender_id=" + config.sender_id + " camera_id=" + target_camera);
+        }
+        return;
+    }
+
     if(control != "force_rgb_keyframe") {
         logger.warn("unknown receiver control ignored: " + control);
         return;
     }
 
-    size_t matched = 0;
-    const bool all_cameras = target_camera.empty() || target_camera == "*";
     for(const auto &camera : cameras) {
         if(!camera) {
             continue;
