@@ -8,7 +8,6 @@ CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 STDOUT_LOG="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 DISPLAY_VALUE="${DISPLAY:-:1}"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 

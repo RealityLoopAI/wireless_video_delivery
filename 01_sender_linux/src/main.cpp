@@ -28,6 +28,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -807,6 +808,59 @@ int capture_stall_reconnect_cooldown_seconds() {
     catch(const std::exception &) {
         return 30;
     }
+}
+
+std::string read_text_file(const std::filesystem::path &path);
+
+int camera_reconnect_process_restart_attempts() {
+    const char *value = std::getenv("GEMINI_SENDER_CAMERA_RECONNECT_RESTART_ATTEMPTS");
+    if(value == nullptr || value[0] == '\0') {
+        return 12;
+    }
+    try {
+        return std::max(0, std::stoi(value));
+    }
+    catch(const std::exception &) {
+        return 12;
+    }
+}
+
+bool is_no_orbbec_device_error(const std::string &error) {
+    return error.find("no Orbbec device found") != std::string::npos;
+}
+
+bool system_orbbec_usb_present() {
+    const std::filesystem::path root = "/sys/bus/usb/devices";
+    std::error_code ec;
+    if(!std::filesystem::exists(root, ec)) {
+        return false;
+    }
+    for(const auto &entry : std::filesystem::directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if(ec) {
+            return false;
+        }
+        if(read_text_file(entry.path() / "idVendor") == "2bc5") {
+            return true;
+        }
+    }
+    return false;
+}
+
+void update_camera_reconnect_process_guard(CameraRuntime &camera, Logger &logger, uint32_t attempts, const std::string &error) {
+    const int restart_attempts = camera_reconnect_process_restart_attempts();
+    if(restart_attempts <= 0 || attempts < static_cast<uint32_t>(restart_attempts)) {
+        return;
+    }
+    if(!is_no_orbbec_device_error(error) || !system_orbbec_usb_present()) {
+        return;
+    }
+
+    logger.error("camera reconnect guard exiting sender for watchdog restart camera_id=" + camera.config.camera_id
+                 + " attempts=" + std::to_string(attempts)
+                 + " threshold=" + std::to_string(restart_attempts)
+                 + " error=\"" + error + "\""
+                 + " reason=orbbec_usb_present_but_sdk_enumeration_failed");
+    g_running = false;
 }
 
 void update_media_outage_guard(CameraRuntime &camera, Logger &logger, const CameraPerfStats &perf) {
@@ -3458,6 +3512,7 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
         logger.warn("camera reconnect failed camera_id=" + camera.config.camera_id + " attempt=" + std::to_string(attempts)
                     + " error=" + error);
         send_status_locked(transport, logger, transport_mutex, camera_offline_message(config, camera.config.camera_id, error));
+        update_camera_reconnect_process_guard(camera, logger, attempts, error);
     }
     catch(const std::exception &e) {
         stop_camera(camera, logger);
@@ -3472,6 +3527,7 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
         logger.warn("camera reconnect failed camera_id=" + camera.config.camera_id + " attempt=" + std::to_string(attempts)
                     + " error=" + error);
         send_status_locked(transport, logger, transport_mutex, camera_offline_message(config, camera.config.camera_id, error));
+        update_camera_reconnect_process_guard(camera, logger, attempts, error);
     }
 }
 

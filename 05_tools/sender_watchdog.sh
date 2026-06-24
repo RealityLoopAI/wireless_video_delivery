@@ -9,12 +9,32 @@ PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 LOCK_FILE="$ROOT_DIR/12_build/sender.lock"
 LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
 RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
+
+resolve_sender_sdk_lib() {
+  local linked_lib=""
+  linked_lib="$(ldd "$BIN" 2>/dev/null | awk '/libOrbbecSDK/ {print $3; exit}')"
+  if [[ -n "$linked_lib" && -f "$linked_lib" ]]; then
+    dirname "$linked_lib"
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/lib" \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+}
+
+SDK_LIB="${GEMINI_SENDER_SDK_LIB:-$(resolve_sender_sdk_lib)}"
 
 mkdir -p "$ROOT_DIR/12_build" "$ROOT_DIR/08_reports/sender_logs"
 "$ROOT_DIR/05_tools/rotate_sender_logs.sh" || true
@@ -51,7 +71,7 @@ cleanup() {
 
 trap cleanup INT TERM HUP EXIT
 
-log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ wifi_guard=$(gemini_sender_wifi_policy_summary)"
+log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ sdk_lib=${SDK_LIB:-auto} wifi_guard=$(gemini_sender_wifi_policy_summary)"
 
 monitor_child_health() {
   local pid="$1"
@@ -99,11 +119,11 @@ while [[ "$stopping" -eq 0 ]]; do
   fi
 
   if [[ "$MODE" == "no-preview" ]]; then
-    LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
+    LD_LIBRARY_PATH="${SDK_LIB:+$SDK_LIB:}${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
   elif [[ "$MODE" == "no-local-preview" ]]; then
-    LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-local-preview &
+    LD_LIBRARY_PATH="${SDK_LIB:+$SDK_LIB:}${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-local-preview &
   else
-    DISPLAY="$DISPLAY_VALUE" LD_LIBRARY_PATH="$SDK_LIB:${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" &
+    DISPLAY="$DISPLAY_VALUE" LD_LIBRARY_PATH="${SDK_LIB:+$SDK_LIB:}${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" &
   fi
 
   child_pid="$!"
