@@ -2040,7 +2040,7 @@ bool h264_payload_has_idr(const std::vector<uint8_t> &payload) {
         if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
             nal_offset = i + 3;
         }
-        else if(i + 5 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+        else if(i + 4 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
             nal_offset = i + 4;
         }
         if(nal_offset > 0 && nal_offset < payload.size() && (payload[nal_offset] & 0x1fu) == 5u) {
@@ -2056,7 +2056,7 @@ bool h264_payload_has_vcl_nal(const std::vector<uint8_t> &payload) {
         if(payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) {
             nal_offset = i + 3;
         }
-        else if(i + 5 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
+        else if(i + 4 < payload.size() && payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) {
             nal_offset = i + 4;
         }
         if(nal_offset > 0 && nal_offset < payload.size()) {

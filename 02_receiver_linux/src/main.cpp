@@ -2546,6 +2546,7 @@ public:
         rgb_record_fps_ = 0.0;
         depth_record_fps_ = 0.0;
         rgb_stats_.reset();
+        rgb_recorded_stats_.reset();
         depth_stats_.reset();
     }
 
@@ -2715,6 +2716,7 @@ private:
         rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression;
         write_pipeline_diagnostics_columns(rgb_recorded_frames_csv_, packet, packet_local_us);
         rgb_recorded_frames_csv_ << '\n';
+        rgb_recorded_stats_.add(packet, packet_local_us);
     }
 
     void write_pending_rgb_recorded_frames() {
@@ -3392,8 +3394,9 @@ private:
         task.log_path = file_path("ffmpeg.log");
         task.start_us = start_us_;
 
-        const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_stats_);
-        const double rgb_duration = media_duration_seconds(rgb_stats_);
+        const auto &rgb_output_stats = rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_;
+        const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_output_stats);
+        const double rgb_duration = media_duration_seconds(rgb_output_stats);
         if(rgb_duration > 0.0) {
             task.entries.push_back(
                 RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale, file_path("rgb_debug.h264"), rgb_record_fps_, cfg.write_debug_h264});
@@ -3416,13 +3419,16 @@ private:
         write_calibration(sender_id, camera_id, announce_json, closed);
         const int rgb_requested_fps = json_int_in_object(announce_json, "rgb_profile", "fps").value_or(30);
         const int depth_requested_fps = json_int_in_object(announce_json, "depth_profile", "fps").value_or(cfg.depth_fps);
-        const std::string rgb_codec = !rgb_stats_.codec_or_compression.empty()
-                                          ? rgb_stats_.codec_or_compression
+        const auto &rgb_output_stats = rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_;
+        const std::string rgb_codec = !rgb_output_stats.codec_or_compression.empty()
+                                          ? rgb_output_stats.codec_or_compression
                                           : json_string_in_object(announce_json, "rgb_profile", "codec").value_or("h264");
-        const uint32_t rgb_width = rgb_stats_.width > 0 ? rgb_stats_.width
-                                                        : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "width").value_or(0));
-        const uint32_t rgb_height = rgb_stats_.height > 0 ? rgb_stats_.height
-                                                          : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "height").value_or(0));
+        const uint32_t rgb_width =
+            rgb_output_stats.width > 0 ? rgb_output_stats.width
+                                       : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "width").value_or(0));
+        const uint32_t rgb_height =
+            rgb_output_stats.height > 0 ? rgb_output_stats.height
+                                        : static_cast<uint32_t>(json_int_in_object(announce_json, "rgb_profile", "height").value_or(0));
         std::ofstream meta(file_path("meta.json"), std::ios::out | std::ios::trunc);
         meta << "{\n";
         meta << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
@@ -3447,8 +3453,8 @@ private:
         meta << "  \"rgb_width\": " << rgb_width << ",\n";
         meta << "  \"rgb_height\": " << rgb_height << ",\n";
         meta << "  \"rgb_fps\": " << rgb_requested_fps << ",\n";
-        meta << "  \"rgb_actual_fps\": " << format_fps(rgb_stats_.actual_fps()) << ",\n";
-        meta << "  \"rgb_frames\": " << rgb_stats_.frames << ",\n";
+        meta << "  \"rgb_actual_fps\": " << format_fps(rgb_output_stats.actual_fps()) << ",\n";
+        meta << "  \"rgb_frames\": " << rgb_output_stats.frames << ",\n";
         meta << "  \"depth_codec\": \"ffv1\",\n";
         meta << "  \"depth_pixel_format\": \"gray16le\",\n";
         meta << "  \"depth_dtype\": \"uint16le\",\n";
@@ -3459,9 +3465,9 @@ private:
         meta << "  \"depth_width\": " << depth_width_ << ",\n";
         meta << "  \"depth_height\": " << depth_height_ << ",\n";
         meta << "  \"rgb_record_fps\": " << format_fps(rgb_record_fps_) << ",\n";
-        meta << "  \"rgb_playback_fps\": " << format_fps(rgb_stats_.actual_fps()) << ",\n";
-        meta << "  \"rgb_target_duration_sec\": " << format_fps(media_duration_seconds(rgb_stats_)) << ",\n";
-        meta << "  \"rgb_retime_scale\": " << format_fps(media_retime_scale(rgb_record_fps_, rgb_stats_)) << ",\n";
+        meta << "  \"rgb_playback_fps\": " << format_fps(rgb_output_stats.actual_fps()) << ",\n";
+        meta << "  \"rgb_target_duration_sec\": " << format_fps(media_duration_seconds(rgb_output_stats)) << ",\n";
+        meta << "  \"rgb_retime_scale\": " << format_fps(media_retime_scale(rgb_record_fps_, rgb_output_stats)) << ",\n";
         meta << "  \"depth_record_fps\": " << format_fps(depth_record_fps_) << ",\n";
         meta << "  \"depth_playback_fps\": " << format_fps(depth_stats_.actual_fps()) << ",\n";
         meta << "  \"depth_target_duration_sec\": " << format_fps(media_duration_seconds(depth_stats_)) << ",\n";
@@ -3612,6 +3618,7 @@ private:
     double rgb_record_fps_ = 0.0;
     double depth_record_fps_ = 0.0;
     StreamRecordStats rgb_stats_;
+    StreamRecordStats rgb_recorded_stats_;
     StreamRecordStats depth_stats_;
     FrameInfo last_rgb_;
     FrameInfo last_depth_;
