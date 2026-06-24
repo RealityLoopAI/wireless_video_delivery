@@ -62,11 +62,13 @@ set_target_properties(gemini_sender PROPERTIES
     INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
 )
 
-add_custom_command(TARGET gemini_sender POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ORBBEC_SDK_CONFIG}"
-            "$<TARGET_FILE_DIR:gemini_sender>/OrbbecSDKConfig_v1.0.xml"
-)
+if(EXISTS "${ORBBEC_SDK_CONFIG}")
+    add_custom_command(TARGET gemini_sender POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ORBBEC_SDK_CONFIG}"
+                "$<TARGET_FILE_DIR:gemini_sender>/OrbbecSDKConfig_v1.0.xml"
+    )
+endif()
 
 add_executable(orbbec_depth_probe
     "${CMAKE_SOURCE_DIR}/05_tools/orbbec_depth_probe.cpp"
