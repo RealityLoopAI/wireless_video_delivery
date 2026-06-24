@@ -1,5 +1,7 @@
 #include "gwv3_sender/config.hpp"
 
+#include "gwv3_common/protocol.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -429,8 +431,8 @@ void validate_config(const AppConfig &config) {
     if(config.transport.status_protocol != "udp") {
         throw std::runtime_error("only udp status_protocol is implemented in this sender build");
     }
-    if(config.transport.media_protocol != "tcp") {
-        throw std::runtime_error("only tcp media_protocol is implemented in this sender build");
+    if(config.transport.media_protocol != "tcp" && config.transport.media_protocol != "udp") {
+        throw std::runtime_error("transport.media_protocol must be tcp or udp");
     }
     if(config.transport.connect_timeout_ms <= 0) {
         throw std::runtime_error("transport.connect_timeout_ms must be positive");
@@ -444,8 +446,8 @@ void validate_config(const AppConfig &config) {
     if(config.transport.reconnect_interval_ms <= 0) {
         throw std::runtime_error("transport.reconnect_interval_ms must be positive");
     }
-    if(config.media_udp.mtu_bytes <= 0) {
-        throw std::runtime_error("media_udp.mtu_bytes must be positive");
+    if(config.media_udp.mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.media_udp.mtu_bytes > 65000) {
+        throw std::runtime_error("media_udp.mtu_bytes must be > 32 and <= 65000");
     }
     if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
         throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
@@ -462,8 +464,8 @@ void validate_config(const AppConfig &config) {
     if(config.web_rgb_preview.bitrate_bps <= 0) {
         throw std::runtime_error("web_rgb_preview.bitrate_bps must be positive");
     }
-    if(config.web_rgb_preview.udp_mtu_bytes <= 0) {
-        throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be positive");
+    if(config.web_rgb_preview.udp_mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.web_rgb_preview.udp_mtu_bytes > 65000) {
+        throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be > 32 and <= 65000");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;

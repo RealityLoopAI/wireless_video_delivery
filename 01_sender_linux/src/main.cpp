@@ -4552,10 +4552,12 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         });
     }
 
-    logger.info("primary media uses per-camera separate tcp senders for rgb and depth paths=" + std::to_string(cameras.size() * 2));
+    logger.info("primary media uses per-camera separate " + config.transport.media_protocol
+                + " senders for rgb and depth paths=" + std::to_string(cameras.size() * 2));
 
     if(config.web_rgb_preview.enabled) {
-        logger.info("web rgb preview media uses separate tcp sender");
+        logger.info(std::string("web rgb preview media uses separate ")
+                    + (config.web_rgb_preview.udp_enabled ? "udp" : "tcp") + " sender");
     }
 
     auto next_heartbeat = std::chrono::steady_clock::now();

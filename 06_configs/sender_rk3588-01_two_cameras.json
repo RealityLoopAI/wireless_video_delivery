@@ -9,11 +9,18 @@
   "transport": {
     "enabled": true,
     "status_protocol": "udp",
-    "media_protocol": "tcp",
+    "media_protocol": "udp",
     "connect_timeout_ms": 250,
     "send_timeout_ms": 80,
     "send_buffer_bytes": 4194304,
     "reconnect_interval_ms": 1000
+  },
+  "media_udp": {
+    "enabled": true,
+    "rgb_enabled": true,
+    "depth_enabled": true,
+    "port": 50013,
+    "mtu_bytes": 1200
   },
   "heartbeat_interval_ms": 1000,
   "swap_depth_between_cameras": false,

@@ -51,6 +51,7 @@ transport = cam.get("depth_transport") or {}
 color_controls = cam.get("color_controls") or {}
 preview = cfg.get("preview") or {}
 web_preview = cfg.get("web_rgb_preview") or {}
+media_udp = cfg.get("media_udp") or {}
 hotplug = cfg.get("hotplug") or {}
 
 required = {
@@ -141,6 +142,11 @@ values = {
     "MEDIA_PORT": receiver.get("media_port", ""),
     "STATUS_PORT": receiver.get("status_port", ""),
     "MEDIA_PROTOCOL": top_transport.get("media_protocol", "tcp"),
+    "MEDIA_UDP_ENABLED": media_udp.get("enabled", False),
+    "MEDIA_UDP_RGB_ENABLED": media_udp.get("rgb_enabled", False),
+    "MEDIA_UDP_DEPTH_ENABLED": media_udp.get("depth_enabled", False),
+    "MEDIA_UDP_PORT": media_udp.get("port", ""),
+    "MEDIA_UDP_MTU": media_udp.get("mtu_bytes", ""),
     "STATUS_PROTOCOL": top_transport.get("status_protocol", "udp"),
     "CONNECT_TIMEOUT_MS": top_transport.get("connect_timeout_ms", ""),
     "SEND_TIMEOUT_MS": top_transport.get("send_timeout_ms", ""),
@@ -168,6 +174,9 @@ values = {
     "WEB_PREVIEW_ON_DEMAND": web_preview.get("on_demand", True),
     "WEB_PREVIEW_FPS": web_preview.get("fps", ""),
     "WEB_PREVIEW_BITRATE": web_preview.get("bitrate_bps", ""),
+    "WEB_PREVIEW_UDP_ENABLED": web_preview.get("udp_enabled", False),
+    "WEB_PREVIEW_UDP_PORT": web_preview.get("udp_port", ""),
+    "WEB_PREVIEW_UDP_MTU": web_preview.get("udp_mtu_bytes", ""),
     "HOTPLUG_ENABLED": hotplug.get("enabled", True),
     "LOG_DIRECTORY": (cfg.get("logging") or {}).get("directory", ""),
     "LOG_MAX_BYTES": (cfg.get("logging") or {}).get("max_bytes", ""),
@@ -318,7 +327,11 @@ echo "  sender_id: $SENDER_ID  version: ${SENDER_VERSION:-未指定}"
 if [[ "${CONFIG_SENDER_ID:-}" == "auto" ]]; then
   echo "  config_sender_id: auto"
 fi
-echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+if [[ "${MEDIA_PROTOCOL:-tcp}" == "udp" ]]; then
+  echo "  receiver: $RECEIVER_IP  media/udp=${MEDIA_UDP_PORT:-未指定}  media_tcp_fallback=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+else
+  echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+fi
 echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_timeout=${SEND_TIMEOUT_MS:-未指定}ms  send_buffer=${SEND_BUFFER_BYTES:-未指定}B  reconnect_interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"
 echo "  camera_count: $CAMERA_COUNT"
@@ -327,8 +340,10 @@ echo "  depth_remap: swap_depth_between_cameras=${SWAP_DEPTH_BETWEEN_CAMERAS:-fa
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
+echo "  media_udp: enabled=${MEDIA_UDP_ENABLED:-false} rgb=${MEDIA_UDP_RGB_ENABLED:-false} depth=${MEDIA_UDP_DEPTH_ENABLED:-false} port=${MEDIA_UDP_PORT:-未指定} mtu=${MEDIA_UDP_MTU:-未指定}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"
 echo "  config_web_preview: enabled=${WEB_PREVIEW_ENABLED} on_demand=${WEB_PREVIEW_ON_DEMAND} fps=${WEB_PREVIEW_FPS} bitrate=${WEB_PREVIEW_BITRATE}bps"
+echo "  config_web_preview_udp: enabled=${WEB_PREVIEW_UDP_ENABLED:-false} port=${WEB_PREVIEW_UDP_PORT:-未指定} mtu=${WEB_PREVIEW_UDP_MTU:-未指定}"
 echo "  hotplug: enabled=${HOTPLUG_ENABLED:-true}"
 case "$PREVIEW_MODE" in
   no-preview)

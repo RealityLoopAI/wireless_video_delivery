@@ -1,9 +1,13 @@
 #include "gwv3_sender/transport.hpp"
 
+#include "gwv3_common/protocol.hpp"
+
+#include <algorithm>
 #include <cerrno>
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <stdexcept>
 
@@ -44,6 +48,51 @@ void set_nonblock(int fd, bool nonblock) {
     }
 }
 
+void write_le16(uint8_t *out, uint16_t value) {
+    out[0] = static_cast<uint8_t>(value & 0xffu);
+    out[1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+}
+
+void write_le32(uint8_t *out, uint32_t value) {
+    out[0] = static_cast<uint8_t>(value & 0xffu);
+    out[1] = static_cast<uint8_t>((value >> 8u) & 0xffu);
+    out[2] = static_cast<uint8_t>((value >> 16u) & 0xffu);
+    out[3] = static_cast<uint8_t>((value >> 24u) & 0xffu);
+}
+
+uint32_t read_le32(const uint8_t *data) {
+    return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8u) | (static_cast<uint32_t>(data[2]) << 16u)
+           | (static_cast<uint32_t>(data[3]) << 24u);
+}
+
+bool append_packet_slice_iovs(const MediaPacketView &packet, size_t offset, size_t size, std::array<iovec, 3> &iovs, int &iov_count) {
+    size_t remaining_offset = offset;
+    size_t remaining_size = size;
+    if(remaining_offset < packet.header_size) {
+        const size_t take = std::min(packet.header_size - remaining_offset, remaining_size);
+        iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.header_data + remaining_offset);
+        iovs[iov_count].iov_len = take;
+        ++iov_count;
+        remaining_size -= take;
+        remaining_offset = 0;
+    }
+    else {
+        remaining_offset -= packet.header_size;
+    }
+
+    if(remaining_size > 0) {
+        if(remaining_offset >= packet.payload_size) {
+            return false;
+        }
+        const size_t take = std::min(packet.payload_size - remaining_offset, remaining_size);
+        iovs[iov_count].iov_base = const_cast<uint8_t *>(packet.payload_data + remaining_offset);
+        iovs[iov_count].iov_len = take;
+        ++iov_count;
+        remaining_size -= take;
+    }
+    return remaining_size == 0;
+}
+
 }  // namespace
 
 Transport::Transport(const AppConfig &config) : config_(config) {
@@ -57,6 +106,8 @@ Transport::~Transport() {
         close(status_udp_fd_);
     }
     close_media_socket();
+    close_udp_socket(media_udp_fd_);
+    close_udp_socket(preview_udp_fd_);
 }
 
 int Transport::make_udp_socket() {
@@ -136,6 +187,15 @@ bool Transport::send_media(const MediaPacketView &packet) {
         set_error("media TCP send failed: packet payload is null");
         return false;
     }
+    int udp_mtu_bytes = 0;
+    const char *udp_label = nullptr;
+    if(auto udp_port = udp_port_for_packet(packet, udp_mtu_bytes, udp_label)) {
+        int &udp_fd = std::strcmp(udp_label, "preview UDP") == 0 ? preview_udp_fd_ : media_udp_fd_;
+        if(!ensure_udp_socket(udp_fd, udp_label)) {
+            return false;
+        }
+        return send_fragmented_udp_packet(udp_fd, *udp_port, udp_mtu_bytes, packet, udp_label);
+    }
     if(!ensure_media_tcp_connected()) {
         return false;
     }
@@ -171,6 +231,129 @@ bool Transport::send_udp_status(const std::string &json_message) {
     if(sent < 0 || static_cast<size_t>(sent) != payload.size()) {
         set_error(std::string("status UDP send failed: ") + std::strerror(errno));
         return false;
+    }
+    return true;
+}
+
+std::optional<uint16_t> Transport::udp_port_for_packet(const MediaPacketView &packet, int &mtu_bytes, const char *&label) const {
+    if(packet.header_size < 9 || packet.header_data == nullptr || read_le32(packet.header_data) != kMediaMagic) {
+        return std::nullopt;
+    }
+
+    const auto stream_type = static_cast<StreamType>(packet.header_data[8]);
+    if(stream_type == StreamType::rgb_preview) {
+        if(config_.web_rgb_preview.udp_enabled) {
+            mtu_bytes = config_.web_rgb_preview.udp_mtu_bytes;
+            label = "preview UDP";
+            return config_.web_rgb_preview.udp_port;
+        }
+        return std::nullopt;
+    }
+
+    const bool media_udp_protocol = config_.transport.media_protocol == "udp";
+    const bool media_udp_enabled = config_.media_udp.enabled || media_udp_protocol;
+    if(!media_udp_enabled) {
+        return std::nullopt;
+    }
+    if(stream_type == StreamType::rgb && (media_udp_protocol || config_.media_udp.rgb_enabled)) {
+        mtu_bytes = config_.media_udp.mtu_bytes;
+        label = "media UDP";
+        return config_.media_udp.port;
+    }
+    if(stream_type == StreamType::depth_raw && (media_udp_protocol || config_.media_udp.depth_enabled)) {
+        mtu_bytes = config_.media_udp.mtu_bytes;
+        label = "media UDP";
+        return config_.media_udp.port;
+    }
+    return std::nullopt;
+}
+
+bool Transport::ensure_udp_socket(int &fd, const char *label) {
+    if(fd >= 0) {
+        return true;
+    }
+    try {
+        fd = make_udp_socket();
+    }
+    catch(const std::exception &e) {
+        set_error(std::string(label) + " socket create failed: " + e.what());
+        return false;
+    }
+    if(fd < 0) {
+        return false;
+    }
+    if(config_.transport.send_buffer_bytes > 0) {
+        int requested = config_.transport.send_buffer_bytes;
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &requested, sizeof(requested));
+    }
+    set_nonblock(fd, true);
+    (void)label;
+    return true;
+}
+
+bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes, const MediaPacketView &packet, const char *label) {
+    if(mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize)) {
+        set_error(std::string(label) + " send failed: mtu_bytes must exceed UDP fragment header size");
+        return false;
+    }
+    const size_t total_size = packet.total_size();
+    if(total_size == 0 || total_size > std::numeric_limits<uint32_t>::max()) {
+        set_error(std::string(label) + " send failed: packet size is invalid");
+        return false;
+    }
+    const size_t chunk_payload_size = static_cast<size_t>(mtu_bytes) - kPreviewUdpHeaderSize;
+    const size_t chunk_count_size = (total_size + chunk_payload_size - 1u) / chunk_payload_size;
+    if(chunk_count_size == 0 || chunk_count_size > std::numeric_limits<uint16_t>::max()) {
+        set_error(std::string(label) + " send failed: packet requires too many UDP fragments");
+        return false;
+    }
+
+    uint32_t &sequence_counter = std::strcmp(label, "preview UDP") == 0 ? preview_udp_sequence_ : media_udp_sequence_;
+    const uint32_t sequence = ++sequence_counter == 0 ? ++sequence_counter : sequence_counter;
+    const uint16_t chunk_count = static_cast<uint16_t>(chunk_count_size);
+    const auto addr = endpoint(config_.receiver.ip, port);
+
+    for(uint16_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        const size_t chunk_offset = static_cast<size_t>(chunk_index) * chunk_payload_size;
+        const size_t remaining = total_size - chunk_offset;
+        const size_t chunk_size = std::min(chunk_payload_size, remaining);
+        if(chunk_size > std::numeric_limits<uint16_t>::max()) {
+            set_error(std::string(label) + " send failed: UDP fragment is too large");
+            return false;
+        }
+
+        std::array<uint8_t, kPreviewUdpHeaderSize> udp_header{};
+        write_le32(udp_header.data() + 0, kPreviewUdpMagic);
+        write_le16(udp_header.data() + 4, kPreviewUdpHeaderVersion);
+        write_le16(udp_header.data() + 6, kPreviewUdpHeaderSize);
+        write_le32(udp_header.data() + 8, sequence);
+        write_le16(udp_header.data() + 12, chunk_index);
+        write_le16(udp_header.data() + 14, chunk_count);
+        write_le32(udp_header.data() + 16, static_cast<uint32_t>(total_size));
+        write_le32(udp_header.data() + 20, static_cast<uint32_t>(chunk_offset));
+        write_le16(udp_header.data() + 24, static_cast<uint16_t>(chunk_size));
+
+        std::array<iovec, 3> iovs{};
+        int iov_count = 0;
+        iovs[iov_count].iov_base = udp_header.data();
+        iovs[iov_count].iov_len = udp_header.size();
+        ++iov_count;
+        if(!append_packet_slice_iovs(packet, chunk_offset, chunk_size, iovs, iov_count)) {
+            set_error(std::string(label) + " send failed: packet slice is invalid");
+            return false;
+        }
+
+        msghdr message{};
+        message.msg_name = const_cast<sockaddr *>(reinterpret_cast<const sockaddr *>(&addr));
+        message.msg_namelen = sizeof(addr);
+        message.msg_iov = iovs.data();
+        message.msg_iovlen = static_cast<size_t>(iov_count);
+        const ssize_t sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+        const size_t expected = kPreviewUdpHeaderSize + chunk_size;
+        if(sent < 0 || static_cast<size_t>(sent) != expected) {
+            set_error(std::string(label) + " send failed: " + std::strerror(errno));
+            return false;
+        }
     }
     return true;
 }
@@ -365,6 +548,13 @@ void Transport::close_media_socket() {
         setsockopt(media_tcp_fd_, SOL_SOCKET, SO_LINGER, &reset_linger, sizeof(reset_linger));
         close(media_tcp_fd_);
         media_tcp_fd_ = -1;
+    }
+}
+
+void Transport::close_udp_socket(int &fd) {
+    if(fd >= 0) {
+        close(fd);
+        fd = -1;
     }
 }
 
