@@ -28,7 +28,7 @@
     "fps": 30
   },
   "web_rgb_preview": {
-    "enabled": false,
+    "enabled": true,
     "max_width": 640,
     "max_height": 400,
     "fps": 30,
