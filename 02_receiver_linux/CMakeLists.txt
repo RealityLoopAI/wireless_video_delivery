@@ -18,6 +18,7 @@ target_compile_options(gemini_receiver PRIVATE
 
 target_link_libraries(gemini_receiver PRIVATE
     ZLIB::ZLIB
+    ${CMAKE_DL_LIBS}
     pthread
 )
 

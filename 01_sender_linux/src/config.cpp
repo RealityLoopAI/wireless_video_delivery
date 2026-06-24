@@ -507,8 +507,10 @@ void validate_config(const AppConfig &config) {
         }
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
            && camera.depth_transport.compression != "qdelta" && camera.depth_transport.compression != "pq12zlib"
-           && camera.depth_transport.compression != "pq8zlib") {
-            throw std::runtime_error("only none/zlib/qdelta/pq12zlib/pq8zlib depth compression is implemented in this sender build");
+           && camera.depth_transport.compression != "q8lz4" && camera.depth_transport.compression != "pq8zlib"
+           && camera.depth_transport.compression != "pq8lz4") {
+            throw std::runtime_error(
+                "only none/zlib/qdelta/pq12zlib/q8lz4/pq8zlib/pq8lz4 depth compression is implemented in this sender build");
         }
         if(camera.depth_transport.quantization_step_mm <= 0.0) {
             throw std::runtime_error("depth_transport.quantization_step_mm must be positive");

@@ -44,6 +44,7 @@ target_link_libraries(gemini_sender PRIVATE
     ${OpenCV_LIBS}
     JPEG::JPEG
     ZLIB::ZLIB
+    ${CMAKE_DL_LIBS}
     pthread
 )
 
