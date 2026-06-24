@@ -3840,6 +3840,51 @@ struct H264StreamBuffer {
     uint32_t height = 0;
 };
 
+struct UdpReassemblyStats {
+    uint64_t datagrams = 0;
+    uint64_t datagram_bytes = 0;
+    uint64_t invalid_datagrams = 0;
+    uint64_t valid_fragments = 0;
+    uint64_t duplicate_fragments = 0;
+    uint64_t assemblies_started = 0;
+    uint64_t completed_packets = 0;
+    uint64_t completed_bytes = 0;
+    uint64_t completed_rgb_packets = 0;
+    uint64_t completed_depth_packets = 0;
+    uint64_t completed_preview_packets = 0;
+    uint64_t parse_rejected_packets = 0;
+    uint64_t stream_rejected_packets = 0;
+    uint64_t expired_packets = 0;
+    uint64_t expired_missing_fragments = 0;
+    uint64_t evicted_packets = 0;
+    uint64_t evicted_missing_fragments = 0;
+    uint64_t max_active_assemblies = 0;
+};
+
+void append_udp_reassembly_stats_json(std::ostringstream &out, const UdpReassemblyStats &stats, size_t active_assemblies) {
+    out << "{";
+    out << "\"datagrams\":" << stats.datagrams << ',';
+    out << "\"datagram_bytes\":" << stats.datagram_bytes << ',';
+    out << "\"invalid_datagrams\":" << stats.invalid_datagrams << ',';
+    out << "\"valid_fragments\":" << stats.valid_fragments << ',';
+    out << "\"duplicate_fragments\":" << stats.duplicate_fragments << ',';
+    out << "\"assemblies_started\":" << stats.assemblies_started << ',';
+    out << "\"completed_packets\":" << stats.completed_packets << ',';
+    out << "\"completed_bytes\":" << stats.completed_bytes << ',';
+    out << "\"completed_rgb_packets\":" << stats.completed_rgb_packets << ',';
+    out << "\"completed_depth_packets\":" << stats.completed_depth_packets << ',';
+    out << "\"completed_preview_packets\":" << stats.completed_preview_packets << ',';
+    out << "\"parse_rejected_packets\":" << stats.parse_rejected_packets << ',';
+    out << "\"stream_rejected_packets\":" << stats.stream_rejected_packets << ',';
+    out << "\"expired_packets\":" << stats.expired_packets << ',';
+    out << "\"expired_missing_fragments\":" << stats.expired_missing_fragments << ',';
+    out << "\"evicted_packets\":" << stats.evicted_packets << ',';
+    out << "\"evicted_missing_fragments\":" << stats.evicted_missing_fragments << ',';
+    out << "\"active_assemblies\":" << active_assemblies << ',';
+    out << "\"max_active_assemblies\":" << stats.max_active_assemblies;
+    out << "}";
+}
+
 constexpr uint32_t kH264PreviewFrameFlagKey = 1u << 0u;
 constexpr uint32_t kH264PreviewFrameFlagConfig = 1u << 1u;
 
@@ -3965,6 +4010,8 @@ public:
         size_t received_count = 0;
         uint32_t total_size = 0;
         uint16_t chunk_count = 0;
+        bool media_udp = false;
+        uint64_t first_us = 0;
         uint64_t updated_us = 0;
     };
 
@@ -4027,6 +4074,23 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
+        UdpReassemblyStats media_udp_stats;
+        UdpReassemblyStats preview_udp_stats;
+        size_t active_media_udp_assemblies = 0;
+        size_t active_preview_udp_assemblies = 0;
+        {
+            std::lock_guard<std::mutex> udp_lock(preview_udp_mutex_);
+            media_udp_stats = media_udp_stats_;
+            preview_udp_stats = preview_udp_stats_;
+            for(const auto &assembly : preview_udp_assemblies_) {
+                if(assembly.second.media_udp) {
+                    ++active_media_udp_assemblies;
+                }
+                else {
+                    ++active_preview_udp_assemblies;
+                }
+            }
+        }
         std::ostringstream out;
         out << "{";
         out << "\"running\":true,";
@@ -4042,6 +4106,12 @@ public:
         out << "\"preview_udp_enabled\":" << (config_.preview_enabled && config_.preview_udp_enabled ? "true" : "false") << ',';
         out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
+        out << "\"media_udp_stats\":";
+        append_udp_reassembly_stats_json(out, media_udp_stats, active_media_udp_assemblies);
+        out << ',';
+        out << "\"preview_udp_stats\":";
+        append_udp_reassembly_stats_json(out, preview_udp_stats, active_preview_udp_assemblies);
+        out << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\",";
@@ -5416,9 +5486,59 @@ private:
         }
     }
 
+    UdpReassemblyStats &udp_stats_locked(bool media_udp) {
+        return media_udp ? media_udp_stats_ : preview_udp_stats_;
+    }
+
+    void account_incomplete_udp_assembly_locked(const PreviewUdpAssembly &assembly, bool evicted) {
+        auto &stats = udp_stats_locked(assembly.media_udp);
+        const uint64_t missing = assembly.chunk_count > assembly.received_count
+                                     ? static_cast<uint64_t>(assembly.chunk_count - assembly.received_count)
+                                     : 0;
+        if(evicted) {
+            stats.evicted_packets++;
+            stats.evicted_missing_fragments += missing;
+        }
+        else {
+            stats.expired_packets++;
+            stats.expired_missing_fragments += missing;
+        }
+    }
+
+    void record_udp_invalid_datagram(bool media_udp) {
+        std::lock_guard<std::mutex> lock(preview_udp_mutex_);
+        udp_stats_locked(media_udp).invalid_datagrams++;
+    }
+
+    void record_udp_parse_rejected_packet(bool media_udp) {
+        std::lock_guard<std::mutex> lock(preview_udp_mutex_);
+        udp_stats_locked(media_udp).parse_rejected_packets++;
+    }
+
+    void record_udp_stream_result(bool media_udp, StreamType stream_type, bool accepted) {
+        std::lock_guard<std::mutex> lock(preview_udp_mutex_);
+        auto &stats = udp_stats_locked(media_udp);
+        if(!accepted) {
+            stats.stream_rejected_packets++;
+            return;
+        }
+        switch(stream_type) {
+        case StreamType::rgb:
+            stats.completed_rgb_packets++;
+            break;
+        case StreamType::depth_raw:
+            stats.completed_depth_packets++;
+            break;
+        case StreamType::rgb_preview:
+            stats.completed_preview_packets++;
+            break;
+        }
+    }
+
     void cleanup_preview_udp_assemblies_locked(uint64_t now) {
         for(auto it = preview_udp_assemblies_.begin(); it != preview_udp_assemblies_.end();) {
             if(now > it->second.updated_us && now - it->second.updated_us > kPreviewUdpAssemblyTimeoutUs) {
+                account_incomplete_udp_assembly_locked(it->second, false);
                 it = preview_udp_assemblies_.erase(it);
             }
             else {
@@ -5435,18 +5555,27 @@ private:
                     oldest = it;
                 }
             }
+            account_incomplete_udp_assembly_locked(oldest->second, true);
             preview_udp_assemblies_.erase(oldest);
         }
     }
 
     void handle_fragmented_udp_datagram(const uint8_t *data, size_t size, const std::string &peer_endpoint, bool media_udp) {
+        {
+            std::lock_guard<std::mutex> lock(preview_udp_mutex_);
+            auto &stats = udp_stats_locked(media_udp);
+            stats.datagrams++;
+            stats.datagram_bytes += size;
+        }
         if(size < kPreviewUdpHeaderSize) {
+            record_udp_invalid_datagram(media_udp);
             return;
         }
         const uint32_t magic = read_le32(data + 0);
         const uint16_t version = read_le16(data + 4);
         const uint16_t header_size = read_le16(data + 6);
         if(magic != kPreviewUdpMagic || version != kPreviewUdpHeaderVersion || header_size != kPreviewUdpHeaderSize || size < header_size) {
+            record_udp_invalid_datagram(media_udp);
             return;
         }
 
@@ -5458,6 +5587,7 @@ private:
         const uint16_t chunk_size = read_le16(data + 24);
         if(chunk_count == 0 || chunk_index >= chunk_count || total_size == 0 || total_size > config_.max_payload_bytes
            || chunk_offset > total_size || chunk_size > total_size - chunk_offset || size < header_size + chunk_size) {
+            record_udp_invalid_datagram(media_udp);
             return;
         }
 
@@ -5467,13 +5597,28 @@ private:
         {
             std::lock_guard<std::mutex> lock(preview_udp_mutex_);
             cleanup_preview_udp_assemblies_locked(now);
+            auto &stats = udp_stats_locked(media_udp);
+            stats.valid_fragments++;
             auto &assembly = preview_udp_assemblies_[key];
-            if(assembly.bytes.size() != total_size || assembly.chunk_count != chunk_count) {
+            if(assembly.bytes.size() != total_size || assembly.chunk_count != chunk_count || assembly.media_udp != media_udp) {
+                if(!assembly.bytes.empty()) {
+                    account_incomplete_udp_assembly_locked(assembly, true);
+                }
                 assembly.bytes.assign(total_size, 0);
                 assembly.received.assign(chunk_count, 0);
                 assembly.received_count = 0;
                 assembly.total_size = total_size;
                 assembly.chunk_count = chunk_count;
+                assembly.media_udp = media_udp;
+                assembly.first_us = now;
+                stats.assemblies_started++;
+                size_t active_for_type = 0;
+                for(const auto &item : preview_udp_assemblies_) {
+                    if(item.second.media_udp == media_udp) {
+                        ++active_for_type;
+                    }
+                }
+                stats.max_active_assemblies = std::max<uint64_t>(stats.max_active_assemblies, active_for_type);
             }
             assembly.updated_us = now;
             if(!assembly.received[chunk_index]) {
@@ -5481,7 +5626,12 @@ private:
                 assembly.received[chunk_index] = 1;
                 assembly.received_count++;
             }
+            else {
+                stats.duplicate_fragments++;
+            }
             if(assembly.received_count == assembly.chunk_count) {
+                stats.completed_packets++;
+                stats.completed_bytes += assembly.total_size;
                 completed = std::move(assembly.bytes);
                 preview_udp_assemblies_.erase(key);
             }
@@ -5494,11 +5644,13 @@ private:
             auto packet = parse_media_packet_buffer(completed.data(), completed.size(), config_.max_payload_bytes);
             const bool accepted = media_udp ? (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw)
                                             : (packet.stream_type == StreamType::rgb_preview);
+            record_udp_stream_result(media_udp, packet.stream_type, accepted);
             if(accepted) {
                 handle_media_packet(packet);
             }
         }
         catch(const std::exception &e) {
+            record_udp_parse_rejected_packet(media_udp);
             logger_.warn(std::string(media_udp ? "media UDP packet rejected from " : "preview UDP packet rejected from ")
                          + peer_endpoint + ": " + e.what());
         }
@@ -5888,6 +6040,8 @@ private:
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
     std::unordered_map<std::string, PreviewUdpAssembly> preview_udp_assemblies_;
+    UdpReassemblyStats media_udp_stats_;
+    UdpReassemblyStats preview_udp_stats_;
 };
 
 struct Args {

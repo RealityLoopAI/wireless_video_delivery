@@ -97,3 +97,23 @@ set_target_properties(orbbec_depth_probe PROPERTIES
     BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
     INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
 )
+
+add_executable(depth_compression_bench
+    "${CMAKE_SOURCE_DIR}/05_tools/depth_compression_bench.cpp"
+)
+
+target_link_libraries(depth_compression_bench PRIVATE
+    ZLIB::ZLIB
+    ${CMAKE_DL_LIBS}
+    pthread
+)
+
+target_compile_options(depth_compression_bench PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+set_target_properties(depth_compression_bench PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+)
