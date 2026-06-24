@@ -100,6 +100,13 @@ struct HotplugConfig {
     bool enabled = true;
 };
 
+struct RecordingBufferConfig {
+    bool enabled = false;
+    int rgb_frames_per_slot = 1;
+    int depth_frames_per_slot = 4;
+    int depth_compression_frames_per_slot = 4;
+};
+
 struct AppConfig {
     std::string sender_id;
     std::string sender_version = "3.0.0";
@@ -110,6 +117,7 @@ struct AppConfig {
     WebRgbPreviewConfig web_rgb_preview;
     LoggingConfig logging;
     HotplugConfig hotplug;
+    RecordingBufferConfig recording_buffer;
     int heartbeat_interval_ms = 1000;
     bool swap_depth_between_cameras = false;
     std::vector<CameraConfig> cameras;

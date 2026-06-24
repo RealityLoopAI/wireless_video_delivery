@@ -6,8 +6,6 @@ BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 MODE="${2:-启动}"
 PREVIEW_MODE="${3:-config}"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
-SDK_CONFIG="$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
 
@@ -16,11 +14,46 @@ fail() {
   exit 1
 }
 
+resolve_sender_sdk_lib() {
+  local linked_lib=""
+  linked_lib="$(ldd "$BIN" 2>/dev/null | awk '/libOrbbecSDK/ {print $3; exit}')"
+  if [[ -n "$linked_lib" && -f "$linked_lib" ]]; then
+    dirname "$linked_lib"
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    "${ORBBEC_SDK_ROOT:-}/lib" \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/lib" \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"; do
+    if [[ -n "$candidate" && -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+}
+
+sdk_config_exists() {
+  local candidate
+  for candidate in \
+    "$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml" \
+    "$ROOT_DIR/12_build/bin/OrbbecSDKConfig.xml" \
+    "${SDK_LIB:-}/../config/OrbbecSDKConfig_v1.0.xml" \
+    "${SDK_LIB:-}/OrbbecSDKConfig.xml"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 [[ -x "$BIN" ]] || fail "未找到可执行文件 $BIN，请先执行 cmake 构建"
 [[ -f "$CONFIG" ]] || fail "配置文件不存在 $CONFIG"
+SDK_LIB="${GEMINI_SENDER_SDK_LIB:-$(resolve_sender_sdk_lib)}"
 [[ -d "$SDK_LIB" ]] || fail "Orbbec SDK 动态库目录不存在 $SDK_LIB"
 [[ -f "$SDK_LIB/libOrbbecSDK.so" ]] || fail "Orbbec SDK 动态库不存在"
-[[ -f "$SDK_CONFIG" ]] || fail "Orbbec SDK 运行配置不存在 $SDK_CONFIG"
+sdk_config_exists || fail "Orbbec SDK 运行配置不存在"
 command -v python3 >/dev/null 2>&1 || fail "未找到 python3，无法解析配置"
 command -v gst-inspect-1.0 >/dev/null 2>&1 || fail "GStreamer 未安装"
 command -v ip >/dev/null 2>&1 || fail "未找到 ip 命令，无法检查到接收端的路由"

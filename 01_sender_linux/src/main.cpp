@@ -320,7 +320,10 @@ struct MediaPacketJob {
 
 class LatestMediaQueue {
 public:
-    explicit LatestMediaQueue(size_t slot_count) : slots_(slot_count) {}
+    explicit LatestMediaQueue(size_t slot_count, size_t rgb_frames_per_slot = 1, size_t depth_frames_per_slot = kDepthMediaQueuePerSlot)
+        : slots_(slot_count),
+          rgb_frames_per_slot_(std::max<size_t>(1, rgb_frames_per_slot)),
+          depth_frames_per_slot_(std::max<size_t>(1, depth_frames_per_slot)) {}
 
     size_t append_slots(size_t slot_count) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -347,16 +350,23 @@ public:
             return PublishResult::rejected_occupied;
         }
         bool dropped = false;
-        if(job.stream_type == StreamType::depth_raw) {
-            while(slot.jobs.size() >= kDepthMediaQueuePerSlot) {
+        if(job.stream_type == StreamType::rgb_preview) {
+            dropped = occupied;
+            slot.jobs.clear();
+            slot.jobs.push_back(std::move(job));
+        }
+        else if(job.stream_type == StreamType::depth_raw) {
+            while(slot.jobs.size() >= depth_frames_per_slot_) {
                 slot.jobs.pop_front();
                 dropped = true;
             }
             slot.jobs.push_back(std::move(job));
         }
         else {
-            dropped = occupied;
-            slot.jobs.clear();
+            while(slot.jobs.size() >= rgb_frames_per_slot_) {
+                slot.jobs.pop_front();
+                dropped = true;
+            }
             slot.jobs.push_back(std::move(job));
         }
         cv_.notify_one();
@@ -415,6 +425,8 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::vector<Slot> slots_;
+    size_t rgb_frames_per_slot_ = 1;
+    size_t depth_frames_per_slot_ = kDepthMediaQueuePerSlot;
     size_t next_slot_ = 0;
     bool stopping_ = false;
 };
@@ -439,7 +451,8 @@ struct DepthCompressionWorkItem {
 
 class LatestDepthCompressionQueue {
 public:
-    explicit LatestDepthCompressionQueue(size_t slot_count) : slots_(slot_count) {}
+    explicit LatestDepthCompressionQueue(size_t slot_count, size_t frames_per_slot = kDepthCompressionQueuePerSlot)
+        : slots_(slot_count), frames_per_slot_(std::max<size_t>(1, frames_per_slot)) {}
 
     size_t append_slots(size_t slot_count) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -455,7 +468,7 @@ public:
         }
         auto &slot = slots_[slot_index];
         bool dropped = false;
-        while(slot.jobs.size() >= kDepthCompressionQueuePerSlot) {
+        while(slot.jobs.size() >= frames_per_slot_) {
             slot.jobs.pop_front();
             dropped = true;
         }
@@ -510,6 +523,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::vector<Slot> slots_;
+    size_t frames_per_slot_ = kDepthCompressionQueuePerSlot;
     size_t next_slot_ = 0;
     bool stopping_ = false;
 };
@@ -826,6 +840,19 @@ int camera_reconnect_process_restart_attempts() {
     }
     catch(const std::exception &) {
         return 12;
+    }
+}
+
+int camera_reconnect_max_delay_seconds() {
+    const char *value = std::getenv("GEMINI_SENDER_CAMERA_RECONNECT_MAX_DELAY_SECONDS");
+    if(value == nullptr || value[0] == '\0') {
+        return 30;
+    }
+    try {
+        return std::max(1, std::stoi(value));
+    }
+    catch(const std::exception &) {
+        return 30;
     }
 }
 
@@ -2018,19 +2045,11 @@ std::chrono::steady_clock::duration frame_interval_for_fps(int fps) {
 }
 
 bool depth_emit_due(CameraRuntime &camera, std::chrono::steady_clock::time_point now) {
-    const auto interval = frame_interval_for_fps(camera.config.depth_profile.fps);
-    if(interval <= std::chrono::steady_clock::duration::zero()) {
-        return true;
-    }
-
-    std::lock_guard<std::mutex> lock(camera.mutex);
-    if(now < camera.next_depth_emit) {
-        return false;
-    }
-    camera.next_depth_emit += interval;
-    if(camera.next_depth_emit <= now) {
-        camera.next_depth_emit = now + interval;
-    }
+    (void)camera;
+    (void)now;
+    // The camera profile already controls capture FPS. Software pacing here
+    // dropped valid depth frames when scheduler jitter made a frame arrive a
+    // little before the next nominal 30 FPS tick.
     return true;
 }
 
@@ -3341,11 +3360,11 @@ std::string ob_error_text(const ob::Error &error) {
 }
 
 std::chrono::milliseconds reconnect_delay(uint32_t attempts) {
-    return std::chrono::seconds(std::min<uint32_t>(5, std::max<uint32_t>(1, attempts)));
+    const auto max_delay = static_cast<uint32_t>(std::max(1, camera_reconnect_max_delay_seconds()));
+    return std::chrono::seconds(std::min<uint32_t>(max_delay, std::max<uint32_t>(1, attempts)));
 }
 
 void stop_camera(CameraRuntime &camera, Logger &logger) {
-    std::lock_guard<std::mutex> lifecycle_lock(g_camera_lifecycle_mutex);
     std::lock_guard<std::mutex> lock(camera.mutex);
     if(camera.pipeline) {
         try {
@@ -3384,101 +3403,112 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
 }
 
 void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
-    std::lock_guard<std::mutex> lifecycle_lock(g_camera_lifecycle_mutex);
-    std::lock_guard<std::mutex> lock(runtime.mutex);
     ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
     auto context = std::make_shared<ob::Context>();
 
-    runtime.device = select_device(*context, runtime.config);
-    auto device_info = runtime.device->getDeviceInfo();
-    runtime.device_serial = device_info->serialNumber() ? device_info->serialNumber() : "";
-    runtime.device_uid = device_info->uid() ? device_info->uid() : "";
-    runtime.device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
-    apply_color_controls(runtime, logger);
-    runtime.pipeline = std::make_unique<ob::Pipeline>(runtime.device);
+    auto device = select_device(*context, runtime.config);
+    auto device_info = device->getDeviceInfo();
+    const std::string device_serial = device_info->serialNumber() ? device_info->serialNumber() : "";
+    const std::string device_uid = device_info->uid() ? device_info->uid() : "";
+    const std::string device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
+
+    CameraRuntime control_runtime;
+    control_runtime.config = runtime.config;
+    control_runtime.device = device;
+    apply_color_controls(control_runtime, logger);
+
+    auto pipeline = std::make_unique<ob::Pipeline>(device);
 
     auto stream_config = std::make_shared<ob::Config>();
-    runtime.color_profile = select_profile(*runtime.pipeline, OB_SENSOR_COLOR, runtime.config.rgb_profile, OB_FORMAT_MJPG, logger);
-    runtime.depth_profile = select_profile(*runtime.pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
-    stream_config->enableStream(runtime.color_profile);
-    stream_config->enableStream(runtime.depth_profile);
+    auto color_profile = select_profile(*pipeline, OB_SENSOR_COLOR, runtime.config.rgb_profile, OB_FORMAT_MJPG, logger);
+    auto depth_profile = select_profile(*pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
+    stream_config->enableStream(color_profile);
+    stream_config->enableStream(depth_profile);
     stream_config->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION);
-    runtime.pipeline->start(stream_config);
-    update_color_properties(runtime);
+    pipeline->start(stream_config);
 
+    const auto color_width = color_profile->width();
+    const auto color_height = color_profile->height();
+    const auto color_fps = color_profile->fps();
+    const auto color_format = ob_format_name(color_profile->format());
+    const auto depth_width = depth_profile->width();
+    const auto depth_height = depth_profile->height();
+    const auto depth_fps = depth_profile->fps();
+    const auto depth_format = ob_format_name(depth_profile->format());
     const auto now = std::chrono::steady_clock::now();
-    runtime.encoder.reset();
-    runtime.web_preview_encoder.reset();
-    runtime.jpeg_dual_encoder.reset();
-    runtime.jpeg_dual_encoder_disabled = false;
-    runtime.jpeg_dual_no_main_output = 0;
-    runtime.web_preview_width = 0;
-    runtime.web_preview_height = 0;
-    runtime.online = true;
-    runtime.announced = false;
-    runtime.hardware_encoder = false;
-    runtime.depth_scale = 0.0f;
-    runtime.last_error.clear();
-    runtime.perf = CameraPerfStats{};
-    runtime.perf.interval_started = now;
-    runtime.next_preview = now;
-    runtime.next_depth_emit = now;
-    runtime.next_time_sync_log = now;
-    runtime.next_jpeg_warning = now;
-    runtime.next_media_warning = now;
-    runtime.next_rgb_timing_warning = now;
-    runtime.last_rgb_frame_at = now;
-    runtime.last_depth_frame_at = now;
-    if(runtime.next_capture_stall_reconnect < now) {
-        runtime.next_capture_stall_reconnect = now;
+    {
+        std::lock_guard<std::mutex> lock(runtime.mutex);
+        runtime.device = std::move(device);
+        runtime.device_serial = device_serial;
+        runtime.device_uid = device_uid;
+        runtime.device_connection_type = device_connection_type;
+        runtime.pipeline = std::move(pipeline);
+        runtime.color_profile = std::move(color_profile);
+        runtime.depth_profile = std::move(depth_profile);
+        runtime.encoder.reset();
+        runtime.web_preview_encoder.reset();
+        runtime.jpeg_dual_encoder.reset();
+        runtime.jpeg_dual_encoder_disabled = false;
+        runtime.jpeg_dual_no_main_output = 0;
+        runtime.web_preview_width = 0;
+        runtime.web_preview_height = 0;
+        runtime.online = true;
+        runtime.announced = false;
+        runtime.hardware_encoder = false;
+        runtime.depth_scale = 0.0f;
+        runtime.last_error.clear();
+        runtime.perf = CameraPerfStats{};
+        runtime.perf.interval_started = now;
+        runtime.next_preview = now;
+        runtime.next_depth_emit = now;
+        runtime.next_time_sync_log = now;
+        runtime.next_jpeg_warning = now;
+        runtime.next_media_warning = now;
+        runtime.next_rgb_timing_warning = now;
+        runtime.last_rgb_frame_at = now;
+        runtime.last_depth_frame_at = now;
+        if(runtime.next_capture_stall_reconnect < now) {
+            runtime.next_capture_stall_reconnect = now;
+        }
+        runtime.capture_stall_samples = 0;
+        runtime.last_media_warning.clear();
+        runtime.rgb_sent_timing_seen = false;
+        runtime.rgb_last_sent_frame_id = 0;
+        runtime.rgb_last_sent_system_timestamp_us = 0;
+        runtime.rgb_encode_timings.clear();
+        runtime.latest_bgr.release();
+        runtime.latest_depth_color.release();
     }
-    runtime.capture_stall_samples = 0;
-    runtime.last_media_warning.clear();
-    runtime.rgb_sent_timing_seen = false;
-    runtime.rgb_last_sent_frame_id = 0;
-    runtime.rgb_last_sent_system_timestamp_us = 0;
-    runtime.rgb_encode_timings.clear();
-    runtime.latest_bgr.release();
-    runtime.latest_depth_color.release();
 
     std::ostringstream oss;
-    oss << "camera started camera_id=" << runtime.config.camera_id << " color=" << runtime.color_profile->width() << "x"
-        << runtime.color_profile->height() << "@" << runtime.color_profile->fps() << " format=" << ob_format_name(runtime.color_profile->format())
-        << " depth=" << runtime.depth_profile->width() << "x" << runtime.depth_profile->height() << "@" << runtime.depth_profile->fps()
-        << " format=" << ob_format_name(runtime.depth_profile->format())
+    oss << "camera started camera_id=" << runtime.config.camera_id << " color=" << color_width << "x"
+        << color_height << "@" << color_fps << " format=" << color_format
+        << " depth=" << depth_width << "x" << depth_height << "@" << depth_fps
+        << " format=" << depth_format
         << " configured_serial=" << runtime.config.serial_number
         << " configured_uid=" << runtime.config.uid
-        << " device_serial=" << runtime.device_serial
-        << " device_uid=" << runtime.device_uid
-        << " paired_rgb_serial=" << paired_rgb_serial_for_depth_uid(runtime.device_uid)
-        << " connection=" << runtime.device_connection_type;
+        << " device_serial=" << device_serial
+        << " device_uid=" << device_uid
+        << " paired_rgb_serial=" << paired_rgb_serial_for_depth_uid(device_uid)
+        << " connection=" << device_connection_type;
     logger.info(oss.str());
 }
 
 std::vector<std::unique_ptr<CameraRuntime>> start_cameras(const AppConfig &config, Logger &logger) {
     std::vector<std::unique_ptr<CameraRuntime>> cameras;
+    const auto now = std::chrono::steady_clock::now();
+    size_t index = 0;
 
     for(const auto &camera_config : config.cameras) {
         auto runtime = std::make_unique<CameraRuntime>();
         runtime->config = camera_config;
-        try {
-            start_camera_runtime(*runtime, logger);
-        }
-        catch(const ob::Error &e) {
-            stop_camera(*runtime, logger);
-            runtime->last_error = ob_error_text(e);
-            runtime->next_reconnect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            logger.warn("camera unavailable at startup camera_id=" + runtime->config.camera_id + " error=" + runtime->last_error
-                        + "; continuing with remaining cameras");
-        }
-        catch(const std::exception &e) {
-            stop_camera(*runtime, logger);
-            runtime->last_error = e.what();
-            runtime->next_reconnect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            logger.warn("camera unavailable at startup camera_id=" + runtime->config.camera_id + " error=" + runtime->last_error
-                        + "; continuing with remaining cameras");
-        }
+        runtime->online = false;
+        runtime->last_error = "camera startup pending";
+        runtime->next_reconnect = now + std::chrono::milliseconds(static_cast<int>(index) * 1500);
+        logger.info("camera startup scheduled camera_id=" + runtime->config.camera_id
+                    + " delay_ms=" + std::to_string(static_cast<int>(index) * 1500));
         cameras.push_back(std::move(runtime));
+        ++index;
     }
     return cameras;
 }
@@ -3713,7 +3743,7 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
         meta.rgb_actual_fps = timing.diagnostics.actual_fps;
         timing.packet_queued_timestamp_us = now_us();
         set_rgb_pipeline_diagnostics(meta, timing);
-        const bool reject_if_occupied = !is_key_frame;
+        const bool reject_if_occupied = !config.recording_buffer.enabled && !is_key_frame;
         auto job = make_owned_media_job(camera, StreamType::rgb, meta, std::move(encoded.data));
         if(publish_media_job(main_media_queue, rgb_slot, camera, StreamType::rgb, std::move(job), logger, reject_if_occupied, is_key_frame)
            && encoded_has_vcl) {
@@ -4352,12 +4382,14 @@ struct MediaSenderPath {
     std::mutex mutex;
     std::thread thread;
 
-    MediaSenderPath(size_t slot_count, std::unique_ptr<Sender> sender) : queue(slot_count), transport(std::move(sender)) {}
+    MediaSenderPath(size_t slot_count, size_t rgb_frames_per_slot, size_t depth_frames_per_slot, std::unique_ptr<Sender> sender)
+        : queue(slot_count, rgb_frames_per_slot, depth_frames_per_slot), transport(std::move(sender)) {}
 };
 
 template <typename Sender, typename MakeSender>
-std::unique_ptr<MediaSenderPath<Sender>> start_media_sender_path(size_t slot_count, MakeSender &make_sender, Logger &logger) {
-    auto path = std::make_unique<MediaSenderPath<Sender>>(slot_count, make_sender());
+std::unique_ptr<MediaSenderPath<Sender>> start_media_sender_path(size_t slot_count, size_t rgb_frames_per_slot,
+                                                                 size_t depth_frames_per_slot, MakeSender &make_sender, Logger &logger) {
+    auto path = std::make_unique<MediaSenderPath<Sender>>(slot_count, rgb_frames_per_slot, depth_frames_per_slot, make_sender());
     auto *path_ptr = path.get();
     path_ptr->thread = std::thread([path_ptr, &logger] {
         media_sender_loop(path_ptr->queue, *path_ptr->transport, logger, path_ptr->mutex);
@@ -4443,8 +4475,15 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
             continue;
         }
 
-        auto rgb_path = start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, make_media_sender, logger);
-        auto depth_path = start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, make_media_sender, logger);
+        const size_t rgb_frames_per_slot =
+            config.recording_buffer.enabled ? static_cast<size_t>(config.recording_buffer.rgb_frames_per_slot) : 1;
+        const size_t depth_frames_per_slot = config.recording_buffer.enabled
+                                                 ? static_cast<size_t>(config.recording_buffer.depth_frames_per_slot)
+                                                 : kDepthMediaQueuePerSlot;
+        auto rgb_path =
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger);
+        auto depth_path =
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger);
         auto *rgb_path_ptr = rgb_path.get();
         auto *depth_path_ptr = depth_path.get();
         rgb_media_paths.push_back(std::move(rgb_path));
@@ -4501,8 +4540,21 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> depth_media_paths;
     rgb_media_paths.reserve(cameras.size());
     depth_media_paths.reserve(cameras.size());
+    const size_t rgb_frames_per_slot =
+        config.recording_buffer.enabled ? static_cast<size_t>(config.recording_buffer.rgb_frames_per_slot) : 1;
+    const size_t depth_frames_per_slot =
+        config.recording_buffer.enabled ? static_cast<size_t>(config.recording_buffer.depth_frames_per_slot) : kDepthMediaQueuePerSlot;
+    const size_t depth_compression_frames_per_slot = config.recording_buffer.enabled
+                                                        ? static_cast<size_t>(config.recording_buffer.depth_compression_frames_per_slot)
+                                                        : kDepthCompressionQueuePerSlot;
+    logger.info("recording buffer "
+                + std::string(config.recording_buffer.enabled ? "enabled" : "disabled")
+                + " rgb_frames_per_slot=" + std::to_string(rgb_frames_per_slot)
+                + " depth_frames_per_slot=" + std::to_string(depth_frames_per_slot)
+                + " depth_compression_frames_per_slot=" + std::to_string(depth_compression_frames_per_slot));
+
     LatestMediaQueue preview_media_queue(cameras.size() * kMediaSlotsPerCamera);
-    LatestDepthCompressionQueue depth_compression_queue(cameras.size() * kMediaSlotsPerCamera);
+    LatestDepthCompressionQueue depth_compression_queue(cameras.size() * kMediaSlotsPerCamera, depth_compression_frames_per_slot);
     std::mutex status_transport_mutex;
     std::mutex preview_media_transport_mutex;
 
@@ -4526,8 +4578,10 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     }
 
     for(size_t i = 0; i < cameras.size(); ++i) {
-        rgb_media_paths.push_back(start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, make_media_sender, logger));
-        depth_media_paths.push_back(start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, make_media_sender, logger));
+        rgb_media_paths.push_back(
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger));
+        depth_media_paths.push_back(
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger));
     }
     std::thread preview_media_thread([&] { media_sender_loop(preview_media_queue, preview_media_transport, logger, preview_media_transport_mutex); });
     const size_t depth_worker_count = depth_compression_worker_count(cameras.size());

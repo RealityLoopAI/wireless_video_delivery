@@ -6,13 +6,27 @@ find_package(ZLIB REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
 
-set(ORBBEC_SDK_ROOT
-    "${CMAKE_SOURCE_DIR}/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK"
-    CACHE PATH "Orbbec SDK root")
+set(_ORBBEC_SDK_DEFAULT_ROOT
+    "${CMAKE_SOURCE_DIR}/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK")
+if(DEFINED ENV{ORBBEC_SDK_ROOT} AND NOT "$ENV{ORBBEC_SDK_ROOT}" STREQUAL "")
+    set(_ORBBEC_SDK_DEFAULT_ROOT "$ENV{ORBBEC_SDK_ROOT}")
+endif()
+
+set(ORBBEC_SDK_ROOT "${_ORBBEC_SDK_DEFAULT_ROOT}" CACHE PATH "Orbbec SDK root")
 
 set(ORBBEC_SDK_INCLUDE_DIR "${ORBBEC_SDK_ROOT}/include")
 set(ORBBEC_SDK_LIBRARY_DIR "${ORBBEC_SDK_ROOT}/lib")
-set(ORBBEC_SDK_CONFIG "${ORBBEC_SDK_ROOT}/config/OrbbecSDKConfig_v1.0.xml")
+set(ORBBEC_SDK_CONFIG "")
+foreach(_ORBBEC_SDK_CONFIG_CANDIDATE
+        "${ORBBEC_SDK_ROOT}/config/OrbbecSDKConfig_v1.0.xml"
+        "${ORBBEC_SDK_ROOT}/lib/OrbbecSDKConfig.xml"
+        "${ORBBEC_SDK_ROOT}/OrbbecSDKConfig.xml")
+    if(EXISTS "${_ORBBEC_SDK_CONFIG_CANDIDATE}")
+        set(ORBBEC_SDK_CONFIG "${_ORBBEC_SDK_CONFIG_CANDIDATE}")
+        get_filename_component(ORBBEC_SDK_CONFIG_NAME "${ORBBEC_SDK_CONFIG}" NAME)
+        break()
+    endif()
+endforeach()
 
 add_executable(gemini_sender
     src/config.cpp
@@ -66,7 +80,7 @@ if(EXISTS "${ORBBEC_SDK_CONFIG}")
     add_custom_command(TARGET gemini_sender POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ORBBEC_SDK_CONFIG}"
-                "$<TARGET_FILE_DIR:gemini_sender>/OrbbecSDKConfig_v1.0.xml"
+                "$<TARGET_FILE_DIR:gemini_sender>/${ORBBEC_SDK_CONFIG_NAME}"
     )
 endif()
 

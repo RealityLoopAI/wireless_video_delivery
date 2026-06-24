@@ -80,6 +80,8 @@ constexpr double kMinRecordFps = 5.0;
 constexpr double kMaxRecordFps = 60.0;
 constexpr size_t kMaxPendingRgbRecordBytes = 8ull * 1024ull * 1024ull;
 constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kDefaultRecordQueueMaxBytes = 512ull * 1024ull * 1024ull;
+constexpr uint64_t kRecordQueueWarnIntervalUs = 5ull * 1000ull * 1000ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
@@ -912,6 +914,7 @@ struct Config {
     bool write_debug_h264 = false;
     bool write_debug_depth_raw = false;
     size_t max_payload_bytes = kMaxReasonablePayload;
+    size_t record_queue_max_bytes = kDefaultRecordQueueMaxBytes;
 };
 
 Config load_config(const std::string &path) {
@@ -944,6 +947,7 @@ Config load_config(const std::string &path) {
     cfg.write_debug_h264 = config_bool(json, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = config_bool(json, "write_debug_depth_raw", cfg.write_debug_depth_raw);
     cfg.max_payload_bytes = static_cast<size_t>(std::max(1, config_int(json, "max_payload_mb", 128))) * 1024ull * 1024ull;
+    cfg.record_queue_max_bytes = static_cast<size_t>(std::max(1, config_int(json, "record_queue_max_mb", 512))) * 1024ull * 1024ull;
 
     if(cfg.segment_seconds <= 0) {
         throw std::runtime_error("segment_seconds must be positive");
@@ -2513,6 +2517,22 @@ struct PendingRgbPacketInfo {
     bool has_vcl = false;
 };
 
+size_t record_packet_queue_bytes(const MediaPacket &packet) {
+    return sizeof(MediaPacket) + packet.sender_id.size() + packet.camera_id.size() + packet.codec_or_compression.size() + packet.payload.size();
+}
+
+struct RecordJob {
+    MediaPacket packet;
+    std::string sender_id;
+    std::string camera_id;
+    std::string camera_name;
+    std::string storage_key;
+    std::string file_prefix;
+    std::string announce_json;
+    size_t queue_bytes = 0;
+    uint64_t enqueue_us = 0;
+};
+
 struct StreamRecordStats {
     uint64_t frames = 0;
     uint64_t first_local_us = 0;
@@ -3979,6 +3999,21 @@ struct CameraState {
     bool segment_finalizing = false;
     std::string segment_dir;
     SegmentWriter segment;
+    std::mutex record_mutex;
+    std::condition_variable record_cv;
+    std::deque<RecordJob> record_queue;
+    size_t record_queue_bytes = 0;
+    size_t record_queue_peak_bytes = 0;
+    size_t record_queue_peak_packets = 0;
+    uint64_t record_enqueued_packets = 0;
+    uint64_t record_dequeued_packets = 0;
+    uint64_t record_backpressure_waits = 0;
+    uint64_t record_oversize_packets = 0;
+    uint64_t record_write_errors = 0;
+    uint32_t record_active_writes = 0;
+    bool record_worker_started = false;
+    bool record_worker_stop = false;
+    std::thread record_worker;
 
     std::string storage_key() const {
         return camera_name.empty() ? key : camera_name;
@@ -4054,15 +4089,18 @@ public:
             admin_thread_.join();
         }
         std::vector<SegmentCloseTask> close_tasks;
+        std::vector<std::shared_ptr<CameraState>> camera_snapshot;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for(auto &item : cameras_) {
                 cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
                 cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
+                camera_snapshot.push_back(item.second);
                 close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
                                        item.second->last_announce_live ? item.second->last_announce_json : ""});
             }
         }
+        stop_record_workers_sync(camera_snapshot);
         for(auto &task : close_tasks) {
             std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
             task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
@@ -4177,6 +4215,31 @@ public:
             const int announce_depth_width = json_int_in_object(cam.last_announce_json, "depth_profile", "width").value_or(0);
             const int announce_depth_height = json_int_in_object(cam.last_announce_json, "depth_profile", "height").value_or(0);
             const auto announce_timestamp_us = json_uint64_field(cam.last_announce_json, "timestamp_us").value_or(0);
+            size_t record_queue_packets = 0;
+            size_t record_queue_bytes = 0;
+            size_t record_queue_peak_packets = 0;
+            size_t record_queue_peak_bytes = 0;
+            uint64_t record_enqueued_packets = 0;
+            uint64_t record_dequeued_packets = 0;
+            uint64_t record_backpressure_waits = 0;
+            uint64_t record_oversize_packets = 0;
+            uint64_t record_write_errors = 0;
+            uint32_t record_active_writes = 0;
+            bool record_worker_started = false;
+            {
+                std::lock_guard<std::mutex> record_lock(cam.record_mutex);
+                record_queue_packets = cam.record_queue.size();
+                record_queue_bytes = cam.record_queue_bytes;
+                record_queue_peak_packets = cam.record_queue_peak_packets;
+                record_queue_peak_bytes = cam.record_queue_peak_bytes;
+                record_enqueued_packets = cam.record_enqueued_packets;
+                record_dequeued_packets = cam.record_dequeued_packets;
+                record_backpressure_waits = cam.record_backpressure_waits;
+                record_oversize_packets = cam.record_oversize_packets;
+                record_write_errors = cam.record_write_errors;
+                record_active_writes = cam.record_active_writes;
+                record_worker_started = cam.record_worker_started;
+            }
             if(!first) {
                 out << ',';
             }
@@ -4198,6 +4261,17 @@ public:
             out << "\"segment_active\":" << (cam.segment_active ? "true" : "false") << ',';
             out << "\"segment_finalizing\":" << (cam.segment_finalizing ? "true" : "false") << ',';
             out << "\"segment_dir\":\"" << json_escape(cam.segment_dir) << "\",";
+            out << "\"record_queue_packets\":" << record_queue_packets << ',';
+            out << "\"record_queue_bytes\":" << record_queue_bytes << ',';
+            out << "\"record_queue_peak_packets\":" << record_queue_peak_packets << ',';
+            out << "\"record_queue_peak_bytes\":" << record_queue_peak_bytes << ',';
+            out << "\"record_enqueued_packets\":" << record_enqueued_packets << ',';
+            out << "\"record_dequeued_packets\":" << record_dequeued_packets << ',';
+            out << "\"record_active_writes\":" << record_active_writes << ',';
+            out << "\"record_backpressure_waits\":" << record_backpressure_waits << ',';
+            out << "\"record_oversize_packets\":" << record_oversize_packets << ',';
+            out << "\"record_write_errors\":" << record_write_errors << ',';
+            out << "\"record_worker_started\":" << (record_worker_started ? "true" : "false") << ',';
             out << "\"last_status_us\":" << cam.last_status_us << ',';
             out << "\"last_media_us\":" << cam.last_media_us << ',';
             out << "\"last_seen_us\":" << last_seen << ',';
@@ -4265,7 +4339,9 @@ public:
         out << "\"state_path\":\"" << json_escape(config_.state_path) << "\",";
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
-        out << "\"segment_seconds\":" << config_.segment_seconds;
+        out << "\"segment_seconds\":" << config_.segment_seconds << ',';
+        out << "\"max_payload_mb\":" << (config_.max_payload_bytes / (1024ull * 1024ull)) << ',';
+        out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
         out << "}";
         return out.str();
     }
@@ -4336,12 +4412,187 @@ public:
         }
     }
 
+    void write_record_job(const std::shared_ptr<CameraState> &cam, RecordJob job) {
+        const MediaPacket *record_packet = &job.packet;
+        std::optional<MediaPacket> decoded_depth_packet;
+        if(job.packet.stream_type == StreamType::depth_raw && job.packet.codec_or_compression != "none") {
+            try {
+                decoded_depth_packet = normalized_depth_packet(job.packet);
+                record_packet = &*decoded_depth_packet;
+            }
+            catch(const std::exception &e) {
+                {
+                    std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                    cam->record_write_errors++;
+                }
+                logger_.warn(std::string("depth record packet ignored camera=") + cam->key + " frame=" + std::to_string(job.packet.frame_id)
+                             + ": " + e.what());
+                return;
+            }
+        }
+
+        try {
+            bool segment_active = false;
+            std::string segment_dir;
+            {
+                std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+                cam->segment.write_packet(config_, *record_packet, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
+                                          job.file_prefix, job.announce_json, logger_);
+                segment_active = cam->segment.active();
+                segment_dir = cam->segment.directory();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cam->segment_active = segment_active;
+                cam->segment_dir = std::move(segment_dir);
+            }
+        }
+        catch(const std::exception &e) {
+            {
+                std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                cam->record_write_errors++;
+            }
+            logger_.warn(std::string("record packet write failed camera=") + cam->key + " frame=" + std::to_string(job.packet.frame_id)
+                         + ": " + e.what());
+        }
+    }
+
+    void record_worker_loop(std::shared_ptr<CameraState> cam) {
+        logger_.info("record queue worker started: " + cam->key);
+        for(;;) {
+            RecordJob job;
+            {
+                std::unique_lock<std::mutex> record_lock(cam->record_mutex);
+                cam->record_cv.wait(record_lock, [&] { return cam->record_worker_stop || !cam->record_queue.empty(); });
+                if(cam->record_queue.empty()) {
+                    if(cam->record_worker_stop) {
+                        break;
+                    }
+                    continue;
+                }
+                job = std::move(cam->record_queue.front());
+                cam->record_queue.pop_front();
+                if(job.queue_bytes <= cam->record_queue_bytes) {
+                    cam->record_queue_bytes -= job.queue_bytes;
+                }
+                else {
+                    cam->record_queue_bytes = 0;
+                }
+                cam->record_dequeued_packets++;
+                cam->record_active_writes++;
+            }
+            cam->record_cv.notify_all();
+
+            write_record_job(cam, std::move(job));
+
+            {
+                std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                if(cam->record_active_writes > 0) {
+                    cam->record_active_writes--;
+                }
+            }
+            cam->record_cv.notify_all();
+        }
+        logger_.info("record queue worker stopped: " + cam->key);
+    }
+
+    void start_record_worker_if_needed(const std::shared_ptr<CameraState> &cam) {
+        bool should_start = false;
+        {
+            std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+            if(!cam->record_worker_started) {
+                cam->record_worker_started = true;
+                cam->record_worker_stop = false;
+                should_start = true;
+            }
+        }
+        if(should_start) {
+            cam->record_worker = std::thread([this, cam] { record_worker_loop(cam); });
+        }
+    }
+
+    bool enqueue_record_job(const std::shared_ptr<CameraState> &cam, RecordJob job) {
+        if(!cam || job.packet.stream_type == StreamType::rgb_preview) {
+            return false;
+        }
+        start_record_worker_if_needed(cam);
+        job.queue_bytes = record_packet_queue_bytes(job.packet);
+        job.enqueue_us = now_us();
+        const size_t max_bytes = std::max<size_t>(1, config_.record_queue_max_bytes);
+        std::unique_lock<std::mutex> record_lock(cam->record_mutex);
+        if(job.queue_bytes > max_bytes) {
+            cam->record_oversize_packets++;
+        }
+        while(!cam->record_worker_stop && !cam->record_queue.empty() && cam->record_queue_bytes + job.queue_bytes > max_bytes) {
+            cam->record_backpressure_waits++;
+            cam->record_cv.wait_for(record_lock, std::chrono::milliseconds(100));
+        }
+        if(cam->record_worker_stop) {
+            return false;
+        }
+        cam->record_queue_bytes += job.queue_bytes;
+        cam->record_queue.push_back(std::move(job));
+        cam->record_enqueued_packets++;
+        cam->record_queue_peak_bytes = std::max(cam->record_queue_peak_bytes, cam->record_queue_bytes);
+        cam->record_queue_peak_packets = std::max(cam->record_queue_peak_packets, cam->record_queue.size());
+        record_lock.unlock();
+        cam->record_cv.notify_one();
+        return true;
+    }
+
+    void wait_record_queue_idle(const std::shared_ptr<CameraState> &cam, const std::string &reason) {
+        if(!cam) {
+            return;
+        }
+        uint64_t next_log_us = now_us() + kRecordQueueWarnIntervalUs;
+        for(;;) {
+            std::unique_lock<std::mutex> record_lock(cam->record_mutex);
+            if(cam->record_queue.empty() && cam->record_active_writes == 0) {
+                return;
+            }
+            const bool timed_out = cam->record_cv.wait_for(record_lock, std::chrono::seconds(1)) == std::cv_status::timeout;
+            const uint64_t current_us = now_us();
+            if(timed_out && current_us >= next_log_us) {
+                const size_t packets = cam->record_queue.size();
+                const size_t bytes = cam->record_queue_bytes;
+                const uint32_t active = cam->record_active_writes;
+                record_lock.unlock();
+                logger_.info("waiting record queue drain camera=" + cam->key + " reason=" + reason
+                             + " packets=" + std::to_string(packets)
+                             + " bytes=" + std::to_string(bytes)
+                             + " active_writes=" + std::to_string(active));
+                next_log_us = current_us + kRecordQueueWarnIntervalUs;
+            }
+        }
+    }
+
+    void stop_record_workers_sync(const std::vector<std::shared_ptr<CameraState>> &cameras) {
+        for(const auto &cam : cameras) {
+            if(!cam) {
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                if(cam->record_worker_started) {
+                    cam->record_worker_stop = true;
+                }
+            }
+            cam->record_cv.notify_all();
+        }
+        for(const auto &cam : cameras) {
+            if(cam && cam->record_worker.joinable()) {
+                cam->record_worker.join();
+            }
+        }
+    }
+
     void close_segments_async(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
         if(close_tasks.empty()) {
             return;
         }
         std::thread([this, close_tasks = std::move(close_tasks), done_log_message] {
             for(auto &task : close_tasks) {
+                wait_record_queue_idle(task.cam, done_log_message);
                 bool segment_active = false;
                 std::string segment_dir;
                 {
@@ -4364,6 +4615,7 @@ public:
             return;
         }
         for(auto &task : close_tasks) {
+            wait_record_queue_idle(task.cam, done_log_message);
             bool segment_active = false;
             std::string segment_dir;
             {
@@ -5068,7 +5320,7 @@ private:
                 clear_camera_live_cache_locked(cam);
             }
 
-            if(!cam.online && !cam.recording_requested && !cam.segment_active &&
+            if(!cam.online && !cam.recording_requested && !cam.segment_active && !cam.record_worker_started &&
                is_older_than_us(now, last_seen, kOfflineCameraPurgeUs)) {
                 cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
                 cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
@@ -5331,23 +5583,10 @@ private:
         }
     }
 
-    void handle_media_packet(const MediaPacket &packet) {
+    void handle_media_packet(MediaPacket packet) {
         if(packet.sender_id.empty() || packet.camera_id.empty()) {
             logger_.warn("media packet with empty sender_id/camera_id ignored");
             return;
-        }
-
-        const MediaPacket *record_packet = &packet;
-        std::optional<MediaPacket> decoded_depth_packet;
-        if(packet.stream_type == StreamType::depth_raw && packet.codec_or_compression != "none") {
-            try {
-                decoded_depth_packet = normalized_depth_packet(packet);
-                record_packet = &*decoded_depth_packet;
-            }
-            catch(const std::exception &e) {
-                logger_.warn(std::string("depth packet ignored: ") + e.what());
-                return;
-            }
         }
 
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
@@ -5358,9 +5597,16 @@ private:
         std::shared_ptr<CameraState> cam;
         bool build_depth_preview = false;
         uint64_t depth_preview_media_us = 0;
-        double depth_preview_scale = fallback_depth_scale_for_camera(record_packet->sender_id, record_packet->camera_id);
+        double depth_preview_scale = fallback_depth_scale_for_camera(packet.sender_id, packet.camera_id);
         std::vector<SenderControlTarget> web_preview_control_targets;
         uint64_t web_preview_control_request_us = 0;
+        bool should_record = false;
+        std::string record_sender_id;
+        std::string record_camera_id;
+        std::string record_camera_name;
+        std::string record_storage_key;
+        std::string record_file_prefix;
+        std::string record_announce_json;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
@@ -5419,17 +5665,47 @@ private:
                 depth_preview_media_us = cam->last_media_us;
                 depth_preview_scale = cam->depth_scale;
             }
+
+            should_record = (recording_all_ || cam->recording_requested) && packet.stream_type != StreamType::rgb_preview;
+            if(should_record) {
+                if(cam->recording_start_us == 0) {
+                    cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                    cam->recording_file_prefix = effective_file_prefix_locked(*cam);
+                }
+                record_sender_id = cam->sender_id;
+                record_camera_id = cam->camera_id;
+                record_camera_name = cam->camera_name;
+                record_storage_key = cam->storage_key();
+                record_file_prefix = cam->recording_file_prefix;
+                record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
+            }
         }
         if(!web_preview_control_targets.empty()) {
             send_web_rgb_preview_controls(web_preview_control_targets, web_preview_control_request_us);
         }
 
         if(build_depth_preview) {
-            auto preview = build_depth_preview_bmp(record_packet->payload,
-                                                   record_packet->width,
-                                                   record_packet->height,
-                                                   depth_preview_range_for_camera(record_packet->sender_id, record_packet->camera_id),
-                                                   depth_preview_scale);
+            std::optional<MediaPacket> preview_depth_packet;
+            const MediaPacket *depth_packet = &packet;
+            if(packet.stream_type == StreamType::depth_raw && packet.codec_or_compression != "none") {
+                try {
+                    preview_depth_packet = normalized_depth_packet(packet);
+                    depth_packet = &*preview_depth_packet;
+                }
+                catch(const std::exception &e) {
+                    logger_.warn(std::string("depth preview packet ignored camera=") + packet.sender_id + "_" + packet.camera_id
+                                 + " frame=" + std::to_string(packet.frame_id) + ": " + e.what());
+                    depth_packet = nullptr;
+                }
+            }
+            PreviewImage preview;
+            if(depth_packet) {
+                preview = build_depth_preview_bmp(depth_packet->payload,
+                                                  depth_packet->width,
+                                                  depth_packet->height,
+                                                  depth_preview_range_for_camera(depth_packet->sender_id, depth_packet->camera_id),
+                                                  depth_preview_scale);
+            }
             if(!preview.bytes.empty()) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if(config_.preview_enabled && cam->online &&
@@ -5443,46 +5719,16 @@ private:
             }
         }
 
-        std::unique_lock<std::mutex> segment_lock(cam->segment_mutex, std::try_to_lock);
-        if(!segment_lock.owns_lock()) {
-            return;
-        }
-        bool should_record = false;
-        std::string sender_id;
-        std::string camera_id;
-        std::string camera_name;
-        std::string storage_key;
-        std::string file_prefix;
-        std::string announce_json;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            should_record = recording_all_ || cam->recording_requested;
-            if(should_record) {
-                if(cam->recording_start_us == 0) {
-                    cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
-                    cam->recording_file_prefix = effective_file_prefix_locked(*cam);
-                }
-                sender_id = cam->sender_id;
-                camera_id = cam->camera_id;
-                camera_name = cam->camera_name;
-                storage_key = cam->storage_key();
-                file_prefix = cam->recording_file_prefix;
-                announce_json = cam->last_announce_live ? cam->last_announce_json : "";
-            }
-        }
-        if(!should_record) {
-            return;
-        }
-        if(packet.stream_type == StreamType::rgb_preview) {
-            return;
-        }
-        cam->segment.write_packet(config_, *record_packet, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger_);
-        const bool segment_active = cam->segment.active();
-        std::string segment_dir = cam->segment.directory();
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            cam->segment_active = segment_active;
-            cam->segment_dir = std::move(segment_dir);
+        if(should_record) {
+            RecordJob job;
+            job.packet = std::move(packet);
+            job.sender_id = std::move(record_sender_id);
+            job.camera_id = std::move(record_camera_id);
+            job.camera_name = std::move(record_camera_name);
+            job.storage_key = std::move(record_storage_key);
+            job.file_prefix = std::move(record_file_prefix);
+            job.announce_json = std::move(record_announce_json);
+            enqueue_record_job(cam, std::move(job));
         }
     }
 
@@ -5646,7 +5892,7 @@ private:
                                             : (packet.stream_type == StreamType::rgb_preview);
             record_udp_stream_result(media_udp, packet.stream_type, accepted);
             if(accepted) {
-                handle_media_packet(packet);
+                handle_media_packet(std::move(packet));
             }
         }
         catch(const std::exception &e) {
@@ -5838,7 +6084,7 @@ private:
                 last_camera = packet.camera_id;
                 last_stream = stream_type_name(packet.stream_type);
                 last_frame_id = packet.frame_id;
-                handle_media_packet(packet);
+                handle_media_packet(std::move(packet));
             }
             catch(const std::exception &e) {
                 std::ostringstream msg;

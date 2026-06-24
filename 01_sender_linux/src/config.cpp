@@ -375,6 +375,20 @@ AppConfig load_config(const std::string &path) {
         config.hotplug.enabled = optional_bool(hotplug, "enabled", config.hotplug.enabled);
     }
 
+    const auto &recording_buffer = root["recording_buffer"];
+    if(!recording_buffer.isNull()) {
+        if(!recording_buffer.isObject()) {
+            throw std::runtime_error("invalid object field: recording_buffer");
+        }
+        config.recording_buffer.enabled = optional_bool(recording_buffer, "enabled", config.recording_buffer.enabled);
+        config.recording_buffer.rgb_frames_per_slot =
+            optional_int(recording_buffer, "rgb_frames_per_slot", config.recording_buffer.rgb_frames_per_slot);
+        config.recording_buffer.depth_frames_per_slot =
+            optional_int(recording_buffer, "depth_frames_per_slot", config.recording_buffer.depth_frames_per_slot);
+        config.recording_buffer.depth_compression_frames_per_slot =
+            optional_int(recording_buffer, "depth_compression_frames_per_slot", config.recording_buffer.depth_compression_frames_per_slot);
+    }
+
     const auto &cameras = root["cameras"];
     if(!cameras.isArray()) {
         throw std::runtime_error("missing or invalid cameras array");
@@ -466,6 +480,15 @@ void validate_config(const AppConfig &config) {
     }
     if(config.web_rgb_preview.udp_mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.web_rgb_preview.udp_mtu_bytes > 65000) {
         throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be > 32 and <= 65000");
+    }
+    if(config.recording_buffer.rgb_frames_per_slot <= 0) {
+        throw std::runtime_error("recording_buffer.rgb_frames_per_slot must be positive");
+    }
+    if(config.recording_buffer.depth_frames_per_slot <= 0) {
+        throw std::runtime_error("recording_buffer.depth_frames_per_slot must be positive");
+    }
+    if(config.recording_buffer.depth_compression_frames_per_slot <= 0) {
+        throw std::runtime_error("recording_buffer.depth_compression_frames_per_slot must be positive");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
