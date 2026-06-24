@@ -1436,12 +1436,79 @@ struct MediaPacket {
     std::vector<uint8_t> payload;
 };
 
-MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
-    std::vector<uint8_t> header(kMediaHeaderBaseSize);
-    if(!read_exact(fd, header.data(), header.size())) {
+struct MediaPacketReadBuffers {
+    std::vector<uint8_t> header;
+    std::vector<char> text;
+};
+
+void copy_media_packet_metadata(const MediaPacket &src, MediaPacket &dst) {
+    dst.stream_type = src.stream_type;
+    dst.flags = src.flags;
+    dst.sender_id = src.sender_id;
+    dst.camera_id = src.camera_id;
+    dst.codec_or_compression = src.codec_or_compression;
+    dst.frame_id = src.frame_id;
+    dst.timestamp_us = src.timestamp_us;
+    dst.system_timestamp_us = src.system_timestamp_us;
+    dst.pair_id = src.pair_id;
+    dst.width = src.width;
+    dst.height = src.height;
+    dst.pixel_format = src.pixel_format;
+    dst.payload_size = src.payload_size;
+    dst.uncompressed_size = src.uncompressed_size;
+    dst.rgb_exposure_us = src.rgb_exposure_us;
+    dst.rgb_gain = src.rgb_gain;
+    dst.rgb_auto_exposure = src.rgb_auto_exposure;
+    dst.rgb_actual_fps = src.rgb_actual_fps;
+    dst.sender_capture_host_timestamp_us = src.sender_capture_host_timestamp_us;
+    dst.sender_timing_bound_timestamp_us = src.sender_timing_bound_timestamp_us;
+    dst.sender_encode_start_timestamp_us = src.sender_encode_start_timestamp_us;
+    dst.sender_encode_done_timestamp_us = src.sender_encode_done_timestamp_us;
+    dst.sender_packet_queued_timestamp_us = src.sender_packet_queued_timestamp_us;
+    dst.payload.clear();
+}
+
+MediaPacket media_packet_metadata_only(const MediaPacket &packet) {
+    MediaPacket copy;
+    copy_media_packet_metadata(packet, copy);
+    return copy;
+}
+
+void reset_media_packet_for_read(MediaPacket &packet) {
+    packet.stream_type = StreamType::rgb;
+    packet.flags = 0;
+    packet.sender_id.clear();
+    packet.camera_id.clear();
+    packet.codec_or_compression.clear();
+    packet.frame_id = 0;
+    packet.timestamp_us = 0;
+    packet.system_timestamp_us = 0;
+    packet.pair_id = 0;
+    packet.width = 0;
+    packet.height = 0;
+    packet.pixel_format = PixelFormat::encoded_video;
+    packet.payload_size = 0;
+    packet.uncompressed_size = 0;
+    packet.rgb_exposure_us = -1;
+    packet.rgb_gain = -1;
+    packet.rgb_auto_exposure = -1;
+    packet.rgb_actual_fps = -1;
+    packet.sender_capture_host_timestamp_us = 0;
+    packet.sender_timing_bound_timestamp_us = 0;
+    packet.sender_encode_start_timestamp_us = 0;
+    packet.sender_encode_done_timestamp_us = 0;
+    packet.sender_packet_queued_timestamp_us = 0;
+    packet.payload.clear();
+}
+
+void read_media_packet_into(int fd, size_t max_payload_bytes, MediaPacketReadBuffers &buffers, MediaPacket &packet) {
+    reset_media_packet_for_read(packet);
+    buffers.header.resize(kMediaHeaderBaseSize);
+    if(!read_exact(fd, buffers.header.data(), buffers.header.size())) {
         throw std::runtime_error("connection closed");
     }
 
+    auto &header = buffers.header;
     const uint32_t magic = read_le32(header.data() + 0);
     const uint16_t header_version = read_le16(header.data() + 4);
     const uint16_t header_size = read_le16(header.data() + 6);
@@ -1465,7 +1532,6 @@ MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
         throw std::runtime_error("media payload too large");
     }
 
-    MediaPacket packet;
     packet.stream_type = static_cast<StreamType>(header[8]);
     packet.flags = read_le32(header.data() + 10);
     packet.frame_id = read_le64(header.data() + 20);
@@ -1491,19 +1557,20 @@ MediaPacket read_media_packet(int fd, size_t max_payload_bytes) {
         packet.sender_packet_queued_timestamp_us = read_le64(header.data() + 126);
     }
 
-    std::vector<char> text(sender_id_len + camera_id_len + codec_len);
-    if(!text.empty() && !read_exact(fd, text.data(), text.size())) {
+    const size_t text_size = static_cast<size_t>(sender_id_len) + static_cast<size_t>(camera_id_len) + static_cast<size_t>(codec_len);
+    buffers.text.resize(text_size);
+    if(!buffers.text.empty() && !read_exact(fd, buffers.text.data(), buffers.text.size())) {
         throw std::runtime_error("connection closed while reading packet strings");
     }
-    packet.sender_id.assign(text.data(), sender_id_len);
-    packet.camera_id.assign(text.data() + sender_id_len, camera_id_len);
-    packet.codec_or_compression.assign(text.data() + sender_id_len + camera_id_len, codec_len);
+    const char *text = buffers.text.empty() ? "" : buffers.text.data();
+    packet.sender_id.assign(text, sender_id_len);
+    packet.camera_id.assign(text + sender_id_len, camera_id_len);
+    packet.codec_or_compression.assign(text + sender_id_len + camera_id_len, codec_len);
 
     packet.payload.resize(static_cast<size_t>(payload_size));
     if(payload_size > 0 && !read_exact(fd, packet.payload.data(), packet.payload.size())) {
         throw std::runtime_error("connection closed while reading payload");
     }
-    return packet;
 }
 
 MediaPacket parse_media_packet_buffer(const uint8_t *data, size_t size, size_t max_payload_bytes) {
@@ -2159,70 +2226,70 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
         return packet;
     }
     if(packet.codec_or_compression == "zlib") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "rvl") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = rvl_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "qdelta") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = qdelta_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "lz4") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = lz4_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "plz4") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = plz4_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "pzlib") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = pzlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "q8lz4") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = q8lz4_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "q8zlib") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = q8zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "pq12zlib") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = pq12zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
         return decoded;
     }
     if(packet.codec_or_compression == "pq8zlib") {
-        MediaPacket decoded = packet;
+        MediaPacket decoded = media_packet_metadata_only(packet);
         decoded.payload = pq8zlib_decompress_payload(packet);
         decoded.payload_size = decoded.payload.size();
         decoded.codec_or_compression = "none";
@@ -2691,8 +2758,9 @@ private:
         return true;
     }
 
-    void write_rgb_recorded_frame(const MediaPacket &packet, uint64_t packet_local_us, size_t recorded_payload_size) {
-        if(!rgb_recorded_frames_csv_ || !h264_payload_has_vcl_nal(packet.payload)) {
+    void write_rgb_recorded_frame(const MediaPacket &packet, uint64_t packet_local_us, size_t recorded_payload_size,
+                                  bool payload_known_vcl = false) {
+        if(!rgb_recorded_frames_csv_ || (!payload_known_vcl && !h264_payload_has_vcl_nal(packet.payload))) {
             return;
         }
         rgb_recorded_frames_csv_ << rgb_recorded_frame_index_++ << ',' << packet_local_us << ',' << packet.frame_id << ','
@@ -2722,7 +2790,7 @@ private:
     void write_pending_rgb_recorded_frames() {
         for(const auto &info : rgb_pending_infos_) {
             if(info.has_vcl) {
-                write_rgb_recorded_frame(info.packet, info.local_time_us, info.payload_size);
+                write_rgb_recorded_frame(info.packet, info.local_time_us, info.payload_size, true);
             }
         }
     }
@@ -2975,7 +3043,7 @@ private:
             rgb_fps_probe_.reset();
         }
         const bool packet_has_vcl = h264_payload_has_vcl_nal(packet.payload);
-        rgb_pending_infos_.push_back(PendingRgbPacketInfo{packet, packet_local_us, packet.payload.size(), packet_has_vcl});
+        rgb_pending_infos_.push_back(PendingRgbPacketInfo{media_packet_metadata_only(packet), packet_local_us, packet.payload.size(), packet_has_vcl});
         rgb_pending_.insert(rgb_pending_.end(), packet.payload.begin(), packet.payload.end());
 
         if(packet_has_vcl) {
@@ -4974,10 +5042,12 @@ private:
             return;
         }
 
-        MediaPacket decoded_packet = packet;
-        if(packet.stream_type == StreamType::depth_raw) {
+        const MediaPacket *record_packet = &packet;
+        std::optional<MediaPacket> decoded_depth_packet;
+        if(packet.stream_type == StreamType::depth_raw && packet.codec_or_compression != "none") {
             try {
-                decoded_packet = normalized_depth_packet(packet);
+                decoded_depth_packet = normalized_depth_packet(packet);
+                record_packet = &*decoded_depth_packet;
             }
             catch(const std::exception &e) {
                 logger_.warn(std::string("depth packet ignored: ") + e.what());
@@ -4993,7 +5063,7 @@ private:
         std::shared_ptr<CameraState> cam;
         bool build_depth_preview = false;
         uint64_t depth_preview_media_us = 0;
-        double depth_preview_scale = fallback_depth_scale_for_camera(decoded_packet.sender_id, decoded_packet.camera_id);
+        double depth_preview_scale = fallback_depth_scale_for_camera(record_packet->sender_id, record_packet->camera_id);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
@@ -5047,10 +5117,10 @@ private:
         }
 
         if(build_depth_preview) {
-            auto preview = build_depth_preview_bmp(decoded_packet.payload,
-                                                   decoded_packet.width,
-                                                   decoded_packet.height,
-                                                   depth_preview_range_for_camera(decoded_packet.sender_id, decoded_packet.camera_id),
+            auto preview = build_depth_preview_bmp(record_packet->payload,
+                                                   record_packet->width,
+                                                   record_packet->height,
+                                                   depth_preview_range_for_camera(record_packet->sender_id, record_packet->camera_id),
                                                    depth_preview_scale);
             if(!preview.bytes.empty()) {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -5098,7 +5168,7 @@ private:
         if(packet.stream_type == StreamType::rgb_preview) {
             return;
         }
-        cam->segment.write_packet(config_, decoded_packet, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger_);
+        cam->segment.write_packet(config_, *record_packet, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger_);
         const bool segment_active = cam->segment.active();
         std::string segment_dir = cam->segment.directory();
         {
@@ -5369,9 +5439,11 @@ private:
         std::string last_camera;
         std::string last_stream;
         uint64_t last_frame_id = 0;
+        MediaPacket packet;
+        MediaPacketReadBuffers read_buffers;
         while(running_ && g_running) {
             try {
-                auto packet = read_media_packet(fd, config_.max_payload_bytes);
+                read_media_packet_into(fd, config_.max_payload_bytes, read_buffers, packet);
                 last_sender = packet.sender_id;
                 last_camera = packet.camera_id;
                 last_stream = stream_type_name(packet.stream_type);
