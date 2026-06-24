@@ -59,6 +59,8 @@ constexpr auto kHotplugScanInterval = std::chrono::seconds(2);
 constexpr auto kHotplugRetryCooldown = std::chrono::seconds(30);
 constexpr auto kHotplugLimitEventInterval = std::chrono::seconds(30);
 constexpr size_t kMediaSlotsPerCamera = 3;
+constexpr size_t kDepthMediaQueuePerSlot = 4;
+constexpr size_t kDepthCompressionQueuePerSlot = 4;
 
 const char *stream_type_name(StreamType stream_type) {
     switch(stream_type) {
@@ -315,13 +317,26 @@ public:
         if(stopping_ || slot_index >= slots_.size()) {
             return PublishResult::rejected_stopping;
         }
-        const bool overwritten = slots_[slot_index].has_value();
-        if(overwritten && reject_if_occupied) {
+        auto &slot = slots_[slot_index];
+        const bool occupied = !slot.jobs.empty();
+        if(occupied && reject_if_occupied) {
             return PublishResult::rejected_occupied;
         }
-        slots_[slot_index] = std::move(job);
+        bool dropped = false;
+        if(job.stream_type == StreamType::depth_raw) {
+            while(slot.jobs.size() >= kDepthMediaQueuePerSlot) {
+                slot.jobs.pop_front();
+                dropped = true;
+            }
+            slot.jobs.push_back(std::move(job));
+        }
+        else {
+            dropped = occupied;
+            slot.jobs.clear();
+            slot.jobs.push_back(std::move(job));
+        }
         cv_.notify_one();
-        return overwritten ? PublishResult::overwritten : PublishResult::queued;
+        return dropped ? PublishResult::overwritten : PublishResult::queued;
     }
 
     std::optional<MediaPacketJob> wait_pop(std::chrono::milliseconds timeout) {
@@ -331,19 +346,10 @@ public:
             return std::nullopt;
         }
 
-        constexpr StreamType priorities[] = {StreamType::rgb, StreamType::rgb_preview, StreamType::depth_raw};
-        for(const auto priority : priorities) {
-            for(size_t offset = 0; offset < slots_.size(); ++offset) {
-                const size_t index = (next_slot_ + offset) % slots_.size();
-                if(slots_[index] && slots_[index]->stream_type == priority) {
-                    auto job = std::move(*slots_[index]);
-                    slots_[index].reset();
-                    next_slot_ = (index + 1) % slots_.size();
-                    return job;
-                }
-            }
+        if(auto job = pop_next_locked([](StreamType stream_type) { return stream_type != StreamType::rgb_preview; })) {
+            return job;
         }
-        return std::nullopt;
+        return pop_next_locked([](StreamType) { return true; });
     }
 
     void stop() {
@@ -352,14 +358,39 @@ public:
         cv_.notify_all();
     }
 
+    bool has_pending_primary() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) {
+            return !slot.jobs.empty() && slot.jobs.front().stream_type != StreamType::rgb_preview;
+        });
+    }
+
 private:
+    struct Slot {
+        std::deque<MediaPacketJob> jobs;
+    };
+
+    template <typename Predicate>
+    std::optional<MediaPacketJob> pop_next_locked(Predicate predicate) {
+        for(size_t offset = 0; offset < slots_.size(); ++offset) {
+            const size_t index = (next_slot_ + offset) % slots_.size();
+            if(!slots_[index].jobs.empty() && predicate(slots_[index].jobs.front().stream_type)) {
+                auto job = std::move(slots_[index].jobs.front());
+                slots_[index].jobs.pop_front();
+                next_slot_ = (index + 1) % slots_.size();
+                return job;
+            }
+        }
+        return std::nullopt;
+    }
+
     bool has_packet_locked() const {
-        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) { return slot.has_value(); });
+        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) { return !slot.jobs.empty(); });
     }
 
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::vector<std::optional<MediaPacketJob>> slots_;
+    std::vector<Slot> slots_;
     size_t next_slot_ = 0;
     bool stopping_ = false;
 };
@@ -376,6 +407,11 @@ struct DepthCompressionJob {
     size_t raw_payload_size = 0;
 };
 
+struct DepthCompressionWorkItem {
+    size_t slot_index = 0;
+    DepthCompressionJob job;
+};
+
 class LatestDepthCompressionQueue {
 public:
     explicit LatestDepthCompressionQueue(size_t slot_count) : slots_(slot_count) {}
@@ -390,13 +426,18 @@ public:
         if(stopping_ || slot_index >= slots_.size()) {
             return false;
         }
-        const bool overwritten = slots_[slot_index].has_value();
-        slots_[slot_index] = std::move(job);
+        auto &slot = slots_[slot_index];
+        bool dropped = false;
+        while(slot.jobs.size() >= kDepthCompressionQueuePerSlot) {
+            slot.jobs.pop_front();
+            dropped = true;
+        }
+        slot.jobs.push_back(std::move(job));
         cv_.notify_one();
-        return overwritten;
+        return dropped;
     }
 
-    std::optional<DepthCompressionJob> wait_pop(std::chrono::milliseconds timeout) {
+    std::optional<DepthCompressionWorkItem> wait_pop(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait_for(lock, timeout, [&] { return stopping_ || has_job_locked(); });
         if(!has_job_locked()) {
@@ -404,14 +445,23 @@ public:
         }
         for(size_t offset = 0; offset < slots_.size(); ++offset) {
             const size_t index = (next_slot_ + offset) % slots_.size();
-            if(slots_[index]) {
-                auto job = std::move(*slots_[index]);
-                slots_[index].reset();
+            if(!slots_[index].jobs.empty() && !slots_[index].in_flight) {
+                auto job = std::move(slots_[index].jobs.front());
+                slots_[index].jobs.pop_front();
+                slots_[index].in_flight = true;
                 next_slot_ = (index + 1) % slots_.size();
-                return job;
+                return DepthCompressionWorkItem{index, std::move(job)};
             }
         }
         return std::nullopt;
+    }
+
+    void complete(size_t slot_index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(slot_index < slots_.size()) {
+            slots_[slot_index].in_flight = false;
+        }
+        cv_.notify_one();
     }
 
     void stop() {
@@ -421,13 +471,18 @@ public:
     }
 
 private:
+    struct Slot {
+        std::deque<DepthCompressionJob> jobs;
+        bool in_flight = false;
+    };
+
     bool has_job_locked() const {
-        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) { return slot.has_value(); });
+        return std::any_of(slots_.begin(), slots_.end(), [](const auto &slot) { return !slot.jobs.empty() && !slot.in_flight; });
     }
 
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::vector<std::optional<DepthCompressionJob>> slots_;
+    std::vector<Slot> slots_;
     size_t next_slot_ = 0;
     bool stopping_ = false;
 };
@@ -3169,30 +3224,46 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
     }
 }
 
-void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMediaQueue &media_queue, Logger &logger) {
+void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, LatestMediaQueue &media_queue, Logger &logger, size_t worker_index) {
     while(g_running) {
-        auto job = depth_queue.wait_pop(std::chrono::milliseconds(100));
-        if(!job || !job->source_camera || !job->output_camera) {
+        auto work = depth_queue.wait_pop(std::chrono::milliseconds(100));
+        if(!work) {
+            continue;
+        }
+        auto &job = work->job;
+        if(!job.source_camera || !job.output_camera) {
+            depth_queue.complete(work->slot_index);
             continue;
         }
 
         try {
             const auto compress_started = std::chrono::steady_clock::now();
             auto compressed_depth =
-                compress_depth_payload(job->meta.codec_or_compression, job->raw_payload, job->raw_payload_size, job->depth_scale,
-                                       job->quantization_step_mm);
-            record_depth_compress_ms(*job->source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
-            job->meta.payload_size = compressed_depth.size();
-            job->meta.uncompressed_size = job->raw_payload_size;
-            auto media_job = make_owned_media_job(*job->output_camera, StreamType::depth_raw, job->meta, std::move(compressed_depth));
-            publish_media_job(media_queue, job->media_slot_index, *job->output_camera, StreamType::depth_raw, std::move(media_job), logger);
-            record_depth_frame_done(*job->output_camera);
+                compress_depth_payload(job.meta.codec_or_compression, job.raw_payload, job.raw_payload_size, job.depth_scale,
+                                       job.quantization_step_mm);
+            record_depth_compress_ms(*job.source_camera, elapsed_ms(compress_started, std::chrono::steady_clock::now()));
+            job.meta.payload_size = compressed_depth.size();
+            job.meta.uncompressed_size = job.raw_payload_size;
+            auto media_job = make_owned_media_job(*job.output_camera, StreamType::depth_raw, job.meta, std::move(compressed_depth));
+            publish_media_job(media_queue, job.media_slot_index, *job.output_camera, StreamType::depth_raw, std::move(media_job), logger);
+            record_depth_frame_done(*job.output_camera);
         }
         catch(const std::exception &e) {
-            set_camera_last_error(*job->source_camera, e.what());
-            logger.warn("depth compression failed camera_id=" + job->source_camera->config.camera_id + " error=" + e.what());
+            set_camera_last_error(*job.source_camera, e.what());
+            logger.warn("depth compression failed worker=" + std::to_string(worker_index)
+                        + " camera_id=" + job.source_camera->config.camera_id + " error=" + e.what());
         }
+        depth_queue.complete(work->slot_index);
     }
+}
+
+size_t depth_compression_worker_count(size_t camera_count) {
+    if(camera_count <= 1) {
+        return 1;
+    }
+    const unsigned int hardware_threads = std::thread::hardware_concurrency();
+    const size_t hardware_limit = hardware_threads == 0 ? camera_count : static_cast<size_t>(hardware_threads);
+    return std::max<size_t>(1, std::min(camera_count, hardware_limit));
 }
 
 std::mutex g_encoder_create_mutex;
@@ -3404,6 +3475,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                     }
                 }
 
+                const bool web_preview_can_queue = web_preview_due && !media_queue.has_pending_primary();
                 if(camera.encoder && camera.encoder->ok()) {
                     try {
                         const auto input_format = encoder_input_format_for(camera);
@@ -3481,7 +3553,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t s
                                     mark_rgb_encoded_timing_queued(camera, timing);
                                 }
                             }
-                            if(web_preview_due && camera.web_preview_encoder && camera.web_preview_encoder->ok()) {
+                            if(web_preview_can_queue && camera.web_preview_encoder && camera.web_preview_encoder->ok()) {
                                 const auto preview_input_format = web_preview_encoder_input_format_for(camera);
                                 if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
                                     const auto decode_started = std::chrono::steady_clock::now();
@@ -3904,7 +3976,13 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
     }
 
     std::thread media_thread([&] { media_sender_loop(media_queue, transport, logger, transport_mutex); });
-    std::thread depth_compression_thread([&] { depth_compression_loop(depth_compression_queue, media_queue, logger); });
+    const size_t depth_worker_count = depth_compression_worker_count(cameras.size());
+    logger.info("depth compression workers=" + std::to_string(depth_worker_count));
+    std::vector<std::thread> depth_compression_threads;
+    depth_compression_threads.reserve(depth_worker_count);
+    for(size_t worker = 0; worker < depth_worker_count; ++worker) {
+        depth_compression_threads.emplace_back([&, worker] { depth_compression_loop(depth_compression_queue, media_queue, logger, worker); });
+    }
     std::vector<std::thread> camera_threads;
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
@@ -3996,8 +4074,10 @@ void run_sender(AppConfig config, const Args &args, Sender &transport, Logger &l
             thread.join();
         }
     }
-    if(depth_compression_thread.joinable()) {
-        depth_compression_thread.join();
+    for(auto &thread : depth_compression_threads) {
+        if(thread.joinable()) {
+            thread.join();
+        }
     }
     if(media_thread.joinable()) {
         media_thread.join();
