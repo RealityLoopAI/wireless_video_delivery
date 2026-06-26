@@ -71,6 +71,7 @@ constexpr uint64_t kPreviewDecoderIdleStopUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kMainPreviewRequestKeepaliveUs = 15ull * 1000ull * 1000ull;
 constexpr uint64_t kMainPreviewDecoderIdleStopUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kWebRgbPreviewControlIntervalUs = 500ull * 1000ull;
+constexpr uint64_t kWebRgbPreviewKeyframeIntervalUs = 1ull * 1000ull * 1000ull;
 constexpr int kWebRgbPreviewControlLeaseMs = 2500;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
@@ -3973,6 +3974,7 @@ struct CameraState {
     std::unique_ptr<RgbPreviewDecoder> rgb_decoder;
     uint64_t rgb_preview_requested_until_us = 0;
     uint64_t last_web_rgb_preview_control_us = 0;
+    uint64_t last_web_rgb_preview_keyframe_us = 0;
     uint64_t last_rgb_preview_packet_us = 0;
     uint64_t rgb_stream_requested_until_us = 0;
     H264StreamBuffer rgb_stream;
@@ -4389,6 +4391,17 @@ public:
             return std::nullopt;
         }
         cam.last_web_rgb_preview_control_us = now;
+        return SenderControlTarget{cam.sender_id, cam.camera_id, cam.status_endpoint};
+    }
+
+    std::optional<SenderControlTarget> maybe_web_rgb_preview_keyframe_target_locked(CameraState &cam, uint64_t now) {
+        if(cam.status_endpoint.empty()) {
+            return std::nullopt;
+        }
+        if(cam.last_web_rgb_preview_keyframe_us != 0 && now < cam.last_web_rgb_preview_keyframe_us + kWebRgbPreviewKeyframeIntervalUs) {
+            return std::nullopt;
+        }
+        cam.last_web_rgb_preview_keyframe_us = now;
         return SenderControlTarget{cam.sender_id, cam.camera_id, cam.status_endpoint};
     }
 
@@ -4902,25 +4915,36 @@ public:
     }
 
     std::optional<std::vector<uint8_t>> rgb_preview(const std::string &sender_id, const std::string &camera_id) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(!config_.preview_enabled) {
-            return std::nullopt;
+        std::optional<SenderControlTarget> keyframe_target;
+        std::optional<std::vector<uint8_t>> jpeg;
+        const auto request_us = now_us();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!config_.preview_enabled) {
+                return std::nullopt;
+            }
+            refresh_camera_liveness_locked(request_us);
+            const auto key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end() || !it->second->online) {
+                return std::nullopt;
+            }
+            if(!kEnableRgbThumbnailPreview) {
+                return std::nullopt;
+            }
+            auto &cam = *it->second;
+            cam.rgb_preview_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            if(!is_recent_us(request_us, cam.rgb_preview_us, kPreviewFreshUs) || !cam.rgb_decoder) {
+                keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(cam, request_us);
+            }
+            if(is_recent_us(request_us, cam.rgb_preview_us, kPreviewFreshUs) && cam.rgb_decoder) {
+                jpeg = cam.rgb_decoder->latest_jpeg();
+            }
         }
-        const auto now = now_us();
-        refresh_camera_liveness_locked(now);
-        const auto key = camera_key(sender_id, camera_id);
-        auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online) {
-            return std::nullopt;
+        if(keyframe_target) {
+            send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_jpeg_preview", request_us);
         }
-        if(!kEnableRgbThumbnailPreview) {
-            return std::nullopt;
-        }
-        it->second->rgb_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
-        if(!is_recent_us(now, it->second->rgb_preview_us, kPreviewFreshUs) || !it->second->rgb_decoder) {
-            return std::nullopt;
-        }
-        return it->second->rgb_decoder->latest_jpeg();
+        return jpeg;
     }
 
     std::string set_main_preview_target(const std::string &sender_id, const std::string &camera_id) {
@@ -4930,66 +4954,88 @@ public:
         if(sender_id.empty() || camera_id.empty()) {
             return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto key = camera_key(sender_id, camera_id);
-        auto it = cameras_.find(key);
-        if(it == cameras_.end()) {
-            return "{\"ok\":false,\"error\":\"camera not found\"}";
-        }
-        if(main_preview_key_ != key) {
-            for(auto &item : cameras_) {
-                if(item.first != key) {
-                    cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
-                    item.second->main_rgb_preview_requested_until_us = 0;
-                    item.second->main_rgb_preview_us = 0;
-                    item.second->main_rgb_preview_width = 0;
-                    item.second->main_rgb_preview_height = 0;
+        std::optional<SenderControlTarget> keyframe_target;
+        const auto request_us = now_us();
+        std::string selected_key;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end()) {
+                return "{\"ok\":false,\"error\":\"camera not found\"}";
+            }
+            const bool target_changed = main_preview_key_ != key;
+            if(target_changed) {
+                for(auto &item : cameras_) {
+                    if(item.first != key) {
+                        cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
+                        item.second->main_rgb_preview_requested_until_us = 0;
+                        item.second->main_rgb_preview_us = 0;
+                        item.second->main_rgb_preview_width = 0;
+                        item.second->main_rgb_preview_height = 0;
+                    }
                 }
             }
+            main_preview_key_ = key;
+            it->second->main_rgb_preview_requested_until_us = request_us + kMainPreviewRequestKeepaliveUs;
+            if(target_changed || !is_recent_us(request_us, it->second->main_rgb_preview_us, kPreviewFreshUs) || !it->second->main_rgb_decoder) {
+                keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
+            }
+            selected_key = main_preview_key_;
         }
-        main_preview_key_ = key;
-        it->second->main_rgb_preview_requested_until_us = now_us() + kMainPreviewRequestKeepaliveUs;
+        if(keyframe_target) {
+            send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_main_target", request_us);
+        }
         std::ostringstream out;
-        out << "{\"ok\":true,\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\"}";
+        out << "{\"ok\":true,\"main_preview_camera_key\":\"" << json_escape(selected_key) << "\"}";
         return out.str();
     }
 
     std::optional<std::vector<uint8_t>> main_rgb_preview(const std::string &sender_id, const std::string &camera_id) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(!config_.preview_enabled) {
-            return std::nullopt;
-        }
-        const auto now = now_us();
-        refresh_camera_liveness_locked(now);
-        const auto key = camera_key(sender_id, camera_id);
-        auto it = cameras_.find(key);
-        if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
-            return std::nullopt;
-        }
-        if(main_preview_key_.empty()) {
-            main_preview_key_ = key;
-        }
-        auto &cam = *it->second;
-        if(key == main_preview_key_) {
-            cam.main_rgb_preview_requested_until_us = now + kMainPreviewRequestKeepaliveUs;
-        }
-        if(!kEnableJpegMainPreview) {
-            return std::nullopt;
-        }
-        if(key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
-            const auto jpeg = cam.main_rgb_decoder->latest_jpeg();
-            if(jpeg) {
-                return jpeg;
+        std::optional<SenderControlTarget> keyframe_target;
+        std::optional<std::vector<uint8_t>> jpeg;
+        const auto request_us = now_us();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!config_.preview_enabled) {
+                return std::nullopt;
+            }
+            refresh_camera_liveness_locked(request_us);
+            const auto key = camera_key(sender_id, camera_id);
+            auto it = cameras_.find(key);
+            if(it == cameras_.end() || !it->second->online || !is_recent_us(request_us, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+                return std::nullopt;
+            }
+            if(main_preview_key_.empty()) {
+                main_preview_key_ = key;
+            }
+            auto &cam = *it->second;
+            if(key == main_preview_key_) {
+                cam.main_rgb_preview_requested_until_us = request_us + kMainPreviewRequestKeepaliveUs;
+                if(!is_recent_us(request_us, cam.main_rgb_preview_us, kPreviewFreshUs) || !cam.main_rgb_decoder) {
+                    keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(cam, request_us);
+                }
+            }
+            if(!kEnableJpegMainPreview) {
+                return std::nullopt;
+            }
+            if(key == main_preview_key_ && is_recent_us(request_us, cam.main_rgb_preview_us, kPreviewFreshUs) && cam.main_rgb_decoder) {
+                jpeg = cam.main_rgb_decoder->latest_jpeg();
+            }
+            if(!jpeg && is_recent_us(request_us, cam.rgb_preview_us, kPreviewFreshUs) && cam.rgb_decoder) {
+                jpeg = cam.rgb_decoder->latest_jpeg();
             }
         }
-        if(is_recent_us(now, cam.rgb_preview_us, kPreviewFreshUs) && cam.rgb_decoder) {
-            return cam.rgb_decoder->latest_jpeg();
+        if(keyframe_target) {
+            send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_main_preview", request_us);
         }
-        return std::nullopt;
+        return jpeg;
     }
 
     bool stream_rgb_h264_preview(int fd, const std::string &sender_id, const std::string &camera_id) {
         std::shared_ptr<CameraState> cam;
+        std::optional<SenderControlTarget> keyframe_target;
+        const auto request_us = now_us();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if(!config_.preview_enabled) {
@@ -5003,11 +5049,10 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
-            const auto now = now_us();
-            refresh_camera_liveness_locked(now);
+            refresh_camera_liveness_locked(request_us);
             const auto key = camera_key(sender_id, camera_id);
             auto it = cameras_.find(key);
-            if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+            if(it == cameras_.end() || !it->second->online || !is_recent_us(request_us, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
                 const std::string body = "{\"ok\":false,\"error\":\"rgb h264 stream not found\"}";
                 std::ostringstream response;
                 response << "HTTP/1.1 404 Not Found\r\n";
@@ -5018,8 +5063,12 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
-            it->second->rgb_stream_requested_until_us = now + kPreviewRequestKeepaliveUs;
+            it->second->rgb_stream_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
             cam = it->second;
+        }
+        if(keyframe_target) {
+            send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_h264_preview", request_us);
         }
 
         H264StreamBuffer *stream = &cam->rgb_stream;
@@ -5111,6 +5160,8 @@ public:
 
     bool stream_rgb_h264_preview_frames(int fd, const std::string &sender_id, const std::string &camera_id) {
         std::shared_ptr<CameraState> cam;
+        std::optional<SenderControlTarget> keyframe_target;
+        const auto request_us = now_us();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if(!config_.preview_enabled) {
@@ -5124,11 +5175,10 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
-            const auto now = now_us();
-            refresh_camera_liveness_locked(now);
+            refresh_camera_liveness_locked(request_us);
             const auto key = camera_key(sender_id, camera_id);
             auto it = cameras_.find(key);
-            if(it == cameras_.end() || !it->second->online || !is_recent_us(now, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
+            if(it == cameras_.end() || !it->second->online || !is_recent_us(request_us, it->second->last_media_us, kCameraOnlineTimeoutUs)) {
                 const std::string body = "{\"ok\":false,\"error\":\"rgb h264 stream not found\"}";
                 std::ostringstream response;
                 response << "HTTP/1.1 404 Not Found\r\n";
@@ -5139,8 +5189,12 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
-            it->second->rgb_stream_requested_until_us = now + kPreviewRequestKeepaliveUs;
+            it->second->rgb_stream_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
             cam = it->second;
+        }
+        if(keyframe_target) {
+            send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_h264_frames", request_us);
         }
 
         H264StreamBuffer *stream = &cam->rgb_stream;

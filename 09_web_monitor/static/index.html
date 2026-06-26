@@ -657,6 +657,7 @@
         this.decoder = null;
         this.configured = false;
         this.stopped = false;
+        this.firstFrameTimer = null;
         this.canvas = root.querySelector('canvas[data-rgb-video]');
         if (!this.canvas) {
           this.canvas = document.createElement('canvas');
@@ -679,6 +680,11 @@
           return;
         }
         setPlaceholder(this.root, 'rgb', '等待 RGB 视频');
+        this.firstFrameTimer = setTimeout(() => {
+          if (!this.stopped && this.canvas.style.display === 'none') {
+            this.markFailed('RGB 视频启动超时');
+          }
+        }, 3000);
         try {
           const res = await fetch(h264PreviewUrl(this.camera), {signal: this.abort.signal, cache: 'no-store'});
           if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -691,12 +697,22 @@
         }
         catch (_) {
           if (!this.stopped) {
-            this.root.dataset.rgbH264Failed = '1';
-            this.root.dataset.rgbH264FailedKey = this.camera.camera_key;
-            setPlaceholder(this.root, 'rgb', 'RGB 视频中断');
-            this.canvas.style.display = 'none';
+            this.markFailed('RGB 视频中断');
           }
         }
+      }
+      markFailed(message) {
+        this.root.dataset.rgbH264Failed = '1';
+        this.root.dataset.rgbH264FailedKey = this.camera.camera_key;
+        setPlaceholder(this.root, 'rgb', message || 'RGB 视频中断');
+        this.canvas.style.display = 'none';
+        if (this.decoder) {
+          try { this.decoder.close(); } catch (_) {}
+          this.decoder = null;
+        }
+        this.configured = false;
+        this.stopped = true;
+        this.abort.abort();
       }
       append(chunk) {
         const merged = new Uint8Array(this.buffer.length + chunk.length);
@@ -730,7 +746,7 @@
         this.decoder = new VideoDecoder({
           output: (frame) => this.draw(frame),
           error: () => {
-            if (!this.stopped) setPlaceholder(this.root, 'rgb', 'RGB 解码错误');
+            if (!this.stopped) this.markFailed('RGB 解码错误');
           }
         });
         const baseConfig = {
@@ -772,6 +788,10 @@
         }
         this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
         frame.close();
+        if (this.firstFrameTimer) {
+          clearTimeout(this.firstFrameTimer);
+          this.firstFrameTimer = null;
+        }
         this.root.dataset.rgbH264Failed = '0';
         this.root.dataset.rgbH264FailedKey = '';
         this.canvas.style.display = 'block';
@@ -780,6 +800,10 @@
       stop() {
         this.stopped = true;
         this.abort.abort();
+        if (this.firstFrameTimer) {
+          clearTimeout(this.firstFrameTimer);
+          this.firstFrameTimer = null;
+        }
         if (this.decoder) {
           try { this.decoder.close(); } catch (_) {}
         }
@@ -914,13 +938,18 @@
       const age = Number(ageMs);
       return Number.isFinite(age) && age >= 0 && age <= PREVIEW_STALE_MS;
     }
+    function rgbH264Fresh(c) {
+      return c.rgb_h264_preview_available && previewFresh(c.rgb_h264_preview_age_ms);
+    }
+    function rgbJpegFresh(c, high = false) {
+      const jpegFresh = (c.rgb_jpeg_preview_available || c.rgb_preview_available) && previewFresh(c.rgb_preview_age_ms);
+      const mainFresh = c.main_rgb_preview_available && previewFresh(c.main_rgb_preview_age_ms);
+      return high ? (mainFresh || jpegFresh) : jpegFresh;
+    }
     function previewAvailable(c, kind, high = false) {
       if (!receiverPreviewEnabled || !isLive(c)) return false;
       if (kind === 'rgb') {
-        const h264Fresh = c.rgb_h264_preview_available && previewFresh(c.rgb_h264_preview_age_ms);
-        const jpegFresh = (c.rgb_jpeg_preview_available || c.rgb_preview_available) && previewFresh(c.rgb_preview_age_ms);
-        const mainFresh = c.main_rgb_preview_available && previewFresh(c.main_rgb_preview_age_ms);
-        return high ? (mainFresh || h264Fresh || jpegFresh || c.rgb_packets > 0) : (h264Fresh || jpegFresh || c.rgb_packets > 0);
+        return high ? (rgbJpegFresh(c, true) || rgbH264Fresh(c) || c.rgb_packets > 0) : (rgbH264Fresh(c) || rgbJpegFresh(c) || c.rgb_packets > 0);
       }
       return (c.depth_preview_available && previewFresh(c.depth_preview_age_ms)) || c.depth_packets > 0;
     }
@@ -1040,7 +1069,8 @@
         clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
         return;
       }
-      if (kind === 'rgb' && rgbH264PreviewSupported() &&
+      const preferH264 = kind === 'rgb' && rgbH264Fresh(c) && !rgbJpegFresh(c, high);
+      if (preferH264 && rgbH264PreviewSupported() &&
           !(root.dataset.rgbH264Failed === '1' && root.dataset.rgbH264FailedKey === c.camera_key)) {
         root.dataset[`${kind}Loading`] = '0';
         ensureRgbVideoPreview(root, c, high);
