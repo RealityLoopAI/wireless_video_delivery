@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cctype>
 #include <csetjmp>
 #include <cstdio>
 #include <csignal>
@@ -31,6 +32,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <json/json.h>
@@ -3359,6 +3361,47 @@ std::string ob_error_text(const ob::Error &error) {
     return message ? message : "Orbbec SDK error";
 }
 
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool is_frame_sync_unsupported_error(const std::string &error) {
+    const auto lower = lower_copy(error);
+    return lower.find("frame sync") != std::string::npos
+           && (lower.find("not support") != std::string::npos || lower.find("does not support") != std::string::npos
+               || lower.find("unsupported") != std::string::npos);
+}
+
+OBFrameAggregateOutputMode frame_aggregate_mode_from_config(const std::string &mode) {
+    if(mode == "full_frame_require") {
+        return OB_FRAME_AGGREGATE_OUTPUT_FULL_FRAME_REQUIRE;
+    }
+    if(mode == "color_frame_require") {
+        return OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE;
+    }
+    if(mode == "any_situation") {
+        return OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION;
+    }
+    return OB_FRAME_AGGREGATE_OUTPUT_DISABLE;
+}
+
+const char *frame_aggregate_mode_name(OBFrameAggregateOutputMode mode) {
+    switch(mode) {
+    case OB_FRAME_AGGREGATE_OUTPUT_FULL_FRAME_REQUIRE:
+        return "full_frame_require";
+    case OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE:
+        return "color_frame_require";
+    case OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION:
+        return "any_situation";
+    case OB_FRAME_AGGREGATE_OUTPUT_DISABLE:
+        return "disable";
+    }
+    return "unknown";
+}
+
 std::chrono::milliseconds reconnect_delay(uint32_t attempts) {
     const auto max_delay = static_cast<uint32_t>(std::max(1, camera_reconnect_max_delay_seconds()));
     return std::chrono::seconds(std::min<uint32_t>(max_delay, std::max<uint32_t>(1, attempts)));
@@ -3412,20 +3455,44 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const std::string device_uid = device_info->uid() ? device_info->uid() : "";
     const std::string device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
 
+    auto start_pipeline = [&](OBFrameAggregateOutputMode aggregate_mode) {
+        auto candidate_pipeline = std::make_unique<ob::Pipeline>(device);
+        auto candidate_config = std::make_shared<ob::Config>();
+        auto candidate_color_profile =
+            select_profile(*candidate_pipeline, OB_SENSOR_COLOR, runtime.config.rgb_profile, OB_FORMAT_MJPG, logger);
+        auto candidate_depth_profile =
+            select_profile(*candidate_pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
+        candidate_config->enableStream(candidate_color_profile);
+        candidate_config->enableStream(candidate_depth_profile);
+        if(aggregate_mode != OB_FRAME_AGGREGATE_OUTPUT_DISABLE) {
+            candidate_config->setFrameAggregateOutputMode(aggregate_mode);
+        }
+        candidate_pipeline->start(candidate_config);
+        return std::make_tuple(std::move(candidate_pipeline), std::move(candidate_color_profile), std::move(candidate_depth_profile));
+    };
+
+    std::unique_ptr<ob::Pipeline> pipeline;
+    std::shared_ptr<ob::VideoStreamProfile> color_profile;
+    std::shared_ptr<ob::VideoStreamProfile> depth_profile;
+    OBFrameAggregateOutputMode aggregate_mode = frame_aggregate_mode_from_config(runtime.config.frame_aggregate_mode);
+    try {
+        std::tie(pipeline, color_profile, depth_profile) = start_pipeline(aggregate_mode);
+    }
+    catch(const ob::Error &e) {
+        const auto error = ob_error_text(e);
+        if(aggregate_mode == OB_FRAME_AGGREGATE_OUTPUT_DISABLE || !is_frame_sync_unsupported_error(error)) {
+            throw;
+        }
+        aggregate_mode = OB_FRAME_AGGREGATE_OUTPUT_DISABLE;
+        logger.warn("camera frame aggregate unsupported, retrying with aggregate disabled camera_id=" + runtime.config.camera_id
+                    + " error=" + error);
+        std::tie(pipeline, color_profile, depth_profile) = start_pipeline(aggregate_mode);
+    }
+
     CameraRuntime control_runtime;
     control_runtime.config = runtime.config;
     control_runtime.device = device;
     apply_color_controls(control_runtime, logger);
-
-    auto pipeline = std::make_unique<ob::Pipeline>(device);
-
-    auto stream_config = std::make_shared<ob::Config>();
-    auto color_profile = select_profile(*pipeline, OB_SENSOR_COLOR, runtime.config.rgb_profile, OB_FORMAT_MJPG, logger);
-    auto depth_profile = select_profile(*pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
-    stream_config->enableStream(color_profile);
-    stream_config->enableStream(depth_profile);
-    stream_config->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION);
-    pipeline->start(stream_config);
 
     const auto color_width = color_profile->width();
     const auto color_height = color_profile->height();
@@ -3490,7 +3557,8 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         << " device_serial=" << device_serial
         << " device_uid=" << device_uid
         << " paired_rgb_serial=" << paired_rgb_serial_for_depth_uid(device_uid)
-        << " connection=" << device_connection_type;
+        << " connection=" << device_connection_type
+        << " aggregate_mode=" << frame_aggregate_mode_name(aggregate_mode);
     logger.info(oss.str());
 }
 

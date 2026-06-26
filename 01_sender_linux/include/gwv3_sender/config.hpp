@@ -42,6 +42,7 @@ struct CameraConfig {
     std::string uid;
     int device_index = 0;
     bool validate_rgb_mjpeg = false;
+    std::string frame_aggregate_mode = "disable";
     VideoProfileConfig rgb_profile;
     VideoProfileConfig depth_profile;
     RgbEncodingConfig rgb_encoding;

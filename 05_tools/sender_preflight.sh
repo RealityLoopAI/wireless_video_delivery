@@ -200,6 +200,7 @@ values = {
     "DEPTH_FPS": depth.get("fps", ""),
     "DEPTH_FORMAT": depth.get("format", ""),
     "DEPTH_COMPRESSION": transport.get("compression", ""),
+    "FRAME_AGGREGATE_MODE": cam.get("frame_aggregate_mode", "disable"),
     "COLOR_CONTROLS": " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in color_controls.items()) or "未配置",
     "PREVIEW_ENABLED": preview.get("enabled", ""),
     "PREVIEW_FPS": preview.get("fps", ""),
@@ -226,7 +227,7 @@ for item in cams:
         f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in controls_item.items()
     ) or "未配置"
     camera_summaries.append(
-        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} color_controls={controls}".format(
+        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} aggregate={aggregate} color_controls={controls}".format(
             camera_id=item.get("camera_id", ""),
             serial=item.get("serial_number", "") or "未指定",
             uid=item.get("uid", "") or "未指定",
@@ -241,6 +242,7 @@ for item in cams:
             depth_fps=depth_item.get("fps", ""),
             depth_fmt=depth_item.get("format", ""),
             compression=depth_transport_item.get("compression", ""),
+            aggregate=item.get("frame_aggregate_mode", "disable"),
             controls=controls_summary,
         )
     )
@@ -372,6 +374,7 @@ echo "  cameras: $CAMERA_SUMMARY"
 echo "  depth_remap: swap_depth_between_cameras=${SWAP_DEPTH_BETWEEN_CAMERAS:-false}"
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
+echo "  frame_aggregate_mode: ${FRAME_AGGREGATE_MODE:-disable}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
 echo "  media_udp: enabled=${MEDIA_UDP_ENABLED:-false} rgb=${MEDIA_UDP_RGB_ENABLED:-false} depth=${MEDIA_UDP_DEPTH_ENABLED:-false} port=${MEDIA_UDP_PORT:-未指定} mtu=${MEDIA_UDP_MTU:-未指定}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"

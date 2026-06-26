@@ -403,6 +403,7 @@ AppConfig load_config(const std::string &path) {
         camera.uid = optional_string(item, "uid", "");
         camera.device_index = optional_int(item, "device_index", camera.device_index);
         camera.validate_rgb_mjpeg = optional_bool(item, "validate_rgb_mjpeg", camera.validate_rgb_mjpeg);
+        camera.frame_aggregate_mode = optional_string(item, "frame_aggregate_mode", camera.frame_aggregate_mode);
         camera.rgb_profile = load_profile(item["rgb_profile"]);
         camera.depth_profile = load_profile(item["depth_profile"]);
 
@@ -512,6 +513,10 @@ void validate_config(const AppConfig &config) {
         }
         if(config.cameras.size() > 1 && camera.serial_number.empty() && camera.uid.empty()) {
             throw std::runtime_error("multi-camera configs require serial_number or uid for every camera: " + camera.camera_id);
+        }
+        if(camera.frame_aggregate_mode != "disable" && camera.frame_aggregate_mode != "any_situation"
+           && camera.frame_aggregate_mode != "full_frame_require" && camera.frame_aggregate_mode != "color_frame_require") {
+            throw std::runtime_error("frame_aggregate_mode must be disable, any_situation, full_frame_require, or color_frame_require");
         }
         if(!camera.serial_number.empty() && !serial_numbers.insert(camera.serial_number).second) {
             throw std::runtime_error("duplicate camera serial_number is not allowed: " + camera.serial_number);

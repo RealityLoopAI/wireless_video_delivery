@@ -9,6 +9,7 @@ PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 STDOUT_LOG="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
+source "$ROOT_DIR/05_tools/orbbec_runtime_guard.sh"
 
 fail() {
   echo "发送端启动失败：$1" >&2
@@ -20,6 +21,7 @@ prepare_usb_for_orbbec() {
 }
 
 prepare_usb_for_orbbec
+gemini_sender_orbbec_prepare_runtime
 gemini_sender_wifi_apply_repo_defaults
 GEMINI_SENDER_REQUIRE_USB=0 "$ROOT_DIR/05_tools/sender_preflight.sh" "$CONFIG" "后台启动" "no-local-preview"
 
