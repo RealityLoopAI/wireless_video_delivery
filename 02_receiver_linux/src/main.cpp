@@ -64,6 +64,8 @@ constexpr bool kEnableJpegMainPreview = true;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 25;
+constexpr size_t kRgbPreviewDecoderMaxQueuedPackets = 8;
+constexpr size_t kRgbPreviewDecoderMaxQueuedBytes = 4ull * 1024ull * 1024ull;
 constexpr uint64_t kCameraOnlineTimeoutUs = 5ull * 1000ull * 1000ull;
 constexpr uint64_t kOfflineCameraPurgeUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kPreviewFreshUs = 5ull * 1000ull * 1000ull;
@@ -1297,6 +1299,7 @@ public:
         pid_ = pid;
         running_ = true;
         reader_ = std::thread([this] { read_loop(); });
+        writer_ = std::thread([this] { write_loop(); });
         logger.info("rgb preview decoder started: " + key_);
         return true;
     }
@@ -1319,6 +1322,12 @@ public:
             stdout_fd_ = -1;
             pid_ = -1;
         }
+        {
+            std::lock_guard<std::mutex> lock(write_queue_mutex_);
+            write_queue_.clear();
+            write_queue_bytes_ = 0;
+        }
+        write_queue_cv_.notify_all();
         if(stdin_fd >= 0) {
             close(stdin_fd);
         }
@@ -1327,6 +1336,9 @@ public:
         }
         if(stdout_fd >= 0) {
             close(stdout_fd);
+        }
+        if(writer_.joinable()) {
+            writer_.join();
         }
         if(reader_.joinable()) {
             reader_.join();
@@ -1349,6 +1361,33 @@ public:
         if(payload.empty()) {
             return true;
         }
+        if(!active()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(write_queue_mutex_);
+            if(!running_) {
+                return false;
+            }
+            while(!write_queue_.empty()
+                  && (write_queue_.size() >= kRgbPreviewDecoderMaxQueuedPackets
+                      || write_queue_bytes_ + payload.size() > kRgbPreviewDecoderMaxQueuedBytes)) {
+                write_queue_bytes_ -= write_queue_.front().size();
+                write_queue_.pop_front();
+            }
+            if(payload.size() > kRgbPreviewDecoderMaxQueuedBytes) {
+                write_queue_.clear();
+                write_queue_bytes_ = 0;
+                return false;
+            }
+            write_queue_bytes_ += payload.size();
+            write_queue_.push_back(payload);
+        }
+        write_queue_cv_.notify_one();
+        return true;
+    }
+
+    bool write_payload_to_process(const std::vector<uint8_t> &payload) {
         std::lock_guard<std::mutex> lock(process_mutex_);
         if(!running_ || stdin_fd_ < 0) {
             return false;
@@ -1444,6 +1483,35 @@ private:
         }
     }
 
+    void write_loop() {
+        while(true) {
+            std::vector<uint8_t> payload;
+            {
+                std::unique_lock<std::mutex> lock(write_queue_mutex_);
+                write_queue_cv_.wait(lock, [&] { return !running_ || !write_queue_.empty(); });
+                if(write_queue_.empty()) {
+                    if(!running_) {
+                        return;
+                    }
+                    continue;
+                }
+                payload = std::move(write_queue_.front());
+                write_queue_bytes_ -= payload.size();
+                write_queue_.pop_front();
+            }
+            if(!write_payload_to_process(payload)) {
+                {
+                    std::lock_guard<std::mutex> lock(write_queue_mutex_);
+                    write_queue_.clear();
+                    write_queue_bytes_ = 0;
+                    running_ = false;
+                }
+                write_queue_cv_.notify_all();
+                return;
+            }
+        }
+    }
+
     void consume_jpegs(std::vector<uint8_t> &buffer) {
         while(true) {
             const auto start = find_marker(buffer, 0xff, 0xd8, 0);
@@ -1480,6 +1548,11 @@ private:
     int stdin_fd_ = -1;
     int stdout_fd_ = -1;
     std::thread reader_;
+    std::thread writer_;
+    mutable std::mutex write_queue_mutex_;
+    std::condition_variable write_queue_cv_;
+    std::deque<std::vector<uint8_t>> write_queue_;
+    size_t write_queue_bytes_ = 0;
     std::vector<uint8_t> latest_jpeg_;
     uint64_t latest_frame_us_ = 0;
 };
