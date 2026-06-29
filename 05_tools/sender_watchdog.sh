@@ -60,18 +60,6 @@ log_watchdog() {
   printf '%s [WATCHDOG] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
 }
 
-apply_v4l2_controls_async() {
-  (
-    for _ in {1..12}; do
-      sleep 0.5
-      if "$ROOT_DIR/05_tools/apply_sender_v4l2_controls.sh" "$CONFIG"; then
-        exit 0
-      fi
-    done
-    log_watchdog "v4l2 controls were not applied after retries"
-  ) >> "$LOG_FILE" 2>&1 &
-}
-
 cleanup() {
   stopping=1
   if [[ -n "${monitor_pid:-}" ]] && kill -0 "$monitor_pid" 2>/dev/null; then
@@ -234,7 +222,6 @@ while [[ "$stopping" -eq 0 ]]; do
   child_pid="$!"
   echo "$child_pid" > "$CHILD_PID_FILE"
   log_watchdog "sender child started pid=$child_pid"
-  apply_v4l2_controls_async
   monitor_child_health "$child_pid" "$child_log_offset" &
   monitor_pid="$!"
 

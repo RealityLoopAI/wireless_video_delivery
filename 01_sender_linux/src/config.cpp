@@ -270,6 +270,12 @@ ColorControlsConfig load_color_controls(const Json::Value &node) {
     controls.max_exposure = optional_int_value(node, "max_exposure");
     controls.max_gain = optional_int_value(node, "max_gain");
     controls.power_line_frequency = optional_int_value(node, "power_line_frequency");
+    controls.auto_white_balance = optional_bool_value(node, "auto_white_balance");
+    controls.white_balance = optional_int_value(node, "white_balance");
+    controls.brightness = optional_int_value(node, "brightness");
+    controls.contrast = optional_int_value(node, "contrast");
+    controls.saturation = optional_int_value(node, "saturation");
+    controls.gamma = optional_int_value(node, "gamma");
     return controls;
 }
 
@@ -593,6 +599,11 @@ void validate_config(const AppConfig &config) {
         validate_nonnegative(camera.color_controls.max_exposure, "color_controls.max_exposure");
         validate_nonnegative(camera.color_controls.max_gain, "color_controls.max_gain");
         validate_nonnegative(camera.color_controls.power_line_frequency, "color_controls.power_line_frequency");
+        validate_nonnegative(camera.color_controls.white_balance, "color_controls.white_balance");
+        validate_nonnegative(camera.color_controls.brightness, "color_controls.brightness");
+        validate_nonnegative(camera.color_controls.contrast, "color_controls.contrast");
+        validate_nonnegative(camera.color_controls.saturation, "color_controls.saturation");
+        validate_nonnegative(camera.color_controls.gamma, "color_controls.gamma");
     }
 }
 

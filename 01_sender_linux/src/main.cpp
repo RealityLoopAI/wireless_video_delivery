@@ -713,7 +713,8 @@ void set_int_property_if_configured(CameraRuntime &camera, Logger &logger, const
 void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     const auto &controls = camera.config.color_controls;
     if(!controls.auto_exposure && !controls.exposure && !controls.gain && !controls.auto_exposure_priority && !controls.max_exposure
-       && !controls.max_gain && !controls.power_line_frequency) {
+       && !controls.max_gain && !controls.power_line_frequency && !controls.auto_white_balance && !controls.white_balance
+       && !controls.brightness && !controls.contrast && !controls.saturation && !controls.gamma) {
         return;
     }
 
@@ -728,6 +729,19 @@ void apply_color_controls(CameraRuntime &camera, Logger &logger) {
                                    controls.power_line_frequency);
     set_int_property_if_configured(camera, logger, "exposure", OB_PROP_COLOR_EXPOSURE_INT, controls.exposure);
     set_int_property_if_configured(camera, logger, "gain", OB_PROP_COLOR_GAIN_INT, controls.gain);
+    if(controls.auto_white_balance && !*controls.auto_white_balance) {
+        set_bool_property_if_configured(camera, logger, "auto_white_balance", OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL,
+                                        controls.auto_white_balance);
+    }
+    set_int_property_if_configured(camera, logger, "white_balance", OB_PROP_COLOR_WHITE_BALANCE_INT, controls.white_balance);
+    set_int_property_if_configured(camera, logger, "brightness", OB_PROP_COLOR_BRIGHTNESS_INT, controls.brightness);
+    set_int_property_if_configured(camera, logger, "contrast", OB_PROP_COLOR_CONTRAST_INT, controls.contrast);
+    set_int_property_if_configured(camera, logger, "saturation", OB_PROP_COLOR_SATURATION_INT, controls.saturation);
+    set_int_property_if_configured(camera, logger, "gamma", OB_PROP_COLOR_GAMMA_INT, controls.gamma);
+    if(controls.auto_white_balance && *controls.auto_white_balance) {
+        set_bool_property_if_configured(camera, logger, "auto_white_balance", OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL,
+                                        controls.auto_white_balance);
+    }
     if(controls.auto_exposure && *controls.auto_exposure) {
         set_bool_property_if_configured(camera, logger, "auto_exposure", OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, controls.auto_exposure);
     }

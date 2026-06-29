@@ -14,8 +14,9 @@
    - `exposure=312, gain=80` 时预览灰度均值约 `16-17`。
    - 临时提高到 `exposure=624, gain=120` 后画面亮度变化仍很小。
 
-2. V4L2/UVC 层的 `brightness/gamma` 对实际 RGB 画面有效。
+2. V4L2/UVC 层的 `brightness/gamma` 对实际 RGB 画面有效，可用于快速验证问题方向。
    - 手动执行 `v4l2-ctl -d /dev/video8 --set-ctrl=brightness=40,gamma=400` 后，预览灰度均值提升到约 `84`。
+   - 但 `gamma=400` 暗部提升过多，画面会发灰，不适合作为默认值。
 
 3. Gemini305 需要 sender 链接 Orbbec SDK v2.8.6。
    - `orbbec_depth_probe` 链接 v2.8.6，可识别 Gemini305。
@@ -24,21 +25,22 @@
 
 ## 本次修复
 
-- 新增 `05_tools/apply_sender_v4l2_controls.sh`：
-  - 从 sender 配置中的 `color_controls.brightness/gamma` 读取 V4L2 控制值。
-  - 自动查找 Orbbec/Gemini 的有效 `/dev/video*` 节点。
-  - 仅在节点支持目标 control 时应用，失败不影响 sender 主链路。
+- sender 正式接入 Orbbec SDK color controls：
+  - `auto_white_balance`
+  - `white_balance`
+  - `brightness`
+  - `contrast`
+  - `saturation`
+  - `gamma`
 
-- 修改 `05_tools/sender_watchdog.sh`：
-  - 每次 sender 子进程启动后异步重试应用 V4L2 控制。
-  - watchdog 自动重启后也会重新补齐亮度配置。
+- 已移除 watchdog 启动后 V4L2 补偿脚本，避免绕开 SDK 造成配置来源不清晰。
 
 - 修改 `06_configs/sender_orangepi5pro-d12a4719_gemini305.json`：
   - 保持手动曝光：`auto_exposure=false`
   - 固定 `exposure=312`
   - 固定 `gain=80`
-  - 增加 `brightness=40`
-  - 增加 `gamma=400`
+  - 增加 `brightness=20`
+  - 增加 `gamma=300`
 
 - 修改 `01_sender_linux/CMakeLists.txt`：
   - 默认优先使用 Orbbec SDK v2.8.6。
@@ -57,18 +59,15 @@
   - `rgb_exposure=312`
   - `rgb_gain=80`
 
-- V4L2 控制读回：
-  - `/dev/video8 brightness=40`
-  - `/dev/video8 gamma=400`
+- SDK 控制读回：
+  - `brightness=20`
+  - `gamma=300`
 
-- 接收端主预览抓图：
-  - 尺寸：`640x400`
-  - 灰度均值：`83.3`
-  - 灰度中位数：`77`
-  - p95：`110`
+- 说明：
+  - `brightness=40,gamma=400` 可快速提亮，但画面发灰。
+  - 当前默认回落到 `brightness=20,gamma=300`，优先保持对比度和自然观感。
 
 ## 后续注意
 
 - Gemini305 设备不要使用 v1.10.27 SDK 编译 sender。
-- `brightness/gamma` 当前是 V4L2/UVC 启动补偿项，不是 Orbbec SDK color property。
-- 如果后续更换 Gemini305 的 USB 枚举节点，脚本会自动重新扫描 Orbbec/Gemini video node，不依赖固定 `/dev/video8`。
+- `brightness/gamma` 已接入 Orbbec SDK color property，不再依赖固定 `/dev/video8`。

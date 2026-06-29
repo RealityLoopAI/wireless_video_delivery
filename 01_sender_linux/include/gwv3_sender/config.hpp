@@ -34,6 +34,12 @@ struct ColorControlsConfig {
     std::optional<int> max_exposure;
     std::optional<int> max_gain;
     std::optional<int> power_line_frequency;
+    std::optional<bool> auto_white_balance;
+    std::optional<int> white_balance;
+    std::optional<int> brightness;
+    std::optional<int> contrast;
+    std::optional<int> saturation;
+    std::optional<int> gamma;
 };
 
 struct CameraConfig {
