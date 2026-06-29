@@ -56,6 +56,16 @@ struct ReceiverConfig {
     uint16_t status_port = 50011;
 };
 
+struct ClockSyncConfig {
+    bool enabled = true;
+    std::string receiver_ip;
+    uint16_t port = 50012;
+    int interval_ms = 2000;
+    int timeout_ms = 100;
+    int64_t max_delay_us = 100000;
+    size_t sample_window = 10;
+};
+
 struct TransportConfig {
     bool enabled = true;
     std::string status_protocol = "udp";
@@ -112,6 +122,7 @@ struct AppConfig {
     std::string sender_id;
     std::string sender_version = "3.0.0";
     ReceiverConfig receiver;
+    ClockSyncConfig clock_sync;
     TransportConfig transport;
     MediaUdpConfig media_udp;
     PreviewConfig preview;

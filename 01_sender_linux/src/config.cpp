@@ -315,6 +315,25 @@ AppConfig load_config(const std::string &path) {
     config.receiver.media_port = parse_port(receiver, "media_port", config.receiver.media_port);
     config.receiver.status_port = parse_port(receiver, "status_port", config.receiver.status_port);
 
+    config.clock_sync.receiver_ip = config.receiver.ip;
+    const auto &clock_sync = root["clock_sync"];
+    if(!clock_sync.isNull()) {
+        if(!clock_sync.isObject()) {
+            throw std::runtime_error("invalid object field: clock_sync");
+        }
+        config.clock_sync.enabled = optional_bool(clock_sync, "enabled", config.clock_sync.enabled);
+        config.clock_sync.receiver_ip = optional_string(clock_sync, "receiver_ip", config.clock_sync.receiver_ip);
+        config.clock_sync.port = parse_port(clock_sync, "port", config.clock_sync.port);
+        config.clock_sync.interval_ms = optional_int(clock_sync, "interval_ms", config.clock_sync.interval_ms);
+        config.clock_sync.timeout_ms = optional_int(clock_sync, "timeout_ms", config.clock_sync.timeout_ms);
+        config.clock_sync.max_delay_us = optional_int(clock_sync, "max_delay_us", static_cast<int>(config.clock_sync.max_delay_us));
+        const int sample_window = optional_int(clock_sync, "sample_window", static_cast<int>(config.clock_sync.sample_window));
+        if(sample_window <= 0) {
+            throw std::runtime_error("clock_sync.sample_window must be positive");
+        }
+        config.clock_sync.sample_window = static_cast<size_t>(sample_window);
+    }
+
     const auto &transport = root["transport"];
     if(!transport.isNull()) {
         config.transport.enabled = optional_bool(transport, "enabled", config.transport.enabled);
@@ -440,6 +459,23 @@ void validate_config(const AppConfig &config) {
     if(config.heartbeat_interval_ms <= 0) {
         throw std::runtime_error("heartbeat_interval_ms must be positive");
     }
+    if(config.clock_sync.enabled) {
+        if(config.clock_sync.receiver_ip.empty()) {
+            throw std::runtime_error("clock_sync.receiver_ip must be non-empty when clock_sync is enabled");
+        }
+        if(config.clock_sync.interval_ms <= 0) {
+            throw std::runtime_error("clock_sync.interval_ms must be positive");
+        }
+        if(config.clock_sync.timeout_ms <= 0) {
+            throw std::runtime_error("clock_sync.timeout_ms must be positive");
+        }
+        if(config.clock_sync.max_delay_us <= 0) {
+            throw std::runtime_error("clock_sync.max_delay_us must be positive");
+        }
+        if(config.clock_sync.sample_window == 0) {
+            throw std::runtime_error("clock_sync.sample_window must be positive");
+        }
+    }
     if(config.cameras.empty()) {
         throw std::runtime_error("at least one camera is required");
     }
@@ -481,6 +517,9 @@ void validate_config(const AppConfig &config) {
     }
     if(config.web_rgb_preview.udp_mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.web_rgb_preview.udp_mtu_bytes > 65000) {
         throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be > 32 and <= 65000");
+    }
+    if(config.clock_sync.enabled && config.web_rgb_preview.udp_enabled && config.clock_sync.port == config.web_rgb_preview.udp_port) {
+        throw std::runtime_error("clock_sync.port conflicts with enabled web_rgb_preview.udp_port");
     }
     if(config.recording_buffer.rgb_frames_per_slot <= 0) {
         throw std::runtime_error("recording_buffer.rgb_frames_per_slot must be positive");

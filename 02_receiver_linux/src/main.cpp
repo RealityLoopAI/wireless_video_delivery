@@ -1,4 +1,5 @@
 #include "gwv3_common/protocol.hpp"
+#include "gwv3_receiver/clock_sync_manager.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -267,6 +268,20 @@ std::optional<int> json_int_field(const std::string &json, const std::string &ke
     return std::nullopt;
 }
 
+std::optional<int64_t> json_int64_field(const std::string &json, const std::string &key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*(-?[0-9]+)");
+    std::smatch match;
+    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
+        try {
+            return std::stoll(match[1].str());
+        }
+        catch(const std::exception &) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<uint64_t> json_uint64_field(const std::string &json, const std::string &key) {
     const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
     std::smatch match;
@@ -378,6 +393,14 @@ std::optional<double> json_double_in_object(const std::string &json, const std::
         return std::nullopt;
     }
     return json_double_field(*object, field_key);
+}
+
+std::optional<bool> json_bool_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
+    const auto object = json_object_field(json, object_key);
+    if(!object) {
+        return std::nullopt;
+    }
+    return json_bool_field(*object, field_key);
 }
 
 std::string config_string(const std::string &json, const std::string &key, const std::string &fallback) {
@@ -904,6 +927,7 @@ struct Config {
     bool preview_udp_enabled = false;
     std::string preview_udp_bind_ip = "0.0.0.0";
     uint16_t preview_udp_port = 50012;
+    ClockSyncManagerConfig clock_sync;
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
@@ -937,6 +961,14 @@ Config load_config(const std::string &path) {
     cfg.preview_udp_enabled = config_bool(json, "preview_udp_enabled", cfg.preview_udp_enabled);
     cfg.preview_udp_bind_ip = config_string(json, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
     cfg.preview_udp_port = config_port(json, "preview_udp_port", cfg.preview_udp_port);
+    cfg.clock_sync.enabled = json_bool_in_object(json, "clock_sync", "enabled").value_or(cfg.clock_sync.enabled);
+    cfg.clock_sync.bind_ip = json_string_in_object(json, "clock_sync", "bind_ip").value_or(cfg.clock_sync.bind_ip);
+    const int clock_sync_port = json_int_in_object(json, "clock_sync", "port").value_or(cfg.clock_sync.port);
+    if(clock_sync_port <= 0 || clock_sync_port > 65535) {
+        throw std::runtime_error("invalid port in receiver config: clock_sync.port");
+    }
+    cfg.clock_sync.port = static_cast<uint16_t>(clock_sync_port);
+    cfg.clock_sync.model_timeout_ms = json_int_in_object(json, "clock_sync", "model_timeout_ms").value_or(cfg.clock_sync.model_timeout_ms);
     cfg.admin_bind_ip = config_string(json, "admin_bind_ip", cfg.admin_bind_ip);
     cfg.admin_port = config_port(json, "admin_port", cfg.admin_port);
     cfg.nas_root = config_string(json, "nas_root", cfg.nas_root);
@@ -955,6 +987,12 @@ Config load_config(const std::string &path) {
     }
     if(cfg.depth_fps <= 0) {
         throw std::runtime_error("depth_fps must be positive");
+    }
+    if(cfg.clock_sync.model_timeout_ms <= 0) {
+        throw std::runtime_error("clock_sync.model_timeout_ms must be positive");
+    }
+    if(cfg.clock_sync.enabled && cfg.preview_udp_enabled && cfg.clock_sync.port == cfg.preview_udp_port) {
+        throw std::runtime_error("clock_sync.port conflicts with enabled preview_udp_port");
     }
     return cfg;
 }
@@ -1480,6 +1518,12 @@ struct MediaPacket {
     uint64_t sender_encode_start_timestamp_us = 0;
     uint64_t sender_encode_done_timestamp_us = 0;
     uint64_t sender_packet_queued_timestamp_us = 0;
+    uint64_t receiver_receive_timestamp_us = 0;
+    bool clock_sync_valid = false;
+    int64_t sender_offset_us = 0;
+    int64_t sender_delay_us = 0;
+    double sender_drift_ppm = 0.0;
+    uint64_t global_timestamp_us = 0;
     std::vector<uint8_t> payload;
 };
 
@@ -1512,6 +1556,12 @@ void copy_media_packet_metadata(const MediaPacket &src, MediaPacket &dst) {
     dst.sender_encode_start_timestamp_us = src.sender_encode_start_timestamp_us;
     dst.sender_encode_done_timestamp_us = src.sender_encode_done_timestamp_us;
     dst.sender_packet_queued_timestamp_us = src.sender_packet_queued_timestamp_us;
+    dst.receiver_receive_timestamp_us = src.receiver_receive_timestamp_us;
+    dst.clock_sync_valid = src.clock_sync_valid;
+    dst.sender_offset_us = src.sender_offset_us;
+    dst.sender_delay_us = src.sender_delay_us;
+    dst.sender_drift_ppm = src.sender_drift_ppm;
+    dst.global_timestamp_us = src.global_timestamp_us;
     dst.payload.clear();
 }
 
@@ -1545,6 +1595,12 @@ void reset_media_packet_for_read(MediaPacket &packet) {
     packet.sender_encode_start_timestamp_us = 0;
     packet.sender_encode_done_timestamp_us = 0;
     packet.sender_packet_queued_timestamp_us = 0;
+    packet.receiver_receive_timestamp_us = 0;
+    packet.clock_sync_valid = false;
+    packet.sender_offset_us = 0;
+    packet.sender_delay_us = 0;
+    packet.sender_drift_ppm = 0.0;
+    packet.global_timestamp_us = 0;
     packet.payload.clear();
 }
 
@@ -2680,7 +2736,9 @@ public:
                        "sender_capture_host_timestamp_us,sender_timing_bound_timestamp_us,sender_encode_start_timestamp_us,"
                        "sender_encode_done_timestamp_us,sender_packet_queued_timestamp_us,receiver_minus_frame_system_us,"
                        "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
-                       "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us\n";
+                       "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
+                       "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
+                       "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us\n";
         rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
         rgb_recorded_frames_csv_
             << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
@@ -2688,7 +2746,9 @@ public:
                "sender_capture_host_timestamp_us,sender_timing_bound_timestamp_us,sender_encode_start_timestamp_us,"
                "sender_encode_done_timestamp_us,sender_packet_queued_timestamp_us,receiver_minus_frame_system_us,"
                "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
-               "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us\n";
+               "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
+               "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
+               "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us\n";
 
         rgb_debug_path_ = file_path("rgb_debug.h264");
         rgb_debug_.open(rgb_debug_path_, std::ios::binary | std::ios::out | std::ios::trunc);
@@ -2858,6 +2918,7 @@ public:
             }
             frames_csv_ << ',' << packet.codec_or_compression;
             write_pipeline_diagnostics_columns(frames_csv_, packet, packet_local_us);
+            write_clock_sync_columns(frames_csv_, packet);
             frames_csv_ << '\n';
         }
     }
@@ -2890,6 +2951,19 @@ private:
         write_optional_delta_us(csv, packet.sender_packet_queued_timestamp_us, packet.sender_encode_done_timestamp_us);
         csv << ',';
         write_optional_delta_us(csv, packet_local_us, packet.sender_packet_queued_timestamp_us);
+    }
+
+    static void write_clock_sync_columns(std::ostream &csv, const MediaPacket &packet) {
+        csv << ',' << packet.sender_id
+            << ',' << packet.camera_id
+            << ',' << packet.timestamp_us
+            << ',' << packet.system_timestamp_us
+            << ',' << packet.receiver_receive_timestamp_us
+            << ',' << (packet.clock_sync_valid ? 1 : 0)
+            << ',' << packet.sender_offset_us
+            << ',' << packet.sender_delay_us
+            << ',' << packet.sender_drift_ppm
+            << ',' << packet.global_timestamp_us;
     }
 
     bool write_rgb_recovery_bytes(const uint8_t *data, size_t size, Logger &logger) {
@@ -2930,6 +3004,7 @@ private:
         }
         rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression;
         write_pipeline_diagnostics_columns(rgb_recorded_frames_csv_, packet, packet_local_us);
+        write_clock_sync_columns(rgb_recorded_frames_csv_, packet);
         rgb_recorded_frames_csv_ << '\n';
         rgb_recorded_stats_.add(packet, packet_local_us);
     }
@@ -4024,7 +4099,11 @@ struct CameraState {
 
 class ReceiverApp {
 public:
-    explicit ReceiverApp(Config config) : config_(std::move(config)), logger_(config_.log_directory), runtime_state_(load_runtime_state(config_.state_path)) {
+    explicit ReceiverApp(Config config)
+        : config_(std::move(config)),
+          logger_(config_.log_directory),
+          runtime_state_(load_runtime_state(config_.state_path)),
+          clock_sync_manager_(config_.clock_sync) {
         logger_.info("receiver state loaded: " + config_.state_path);
     }
 
@@ -4054,6 +4133,9 @@ public:
 
     void start() {
         running_ = true;
+        clock_sync_manager_.set_log_callbacks([this](const std::string &message) { logger_.info(message); },
+                                             [this](const std::string &message) { logger_.warn(message); });
+        clock_sync_manager_.start();
         udp_thread_ = std::thread([this] { udp_loop(); });
         if(config_.media_udp_enabled) {
             media_udp_thread_ = std::thread([this] { media_udp_loop(); });
@@ -4065,6 +4147,9 @@ public:
         admin_thread_ = std::thread([this] { admin_loop(); });
         logger_.info("receiver started: media tcp " + config_.media_bind_ip + ":" + std::to_string(config_.media_port) +
                      ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) +
+                     ", clock sync udp "
+                     + (config_.clock_sync.enabled ? config_.clock_sync.bind_ip : std::string("disabled")) + ":" +
+                     std::to_string(config_.clock_sync.port) +
                      ", media udp " + (config_.media_udp_enabled ? config_.media_udp_bind_ip : std::string("disabled")) + ":" +
                      std::to_string(config_.media_udp_port) +
                      ", preview udp " +
@@ -4075,6 +4160,7 @@ public:
 
     void stop() {
         running_ = false;
+        clock_sync_manager_.stop();
         if(udp_thread_.joinable()) {
             udp_thread_.join();
         }
@@ -4154,6 +4240,27 @@ public:
         out << ',';
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"admin_port\":" << config_.admin_port << ',';
+        out << "\"clock_sync_enabled\":" << (config_.clock_sync.enabled ? "true" : "false") << ',';
+        out << "\"clock_sync_port\":" << config_.clock_sync.port << ',';
+        out << "\"clock_sync\":[";
+        const auto clock_models = clock_sync_manager_.models();
+        for(size_t i = 0; i < clock_models.size(); ++i) {
+            if(i > 0) {
+                out << ',';
+            }
+            const auto &model = clock_models[i].second;
+            out << "{";
+            out << "\"sender_id\":\"" << json_escape(clock_models[i].first) << "\",";
+            out << "\"clock_sync_valid\":" << (model.valid ? "true" : "false") << ',';
+            out << "\"clock_offset_us\":" << model.offset_us << ',';
+            out << "\"clock_delay_us\":" << model.delay_us << ',';
+            out << "\"clock_drift_ppm\":" << model.drift_ppm << ',';
+            out << "\"clock_last_sync_us\":" << model.last_sync_us << ',';
+            out << "\"clock_last_update_receiver_us\":" << model.last_update_receiver_us << ',';
+            out << "\"clock_samples\":" << model.sample_count;
+            out << "}";
+        }
+        out << "],";
         out << "\"main_preview_camera_key\":\"" << json_escape(main_preview_key_) << "\",";
         out << "\"cameras\":[";
         bool first = true;
@@ -4246,6 +4353,7 @@ public:
                 out << ',';
             }
             first = false;
+            const auto clock_model = clock_sync_manager_.get_model(cam.sender_id);
             out << "{";
             out << "\"sender_id\":\"" << json_escape(cam.sender_id) << "\",";
             out << "\"camera_id\":\"" << json_escape(cam.camera_id) << "\",";
@@ -4279,6 +4387,11 @@ public:
             out << "\"last_seen_us\":" << last_seen << ',';
             out << "\"status_age_ms\":" << age_ms_or_negative(now, cam.last_status_us) << ',';
             out << "\"media_age_ms\":" << age_ms_or_negative(now, cam.last_media_us) << ',';
+            out << "\"clock_sync_valid\":" << (clock_model.valid ? "true" : "false") << ',';
+            out << "\"clock_offset_us\":" << clock_model.offset_us << ',';
+            out << "\"clock_delay_us\":" << clock_model.delay_us << ',';
+            out << "\"clock_drift_ppm\":" << clock_model.drift_ppm << ',';
+            out << "\"clock_last_sync_us\":" << clock_model.last_sync_us << ',';
             out << "\"rgb_packets\":" << cam.rgb_packets << ',';
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
@@ -4335,6 +4448,10 @@ public:
         out << "\"preview_udp_enabled\":" << (config_.preview_udp_enabled ? "true" : "false") << ',';
         out << "\"preview_udp_bind_ip\":\"" << json_escape(config_.preview_udp_bind_ip) << "\",";
         out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
+        out << "\"clock_sync_enabled\":" << (config_.clock_sync.enabled ? "true" : "false") << ',';
+        out << "\"clock_sync_bind_ip\":\"" << json_escape(config_.clock_sync.bind_ip) << "\",";
+        out << "\"clock_sync_port\":" << config_.clock_sync.port << ',';
+        out << "\"clock_sync_model_timeout_ms\":" << config_.clock_sync.model_timeout_ms << ',';
         out << "\"admin_bind_ip\":\"" << json_escape(config_.admin_bind_ip) << "\",";
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
@@ -5459,6 +5576,15 @@ private:
         const auto camera_id = json_string_field(json, "camera_id").value_or("");
         bool should_log_status = type != "heartbeat" && type != "sender_hello";
 
+        if(!sender_id.empty() && (type == "heartbeat" || type == "clock_sync_report")) {
+            const bool clock_valid = json_bool_field(json, "clock_sync_valid").value_or(false);
+            const auto offset_us = json_int64_field(json, "clock_offset_us").value_or(0);
+            const auto delay_us = json_int64_field(json, "clock_delay_us").value_or(0);
+            const auto drift_ppm = json_double_field(json, "clock_drift_ppm").value_or(0.0);
+            const auto last_sync_us = clock_valid ? json_uint64_field(json, "clock_last_sync_us").value_or(0) : 0;
+            clock_sync_manager_.update_from_sender_report(sender_id, offset_us, delay_us, drift_ppm, last_sync_us);
+        }
+
         if(!sender_id.empty() && !camera_id.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto key = camera_key(sender_id, camera_id);
@@ -5642,6 +5768,19 @@ private:
             logger_.warn("media packet with empty sender_id/camera_id ignored");
             return;
         }
+        const uint64_t packet_receive_us = now_us();
+        packet.receiver_receive_timestamp_us = packet_receive_us;
+        const auto clock_model = clock_sync_manager_.get_model(packet.sender_id);
+        packet.clock_sync_valid = clock_model.valid;
+        packet.sender_offset_us = clock_model.offset_us;
+        packet.sender_delay_us = clock_model.delay_us;
+        packet.sender_drift_ppm = clock_model.drift_ppm;
+        // The offset model maps sender system time to receiver time.
+        const uint64_t sender_clock_timestamp_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet.timestamp_us;
+        const int64_t global_timestamp_us = clock_model.valid
+                                                ? static_cast<int64_t>(sender_clock_timestamp_us) + clock_model.offset_us
+                                                : static_cast<int64_t>(sender_clock_timestamp_us);
+        packet.global_timestamp_us = global_timestamp_us > 0 ? static_cast<uint64_t>(global_timestamp_us) : 0;
 
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
         const bool rgb_has_idr = rgb_stream_packet &&
@@ -5664,7 +5803,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
-            cam->last_media_us = now_us();
+            cam->last_media_us = packet_receive_us;
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
@@ -6324,6 +6463,7 @@ private:
     Config config_;
     Logger logger_;
     RuntimeState runtime_state_;
+    ClockSyncManager clock_sync_manager_;
     std::atomic<bool> running_{false};
     std::atomic<int> active_media_clients_{0};
     std::thread udp_thread_;

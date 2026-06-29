@@ -10,6 +10,12 @@
   "preview_udp_enabled": false,
   "preview_udp_bind_ip": "0.0.0.0",
   "preview_udp_port": 50012,
+  "clock_sync": {
+    "enabled": true,
+    "bind_ip": "0.0.0.0",
+    "port": 50012,
+    "model_timeout_ms": 10000
+  },
   "admin_bind_ip": "127.0.0.1",
   "admin_port": 18080,
   "web_bind_ip": "0.0.0.0",

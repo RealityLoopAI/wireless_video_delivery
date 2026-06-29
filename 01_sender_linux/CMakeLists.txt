@@ -30,6 +30,7 @@ foreach(_ORBBEC_SDK_CONFIG_CANDIDATE
 endforeach()
 
 add_executable(gemini_sender
+    src/clock_sync_client.cpp
     src/config.cpp
     src/gst_h264_encoder.cpp
     src/logger.cpp

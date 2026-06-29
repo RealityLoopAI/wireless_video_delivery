@@ -1,4 +1,5 @@
 #include "gwv3_common/protocol.hpp"
+#include "gwv3_sender/clock_sync_client.hpp"
 #include "gwv3_sender/config.hpp"
 #include "gwv3_sender/gst_h264_encoder.hpp"
 #include "gwv3_sender/logger.hpp"
@@ -2817,6 +2818,8 @@ Json::Value sender_hello(const AppConfig &config) {
     capabilities["web_rgb_preview"] = config.web_rgb_preview.enabled;
     capabilities["web_rgb_preview_on_demand"] = config.web_rgb_preview.on_demand;
     capabilities["hotplug"] = config.hotplug.enabled;
+    capabilities["clock_sync"] = config.clock_sync.enabled;
+    capabilities["clock_sync_port"] = config.clock_sync.port;
     capabilities["media_protocol"] = config.transport.media_protocol;
     capabilities["status_protocol"] = config.transport.status_protocol;
     msg["capabilities"] = capabilities;
@@ -2874,10 +2877,20 @@ Json::Value camera_offline_message(const AppConfig &config, const std::string &c
     return msg;
 }
 
-Json::Value camera_heartbeat(const AppConfig &config, CameraRuntime &camera, std::chrono::steady_clock::time_point started) {
+Json::Value camera_heartbeat(const AppConfig &config,
+                             CameraRuntime &camera,
+                             std::chrono::steady_clock::time_point started,
+                             const ClockSyncClient *clock_sync) {
     Json::Value msg = base_message(config, "heartbeat");
     const auto uptime = std::chrono::steady_clock::now() - started;
     msg["uptime_ms"] = Json::UInt64(std::chrono::duration_cast<std::chrono::milliseconds>(uptime).count());
+    const auto clock_state = clock_sync ? clock_sync->state() : ClockSyncClientState{};
+    msg["clock_sync_valid"] = clock_state.valid;
+    msg["clock_offset_us"] = Json::Int64(clock_state.offset_us);
+    msg["clock_delay_us"] = Json::Int64(clock_state.delay_us);
+    msg["clock_drift_ppm"] = clock_state.drift_ppm;
+    msg["clock_last_sync_us"] = Json::UInt64(clock_state.last_sync_us);
+    msg["clock_samples"] = Json::UInt64(clock_state.sample_count);
     std::lock_guard<std::mutex> lock(camera.mutex);
     const auto seconds = std::max(0.001, std::chrono::duration<double>(std::chrono::steady_clock::now() - camera.stats_started).count());
     msg["camera_id"] = camera.config.camera_id;
@@ -4602,6 +4615,24 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     const auto preview_interval = std::chrono::milliseconds(std::max(1, 1000 / preview_fps));
 
     const auto started = std::chrono::steady_clock::now();
+    std::unique_ptr<ClockSyncClient> clock_sync;
+    if(!args.no_send && config.clock_sync.enabled) {
+        ClockSyncClientConfig clock_config;
+        clock_config.enabled = config.clock_sync.enabled;
+        clock_config.receiver_ip = config.clock_sync.receiver_ip.empty() ? config.receiver.ip : config.clock_sync.receiver_ip;
+        clock_config.port = config.clock_sync.port;
+        clock_config.interval_ms = config.clock_sync.interval_ms;
+        clock_config.timeout_ms = config.clock_sync.timeout_ms;
+        clock_config.max_delay_us = config.clock_sync.max_delay_us;
+        clock_config.sample_window = config.clock_sync.sample_window;
+        clock_sync = std::make_unique<ClockSyncClient>(clock_config, config.sender_id);
+        clock_sync->set_log_callbacks([&logger](const std::string &message) { logger.info(message); },
+                                      [&logger](const std::string &message) { logger.warn(message); });
+        clock_sync->start();
+        logger.info("clock_sync client enabled receiver=" + clock_config.receiver_ip + ":" + std::to_string(clock_config.port)
+                    + " interval_ms=" + std::to_string(clock_config.interval_ms)
+                    + " timeout_ms=" + std::to_string(clock_config.timeout_ms));
+    }
     auto cameras = start_cameras(config, logger);
     configure_depth_remap_targets(config, cameras, logger);
     std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> rgb_media_paths;
@@ -4700,7 +4731,8 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         process_receiver_controls(status_transport, config, cameras, logger, status_transport_mutex);
         if(now >= next_heartbeat) {
             for(auto &camera : cameras) {
-                send_status_locked(status_transport, logger, status_transport_mutex, camera_heartbeat(config, *camera, started));
+                send_status_locked(status_transport, logger, status_transport_mutex,
+                                   camera_heartbeat(config, *camera, started, clock_sync.get()));
             }
             next_heartbeat = now + std::chrono::milliseconds(config.heartbeat_interval_ms);
         }
@@ -4756,6 +4788,9 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
+    if(clock_sync) {
+        clock_sync->stop();
+    }
     g_running = false;
     depth_compression_queue.stop();
     for(auto &path : rgb_media_paths) {
