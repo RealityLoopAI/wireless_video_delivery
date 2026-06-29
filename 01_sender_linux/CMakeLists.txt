@@ -6,8 +6,15 @@ find_package(ZLIB REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
 
-set(_ORBBEC_SDK_DEFAULT_ROOT
+set(_ORBBEC_SDK_V2_ROOT
+    "${CMAKE_SOURCE_DIR}/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6")
+set(_ORBBEC_SDK_V1_ROOT
     "${CMAKE_SOURCE_DIR}/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK")
+if(EXISTS "${_ORBBEC_SDK_V2_ROOT}/lib/libOrbbecSDK.so")
+    set(_ORBBEC_SDK_DEFAULT_ROOT "${_ORBBEC_SDK_V2_ROOT}")
+else()
+    set(_ORBBEC_SDK_DEFAULT_ROOT "${_ORBBEC_SDK_V1_ROOT}")
+endif()
 if(DEFINED ENV{ORBBEC_SDK_ROOT} AND NOT "$ENV{ORBBEC_SDK_ROOT}" STREQUAL "")
     set(_ORBBEC_SDK_DEFAULT_ROOT "$ENV{ORBBEC_SDK_ROOT}")
 endif()

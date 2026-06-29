@@ -92,6 +92,8 @@
         "auto_exposure": false,
         "exposure": 312,
         "gain": 80,
+        "brightness": 40,
+        "gamma": 400,
         "auto_exposure_priority": 0,
         "power_line_frequency": 3
       }
