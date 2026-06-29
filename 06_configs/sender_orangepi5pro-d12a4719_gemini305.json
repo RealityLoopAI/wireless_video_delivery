@@ -91,6 +91,7 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
+        "gain": 80,
         "auto_exposure_priority": 0,
         "power_line_frequency": 3
       }
