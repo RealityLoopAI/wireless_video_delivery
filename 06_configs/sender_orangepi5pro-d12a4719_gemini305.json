@@ -89,7 +89,8 @@
         "quantization_step_mm": 10
       },
       "color_controls": {
-        "auto_exposure": true,
+        "auto_exposure": false,
+        "exposure": 312,
         "auto_exposure_priority": 0,
         "power_line_frequency": 3
       }
