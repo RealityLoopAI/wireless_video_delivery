@@ -34,11 +34,31 @@ gemini_sender_wifi_required() {
 }
 
 gemini_sender_wifi_policy_summary() {
-  printf 'iface=%s connection=%s required_ssid=%s min_freq_mhz=%s' \
+  printf 'iface=%s connection=%s required_ssid=%s min_freq_mhz=%s wifi_powersave=%s' \
     "$(gemini_sender_wifi_iface)" \
     "${GEMINI_SENDER_WIFI_CONNECTION:-未配置}" \
     "${GEMINI_SENDER_WIFI_REQUIRED_SSID:-未配置}" \
-    "${GEMINI_SENDER_WIFI_MIN_FREQ_MHZ:-未配置}"
+    "${GEMINI_SENDER_WIFI_MIN_FREQ_MHZ:-未配置}" \
+    "${GEMINI_SENDER_WIFI_DISABLE_POWERSAVE:-1}"
+}
+
+gemini_sender_wifi_disable_powersave() {
+  local iface connection
+  iface="$(gemini_sender_wifi_iface)"
+  if [[ "${GEMINI_SENDER_WIFI_DISABLE_POWERSAVE:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  if command -v iw >/dev/null 2>&1; then
+    iw dev "$iface" set power_save off >/dev/null 2>&1 || true
+  fi
+
+  if command -v nmcli >/dev/null 2>&1; then
+    connection="$(nmcli -g GENERAL.CONNECTION device show "$iface" 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$connection" && "$connection" != "--" ]]; then
+      nmcli connection modify "$connection" 802-11-wireless.powersave 2 >/dev/null 2>&1 || true
+    fi
+  fi
 }
 
 gemini_sender_wifi_current_link() {
@@ -139,9 +159,11 @@ gemini_sender_wifi_connect_if_configured() {
   GEMINI_SENDER_WIFI_LAST_ERROR=""
 
   if [[ -z "$connection" ]]; then
+    gemini_sender_wifi_disable_powersave
     return 0
   fi
   if gemini_sender_wifi_check_policy; then
+    gemini_sender_wifi_disable_powersave
     return 0
   fi
   if ! command -v nmcli >/dev/null 2>&1; then
@@ -157,11 +179,13 @@ gemini_sender_wifi_connect_if_configured() {
   fi
   if ! nmcli connection up "$connection" ifname "$iface" >/dev/null 2>&1; then
     if gemini_sender_wifi_check_policy; then
+      gemini_sender_wifi_disable_powersave
       return 0
     fi
     GEMINI_SENDER_WIFI_LAST_ERROR="无法在 $iface 上启用 Wi-Fi 连接 $connection"
     return 1
   fi
+  gemini_sender_wifi_disable_powersave
 }
 
 gemini_sender_wifi_check_policy() {

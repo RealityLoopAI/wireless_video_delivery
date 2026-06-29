@@ -102,3 +102,4 @@ stop_matching_processes() {
 stop_unit_if_active "Web 监控" "$WEB_UNIT" "$BUILD_DIR/web_monitor.pid" || stop_pid_file "Web 监控" "$BUILD_DIR/web_monitor.pid"
 stop_matching_processes "Web 监控" "$ROOT_DIR/09_web_monitor/.venv/bin/python -m uvicorn server:app"
 stop_unit_if_active "C++ 接收端" "$RECEIVER_UNIT" "$BUILD_DIR/receiver.pid" || stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1
+stop_matching_processes "C++ 接收端" "$ROOT_DIR/12_build/bin/gemini_receiver --config"

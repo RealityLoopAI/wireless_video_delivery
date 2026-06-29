@@ -20,6 +20,46 @@ fail() {
   exit 1
 }
 
+collect_descendants() {
+  local pid="$1"
+  local child
+  while read -r child; do
+    [[ -z "$child" ]] && continue
+    collect_descendants "$child"
+    echo "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+}
+
+stop_matching_processes() {
+  local name="$1"
+  local pattern="$2"
+  local pids=() descendants=() pid
+  mapfile -t pids < <(pgrep -f "$pattern" 2>/dev/null || true)
+  if ((${#pids[@]} == 0)); then
+    return 0
+  fi
+  for pid in "${pids[@]}"; do
+    mapfile -t descendants < <(collect_descendants "$pid")
+    if ((${#descendants[@]} > 0)); then
+      kill "${descendants[@]}" 2>/dev/null || true
+    fi
+  done
+  kill "${pids[@]}" 2>/dev/null || true
+  for _ in {1..20}; do
+    local alive=0
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    ((alive == 0)) && break
+    sleep 0.2
+  done
+  kill -9 "${pids[@]}" 2>/dev/null || true
+  echo "$name 残留进程已清理：${pids[*]}"
+}
+
 read_config_field() {
   python3 - "$CONFIG" "$1" "$2" <<'PY'
 import json
@@ -61,6 +101,9 @@ fi
 
 systemctl --user stop gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+stop_matching_processes "Web 监控" "$VENV/bin/python -m uvicorn server:app"
+stop_matching_processes "C++ 接收端" "$BIN --config"
+rm -f "$RECEIVER_PID" "$WEB_PID"
 
 cat > "$RECEIVER_UNIT" <<EOF
 [Unit]
