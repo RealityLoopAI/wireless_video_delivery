@@ -64,6 +64,74 @@ gemini_sender_wifi_current_freq() {
   gemini_sender_wifi_current_link | awk '/^[[:space:]]*freq:/ {print $2; exit}'
 }
 
+gemini_sender_wifi_visible_freq_for_ssid() {
+  local ssid="$1"
+  local iface visible_ssid visible_freq freq
+  iface="$(gemini_sender_wifi_iface)"
+  if [[ -z "$ssid" ]] || ! command -v nmcli >/dev/null 2>&1; then
+    return 1
+  fi
+
+  while IFS=: read -r visible_ssid visible_freq _; do
+    if [[ "$visible_ssid" != "$ssid" ]]; then
+      continue
+    fi
+    freq="${visible_freq%% *}"
+    if [[ "$freq" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$freq"
+      return 0
+    fi
+  done < <(nmcli --escape no -t -f SSID,FREQ dev wifi list ifname "$iface" 2>/dev/null || true)
+  return 1
+}
+
+gemini_sender_wifi_find_visible_saved_connection() {
+  local iface min_freq required_ssid connection fields type autoconnect priority ssid freq
+  local best_connection="" best_priority=-999999 best_freq=0
+  iface="$(gemini_sender_wifi_iface)"
+  min_freq="${GEMINI_SENDER_WIFI_MIN_FREQ_MHZ:-0}"
+  required_ssid="${GEMINI_SENDER_WIFI_REQUIRED_SSID:-}"
+
+  if ! command -v nmcli >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! [[ "$min_freq" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  while IFS= read -r connection; do
+    [[ -n "$connection" ]] || continue
+    mapfile -t fields < <(nmcli -g connection.type,connection.autoconnect,connection.autoconnect-priority,802-11-wireless.ssid connection show "$connection" 2>/dev/null || true)
+    type="${fields[0]:-}"
+    autoconnect="${fields[1]:-}"
+    priority="${fields[2]:-0}"
+    ssid="${fields[3]:-}"
+
+    [[ "$type" == "802-11-wireless" ]] || continue
+    [[ "$autoconnect" == "yes" ]] || continue
+    [[ -n "$ssid" ]] || continue
+    if [[ -n "$required_ssid" && "$ssid" != "$required_ssid" ]]; then
+      continue
+    fi
+    if ! [[ "$priority" =~ ^-?[0-9]+$ ]]; then
+      priority=0
+    fi
+    freq="$(gemini_sender_wifi_visible_freq_for_ssid "$ssid" || true)"
+    [[ "$freq" =~ ^[0-9]+$ ]] || continue
+    (( freq >= min_freq )) || continue
+
+    if [[ -z "$best_connection" ]] || (( priority > best_priority )) || \
+      { (( priority == best_priority )) && (( freq > best_freq )); }; then
+      best_connection="$connection"
+      best_priority="$priority"
+      best_freq="$freq"
+    fi
+  done < <(nmcli -g NAME connection show 2>/dev/null || true)
+
+  [[ -n "$best_connection" ]] || return 1
+  printf '%s\n' "$best_connection"
+}
+
 gemini_sender_wifi_connect_if_configured() {
   local connection iface
   connection="${GEMINI_SENDER_WIFI_CONNECTION:-}"
@@ -77,8 +145,15 @@ gemini_sender_wifi_connect_if_configured() {
     return 0
   fi
   if ! command -v nmcli >/dev/null 2>&1; then
-    GEMINI_SENDER_WIFI_LAST_ERROR="未找到 nmcli，无法切换到 Wi-Fi 连接 $connection"
+    GEMINI_SENDER_WIFI_LAST_ERROR="未找到 nmcli，无法切换 Wi-Fi 连接"
     return 1
+  fi
+  if [[ -z "$connection" ]]; then
+    connection="$(gemini_sender_wifi_find_visible_saved_connection || true)"
+    if [[ -z "$connection" ]]; then
+      GEMINI_SENDER_WIFI_LAST_ERROR="当前 Wi-Fi 不满足策略，且未找到已保存、可见并满足频率要求的 Wi-Fi 连接"
+      return 1
+    fi
   fi
   if ! nmcli connection up "$connection" ifname "$iface" >/dev/null 2>&1; then
     if gemini_sender_wifi_check_policy; then

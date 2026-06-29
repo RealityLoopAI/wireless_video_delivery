@@ -79,8 +79,9 @@ log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ sdk_lib=${SDK_LI
 
 monitor_child_health() {
   local pid="$1"
+  local initial_log_offset="${2:-0}"
   local child_started_at
-  local log_offset=0
+  local log_offset="$initial_log_offset"
   local current_size=0
   local new_bytes=0
   child_started_at="$(date +%s)"
@@ -209,6 +210,7 @@ while [[ "$stopping" -eq 0 ]]; do
 
   gemini_sender_orbbec_prepare_runtime
 
+  child_log_offset="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
   if [[ "$MODE" == "no-preview" ]]; then
     LD_LIBRARY_PATH="${SDK_LIB:+$SDK_LIB:}${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
   elif [[ "$MODE" == "no-local-preview" ]]; then
@@ -220,7 +222,7 @@ while [[ "$stopping" -eq 0 ]]; do
   child_pid="$!"
   echo "$child_pid" > "$CHILD_PID_FILE"
   log_watchdog "sender child started pid=$child_pid"
-  monitor_child_health "$child_pid" &
+  monitor_child_health "$child_pid" "$child_log_offset" &
   monitor_pid="$!"
 
   set +e
