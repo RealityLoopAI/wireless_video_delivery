@@ -547,11 +547,12 @@
 
     const STATUS_REFRESH_MS = 1000;
     const MAIN_RGB_REFRESH_MS = 33;
-    const THUMB_RGB_REFRESH_MS = 33;
+    const THUMB_RGB_REFRESH_MS = 250;
     const MAIN_DEPTH_REFRESH_MS = 180;
-    const THUMB_DEPTH_REFRESH_MS = 650;
+    const THUMB_DEPTH_REFRESH_MS = 1000;
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
+    const PREVIEW_PROBE_INTERVAL_MS = 1500;
     const PREVIEW_STALE_MS = 5000;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
@@ -949,9 +950,9 @@
     function previewAvailable(c, kind, high = false) {
       if (!receiverPreviewEnabled || !isLive(c)) return false;
       if (kind === 'rgb') {
-        return high ? (rgbJpegFresh(c, true) || rgbH264Fresh(c) || c.rgb_packets > 0) : (rgbH264Fresh(c) || rgbJpegFresh(c) || c.rgb_packets > 0);
+        return high ? (rgbJpegFresh(c, true) || rgbH264Fresh(c) || c.rgb_packets > 0) : (rgbH264Fresh(c) || rgbJpegFresh(c));
       }
-      return (c.depth_preview_available && previewFresh(c.depth_preview_age_ms)) || c.depth_packets > 0;
+      return c.depth_preview_available && previewFresh(c.depth_preview_age_ms);
     }
     function hasAnyPreview(c) {
       return isLive(c) && (previewAvailable(c, 'rgb') || previewAvailable(c, 'depth') || c.rgb_packets > 0 || c.depth_packets > 0);
@@ -1057,7 +1058,19 @@
     function refreshPreview(root, c, kind, high = false) {
       const img = root.querySelector(`[data-preview="${kind}"]`);
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
-      if (!previewAvailable(c, kind, high)) {
+      const available = previewAvailable(c, kind, high);
+      const packetCount = kind === 'rgb' ? Number(c.rgb_packets || 0) : Number(c.depth_packets || 0);
+      let probe = false;
+      if (!available && receiverPreviewEnabled && isLive(c) && packetCount > 0) {
+        const probeField = `${kind}ProbeAt`;
+        const now = Date.now();
+        const lastProbe = Number(root.dataset[probeField] || '0');
+        if (high || now - lastProbe >= PREVIEW_PROBE_INTERVAL_MS) {
+          root.dataset[probeField] = String(now);
+          probe = true;
+        }
+      }
+      if (!available && !probe) {
         if (!receiverPreviewEnabled) {
           clearPreview(root, kind, '预览关闭');
           return;
