@@ -76,6 +76,7 @@ constexpr uint64_t kMainPreviewDecoderIdleStopUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kWebRgbPreviewControlIntervalUs = 500ull * 1000ull;
 constexpr uint64_t kWebRgbPreviewKeyframeIntervalUs = 1ull * 1000ull * 1000ull;
 constexpr int kWebRgbPreviewControlLeaseMs = 2500;
+constexpr uint64_t kRgbDepthPairValidMaxDeltaUs = 100ull * 1000ull;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
@@ -2811,7 +2812,8 @@ public:
                        "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
                        "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
                        "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
-                       "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us\n";
+                       "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us,"
+                       "rgb_depth_pair_valid\n";
         rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
         rgb_recorded_frames_csv_
             << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
@@ -2992,6 +2994,7 @@ public:
             frames_csv_ << ',' << packet.codec_or_compression;
             write_pipeline_diagnostics_columns(frames_csv_, packet, packet_local_us);
             write_clock_sync_columns(frames_csv_, packet);
+            write_pair_quality_column(frames_csv_, last_rgb_, last_depth_);
             frames_csv_ << '\n';
         }
     }
@@ -3037,6 +3040,19 @@ private:
             << ',' << packet.sender_delay_us
             << ',' << packet.sender_drift_ppm
             << ',' << packet.global_timestamp_us;
+    }
+
+    static void write_pair_quality_column(std::ostream &csv, const FrameInfo &rgb, const FrameInfo &depth) {
+        csv << ',';
+        if(!rgb.valid || !depth.valid) {
+            csv << 0;
+            return;
+        }
+        const bool use_system_pair_delta = rgb.system_timestamp_us > 0 && depth.system_timestamp_us > 0;
+        const uint64_t rgb_pair_us = use_system_pair_delta ? rgb.system_timestamp_us : rgb.timestamp_us;
+        const uint64_t depth_pair_us = use_system_pair_delta ? depth.system_timestamp_us : depth.timestamp_us;
+        const uint64_t delta = rgb_pair_us > depth_pair_us ? rgb_pair_us - depth_pair_us : depth_pair_us - rgb_pair_us;
+        csv << (delta <= kRgbDepthPairValidMaxDeltaUs ? 1 : 0);
     }
 
     bool write_rgb_recovery_bytes(const uint8_t *data, size_t size, Logger &logger) {

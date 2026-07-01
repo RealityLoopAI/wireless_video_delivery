@@ -72,6 +72,8 @@ constexpr size_t kDepthMediaQueuePerSlot = 4;
 constexpr size_t kDepthCompressionQueuePerSlot = 4;
 constexpr uint32_t kJpegDualNoMainOutputFallbackFrames = 60;
 constexpr uint64_t kRgbPtsMatchToleranceUs = 2000;
+constexpr uint64_t kRgbEncoderOutputLagResetUs = 500000;
+constexpr auto kWebRgbPreviewSuppressAfterEncoderLag = std::chrono::seconds(10);
 
 const char *stream_type_name(StreamType stream_type) {
     switch(stream_type) {
@@ -166,6 +168,7 @@ struct CameraPerfStats {
     double depth_preview_ms = 0.0;
     double preview_ms = 0.0;
     uint64_t rgb_timing_mismatch_drops = 0;
+    uint64_t rgb_encoder_lag_resets = 0;
     std::chrono::steady_clock::time_point interval_started = std::chrono::steady_clock::now();
 
     void note_rgb_frame_id(uint64_t frame_id) {
@@ -288,9 +291,11 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point next_media_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_keyframe_guard_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_rgb_timing_warning = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_rgb_encoder_lag_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_rgb_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_depth_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_capture_stall_reconnect = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point web_rgb_preview_suppressed_until = std::chrono::steady_clock::time_point::min();
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
@@ -1083,6 +1088,7 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_exposure_priority=" << camera.live.color_exposure_priority
         << " rgb_corrupt_jpeg_frames=" << perf.rgb_corrupt_jpeg_frames
         << " rgb_timing_mismatch_drops=" << perf.rgb_timing_mismatch_drops
+        << " rgb_encoder_lag_resets=" << perf.rgb_encoder_lag_resets
         << " rgb_send_failures=" << perf.rgb_send_failures
         << " rgb_preview_send_failures=" << perf.rgb_preview_send_failures
         << " depth_send_failures=" << perf.depth_send_failures;
@@ -2080,6 +2086,9 @@ bool web_rgb_preview_emit_due(const AppConfig &config, CameraRuntime &camera, st
     }
 
     std::lock_guard<std::mutex> lock(camera.mutex);
+    if(now < camera.web_rgb_preview_suppressed_until) {
+        return false;
+    }
     if(config.web_rgb_preview.on_demand && now > camera.web_rgb_preview_requested_until) {
         return false;
     }
@@ -3151,6 +3160,59 @@ void mark_rgb_encoded_timing_queued(CameraRuntime &camera, const RgbEncodeTiming
     camera.rgb_last_sent_system_timestamp_us = timing.system_timestamp_us;
 }
 
+bool rgb_encoder_output_lag_too_large(CameraRuntime &camera, Logger &logger, const RgbEncodeTiming &timing,
+                                      uint64_t encode_done_timestamp_us, std::chrono::steady_clock::time_point now) {
+    if(timing.system_timestamp_us == 0 || encode_done_timestamp_us <= timing.system_timestamp_us) {
+        return false;
+    }
+    const uint64_t lag_us = encode_done_timestamp_us - timing.system_timestamp_us;
+    if(lag_us <= kRgbEncoderOutputLagResetUs) {
+        return false;
+    }
+
+    std::unique_ptr<GstH264Encoder> old_encoder;
+    std::unique_ptr<GstH264Encoder> old_preview_encoder;
+    std::unique_ptr<GstJpegDualH264Encoder> old_dual_encoder;
+    bool should_log = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        old_encoder = std::move(camera.encoder);
+        old_preview_encoder = std::move(camera.web_preview_encoder);
+        old_dual_encoder = std::move(camera.jpeg_dual_encoder);
+        camera.jpeg_dual_encoder_disabled = true;
+        camera.jpeg_dual_no_main_output = 0;
+        camera.web_preview_width = 0;
+        camera.web_preview_height = 0;
+        camera.web_rgb_preview_requested_until = std::chrono::steady_clock::time_point::min();
+        camera.web_rgb_preview_suppressed_until = now + kWebRgbPreviewSuppressAfterEncoderLag;
+        camera.rgb_encode_timings.clear();
+        camera.rgb_sent_timing_seen = false;
+        camera.rgb_last_sent_frame_id = 0;
+        camera.rgb_last_sent_system_timestamp_us = 0;
+        camera.rgb_dropped++;
+        camera.perf.rgb_encoder_lag_resets++;
+        camera.last_error = "rgb encoder output lag reset";
+        if(now >= camera.next_rgb_encoder_lag_warning) {
+            camera.next_rgb_encoder_lag_warning = now + std::chrono::seconds(2);
+            should_log = true;
+        }
+    }
+
+    if(should_log) {
+        std::ostringstream oss;
+        oss << "rgb encoder output lag reset camera_id=" << camera.config.camera_id
+            << " frame_id=" << timing.frame_id
+            << " lag_us=" << lag_us
+            << " threshold_us=" << kRgbEncoderOutputLagResetUs
+            << " system_timestamp_us=" << timing.system_timestamp_us
+            << " encode_done_timestamp_us=" << encode_done_timestamp_us
+            << " web_preview_suppressed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(kWebRgbPreviewSuppressAfterEncoderLag).count();
+        logger.warn(oss.str());
+    }
+    return true;
+}
+
 void set_rgb_pipeline_diagnostics(MediaFrameMeta &meta, const RgbEncodeTiming &timing) {
     meta.flags |= has_pipeline_diagnostics;
     meta.sender_capture_host_timestamp_us = timing.capture_host_timestamp_us;
@@ -3812,6 +3874,9 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
             timing.encode_start_timestamp_us = submitted_timing.encode_start_timestamp_us;
         }
         timing.encode_done_timestamp_us = encode_done_timestamp_us;
+        if(encoded_has_vcl && rgb_encoder_output_lag_too_large(camera, logger, timing, encode_done_timestamp_us, frame_now)) {
+            return;
+        }
         if(encoded_has_vcl && !rgb_encoded_timing_is_monotonic(camera, logger, timing, frame_now)) {
             continue;
         }
