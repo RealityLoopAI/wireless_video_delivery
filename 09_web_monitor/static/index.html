@@ -598,6 +598,9 @@
     }[ch]));
     const displayName = (c) => c?.camera_name || c?.storage_key || c?.camera_key || '未知相机';
     const isLive = (c) => c && c.live !== false && c.online;
+    const isFinalizing = (c) => Boolean(c?.segment_finalizing);
+    const cameraStateText = (c) => isFinalizing(c) ? 'FINAL' : (c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF'));
+    const cameraDotClass = (c) => (c.recording || isFinalizing(c)) ? 'recording' : (isLive(c) ? 'ok' : '');
 
     async function post(url) {
       const res = await fetch(url, {method: 'POST'});
@@ -970,8 +973,8 @@
         return;
       }
       title.textContent = displayName(c);
-      const status = c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF');
-      const dotClass = c.recording ? 'recording' : (isLive(c) ? 'ok' : '');
+      const status = cameraStateText(c);
+      const dotClass = cameraDotClass(c);
       const rgb = `${c.main_rgb_preview_width || c.rgb_preview_width || 0}x${c.main_rgb_preview_height || c.rgb_preview_height || 0}`;
       const depth = `${c.depth_preview_width || 0}x${c.depth_preview_height || 0}`;
       state.innerHTML = `<span class="dot ${dotClass}"></span><span>${status}</span><span>RGB ${rgb}</span><span>DEPTH ${depth}</span>`;
@@ -1035,9 +1038,9 @@
       card.dataset.rgbAvailable = previewAvailable(c, 'rgb') ? '1' : '0';
       card.dataset.depthAvailable = previewAvailable(c, 'depth') ? '1' : '0';
       setText(card, 'name', displayName(c));
-      setText(card, 'state', c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF'));
+      setText(card, 'state', cameraStateText(c));
       const dot = card.querySelector('[data-field="live_dot"]');
-      dot.className = `dot ${c.recording ? 'recording' : (isLive(c) ? 'ok' : '')}`;
+      dot.className = `dot ${cameraDotClass(c)}`;
       card.classList.toggle('active', c.camera_key === mainKey);
     }
     function clearPreview(root, kind, message) {
@@ -1274,9 +1277,10 @@
 
       const online = cameras.filter(isLive).length;
       const recording = cameras.filter((c) => c.recording).length;
+      const finalizing = cameras.filter(isFinalizing).length;
       const visible = visibleCameras.length;
       document.getElementById('summary').textContent =
-        `${visible}/${cameras.length} 有画面 · ${online} 在线 · ${recording ? `${recording} 路录制` : '空闲'}`;
+        `${visible}/${cameras.length} 有画面 · ${online} 在线 · ${recording ? `${recording} 路录制` : '空闲'}${finalizing ? ` · ${finalizing} 路收尾` : ''}`;
       document.getElementById('system').innerHTML = `
         <div class="debug-item"><span class="debug-label">系统时间</span><div class="debug-value">${formatBeijingDate(new Date())}</div></div>
         <div class="debug-item"><span class="debug-label">时区</span><div class="debug-value">北京时间 UTC+8</div></div>
@@ -1285,7 +1289,8 @@
         <div class="debug-item"><span class="debug-label">管理端口</span><div class="debug-value">HTTP ${data.admin_port}</div></div>
         <div class="debug-item"><span class="debug-label">实时预览</span><div class="debug-value">${receiverPreviewEnabled ? '开启' : '关闭'}</div></div>
         <div class="debug-item"><span class="debug-label">NAS</span><div class="debug-value">${escapeHtml(data.nas_root)}</div></div>
-        <div class="debug-item"><span class="debug-label">全局录制</span><div class="debug-value">${data.recording_all ? '开启' : '关闭'}</div></div>`;
+        <div class="debug-item"><span class="debug-label">全局录制</span><div class="debug-value">${data.recording_all ? '开启' : '关闭'}</div></div>
+        <div class="debug-item"><span class="debug-label">录制收尾</span><div class="debug-value">${finalizing ? `${finalizing} 路` : '无'}</div></div>`;
 
       syncDomList('settingsList', 'setting', cameras);
       if (!visibleCameras.length) {

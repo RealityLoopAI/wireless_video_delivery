@@ -4265,6 +4265,7 @@ public:
         if(admin_thread_.joinable()) {
             admin_thread_.join();
         }
+        wait_segment_close_futures();
         std::vector<SegmentCloseTask> close_tasks;
         std::vector<std::shared_ptr<CameraState>> camera_snapshot;
         {
@@ -4805,28 +4806,70 @@ public:
         }
     }
 
+    void close_segment_task(SegmentCloseTask &task, const std::string &reason) {
+        if(!task.cam) {
+            return;
+        }
+        wait_record_queue_idle(task.cam, reason);
+        try {
+            std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
+            task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+            const bool segment_active = task.cam->segment.active();
+            std::string segment_dir = task.cam->segment.directory();
+            std::lock_guard<std::mutex> lock(mutex_);
+            task.cam->segment_active = segment_active;
+            task.cam->segment_finalizing = false;
+            task.cam->segment_dir = std::move(segment_dir);
+        }
+        catch(const std::exception &e) {
+            logger_.warn("recording segment finalize failed camera=" + task.cam->key + ": " + e.what());
+            std::lock_guard<std::mutex> lock(mutex_);
+            task.cam->segment_finalizing = false;
+            task.cam->last_error = std::string("recording_finalize_failed: ") + e.what();
+        }
+    }
+
+    void reap_segment_close_futures() {
+        std::lock_guard<std::mutex> lock(segment_close_futures_mutex_);
+        auto it = segment_close_futures_.begin();
+        while(it != segment_close_futures_.end()) {
+            if(it->valid() && it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                it->get();
+                it = segment_close_futures_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+
+    void wait_segment_close_futures() {
+        std::vector<std::future<void>> futures;
+        {
+            std::lock_guard<std::mutex> lock(segment_close_futures_mutex_);
+            futures.swap(segment_close_futures_);
+        }
+        for(auto &future : futures) {
+            if(future.valid()) {
+                future.get();
+            }
+        }
+    }
+
     void close_segments_async(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
         if(close_tasks.empty()) {
             return;
         }
-        std::thread([this, close_tasks = std::move(close_tasks), done_log_message] {
+        reap_segment_close_futures();
+        auto future = std::async(std::launch::async, [this, close_tasks = std::move(close_tasks), done_log_message]() mutable {
+            logger_.info(done_log_message + " started");
             for(auto &task : close_tasks) {
-                wait_record_queue_idle(task.cam, done_log_message);
-                bool segment_active = false;
-                std::string segment_dir;
-                {
-                    std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
-                    task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
-                    segment_active = task.cam->segment.active();
-                    segment_dir = task.cam->segment.directory();
-                }
-                std::lock_guard<std::mutex> lock(mutex_);
-                task.cam->segment_active = segment_active;
-                task.cam->segment_finalizing = false;
-                task.cam->segment_dir = std::move(segment_dir);
+                close_segment_task(task, done_log_message);
             }
             logger_.info(done_log_message);
-        }).detach();
+        });
+        std::lock_guard<std::mutex> lock(segment_close_futures_mutex_);
+        segment_close_futures_.push_back(std::move(future));
     }
 
     void close_segments_sync(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
@@ -4834,19 +4877,7 @@ public:
             return;
         }
         for(auto &task : close_tasks) {
-            wait_record_queue_idle(task.cam, done_log_message);
-            bool segment_active = false;
-            std::string segment_dir;
-            {
-                std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
-                task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
-                segment_active = task.cam->segment.active();
-                segment_dir = task.cam->segment.directory();
-            }
-            std::lock_guard<std::mutex> lock(mutex_);
-            task.cam->segment_active = segment_active;
-            task.cam->segment_finalizing = false;
-            task.cam->segment_dir = std::move(segment_dir);
+            close_segment_task(task, done_log_message);
         }
         logger_.info(done_log_message);
     }
@@ -4917,23 +4948,27 @@ public:
             recording_all_has_file_prefix_override_ = false;
             recording_all_file_prefix_.clear();
             for(auto &item : cameras_) {
+                const bool needs_close = item.second->recording_requested || item.second->segment_active || item.second->segment_finalizing;
                 item.second->recording_requested = false;
                 item.second->recording_start_us = 0;
                 item.second->recording_file_prefix.clear();
-                if(item.second->segment_active) {
+                if(needs_close) {
                     item.second->segment_finalizing = true;
                     finalizing = true;
+                    close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
+                                           item.second->last_announce_live ? item.second->last_announce_json : ""});
                 }
-                close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
-                                       item.second->last_announce_live ? item.second->last_announce_json : ""});
             }
             refresh_camera_liveness_locked(now_us());
         }
         logger_.info("recording stop-all requested");
-        close_segments_sync(std::move(close_tasks), "recording stop-all finalized");
+        if(finalizing) {
+            close_segments_async(std::move(close_tasks), "recording stop-all finalized");
+        }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us
-            << ",\"finalizing\":false,\"finalized\":" << (finalizing ? "true" : "false") << "}";
+            << ",\"finalizing\":" << (finalizing ? "true" : "false")
+            << ",\"finalized\":" << (finalizing ? "false" : "true") << "}";
         return out.str();
     }
 
@@ -4985,6 +5020,7 @@ public:
         std::shared_ptr<CameraState> cam;
         std::string announce_json;
         uint64_t recording_start_us = 0;
+        bool finalizing = false;
         const auto key = camera_key(sender_id, camera_id);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -4995,8 +5031,9 @@ public:
             cam = it->second;
             announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             recording_start_us = cam->recording_start_us;
+            finalizing = recording_all_ || cam->recording_requested || cam->segment_active || cam->segment_finalizing;
             cam->recording_requested = false;
-            if(cam->segment_active) {
+            if(finalizing) {
                 cam->segment_finalizing = true;
             }
             if(recording_all_) {
@@ -5011,9 +5048,13 @@ public:
         logger_.info("recording stop requested: " + key);
         std::vector<SegmentCloseTask> close_tasks;
         close_tasks.push_back({cam, cam->sender_id, cam->camera_id, announce_json});
-        close_segments_sync(std::move(close_tasks), "recording stop finalized: " + key);
+        if(finalizing) {
+            close_segments_async(std::move(close_tasks), "recording stop finalized: " + key);
+        }
         std::ostringstream out;
-        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us << ",\"finalizing\":false,\"finalized\":true}";
+        out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us
+            << ",\"finalizing\":" << (finalizing ? "true" : "false")
+            << ",\"finalized\":" << (finalizing ? "false" : "true") << "}";
         return out.str();
     }
 
@@ -6561,6 +6602,7 @@ private:
     std::thread tcp_thread_;
     std::thread admin_thread_;
     std::mutex mutex_;
+    std::mutex segment_close_futures_mutex_;
     std::mutex preview_udp_mutex_;
     std::string main_preview_key_;
     bool recording_all_ = false;
@@ -6568,6 +6610,7 @@ private:
     bool recording_all_has_file_prefix_override_ = false;
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
+    std::vector<std::future<void>> segment_close_futures_;
     std::unordered_map<std::string, PreviewUdpAssembly> preview_udp_assemblies_;
     UdpReassemblyStats media_udp_stats_;
     UdpReassemblyStats preview_udp_stats_;

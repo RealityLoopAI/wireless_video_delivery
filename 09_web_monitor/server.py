@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 
 
 ADMIN_BASE = os.environ.get("GWV3_RECEIVER_ADMIN", "http://127.0.0.1:18080")
+ADMIN_TIMEOUT_S = float(os.environ.get("GWV3_RECEIVER_ADMIN_TIMEOUT_S", "3"))
+ADMIN_RECORD_STOP_TIMEOUT_S = float(os.environ.get("GWV3_RECEIVER_RECORD_STOP_TIMEOUT_S", "60"))
 ROOT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = ROOT_DIR / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
@@ -20,11 +22,11 @@ app = FastAPI(title="Gemini Wireless Video v3 Monitor")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-def _request(method: str, path: str) -> Any:
+def _request(method: str, path: str, timeout_s: float = ADMIN_TIMEOUT_S) -> Any:
     url = ADMIN_BASE.rstrip("/") + path
     req = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             data = resp.read().decode("utf-8")
             return json.loads(data)
     except urllib.error.HTTPError as exc:
@@ -63,7 +65,7 @@ def start_all(file_prefix: str | None = Query(None)) -> Any:
 
 @app.post("/api/record/stop-all")
 def stop_all() -> Any:
-    return _request("POST", "/api/record/stop-all")
+    return _request("POST", "/api/record/stop-all", timeout_s=ADMIN_RECORD_STOP_TIMEOUT_S)
 
 
 @app.post("/api/record/start")
@@ -78,7 +80,7 @@ def start_camera(sender_id: str = Query(...), camera_id: str = Query(...), file_
 @app.post("/api/record/stop")
 def stop_camera(sender_id: str = Query(...), camera_id: str = Query(...)) -> Any:
     query = urllib.parse.urlencode({"sender_id": sender_id, "camera_id": camera_id})
-    return _request("POST", f"/api/record/stop?{query}")
+    return _request("POST", f"/api/record/stop?{query}", timeout_s=ADMIN_RECORD_STOP_TIMEOUT_S)
 
 
 @app.post("/api/camera/name")
