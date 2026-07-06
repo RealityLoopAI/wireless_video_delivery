@@ -276,6 +276,7 @@ ColorControlsConfig load_color_controls(const Json::Value &node) {
     controls.contrast = optional_int_value(node, "contrast");
     controls.saturation = optional_int_value(node, "saturation");
     controls.gamma = optional_int_value(node, "gamma");
+    controls.backlight_compensation = optional_int_value(node, "backlight_compensation");
     return controls;
 }
 
@@ -550,6 +551,12 @@ void validate_config(const AppConfig &config) {
                 throw std::runtime_error(std::string(name) + " must be non-negative");
             }
         };
+        auto validate_range = [](const std::optional<int> &value, const char *name, int min_value, int max_value) {
+            if(value && (*value < min_value || *value > max_value)) {
+                throw std::runtime_error(std::string(name) + " must be in range [" + std::to_string(min_value) + ", "
+                                         + std::to_string(max_value) + "]");
+            }
+        };
         if(!is_valid_protocol_id(camera.camera_id)) {
             throw std::runtime_error("camera_id must be 1-64 ASCII letters/digits/_/-");
         }
@@ -600,10 +607,11 @@ void validate_config(const AppConfig &config) {
         validate_nonnegative(camera.color_controls.max_gain, "color_controls.max_gain");
         validate_nonnegative(camera.color_controls.power_line_frequency, "color_controls.power_line_frequency");
         validate_nonnegative(camera.color_controls.white_balance, "color_controls.white_balance");
-        validate_nonnegative(camera.color_controls.brightness, "color_controls.brightness");
+        validate_range(camera.color_controls.brightness, "color_controls.brightness", -64, 64);
         validate_nonnegative(camera.color_controls.contrast, "color_controls.contrast");
         validate_nonnegative(camera.color_controls.saturation, "color_controls.saturation");
         validate_nonnegative(camera.color_controls.gamma, "color_controls.gamma");
+        validate_nonnegative(camera.color_controls.backlight_compensation, "color_controls.backlight_compensation");
     }
 }
 

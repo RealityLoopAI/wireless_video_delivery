@@ -719,7 +719,8 @@ void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     const auto &controls = camera.config.color_controls;
     if(!controls.auto_exposure && !controls.exposure && !controls.gain && !controls.auto_exposure_priority && !controls.max_exposure
        && !controls.max_gain && !controls.power_line_frequency && !controls.auto_white_balance && !controls.white_balance
-       && !controls.brightness && !controls.contrast && !controls.saturation && !controls.gamma) {
+       && !controls.brightness && !controls.contrast && !controls.saturation && !controls.gamma
+       && !controls.backlight_compensation) {
         return;
     }
 
@@ -743,6 +744,8 @@ void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     set_int_property_if_configured(camera, logger, "contrast", OB_PROP_COLOR_CONTRAST_INT, controls.contrast);
     set_int_property_if_configured(camera, logger, "saturation", OB_PROP_COLOR_SATURATION_INT, controls.saturation);
     set_int_property_if_configured(camera, logger, "gamma", OB_PROP_COLOR_GAMMA_INT, controls.gamma);
+    set_int_property_if_configured(camera, logger, "backlight_compensation", OB_PROP_COLOR_BACKLIGHT_COMPENSATION_INT,
+                                   controls.backlight_compensation);
     if(controls.auto_white_balance && *controls.auto_white_balance) {
         set_bool_property_if_configured(camera, logger, "auto_white_balance", OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL,
                                         controls.auto_white_balance);

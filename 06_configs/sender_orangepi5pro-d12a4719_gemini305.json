@@ -89,11 +89,12 @@
         "quantization_step_mm": 10
       },
       "color_controls": {
-        "auto_exposure": false,
-        "exposure": 312,
-        "gain": 80,
-        "brightness": 20,
+        "auto_exposure": true,
+        "brightness": -35,
+        "contrast": 50,
+        "saturation": 64,
         "gamma": 300,
+        "backlight_compensation": 0,
         "auto_exposure_priority": 0,
         "power_line_frequency": 3
       }

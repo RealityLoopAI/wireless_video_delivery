@@ -40,6 +40,7 @@ struct ColorControlsConfig {
     std::optional<int> contrast;
     std::optional<int> saturation;
     std::optional<int> gamma;
+    std::optional<int> backlight_compensation;
 };
 
 struct CameraConfig {
