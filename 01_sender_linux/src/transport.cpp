@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -91,6 +92,41 @@ bool append_packet_slice_iovs(const MediaPacketView &packet, size_t offset, size
         remaining_size -= take;
     }
     return remaining_size == 0;
+}
+
+bool tcp_peer_closed(int fd) {
+    if(fd < 0) {
+        return true;
+    }
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLIN | POLLERR | POLLHUP;
+#ifdef POLLRDHUP
+    pfd.events |= POLLRDHUP;
+#endif
+    const int rc = poll(&pfd, 1, 0);
+    if(rc <= 0) {
+        return false;
+    }
+    if((pfd.revents & (POLLERR | POLLHUP)) != 0) {
+        return true;
+    }
+#ifdef POLLRDHUP
+    if((pfd.revents & POLLRDHUP) != 0) {
+        return true;
+    }
+#endif
+    if((pfd.revents & POLLIN) != 0) {
+        char byte = 0;
+        const ssize_t got = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if(got == 0) {
+            return true;
+        }
+        if(got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -360,7 +396,11 @@ bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes,
 
 bool Transport::ensure_media_tcp_connected() {
     if(media_tcp_fd_ >= 0) {
-        return true;
+        if(!tcp_peer_closed(media_tcp_fd_)) {
+            return true;
+        }
+        close_media_socket();
+        last_media_connect_attempt_ = {};
     }
     if(!can_retry_media_connect()) {
         return false;
