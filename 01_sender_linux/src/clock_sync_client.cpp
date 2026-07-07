@@ -26,6 +26,10 @@ uint64_t now_us() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
+uint64_t max_sync_age_us(int interval_ms) {
+    return static_cast<uint64_t>(std::max(10000, interval_ms * 5)) * 1000ull;
+}
+
 std::string json_to_string(const Json::Value &value) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
@@ -119,7 +123,7 @@ bool ClockSyncClient::healthy() const {
         return false;
     }
     const uint64_t now = now_us();
-    const uint64_t max_age_us = static_cast<uint64_t>(std::max(10000, config_.interval_ms * 5)) * 1000ull;
+    const uint64_t max_age_us = max_sync_age_us(config_.interval_ms);
     return state_.last_sync_us >= now || now - state_.last_sync_us <= max_age_us;
 }
 
@@ -268,7 +272,17 @@ bool ClockSyncClient::apply_sample(uint64_t sender_receive_us, int64_t offset_us
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if(state_.valid && std::llabs(offset_us - state_.offset_us) > 50000) {
-            return false;
+            const uint64_t max_age_us = max_sync_age_us(config_.interval_ms);
+            const bool stale = state_.last_sync_us == 0 || sender_receive_us <= state_.last_sync_us
+                               || sender_receive_us - state_.last_sync_us > max_age_us;
+            if(!stale) {
+                return false;
+            }
+            log_warn("clock_sync accepting large offset reset sender_id=" + sender_id_
+                     + " old_offset_us=" + std::to_string(state_.offset_us)
+                     + " new_offset_us=" + std::to_string(offset_us));
+            state_ = ClockSyncClientState{};
+            samples_.clear();
         }
 
         if(!state_.valid) {

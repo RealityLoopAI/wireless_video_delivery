@@ -2911,7 +2911,8 @@ Json::Value camera_heartbeat(const AppConfig &config,
     const auto uptime = std::chrono::steady_clock::now() - started;
     msg["uptime_ms"] = Json::UInt64(std::chrono::duration_cast<std::chrono::milliseconds>(uptime).count());
     const auto clock_state = clock_sync ? clock_sync->state() : ClockSyncClientState{};
-    msg["clock_sync_valid"] = clock_state.valid;
+    const bool clock_valid = clock_sync && clock_sync->healthy() && clock_state.valid;
+    msg["clock_sync_valid"] = clock_valid;
     msg["clock_offset_us"] = Json::Int64(clock_state.offset_us);
     msg["clock_delay_us"] = Json::Int64(clock_state.delay_us);
     msg["clock_drift_ppm"] = clock_state.drift_ppm;
