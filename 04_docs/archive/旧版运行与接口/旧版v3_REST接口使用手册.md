@@ -172,6 +172,12 @@ curl "http://192.168.66.196:8080/api/status"
 | `depth_preview_width` / `depth_preview_height` | Depth 预览图尺寸。 |
 | `last_error` | 最近状态事件或错误信息。 |
 
+身份约束：
+
+- REST 调用必须继续使用原始 `sender_id` 和 `camera_id` 定位相机。
+- `camera_name`、`storage_key`、`camera_file_prefix` 只影响显示和落盘命名，不改变相机身份。
+- 多发送端场景下，如果两个物理设备复用同一个 `<sender_id>_<camera_id>`，预览、录制控制和存储都会产生冲突。
+
 判断实时流是否在更新：
 
 - 连续调用 `/api/status`。
