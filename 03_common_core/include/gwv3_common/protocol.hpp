@@ -13,6 +13,9 @@ constexpr uint16_t kMediaHeaderVersion = 2;
 constexpr uint16_t kMediaHeaderV1Size = 94;
 constexpr uint16_t kMediaHeaderV2Size = 134;
 constexpr uint32_t kMediaMagic = 0x33565747;  // bytes: G W V 3
+constexpr uint32_t kPreviewUdpMagic = 0x31505547;  // bytes: G U P 1
+constexpr uint16_t kPreviewUdpHeaderVersion = 1;
+constexpr uint16_t kPreviewUdpHeaderSize = 32;
 
 enum class StreamType : uint8_t {
     rgb = 1,

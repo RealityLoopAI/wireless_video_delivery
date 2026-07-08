@@ -34,8 +34,10 @@ else
 fi
 
 if command -v ss >/dev/null 2>&1; then
-  echo "媒体连接："
+  echo "媒体 TCP 连接："
   ss -tnp 2>/dev/null | grep -E '(:50010|gemini_sender)' || echo "  未发现当前 TCP 媒体连接"
+  echo "媒体 UDP socket："
+  ss -aunp 2>/dev/null | grep -E '(gemini_sender|:50012|:50013)' || echo "  未发现当前 UDP 媒体 socket"
 fi
 
 if [[ -f "$LOG_FILE" ]]; then

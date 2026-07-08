@@ -1,0 +1,103 @@
+{
+  "sender_id": "orangepi5pro-d12a4719",
+  "sender_version": "3.0.0",
+  "receiver": {
+    "ip": "192.168.66.196",
+    "media_port": 50010,
+    "status_port": 50011
+  },
+  "clock_sync": {
+    "enabled": true,
+    "receiver_ip": "192.168.66.196",
+    "port": 50012,
+    "interval_ms": 2000,
+    "timeout_ms": 100,
+    "max_delay_us": 100000,
+    "sample_window": 10
+  },
+  "transport": {
+    "enabled": true,
+    "status_protocol": "udp",
+    "media_protocol": "tcp",
+    "connect_timeout_ms": 250,
+    "send_timeout_ms": 80,
+    "send_buffer_bytes": 33554432,
+    "reconnect_interval_ms": 1000
+  },
+  "media_udp": {
+    "enabled": false,
+    "rgb_enabled": false,
+    "depth_enabled": false,
+    "port": 50013,
+    "mtu_bytes": 1200
+  },
+  "heartbeat_interval_ms": 1000,
+  "preview": {
+    "enabled": true,
+    "fps": 30
+  },
+  "web_rgb_preview": {
+    "enabled": true,
+    "max_width": 640,
+    "max_height": 400,
+    "fps": 30,
+    "bitrate_bps": 500000,
+    "udp_enabled": false,
+    "udp_port": 50012,
+    "udp_mtu_bytes": 1200
+  },
+  "logging": {
+    "directory": "08_reports/sender_logs",
+    "max_bytes": 10485760
+  },
+  "hotplug": {
+    "enabled": false
+  },
+  "recording_buffer": {
+    "enabled": true,
+    "rgb_frames_per_slot": 900,
+    "depth_frames_per_slot": 900,
+    "depth_compression_frames_per_slot": 60
+  },
+  "cameras": [
+    {
+      "camera_id": "cam01",
+      "serial_number": "CV2R46P00091",
+      "capture_backend": "orbbec_sdk",
+      "device_model": "Orbbec Gemini 305",
+      "validate_rgb_mjpeg": true,
+      "rgb_profile": {
+        "width": 1280,
+        "height": 800,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "width": 320,
+        "height": 200,
+        "fps": 30,
+        "format": "y16"
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "hardware",
+        "gstreamer_encoder": "mpph264enc",
+        "bitrate_bps": 6000000
+      },
+      "depth_transport": {
+        "compression": "pq8zlib",
+        "quantization_step_mm": 10
+      },
+      "color_controls": {
+        "auto_exposure": true,
+        "brightness": -35,
+        "contrast": 50,
+        "saturation": 64,
+        "gamma": 300,
+        "backlight_compensation": 0,
+        "auto_exposure_priority": 0,
+        "power_line_frequency": 3
+      }
+    }
+  ]
+}

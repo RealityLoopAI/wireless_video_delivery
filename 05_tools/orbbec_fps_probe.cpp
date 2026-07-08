@@ -26,13 +26,22 @@ struct Options {
     int gain = -1;
     int power_line_frequency = -1;
     int max_exposure = -1;
+    int color_width = 1920;
+    int color_height = 1080;
+    int depth_width = 320;
+    int depth_height = 200;
+    int fps = 30;
+    std::string color_format = "mjpg";
+    std::string depth_format = "y16";
 };
 
 void usage(const char *argv0) {
     std::cerr << "usage: " << argv0
               << " [--serial SN] [--streams color|both] [--aggregate any|full|color|disable]"
                  " [--seconds N] [--index N] [--auto-exposure 0|1] [--exposure N] [--gain N]"
-                 " [--ae-priority 0|1] [--power-line 0|1|2] [--max-exposure N]\n";
+                 " [--ae-priority 0|1] [--power-line 0|1|2] [--max-exposure N]"
+                 " [--color-width N] [--color-height N] [--depth-width N] [--depth-height N] [--fps N]"
+                 " [--color-format mjpg|rgb|yuyv] [--depth-format y16|y12]\n";
 }
 
 Options parse_args(int argc, char **argv) {
@@ -78,6 +87,27 @@ Options parse_args(int argc, char **argv) {
         else if(arg == "--max-exposure") {
             options.max_exposure = std::stoi(require_value("--max-exposure"));
         }
+        else if(arg == "--color-width") {
+            options.color_width = std::stoi(require_value("--color-width"));
+        }
+        else if(arg == "--color-height") {
+            options.color_height = std::stoi(require_value("--color-height"));
+        }
+        else if(arg == "--depth-width") {
+            options.depth_width = std::stoi(require_value("--depth-width"));
+        }
+        else if(arg == "--depth-height") {
+            options.depth_height = std::stoi(require_value("--depth-height"));
+        }
+        else if(arg == "--fps") {
+            options.fps = std::stoi(require_value("--fps"));
+        }
+        else if(arg == "--color-format") {
+            options.color_format = require_value("--color-format");
+        }
+        else if(arg == "--depth-format") {
+            options.depth_format = require_value("--depth-format");
+        }
         else if(arg == "--help" || arg == "-h") {
             usage(argv[0]);
             std::exit(0);
@@ -103,6 +133,25 @@ OBFrameAggregateOutputMode aggregate_mode(const std::string &value) {
         return OB_FRAME_AGGREGATE_OUTPUT_DISABLE;
     }
     throw std::runtime_error("invalid aggregate mode: " + value);
+}
+
+OBFormat video_format(const std::string &value) {
+    if(value == "mjpg") {
+        return OB_FORMAT_MJPG;
+    }
+    if(value == "rgb") {
+        return OB_FORMAT_RGB;
+    }
+    if(value == "yuyv") {
+        return OB_FORMAT_YUYV;
+    }
+    if(value == "y16") {
+        return OB_FORMAT_Y16;
+    }
+    if(value == "y12") {
+        return OB_FORMAT_Y12;
+    }
+    throw std::runtime_error("invalid video format: " + value);
 }
 
 const char *safe(const char *value) {
@@ -193,6 +242,30 @@ int main(int argc, char **argv) {
         std::cout << "selected sn=" << safe(info->serialNumber()) << " name=" << safe(info->name()) << " fw=" << safe(info->firmwareVersion())
                   << " conn=" << safe(info->connectionType()) << " uid=" << safe(info->uid()) << "\n";
 
+        ob::Pipeline pipeline(device);
+        auto config = std::make_shared<ob::Config>();
+        auto color_profile =
+            profile(pipeline, OB_SENSOR_COLOR, options.color_width, options.color_height, video_format(options.color_format), options.fps);
+        config->enableStream(color_profile);
+        std::shared_ptr<ob::VideoStreamProfile> depth_profile;
+        if(options.streams == "both") {
+            depth_profile =
+                profile(pipeline, OB_SENSOR_DEPTH, options.depth_width, options.depth_height, video_format(options.depth_format), options.fps);
+            config->enableStream(depth_profile);
+        }
+        if(options.aggregate != "disable") {
+            config->setFrameAggregateOutputMode(aggregate_mode(options.aggregate));
+        }
+
+        std::cout << "start streams=" << options.streams << " aggregate=" << options.aggregate << " color=" << color_profile->width() << "x"
+                  << color_profile->height() << "@" << color_profile->fps() << " depth="
+                  << (depth_profile ? std::to_string(depth_profile->width()) + "x" + std::to_string(depth_profile->height()) + "@"
+                                          + std::to_string(depth_profile->fps())
+                                    : "off")
+                  << "\n";
+
+        pipeline.start(config);
+
         if(options.auto_exposure == 0) {
             set_bool_if_supported(device, OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "auto_exposure", options.auto_exposure);
         }
@@ -204,26 +277,6 @@ int main(int argc, char **argv) {
         if(options.auto_exposure > 0) {
             set_bool_if_supported(device, OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "auto_exposure", options.auto_exposure);
         }
-
-        ob::Pipeline pipeline(device);
-        auto config = std::make_shared<ob::Config>();
-        auto color_profile = profile(pipeline, OB_SENSOR_COLOR, 1920, 1080, OB_FORMAT_MJPG, 30);
-        config->enableStream(color_profile);
-        std::shared_ptr<ob::VideoStreamProfile> depth_profile;
-        if(options.streams == "both") {
-            depth_profile = profile(pipeline, OB_SENSOR_DEPTH, 320, 200, OB_FORMAT_Y16, 30);
-            config->enableStream(depth_profile);
-        }
-        config->setFrameAggregateOutputMode(aggregate_mode(options.aggregate));
-
-        std::cout << "start streams=" << options.streams << " aggregate=" << options.aggregate << " color=" << color_profile->width() << "x"
-                  << color_profile->height() << "@" << color_profile->fps() << " depth="
-                  << (depth_profile ? std::to_string(depth_profile->width()) + "x" + std::to_string(depth_profile->height()) + "@"
-                                          + std::to_string(depth_profile->fps())
-                                    : "off")
-                  << "\n";
-
-        pipeline.start(config);
 
         uint64_t framesets = 0;
         uint64_t timeouts = 0;

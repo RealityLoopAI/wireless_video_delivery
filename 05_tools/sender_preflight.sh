@@ -6,8 +6,6 @@ BIN="$ROOT_DIR/12_build/bin/gemini_sender"
 CONFIG="${1:-$ROOT_DIR/06_configs/sender_rk3588-01_one_camera.json}"
 MODE="${2:-启动}"
 PREVIEW_MODE="${3:-config}"
-SDK_LIB="$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"
-SDK_CONFIG="$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml"
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
 
@@ -16,11 +14,46 @@ fail() {
   exit 1
 }
 
+resolve_sender_sdk_lib() {
+  local linked_lib=""
+  linked_lib="$(ldd "$BIN" 2>/dev/null | awk '/libOrbbecSDK/ {print $3; exit}')"
+  if [[ -n "$linked_lib" && -f "$linked_lib" ]]; then
+    dirname "$linked_lib"
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    "${ORBBEC_SDK_ROOT:-}/lib" \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/lib" \
+    "$ROOT_DIR/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK/lib"; do
+    if [[ -n "$candidate" && -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+}
+
+sdk_config_exists() {
+  local candidate
+  for candidate in \
+    "$ROOT_DIR/12_build/bin/OrbbecSDKConfig_v1.0.xml" \
+    "$ROOT_DIR/12_build/bin/OrbbecSDKConfig.xml" \
+    "${SDK_LIB:-}/../config/OrbbecSDKConfig_v1.0.xml" \
+    "${SDK_LIB:-}/OrbbecSDKConfig.xml"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 [[ -x "$BIN" ]] || fail "未找到可执行文件 $BIN，请先执行 cmake 构建"
 [[ -f "$CONFIG" ]] || fail "配置文件不存在 $CONFIG"
+SDK_LIB="${GEMINI_SENDER_SDK_LIB:-$(resolve_sender_sdk_lib)}"
 [[ -d "$SDK_LIB" ]] || fail "Orbbec SDK 动态库目录不存在 $SDK_LIB"
 [[ -f "$SDK_LIB/libOrbbecSDK.so" ]] || fail "Orbbec SDK 动态库不存在"
-[[ -f "$SDK_CONFIG" ]] || fail "Orbbec SDK 运行配置不存在 $SDK_CONFIG"
+sdk_config_exists || fail "Orbbec SDK 运行配置不存在"
 command -v python3 >/dev/null 2>&1 || fail "未找到 python3，无法解析配置"
 command -v gst-inspect-1.0 >/dev/null 2>&1 || fail "GStreamer 未安装"
 command -v ip >/dev/null 2>&1 || fail "未找到 ip 命令，无法检查到接收端的路由"
@@ -50,6 +83,8 @@ encoding = cam.get("rgb_encoding") or {}
 transport = cam.get("depth_transport") or {}
 color_controls = cam.get("color_controls") or {}
 preview = cfg.get("preview") or {}
+web_preview = cfg.get("web_rgb_preview") or {}
+media_udp = cfg.get("media_udp") or {}
 hotplug = cfg.get("hotplug") or {}
 
 required = {
@@ -140,6 +175,11 @@ values = {
     "MEDIA_PORT": receiver.get("media_port", ""),
     "STATUS_PORT": receiver.get("status_port", ""),
     "MEDIA_PROTOCOL": top_transport.get("media_protocol", "tcp"),
+    "MEDIA_UDP_ENABLED": media_udp.get("enabled", False),
+    "MEDIA_UDP_RGB_ENABLED": media_udp.get("rgb_enabled", False),
+    "MEDIA_UDP_DEPTH_ENABLED": media_udp.get("depth_enabled", False),
+    "MEDIA_UDP_PORT": media_udp.get("port", ""),
+    "MEDIA_UDP_MTU": media_udp.get("mtu_bytes", ""),
     "STATUS_PROTOCOL": top_transport.get("status_protocol", "udp"),
     "CONNECT_TIMEOUT_MS": top_transport.get("connect_timeout_ms", ""),
     "SEND_TIMEOUT_MS": top_transport.get("send_timeout_ms", ""),
@@ -160,9 +200,17 @@ values = {
     "DEPTH_FPS": depth.get("fps", ""),
     "DEPTH_FORMAT": depth.get("format", ""),
     "DEPTH_COMPRESSION": transport.get("compression", ""),
+    "FRAME_AGGREGATE_MODE": cam.get("frame_aggregate_mode", "disable"),
     "COLOR_CONTROLS": " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in color_controls.items()) or "未配置",
     "PREVIEW_ENABLED": preview.get("enabled", ""),
     "PREVIEW_FPS": preview.get("fps", ""),
+    "WEB_PREVIEW_ENABLED": web_preview.get("enabled", ""),
+    "WEB_PREVIEW_ON_DEMAND": web_preview.get("on_demand", True),
+    "WEB_PREVIEW_FPS": web_preview.get("fps", ""),
+    "WEB_PREVIEW_BITRATE": web_preview.get("bitrate_bps", ""),
+    "WEB_PREVIEW_UDP_ENABLED": web_preview.get("udp_enabled", False),
+    "WEB_PREVIEW_UDP_PORT": web_preview.get("udp_port", ""),
+    "WEB_PREVIEW_UDP_MTU": web_preview.get("udp_mtu_bytes", ""),
     "HOTPLUG_ENABLED": hotplug.get("enabled", True),
     "LOG_DIRECTORY": (cfg.get("logging") or {}).get("directory", ""),
     "LOG_MAX_BYTES": (cfg.get("logging") or {}).get("max_bytes", ""),
@@ -179,7 +227,7 @@ for item in cams:
         f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in controls_item.items()
     ) or "未配置"
     camera_summaries.append(
-        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} color_controls={controls}".format(
+        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} aggregate={aggregate} color_controls={controls}".format(
             camera_id=item.get("camera_id", ""),
             serial=item.get("serial_number", "") or "未指定",
             uid=item.get("uid", "") or "未指定",
@@ -194,6 +242,7 @@ for item in cams:
             depth_fps=depth_item.get("fps", ""),
             depth_fmt=depth_item.get("format", ""),
             compression=depth_transport_item.get("compression", ""),
+            aggregate=item.get("frame_aggregate_mode", "disable"),
             controls=controls_summary,
         )
     )
@@ -289,7 +338,7 @@ if not isinstance(status, dict):
 
 active_clients = status.get("active_media_clients")
 if isinstance(active_clients, int) and active_clients > 1:
-    print(f"receiver currently has {active_clients} active media clients; current one-stream delivery expectation may be impacted")
+    print(f"receiver currently has {active_clients} active media clients; split rgb/depth/preview links can make this normal; check sender_id conflict warnings below for duplicates")
 
 conflicts = []
 for cam in status.get("cameras", []):
@@ -313,7 +362,11 @@ echo "  sender_id: $SENDER_ID  version: ${SENDER_VERSION:-未指定}"
 if [[ "${CONFIG_SENDER_ID:-}" == "auto" ]]; then
   echo "  config_sender_id: auto"
 fi
-echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+if [[ "${MEDIA_PROTOCOL:-tcp}" == "udp" ]]; then
+  echo "  receiver: $RECEIVER_IP  media/udp=${MEDIA_UDP_PORT:-未指定}  media_tcp_fallback=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+else
+  echo "  receiver: $RECEIVER_IP  media/${MEDIA_PROTOCOL}=$MEDIA_PORT  status/${STATUS_PROTOCOL}=$STATUS_PORT"
+fi
 echo "  transport: connect_timeout=${CONNECT_TIMEOUT_MS:-未指定}ms  send_timeout=${SEND_TIMEOUT_MS:-未指定}ms  send_buffer=${SEND_BUFFER_BYTES:-未指定}B  reconnect_interval=${RECONNECT_INTERVAL_MS:-未指定}ms"
 echo "  heartbeat: ${HEARTBEAT_INTERVAL_MS:-未指定}ms"
 echo "  camera_count: $CAMERA_COUNT"
@@ -321,12 +374,19 @@ echo "  cameras: $CAMERA_SUMMARY"
 echo "  depth_remap: swap_depth_between_cameras=${SWAP_DEPTH_BETWEEN_CAMERAS:-false}"
 echo "  RGB: ${RGB_WIDTH}x${RGB_HEIGHT}@${RGB_FPS} ${RGB_FORMAT} -> ${RGB_CODEC}/${RGB_ENCODER} ${RGB_BITRATE}bps"
 echo "  Depth: ${DEPTH_WIDTH}x${DEPTH_HEIGHT}@${DEPTH_FPS} ${DEPTH_FORMAT} compression=${DEPTH_COMPRESSION}"
+echo "  frame_aggregate_mode: ${FRAME_AGGREGATE_MODE:-disable}"
 echo "  color_controls: ${COLOR_CONTROLS:-未配置}"
+echo "  media_udp: enabled=${MEDIA_UDP_ENABLED:-false} rgb=${MEDIA_UDP_RGB_ENABLED:-false} depth=${MEDIA_UDP_DEPTH_ENABLED:-false} port=${MEDIA_UDP_PORT:-未指定} mtu=${MEDIA_UDP_MTU:-未指定}"
 echo "  config_preview: enabled=${PREVIEW_ENABLED} fps=${PREVIEW_FPS}"
+echo "  config_web_preview: enabled=${WEB_PREVIEW_ENABLED} on_demand=${WEB_PREVIEW_ON_DEMAND} fps=${WEB_PREVIEW_FPS} bitrate=${WEB_PREVIEW_BITRATE}bps"
+echo "  config_web_preview_udp: enabled=${WEB_PREVIEW_UDP_ENABLED:-false} port=${WEB_PREVIEW_UDP_PORT:-未指定} mtu=${WEB_PREVIEW_UDP_MTU:-未指定}"
 echo "  hotplug: enabled=${HOTPLUG_ENABLED:-true}"
 case "$PREVIEW_MODE" in
   no-preview)
-    echo "  launch_preview: disabled by --no-preview"
+    echo "  launch_preview: local/web preview disabled by --no-preview"
+    ;;
+  no-local-preview)
+    echo "  launch_preview: local OpenCV preview disabled; web RGB preview follows config"
     ;;
   *)
     echo "  launch_preview: follows config"

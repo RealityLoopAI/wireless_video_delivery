@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@ public:
     ~Transport();
 
     bool send_status(const std::string &json_message);
+    std::optional<std::string> receive_status_control(int timeout_ms);
     bool send_media(const std::vector<uint8_t> &packet);
     bool send_media(const MediaPacketView &packet);
     std::string last_error() const;
@@ -39,19 +41,27 @@ private:
     int make_udp_socket();
     int make_tcp_socket();
     bool send_udp_status(const std::string &json_message);
+    bool send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes, const MediaPacketView &packet, const char *label);
+    bool ensure_udp_socket(int &fd, const char *label);
     bool ensure_media_tcp_connected();
     SendResult send_all(int fd, const uint8_t *data, size_t size);
     SendResult send_all(int fd, const MediaPacketView &packet);
     void close_media_socket();
+    void close_udp_socket(int &fd);
     bool can_retry_media_connect() const;
     void set_error(const std::string &message);
     bool should_drop_before_write(int fd, size_t packet_size);
     size_t media_send_capacity_bytes() const;
+    std::optional<uint16_t> udp_port_for_packet(const MediaPacketView &packet, int &mtu_bytes, const char *&label) const;
 
     AppConfig config_;
     int status_udp_fd_ = -1;
     int media_tcp_fd_ = -1;
+    int media_udp_fd_ = -1;
+    int preview_udp_fd_ = -1;
     int media_send_buffer_bytes_ = 0;
+    uint32_t media_udp_sequence_ = 0;
+    uint32_t preview_udp_sequence_ = 0;
     uint32_t consecutive_media_backpressure_drops_ = 0;
     std::chrono::steady_clock::time_point last_media_connect_attempt_{};
     std::string last_error_;
@@ -60,6 +70,7 @@ private:
 class NullTransport {
 public:
     bool send_status(const std::string &) { return true; }
+    std::optional<std::string> receive_status_control(int) { return std::nullopt; }
     bool send_media(const std::vector<uint8_t> &) { return true; }
     bool send_media(const MediaPacketView &) { return true; }
     std::string last_error() const { return {}; }

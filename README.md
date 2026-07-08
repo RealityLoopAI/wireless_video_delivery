@@ -1,320 +1,114 @@
-# Gemini Wireless Video v3
+# wireless_video_delivery
 
-## 1. 项目定位
+`wireless_video_delivery` 是一套多路 Orbbec Gemini RGBD 相机的无线采集、传输、网页预览和录制工程。
 
-本目录是无线 RGBD 采集与录制系统 3.0 的工程骨架。
-3.0 目标是使用 C++ 重构发送端和接收端，实现全 Linux 环境下的多路 Gemini RGB + Depth 采集、传输、网页预览和 NAS 录制。
+这个仓库把发送端、接收端、Web Monitor、配置模板、运行脚本和文档放在一起，目标是在 Linux 设备上完成从相机采集到 NAS 落盘的完整链路。
 
-当前目录已包含发送端、接收端、Web 监控和控制脚本源码；发送端需要按 `11_third_party/README.md` 放置 Orbbec ARM64 SDK 后编译运行。
+## 先读什么
 
-当前交付实现的网络协议现状是：状态上报走 `UDP 50011`，媒体数据走 `TCP 50010`，管理接口走 `HTTP 8080`。需求和方案文档里提到的 `UDP/RTP`、`SRT` 目前仍属于候选技术路线，不是当前仓库已经启用的媒体传输实现。
+如果你是第一次看这个项目，按下面顺序读：
 
-## 2. 当前状态
+1. [04_docs/00_文档索引.md](04_docs/00_文档索引.md)
+2. [04_docs/01_从零开始理解项目.md](04_docs/01_从零开始理解项目.md)
+3. [04_docs/02_系统架构与技术路线.md](04_docs/02_系统架构与技术路线.md)
+4. [04_docs/03_RGBD数据链路.md](04_docs/03_RGBD数据链路.md)
+5. [04_docs/04_部署与运行手册.md](04_docs/04_部署与运行手册.md)
 
-已完成：
+旧文档已经移动到 [04_docs/archive/README_历史文档说明.md](04_docs/archive/README_历史文档说明.md)。归档文档只用于追溯历史问题和取舍，不代表当前实现。
 
-1. v3 工程目录分类。
-2. 需求 3.0 总文档。
-3. 发送端需求文档。
-4. 接收端需求文档。
-5. 中间传输数据格式文档。
-6. 第三方 SDK 放置说明。
-7. RK3588/香橙派 5 Pro 发送端 C++ 实现，包含本地预览、曝光/增益配置、坏 MJPEG 帧过滤、TCP 背压丢包保护/自动重连、采集/媒体发送停滞自恢复和 watchdog 自动重启。
-8. Ubuntu 接收端 C++ 核心接收与录制服务。
-9. FastAPI Web/REST 监控服务。
-10. 接收端 CLI 控制工具。
-11. 发送端和接收端一键启动、停止、状态脚本。
-12. 接收端 Orbbec 兼容交付导出工具。
-13. 发送端一键脚本预检：配置、SDK、相机、GStreamer 编码器、接收端路由、Wi-Fi 链路信息、USB/TCP 缓冲告警和当前设备 5GHz Wi-Fi guard。
-14. 接收端 systemd 用户服务自启动、异常自动重启、日志轮转和 Web 访问日志降噪。
+## 当前系统做什么
 
-源码仓库默认不包含或尚未完成：
+系统由发送端、接收端、Web Monitor 和 NAS 组成：
 
-1. Orbbec SDK 实体库文件（GitHub 源码交付默认不包含）。
-2. 长时间稳定性测试报告。
-3. 接收端历史回放、文件下载、权限体系。
-4. 发送端软件编码 fallback 的实测验证。
+```mermaid
+flowchart LR
+  camera[Orbbec Gemini RGBD 相机]
+  sender[Linux ARM 发送端]
+  receiver[Linux x86_64 接收端]
+  web[Web Monitor]
+  nas[NAS 录制目录]
 
-## 3. 目录说明
+  camera --> sender
+  sender -->|TCP 50010 媒体数据| receiver
+  sender -->|UDP 50011 状态心跳| receiver
+  sender <-->|UDP 50012 CLOCK_SYNC| receiver
+  receiver --> web
+  receiver --> nas
+```
+
+当前主线实现：
+
+1. 发送端通过 Orbbec SDK 采集 RGB 和 Depth。
+2. RGB 在发送端编码为 H.264 后发送。
+3. Depth 以 `uint16` 深度帧为母版，支持原始帧、zlib 无损和量化/分块压缩模式。
+4. CLOCK_SYNC 通过独立 UDP 端口估计 sender 到 receiver 的时间偏移，接收端生成 `global_timestamp_us`。
+5. 接收端接收媒体数据和状态心跳，提供录制控制和网页预览。
+6. 录制数据写入接收端挂载的 NAS 目录。
+7. Web Monitor 用于看在线状态、实时预览、开始/停止录制和设置显示名称。
+
+当前默认网络入口：
 
 ```text
-01_sender_linux/
+media:   TCP 50010
+status:  UDP 50011
+clock:   UDP 50012
+admin:   HTTP 127.0.0.1:18080
+web:     HTTP 0.0.0.0:8080
 ```
 
-发送端工程目录，包含树莓派 5、香橙派等 Linux ARM/ARM64 设备上运行的 C++ 采集和发送程序。
+## 当前不是目标
+
+当前主线不把下面内容当成正式能力：
+
+1. Windows 接收端。
+2. Python SDK 实时取流接口。
+3. RTP/UDP 5600 旧链路。
+4. Web 端历史录像检索和下载系统。
+5. 接收端远程修改发送端采集参数。
+6. 硬件同步、PTP 或严格画面内容级同步。
+7. 长时间 7x24 满负载稳定性承诺。
+
+## 仓库目录
 
 ```text
-02_receiver_linux/
+01_sender_linux/     发送端 C++ 工程
+02_receiver_linux/   接收端 C++ 工程
+03_common_core/      发送端和接收端共用协议定义
+04_docs/             当前主文档和历史归档
+05_tools/            启动、停止、状态、导出和维护脚本
+06_configs/          发送端和接收端配置模板
+07_samples/          样例材料
+08_reports/          近期运行、排查和合并归档；较早历史报告已迁入 04_docs/archive
+09_web_monitor/      FastAPI Web Monitor
+10_tests/            测试和模拟工具
+11_third_party/      第三方依赖放置说明
 ```
 
-接收端 C++ 工程目录。负责 UDP/TCP 接收、录制控制、本地管理 HTTP 和 NAS 写入。
+## 常用命令
 
-```text
-03_common_core/
-```
-
-公共核心目录，包含发送端和接收端共用的数据结构、协议定义、配置读取、日志、时间戳等代码。
-
-```text
-04_docs/
-```
-
-项目文档目录。当前最重要的需求和分工文档都在这里。
-
-```text
-05_tools/
-```
-
-工具目录，包含启动、停止、状态、预检、导出和调试工具。
-
-```text
-06_configs/
-```
-
-配置目录，包含发送端和接收端 JSON 配置模板。
-
-```text
-07_samples/
-```
-
-样例目录，用于放录制目录样例、配置样例或小规模测试样例。
-
-```text
-08_reports/
-```
-
-报告目录，用于放测试报告、联调记录、问题总结、验收记录和运行日志。
-
-```text
-09_web_monitor/
-```
-
-网页监控目录。当前使用 FastAPI 提供 Web 页面和 REST 代理。
-
-```text
-10_tests/
-```
-
-测试目录，用于放单元测试、集成测试和功能验证脚本。
-
-```text
-11_third_party/
-```
-
-第三方依赖说明目录。Orbbec SDK、FFmpeg、GStreamer、WebRTC 等依赖的放置规则见该目录下的 README。
-
-```text
-12_build/
-```
-
-构建输出目录，CMake 生成的临时文件和可执行文件放在这里。
-
-## 4. 关键文档
-
-建议按以下顺序阅读：
-
-1. `04_docs/00_文档索引_v3.md`
-2. `04_docs/需求3.0.md`
-3. `04_docs/03_中间传输数据格式_v3.md`
-4. `04_docs/08_接收端运行使用手册_v3.md`
-5. `04_docs/06_接收端当前存储格式说明_v3.md`
-6. `04_docs/07_Orbbec交付导出说明_v3.md`
-7. `04_docs/06_发送端运行使用手册_v3.md`
-
-发送端默认配置当前使用固定 `sender_id=rk3588-ubuntu`，接收端地址 `192.168.66.196`。当前交付预期收敛为一路 RGBD 稳定发送，默认入口使用 `06_configs/sender_rk3588-01_one_camera.json`。默认一路规格为 `cam02 / AY2MC31010W`，RGB `1920x1080@30 MJPG -> H.264 12Mbps`，Depth `320x200@30 y12 -> uint16 depth frame -> zlib`，本地预览按配置启用。发送端仍保留多路和热插拔能力，发现配置外新设备时可自动分配 `cam03` / `cam04` 并按同规格发送；但这属于扩展/实验能力，不作为当前默认运行目标。媒体 TCP 发送使用非阻塞背压保护：短暂拥塞时优先丢弃尚未写入 socket 的完整媒体包并保留连接；连续背压丢包后会主动关闭 media socket 并重连，避免发送计数长期卡在 0。如果采集正常但媒体连续发不出去，发送端会主动退出并交给 watchdog 重启。
-
-2026-06-05 Orange Pi 5 Pro 现场单路配置必须保留历史相机 key：`sender_id=auto` 派生为 `orangepi5pro-b439137c`，`camera_id=cam02`，配置文件为 `06_configs/sender_orangepi5pro-01_depth_zlib.json`，热插拔关闭。运行规格应跟随当前默认交付档，Depth 使用 `320x200@30 y12`；不能跟随仓库默认乱改的是身份和设备绑定字段。不要为了适配本机 IP 临时改成 `orangepi5pro-66-206_cam01`；这样会改变接收端 key，网页主预览或录制控制如果还选中旧 key，就会表现为“看不到预览/像是没发”。排查时先看接收端 `/api/status` 中 `orangepi5pro-b439137c_cam02` 的 `rgb_packets/depth_packets` 是否增长，并用 `POST /api/preview/main-target?sender_id=orangepi5pro-b439137c&camera_id=cam02` 把主预览切回本机。
-
-2026-06-05 使用 `05_tools/orbbec_depth_probe.cpp` 对现场 `SV1301S_U3 / AY2MC31010W` 枚举确认：该相机最低 Depth profile 为 `320x200@5 y11/y12`，最高 Depth profile 为 `1280x800@30 y11/y12`。当前默认交付使用 `320x200@30 y12`，在保留 Depth 实时性的同时降低 USB、zlib、网络和接收端压力；`06_configs/sender_rk3588-01_cam02_depth_max.json` 提供单路最高 Depth 测试配置，用于容量验证，不作为默认交付配置。
-
-2026-06-05 默认 Depth 档运行时，发送端会按 `depth_profile.fps` 对 Depth 压缩和媒体发送限流。运行状态判断以 `depth_sent_fps` 和 `depth_mbps` 为准，`depth_input_fps` 仅表示 SDK 输入到发送端的实际帧率。
-
-2026-06-12 RK3588 双路现场配置为 `06_configs/sender_rk3588-01_two_cameras.json`，固定 `sender_id=rk3588-ubuntu`，接收端为 `192.168.66.196`。当前两路绑定为 `cam01 / AY2M54302ZH` 和 `cam02 / AY2MC3100Z8`，RGB 保持 `1920x1080@30 H.264 12Mbps`，Depth 使用 `320x200@30 y12 -> zlib`，RGB 手动曝光使用 `auto_exposure=false, exposure=312, gain=80`。当前实机验证 RGB 与 Depth 已按同一 `camera_id` 对应，因此默认配置必须保持 `swap_depth_between_cameras=false`；只有现场确认两路 Depth 物理视角与 RGB 交叉时，才使用 `06_configs/sender_rk3588-01_two_cameras_swapped_test.json` 做反向测试。发送端默认使用每路 RGB/Depth 本地预览窗口；需要调试双 RGB 时间戳对齐预览时再将配置中的 `preview.aligned_rgb` 改为 `true`。验证时同时看发送端本地预览标签、接收端 `/api/status` 中 `rk3588-ubuntu_cam01/cam02` 的包计数，以及接收端 RGB/Depth 四宫格截图；不要只看网页主预览当前选中的旧 key。
-
-2026-06-05 使用最高 Depth 单路配置断开前最后 60 个有效 `perf` 采样确认：RGB/Depth 输入与发送均约 30fps，RGB 网络约 12.06Mbps，Depth zlib 网络约 62.45Mbps，总网络约 74.51Mbps；Depth USB 输入约 492.38Mbps，Depth zlib 平均约 15.78ms/帧，RGB/Depth send failure 均为 0。该结果依赖当时 5G Wi-Fi 链路和接收端吞吐正常，仍只作为单路容量和画质验证；默认交付已改为 `320x200@30 y12`。
-
-2026-06-05 当前现场交付预期：默认运行一路 RGBD，降低对 Wi-Fi 上行、USB、中断和远程操作通道的抢占。2026-05-29 历史容量测试表明，这台 RK3588 本机算力按实测约可支撑 5-6 路同规格处理，但在当前 Wi-Fi 与接收端组合下，多路会先受无线链路或接收端吞吐限制；3 路曾出现 TCP Send-Q 接近 4 MiB 和 backpressure 丢包。因此 2 路以上只作为手动指定配置的扩展/实验场景，不作为当前默认交付预期。
-
-发送端开发人员重点阅读：
-
-1. `04_docs/01_发送端需求_v3.md`
-2. `04_docs/03_中间传输数据格式_v3.md`
-3. `04_docs/04_发送端交付与接收端对接说明_v3.md`
-4. `04_docs/06_发送端运行使用手册_v3.md`
-5. `11_third_party/README.md`
-
-接收端开发人员重点阅读：
-
-1. `04_docs/02_接收端需求_v3.md`
-2. `04_docs/03_中间传输数据格式_v3.md`
-3. `04_docs/08_接收端运行使用手册_v3.md`
-4. `04_docs/06_接收端当前存储格式说明_v3.md`
-5. `04_docs/07_Orbbec交付导出说明_v3.md`
-
-双方共同对齐：
-
-1. `04_docs/03_中间传输数据格式_v3.md`
-
-## 5. Orbbec SDK 状态
-
-GitHub 源码交付默认不内置 Orbbec SDK 实体文件。本机运行发送端时，应按下方路径放置 ARM64 SDK；当前这台发送端已按 `linux_arm64` 路径放置 SDK。
-
-已确认 Orbbec SDK v1.10.27 release 中有 Linux ARM64 包，可作为发送端候选 SDK：
-
-```text
-https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
-```
-
-本项目按架构分开放置：
-
-```text
-11_third_party/orbbec/linux_arm64/
-11_third_party/orbbec/linux_x64/
-```
-
-规则：
-
-1. `linux_arm64` 给树莓派 5 / 香橙派发送端使用。
-2. `linux_x64` 给 Ubuntu 24.04 x86_64 接收端或开发机参考使用。
-3. 不能把 x64 SDK 当作发送端 SDK。
-
-具体放置规则见：
-
-```text
-11_third_party/README.md
-```
-
-## 6. 打包交付说明
-
-如果当前阶段要把本目录发给其他开发人员，请至少包含：
-
-1. 本 README。
-2. `04_docs/` 全部文档。
-3. `11_third_party/README.md`。
-4. 当前一级目录结构。
-
-如果要连 SDK 一起打包，需要先确认是否允许分发 SDK 实体，并把 ARM64 和 x64 SDK 按架构分别放入 `11_third_party/orbbec/` 下。
-
-## 7. 发送端快速启动
-
-当前 RK3588 发送端默认配置：
-
-```text
-06_configs/sender_rk3588-01_one_camera.json
-```
-
-默认规格：
-
-```text
-sender_id: auto (current machine derives orangepi5pro-c973b736)
-camera_id: cam02
-receiver_ip: 192.168.66.196
-RGB: 1920x1080@30 H.264 12Mbps
-Depth: 320x200@30 y12 -> zlib
-current expectation: stable 1 full-spec RGBD stream
-hotplug: retained as extension capability, not default delivery target
-transport.send_buffer_bytes: 4194304
-Wi-Fi guard: default min 5000MHz, optional SSID via GEMINI_SENDER_DEFAULT_WIFI_CONNECTION
-desktop idle-delay: 3600s
-desktop clock seconds: enabled
-monitor time display: Beijing time UTC+8, second precision
-multi-stream tuning: usbfs_memory_mb >= 256, net.core.wmem_max >= 4194304
-```
-
-最高 Depth 单路测试配置：
-
-```text
-06_configs/sender_rk3588-01_cam02_depth_max.json
-RGB: 1920x1080@30 H.264 12Mbps
-Depth: 1280x800@30 y12 -> zlib
-2026-06-05实测: RGB约30fps, Depth约30fps, 总网络约74.5Mbps, send failure为0
-用途: 单路容量和画质验证；默认交付保持 320x200@30 y12
-```
-
-多发送端同时接入时，接收端以 `<sender_id>_<camera_id>` 作为唯一相机 key。固定 `sender_id` 必须和物理设备一一对应，不能为了本机 IP、当前网段或临时调试随意改名；同一个 key 被两台发送端复用会导致预览、录制控制和存储目录混写或互相覆盖。改动任何 `sender_id` / `camera_id` 前，先查接收端 `/api/status` 是否已有同名 live key，并以 `sender_preflight.sh` 的 ID conflict 提示为准。
-实际运行参数和系统缓冲告警以 `./05_tools/sender_preflight.sh` 和 `./05_tools/status_sender.sh` 输出为准。
-
-当前桌面熄屏时间设置为 3600 秒，可通过 `./05_tools/set_desktop_screen_timeout.sh 3600` 重新应用。现场桌面时钟需要显示到秒，当前用户应保持 `org.gnome.desktop.interface clock-show-seconds=true`。Web Monitor 页面上的系统时间、Last media、Last status 统一按北京时间 UTC+8 显示到秒；接口和落盘中的 `*_timestamp_us` / `last_*_us` 仍保留 Unix epoch microseconds 原始值，用于跨流对齐。
-
-启动：
-
-```bash
-./05_tools/start_sender.sh
-```
-
-带本地预览启动：
-
-```bash
-./05_tools/start_sender_preview.sh
-```
-
-查看状态：
-
-```bash
-./05_tools/status_sender.sh
-```
-
-停止：
-
-```bash
-./05_tools/stop_sender.sh
-```
-
-详细说明见：
-
-```text
-04_docs/06_发送端运行使用手册_v3.md
-```
-
-## 8. 接收端快速启动
-
-当前接收端默认写入：
-
-```text
-/home/fz/Desktop/nas
-```
-
-启动：
+接收端：
 
 ```bash
 ./05_tools/start_receiver.sh
-```
-
-查看状态：
-
-```bash
 ./05_tools/status_receiver.sh
-```
-
-停止：
-
-```bash
 ./05_tools/stop_receiver.sh
 ```
 
-Web 页面：
-
-```text
-http://127.0.0.1:8080
-```
-
-命令行控制：
+发送端：
 
 ```bash
-./05_tools/gwv3_receiver_cli.py status
-./05_tools/gwv3_receiver_cli.py start-all
-./05_tools/gwv3_receiver_cli.py stop-all
+./05_tools/start_sender.sh
+./05_tools/start_sender_preview.sh
+./05_tools/status_sender.sh
+./05_tools/stop_sender.sh
 ```
 
-Orbbec 兼容交付导出：
+具体部署、配置和排障步骤见 [04_docs/04_部署与运行手册.md](04_docs/04_部署与运行手册.md) 和 [04_docs/06_故障排查手册.md](04_docs/06_故障排查手册.md)。
 
-```bash
-./05_tools/export_orbbec_delivery.py <segment_dir> --overwrite
-```
+## 关键约束
 
-详细说明见：
+多发送端系统最重要的约束是身份稳定。
 
-```text
-04_docs/08_接收端运行使用手册_v3.md
-04_docs/07_Orbbec交付导出说明_v3.md
-```
+接收端使用 `<sender_id>_<camera_id>` 作为唯一相机 key。这个 key 影响网页预览、录制控制、存储目录、时间戳对齐和下游处理。不要为了临时调试、当前 IP、仓库默认配置或看起来更顺手而随意改 `sender_id` / `camera_id`。
+
+文档和配置中不应提交密码、私有凭据、NAS 原始数据或本地临时备份。

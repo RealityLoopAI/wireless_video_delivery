@@ -6,6 +6,15 @@
     "media_port": 50010,
     "status_port": 50011
   },
+  "clock_sync": {
+    "enabled": true,
+    "receiver_ip": "192.168.66.196",
+    "port": 50012,
+    "interval_ms": 2000,
+    "timeout_ms": 100,
+    "max_delay_us": 100000,
+    "sample_window": 10
+  },
   "transport": {
     "enabled": true,
     "status_protocol": "udp",
@@ -33,6 +42,12 @@
   },
   "hotplug": {
     "enabled": false
+  },
+  "recording_buffer": {
+    "enabled": true,
+    "rgb_frames_per_slot": 900,
+    "depth_frames_per_slot": 900,
+    "depth_compression_frames_per_slot": 60
   },
   "cameras": [
     {

@@ -6,19 +6,41 @@
     "media_port": 50010,
     "status_port": 50011
   },
+  "clock_sync": {
+    "enabled": true,
+    "receiver_ip": "192.168.66.196",
+    "port": 50012,
+    "interval_ms": 2000,
+    "timeout_ms": 100,
+    "max_delay_us": 100000,
+    "sample_window": 10
+  },
   "transport": {
     "enabled": true,
     "status_protocol": "udp",
-    "media_protocol": "tcp",
+    "media_protocol": "udp",
     "connect_timeout_ms": 250,
     "send_timeout_ms": 80,
     "send_buffer_bytes": 4194304,
     "reconnect_interval_ms": 1000
   },
+  "media_udp": {
+    "enabled": true,
+    "rgb_enabled": true,
+    "depth_enabled": true,
+    "port": 50013,
+    "mtu_bytes": 1200
+  },
   "heartbeat_interval_ms": 1000,
   "swap_depth_between_cameras": false,
   "hotplug": {
     "enabled": false
+  },
+  "recording_buffer": {
+    "enabled": true,
+    "rgb_frames_per_slot": 900,
+    "depth_frames_per_slot": 900,
+    "depth_compression_frames_per_slot": 60
   },
   "preview": {
     "enabled": true,

@@ -1,10 +1,12 @@
 add_executable(gemini_receiver
+    src/clock_sync_manager.cpp
     src/main.cpp
 )
 
 find_package(ZLIB REQUIRED)
 
 target_include_directories(gemini_receiver PRIVATE
+    include
     "${CMAKE_SOURCE_DIR}/03_common_core/include"
 )
 
@@ -18,6 +20,7 @@ target_compile_options(gemini_receiver PRIVATE
 
 target_link_libraries(gemini_receiver PRIVATE
     ZLIB::ZLIB
+    ${CMAKE_DL_LIBS}
     pthread
 )
 

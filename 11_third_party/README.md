@@ -2,12 +2,14 @@
 
 ## 1. 目录定位
 
-本目录用于说明和放置 3.0 工程需要的第三方依赖。
+本目录用于说明和放置 `wireless_video_delivery` 工程需要的第三方依赖。
 当前只放说明文件，不直接内置大型 SDK 或动态库实体。
+
+项目总说明见 [../README.md](../README.md)，部署依赖见 [../04_docs/04_部署与运行手册.md](../04_docs/04_部署与运行手册.md)。
 
 ## 2. Orbbec SDK
 
-3.0 发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
+发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
 
 已确认 Orbbec SDK v1.10.27 release 中包含 Linux ARM64 包，可作为树莓派 5 / 香橙派发送端的优先候选版本：
 
@@ -37,21 +39,15 @@ OrbbecViewer_v1.10.27_202509260133_linux_x64_release.zip
 3. `OrbbecViewer` 是调试工具，不是项目运行时必须依赖；现场排查相机枚举、分辨率、帧率、固件状态时可以带上。
 4. Gitee 页面中 `C++` 可能被显示成空格，最终以实际下载文件名为准。
 
-## 3. 已知本地参考 SDK
+## 3. 本地参考 SDK 规则
 
-当前本机已有一个旧版 Linux x64 SDK 可用于参考 API 和示例：
-
-```text
-E:\Win10\Desktop\资料\奥比中光系列相机资料\奥比中光系列相机资料_2024.01.02\6.Orbbec SDK使用【Linux、Windows】\Linux_SDK\OrbbecSDK_C_C++_v1.5.7_linux_x64_release
-```
-
-该包只能用于：
+如果现场机器上已有旧版 Linux x64 SDK，只能用于：
 
 1. 查看 C/C++ API。
 2. 查看示例代码。
 3. 参考 Linux x86_64 环境下的编译方式。
 
-该包不应作为树莓派 5 / 香橙派发送端 SDK 使用。
+本仓库文档不记录个人 Windows 路径或某台机器上的临时 SDK 路径。旧版 x64 SDK 不应作为树莓派 5 / 香橙派发送端 SDK 使用。
 
 ## 4. 建议放置方式
 
@@ -78,17 +74,20 @@ E:\Win10\Desktop\资料\奥比中光系列相机资料\奥比中光系列相机�
 3. 不允许在发送端构建脚本中引用 `linux_x64` SDK。
 4. 不允许只放一个没有架构标识的 `SDK/` 目录。
 
-## 5. 还需要确认的第三方依赖
+## 5. 当前第三方依赖分工
 
-正式开发前还需要确认：
+当前主线已经围绕以下依赖组织：
 
-1. FFmpeg 或 GStreamer。
-2. H.264/H.265 硬件编码路径。
-3. Depth 无损压缩库，例如 LZ4 或 Zstd。
-4. Web 预览方案，例如 WebRTC 或备选方案。
-5. C++ HTTP/Web 框架。
-6. JSON 库。
-7. 日志库。
+1. Orbbec SDK：发送端相机采集和相机参数读取。
+2. GStreamer + Rockchip MPP：发送端 RGB H.264 硬件编码。
+3. FFmpeg：接收端 RGB/Depth 封装和导出工具依赖。
+4. OpenCV：发送端本地预览和部分图像处理。
+5. jsoncpp：C++ 配置和状态 JSON 处理。
+6. zlib：Depth 无损压缩传输。
+7. LZ4：部分量化/分块 Depth 压缩模式。
+8. FastAPI：Web Monitor 服务。
+
+后续如果引入 Zstd、SRT、WebRTC 或新的硬件编码路径，应先在技术路线文档中说明原因、收益、风险和当前实现状态。
 
 ## 6. 当前不内置 SDK 实体的原因
 

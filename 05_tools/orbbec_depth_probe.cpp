@@ -260,6 +260,8 @@ int main(int argc, char **argv) {
         print_int_property(device, OB_PROP_COLOR_AE_MAX_EXPOSURE_INT, "color_max_exposure");
         print_int_property(device, OB_PROP_COLOR_MAXIMAL_GAIN_INT, "color_max_gain");
         print_int_property(device, OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, "color_power_line_frequency");
+        print_bool_property(device, OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "color_auto_white_balance");
+        print_int_property(device, OB_PROP_COLOR_WHITE_BALANCE_INT, "color_white_balance");
 
         print_depth_work_modes(device);
         print_int_property(device, OB_PROP_DEPTH_PRECISION_LEVEL_INT, "depth_precision_level");

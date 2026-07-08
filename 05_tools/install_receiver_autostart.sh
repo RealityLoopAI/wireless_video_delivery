@@ -20,6 +20,60 @@ fail() {
   exit 1
 }
 
+collect_descendants() {
+  local pid="$1"
+  local child
+  while read -r child; do
+    [[ -z "$child" ]] && continue
+    collect_descendants "$child"
+    echo "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+}
+
+stop_matching_processes() {
+  local name="$1"
+  local pattern="$2"
+  local force_kill="${3:-1}"
+  local pids=() descendants=() pid
+  mapfile -t pids < <(pgrep -f "$pattern" 2>/dev/null || true)
+  if ((${#pids[@]} == 0)); then
+    return 0
+  fi
+  for pid in "${pids[@]}"; do
+    mapfile -t descendants < <(collect_descendants "$pid")
+    if ((${#descendants[@]} > 0)); then
+      kill "${descendants[@]}" 2>/dev/null || true
+    fi
+  done
+  kill "${pids[@]}" 2>/dev/null || true
+  for _ in {1..20}; do
+    local alive=0
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    ((alive == 0)) && break
+    sleep 0.2
+  done
+  if [[ "$force_kill" == "1" ]]; then
+    kill -9 "${pids[@]}" 2>/dev/null || true
+  else
+    local still_alive=()
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        still_alive+=("$pid")
+      fi
+    done
+    if ((${#still_alive[@]} > 0)); then
+      echo "$name 残留进程仍在运行，已跳过 SIGKILL 以避免打断录制收尾：${still_alive[*]}"
+      return 1
+    fi
+  fi
+  echo "$name 残留进程已清理：${pids[*]}"
+}
+
 read_config_field() {
   python3 - "$CONFIG" "$1" "$2" <<'PY'
 import json
@@ -33,6 +87,47 @@ try:
 except Exception:
     print(fallback)
 PY
+}
+
+status_is_idle() {
+  python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+busy = bool(data.get("recording_all"))
+for cam in data.get("cameras", []):
+    if cam.get("recording") or cam.get("segment_active") or cam.get("segment_finalizing"):
+        busy = True
+    if int(cam.get("record_queue_packets") or 0) > 0 or int(cam.get("record_active_writes") or 0) > 0:
+        busy = True
+sys.exit(1 if busy else 0)
+'
+}
+
+request_receiver_record_stop() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local admin_port
+  admin_port="$(read_config_field admin_port 18080)"
+  local base_url="http://127.0.0.1:${admin_port}"
+  if ! curl -fsS --max-time 3 -X POST "$base_url/api/record/stop-all" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "已请求接收端停止录制，等待切片收尾..."
+  for _ in {1..120}; do
+    local status
+    status="$(curl -fsS --max-time 3 "$base_url/api/status" 2>/dev/null || true)"
+    if [[ -n "$status" ]] && status_is_idle <<<"$status"; then
+      echo "接收端录制已空闲"
+      return 0
+    fi
+    sleep 1
+  done
+  fail "接收端录制收尾等待超时，已避免 SIGKILL；请确认录制停止后再安装自启动"
 }
 
 [[ -f "$CONFIG" ]] || fail "配置文件不存在 $CONFIG"
@@ -59,8 +154,13 @@ if [[ ! -x "$VENV/bin/python" ]]; then
 fi
 "$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
 
-systemctl --user stop gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+systemctl --user stop gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+request_receiver_record_stop
+systemctl --user stop gwv3-gemini-receiver.service >/dev/null 2>&1 || true
 systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+stop_matching_processes "Web 监控" "$VENV/bin/python -m uvicorn server:app"
+stop_matching_processes "C++ 接收端" "$BIN --config" 0
+rm -f "$RECEIVER_PID" "$WEB_PID"
 
 cat > "$RECEIVER_UNIT" <<EOF
 [Unit]
@@ -74,6 +174,9 @@ WorkingDirectory=$ROOT_DIR
 ExecStart=$BIN --config $CONFIG
 Restart=on-failure
 RestartSec=2
+KillMode=control-group
+TimeoutStopSec=180s
+SendSIGKILL=no
 MemoryHigh=3G
 MemoryMax=4G
 StandardOutput=append:$RECEIVER_STDOUT
