@@ -3767,28 +3767,44 @@ private:
     }
 
     void finalize_completed_media(const Config &cfg) const {
-        RetimingTask task;
-        task.ffmpeg_path = cfg.ffmpeg_path;
-        task.ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
-        task.log_path = file_path("ffmpeg.log");
-        task.start_us = start_us_;
+        const auto ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
+        const auto log_path = file_path("ffmpeg.log");
+        bool checked_any_media = false;
 
-        const auto &rgb_output_stats = rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_;
-        const double rgb_scale = media_retime_scale(rgb_record_fps_, rgb_output_stats);
-        const double rgb_duration = media_duration_seconds(rgb_output_stats);
-        if(rgb_duration > 0.0) {
-            task.entries.push_back(
-                RetimingEntry{file_path("rgb.mp4"), "rgb", rgb_duration, rgb_scale, file_path("rgb_debug.h264"), rgb_record_fps_, cfg.write_debug_h264});
+        const auto validate_media = [&](const std::filesystem::path &path, const std::string &stream_name) -> bool {
+            if(!file_size_nonzero(path)) {
+                append_retime_log(log_path, stream_name + " validation skipped: media file missing or empty");
+                return false;
+            }
+            checked_any_media = true;
+            const bool ok = media_file_readable(ffprobe_path, path);
+            append_retime_log(log_path, stream_name + (ok ? " final validation ok" : " final validation failed"));
+            set_file_mtime_to_start(path, start_us_);
+            return ok;
+        };
+
+        const bool rgb_ok = validate_media(file_path("rgb.mp4"), "rgb");
+        if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
+            std::error_code ec;
+            if(std::filesystem::exists(rgb_debug_path_, ec)) {
+                std::filesystem::remove(rgb_debug_path_, ec);
+                if(ec) {
+                    append_retime_log(log_path, "rgb recovery h264 remove failed: " + ec.message());
+                }
+                else {
+                    append_retime_log(log_path, "rgb recovery h264 removed after final validation");
+                }
+            }
         }
-        const double depth_scale = media_retime_scale(depth_record_fps_, depth_stats_);
-        const double depth_duration = media_duration_seconds(depth_stats_);
-        if(depth_duration > 0.0) {
-            task.entries.push_back(RetimingEntry{file_path("depth.mkv"), "depth", depth_duration, depth_scale, {}, 0.0, false});
+        else if(!rgb_ok && !rgb_debug_path_.empty()) {
+            append_retime_log(log_path, "rgb recovery h264 kept for offline repair");
         }
-        if(task.entries.empty()) {
-            return;
+
+        validate_media(file_path("depth.mkv"), "depth");
+        if(checked_any_media) {
+            append_retime_log(log_path, "realtime remux disabled; media kept in recorder output format");
+            set_file_mtime_to_start(log_path, start_us_);
         }
-        run_retime_task(std::move(task));
     }
 
     void write_meta(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) {
