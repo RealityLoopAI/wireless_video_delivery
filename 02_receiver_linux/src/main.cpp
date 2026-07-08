@@ -95,7 +95,6 @@ constexpr size_t kPreviewUdpMaxAssemblies = 4096;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
-constexpr const char *kRgbMp4FinalMuxFlags = "+faststart";
 
 std::atomic<bool> g_running{true};
 
@@ -3443,24 +3442,6 @@ private:
         }
     }
 
-    struct RetimingEntry {
-        std::filesystem::path media_path;
-        std::string stream_name;
-        double target_duration_seconds = 0.0;
-        double fallback_scale = 1.0;
-        std::filesystem::path raw_h264_path;
-        double raw_h264_fps = 30.0;
-        bool keep_raw_h264 = false;
-    };
-
-    struct RetimingTask {
-        std::string ffmpeg_path;
-        std::string ffprobe_path;
-        std::filesystem::path log_path;
-        uint64_t start_us = 0;
-        std::vector<RetimingEntry> entries;
-    };
-
     static double media_duration_seconds(const StreamRecordStats &stats) {
         if(stats.frames < 2 || stats.last_local_us <= stats.first_local_us) {
             return 0.0;
@@ -3474,20 +3455,6 @@ private:
             return 1.0;
         }
         return record_fps / actual_fps;
-    }
-
-    static bool should_retime_media(double scale) {
-        return std::isfinite(scale) && scale >= 0.8 && scale <= 1.25 && std::fabs(scale - 1.0) >= 0.001;
-    }
-
-    static bool is_mp4_file(const std::filesystem::path &path) {
-        return path.extension().string() == ".mp4";
-    }
-
-    static std::string format_scale(double scale) {
-        std::ostringstream out;
-        out << std::fixed << std::setprecision(9) << scale;
-        return out.str();
     }
 
     static std::string ffprobe_path_from_ffmpeg(const std::string &ffmpeg_path) {
@@ -3538,12 +3505,21 @@ private:
             return false;
         }
         constexpr size_t kChunkSize = 64 * 1024;
+        constexpr size_t kMaxMoovScanBytes = 8ull * 1024ull * 1024ull;
         std::vector<char> buffer(kChunkSize + 3);
         size_t carry = 0;
+        size_t scanned = 0;
         while(input) {
-            input.read(buffer.data() + static_cast<std::streamoff>(carry), static_cast<std::streamsize>(kChunkSize));
+            const size_t remaining = kMaxMoovScanBytes > scanned ? kMaxMoovScanBytes - scanned : 0;
+            if(remaining == 0) {
+                break;
+            }
+            const size_t to_read = std::min(kChunkSize, remaining);
+            input.read(buffer.data() + static_cast<std::streamoff>(carry), static_cast<std::streamsize>(to_read));
             const auto read_count = input.gcount();
-            const size_t total = carry + static_cast<size_t>(std::max<std::streamsize>(read_count, 0));
+            const size_t read_size = static_cast<size_t>(std::max<std::streamsize>(read_count, 0));
+            scanned += read_size;
+            const size_t total = carry + read_size;
             if(total >= 4) {
                 const char *begin = buffer.data();
                 const char *end = buffer.data() + total;
@@ -3587,183 +3563,6 @@ private:
         times[0].tv_nsec = static_cast<long>((start_us % 1'000'000ull) * 1000ull);
         times[1] = times[0];
         utimensat(AT_FDCWD, path.c_str(), times, 0);
-    }
-
-    static std::filesystem::path local_retime_tmp_path(const std::filesystem::path &media_path, const std::string &tag) {
-        const auto tmp_dir = std::filesystem::temp_directory_path() / "gwv3_receiver_media_tmp";
-        std::error_code ec;
-        std::filesystem::create_directories(tmp_dir, ec);
-        const auto stem = media_path.stem().string();
-        const auto extension = media_path.extension().string();
-        for(int attempt = 0; attempt < 100; ++attempt) {
-            const auto name = stem + "." + tag + "." + std::to_string(static_cast<long long>(::getpid())) + "." +
-                              std::to_string(static_cast<unsigned long long>(now_us())) + "." + std::to_string(attempt) + extension;
-            auto candidate = tmp_dir / name;
-            if(!std::filesystem::exists(candidate, ec)) {
-                return candidate;
-            }
-        }
-        return tmp_dir / (stem + "." + tag + "." + std::to_string(static_cast<unsigned long long>(now_us())) + extension);
-    }
-
-    static bool replace_media_from_local_tmp(const RetimingTask &task, const RetimingEntry &entry,
-                                             const std::filesystem::path &local_tmp_path, const std::string &operation) {
-        if(!media_file_readable(task.ffprobe_path, local_tmp_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " " + operation + " local tmp validation failed");
-            return false;
-        }
-
-        const auto parent = entry.media_path.parent_path();
-        const auto replace_tmp_path = parent / (entry.media_path.stem().string() + "." + operation + "_replace_tmp" +
-                                                entry.media_path.extension().string());
-        std::error_code ec;
-        std::filesystem::remove(replace_tmp_path, ec);
-        std::filesystem::copy_file(local_tmp_path, replace_tmp_path, std::filesystem::copy_options::overwrite_existing, ec);
-        if(ec || !media_file_readable(task.ffprobe_path, replace_tmp_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " " + operation + " staging copy failed");
-            std::filesystem::remove(replace_tmp_path, ec);
-            return false;
-        }
-
-        std::filesystem::rename(replace_tmp_path, entry.media_path, ec);
-        if(ec) {
-            append_retime_log(task.log_path, entry.stream_name + " " + operation + " replace failed: " + ec.message());
-            std::filesystem::remove(replace_tmp_path, ec);
-            return false;
-        }
-
-        set_file_mtime_to_start(entry.media_path, task.start_us);
-        if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " " + operation + " final validation failed");
-            return false;
-        }
-        return true;
-    }
-
-    static bool repair_mp4_from_h264(const RetimingTask &task, const RetimingEntry &entry) {
-        if(entry.raw_h264_path.empty() || !std::filesystem::exists(entry.raw_h264_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " repair skipped: raw h264 missing");
-            return false;
-        }
-        const auto tmp_path = local_retime_tmp_path(entry.media_path, "repair");
-        std::error_code ec;
-        std::filesystem::remove(tmp_path, ec);
-
-        append_retime_log(task.log_path, entry.stream_name + " repair start from " + entry.raw_h264_path.filename().string());
-        const std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y -fflags +genpts -r " +
-                                format_fps(entry.raw_h264_fps) + " -f h264 -i " + shell_quote(entry.raw_h264_path.string()) +
-                                " -c:v copy -movflags " + kRgbMp4FinalMuxFlags + " " + shell_quote(tmp_path.string()) +
-                                " 2>>" + shell_quote(task.log_path.string());
-        const int rc = std::system(cmd.c_str());
-        if(rc != 0 || !file_size_nonzero(tmp_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " repair failed");
-            std::filesystem::remove(tmp_path, ec);
-            return false;
-        }
-
-        const bool replaced = replace_media_from_local_tmp(task, entry, tmp_path, "repair");
-        std::filesystem::remove(tmp_path, ec);
-        if(!replaced) {
-            return false;
-        }
-        append_retime_log(task.log_path, entry.stream_name + " repair done");
-        return true;
-    }
-
-    static bool retime_media_file(const RetimingTask &task, const RetimingEntry &entry) {
-        if(!std::filesystem::exists(entry.media_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " retime skipped: media file missing");
-            return false;
-        }
-
-        double scale = entry.fallback_scale;
-        if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " initial validation failed");
-            if(entry.stream_name != "rgb" || !repair_mp4_from_h264(task, entry)) {
-                return false;
-            }
-        }
-        auto current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path);
-        if(!current_duration && entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry)) {
-            current_duration = probe_media_duration_seconds(task.ffprobe_path, entry.media_path);
-        }
-        if(current_duration) {
-            if(entry.target_duration_seconds > 0.0) {
-                scale = entry.target_duration_seconds / *current_duration;
-            }
-            append_retime_log(task.log_path, entry.stream_name + " duration current=" + format_scale(*current_duration) +
-                                                 " target=" + format_scale(entry.target_duration_seconds) +
-                                                 " scale=" + format_scale(scale));
-        }
-        else {
-            append_retime_log(task.log_path, entry.stream_name + " duration probe failed; fallback scale=" + format_scale(scale));
-        }
-        const bool should_retime = should_retime_media(scale);
-        const bool should_finalize_mp4 = is_mp4_file(entry.media_path);
-        if(!should_retime && !should_finalize_mp4) {
-            append_retime_log(task.log_path, entry.stream_name + " retime skipped: scale near 1 or outside 0.8..1.25");
-            if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
-                append_retime_log(task.log_path, entry.stream_name + " skipped retime final validation failed");
-                return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);
-            }
-            append_retime_log(task.log_path, entry.stream_name + " final validation ok");
-            return true;
-        }
-
-        const auto tmp_path = local_retime_tmp_path(entry.media_path, "retime");
-        std::error_code ec;
-        std::filesystem::remove(tmp_path, ec);
-
-        append_retime_log(task.log_path,
-                          entry.stream_name + (should_retime ? " retime start scale=" + format_scale(scale) : " finalize mp4 start"));
-        std::string cmd = shell_quote(task.ffmpeg_path) + " -hide_banner -loglevel warning -y ";
-        if(should_retime) {
-            cmd += "-itsscale " + format_scale(scale) + " ";
-        }
-        cmd += "-i " + shell_quote(entry.media_path.string()) + " -map 0 -c copy -avoid_negative_ts make_zero";
-        if(should_finalize_mp4) {
-            cmd += std::string(" -movflags ") + kRgbMp4FinalMuxFlags;
-        }
-        cmd += " " + shell_quote(tmp_path.string()) + " 2>>" + shell_quote(task.log_path.string());
-        const int rc = std::system(cmd.c_str());
-        if(rc != 0 || !file_size_nonzero(tmp_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " retime failed");
-            std::filesystem::remove(tmp_path, ec);
-            return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);
-        }
-
-        const bool replaced = replace_media_from_local_tmp(task, entry, tmp_path, "retime");
-        std::filesystem::remove(tmp_path, ec);
-        if(!replaced) {
-            append_retime_log(task.log_path, entry.stream_name + " retime replace failed");
-            return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);
-        }
-        append_retime_log(task.log_path, entry.stream_name + (should_retime ? " retime done" : " finalize mp4 done"));
-        if(!media_file_readable(task.ffprobe_path, entry.media_path)) {
-            append_retime_log(task.log_path, entry.stream_name + " retime final validation failed");
-            return entry.stream_name == "rgb" && repair_mp4_from_h264(task, entry);
-        }
-        append_retime_log(task.log_path, entry.stream_name + " final validation ok");
-        return true;
-    }
-
-    static void run_retime_task(RetimingTask task) {
-        for(const auto &entry : task.entries) {
-            const bool ok = retime_media_file(task, entry);
-            if(ok && entry.stream_name == "rgb" && !entry.keep_raw_h264 && !entry.raw_h264_path.empty()) {
-                std::error_code ec;
-                if(std::filesystem::exists(entry.raw_h264_path, ec)) {
-                    std::filesystem::remove(entry.raw_h264_path, ec);
-                    if(ec) {
-                        append_retime_log(task.log_path, "rgb recovery h264 remove failed: " + ec.message());
-                    }
-                    else {
-                        append_retime_log(task.log_path, "rgb recovery h264 removed after final validation");
-                    }
-                }
-            }
-        }
-        set_file_mtime_to_start(task.log_path, task.start_us);
     }
 
     void finalize_completed_media(const Config &cfg) const {
