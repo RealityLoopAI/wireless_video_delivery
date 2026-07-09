@@ -72,7 +72,7 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
-        "gain": 20,
+        "gain": 60,
         "auto_white_balance": true
       }
     }
