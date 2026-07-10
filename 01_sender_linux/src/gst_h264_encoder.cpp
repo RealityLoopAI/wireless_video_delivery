@@ -159,12 +159,10 @@ void GstH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us) {
         return;
     }
     force_keyframe_pending_ = false;
-    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GstEvent *event = gst_video_event_new_downstream_force_key_unit(running_time,
-                                                                    running_time,
-                                                                    running_time,
-                                                                    TRUE,
-                                                                    force_keyframe_count_++);
+    (void)timestamp_us;
+    GstEvent *event = gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                                  TRUE,
+                                                                  force_keyframe_count_++);
     if(event && !gst_element_send_event(encoder_, event)) {
         // Ownership is transferred to gst_element_send_event even when it returns false.
     }
@@ -336,12 +334,10 @@ void GstJpegDualH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us, 
         return;
     }
     pending = false;
-    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GstEvent *event = gst_video_event_new_downstream_force_key_unit(running_time,
-                                                                    running_time,
-                                                                    running_time,
-                                                                    TRUE,
-                                                                    count++);
+    (void)timestamp_us;
+    GstEvent *event = gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                                  TRUE,
+                                                                  count++);
     if(event && !gst_element_send_event(encoder, event)) {
     }
 }

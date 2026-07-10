@@ -171,7 +171,7 @@ request_receiver_record_stop
 systemctl --user stop gwv3-gemini-receiver.service >/dev/null 2>&1 || true
 systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 stop_matching_processes "Web 监控" "$VENV/bin/python -m uvicorn server:app"
-stop_matching_processes "C++ 接收端" "$BIN --config" 0
+stop_matching_processes "C++ 接收端" "gemini_receiver .*--config" 0
 rm -f "$RECEIVER_PID" "$WEB_PID"
 
 cat > "$RECEIVER_UNIT" <<EOF
