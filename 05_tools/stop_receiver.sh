@@ -150,7 +150,7 @@ except Exception:
 
 busy = bool(data.get("recording_all"))
 for cam in data.get("cameras", []):
-    if cam.get("recording") or cam.get("segment_active") or cam.get("segment_finalizing"):
+    if cam.get("recording") or cam.get("segment_active") or cam.get("segment_finalizing") or cam.get("record_finalizing"):
         busy = True
     if int(cam.get("record_queue_packets") or 0) > 0 or int(cam.get("record_active_writes") or 0) > 0:
         busy = True
