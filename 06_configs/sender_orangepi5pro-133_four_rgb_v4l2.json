@@ -1,0 +1,166 @@
+{
+  "sender_id": "orangepi5pro-d12a4719",
+  "sender_version": "3.0.0",
+  "receiver": {
+    "ip": "192.168.66.196",
+    "media_port": 50010,
+    "status_port": 50011
+  },
+  "clock_sync": {
+    "enabled": true,
+    "receiver_ip": "192.168.66.196",
+    "port": 50012,
+    "interval_ms": 2000,
+    "timeout_ms": 100,
+    "max_delay_us": 100000,
+    "sample_window": 10
+  },
+  "transport": {
+    "enabled": true,
+    "status_protocol": "udp",
+    "media_protocol": "tcp",
+    "connect_timeout_ms": 250,
+    "send_timeout_ms": 80,
+    "send_buffer_bytes": 33554432,
+    "reconnect_interval_ms": 1000
+  },
+  "heartbeat_interval_ms": 1000,
+  "preview": {
+    "enabled": false,
+    "fps": 30
+  },
+  "web_rgb_preview": {
+    "enabled": false,
+    "max_width": 640,
+    "max_height": 360,
+    "fps": 30,
+    "bitrate_bps": 500000
+  },
+  "logging": {
+    "directory": "08_reports/sender_logs",
+    "max_bytes": 10485760
+  },
+  "hotplug": {
+    "enabled": false
+  },
+  "recording_buffer": {
+    "enabled": true,
+    "rgb_frames_per_slot": 900,
+    "depth_frames_per_slot": 1,
+    "depth_compression_frames_per_slot": 1
+  },
+  "cameras": [
+    {
+      "camera_id": "cam01",
+      "capture_backend": "v4l2",
+      "serial_number": "AY2M54301VE",
+      "video_device": "/dev/video0",
+      "validate_rgb_mjpeg": false,
+      "rgb_profile": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "enabled": false
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "hardware",
+        "gstreamer_encoder": "mpph264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "exposure": 312,
+        "auto_exposure_priority": 0,
+        "power_line_frequency": 1
+      }
+    },
+    {
+      "camera_id": "cam02",
+      "capture_backend": "v4l2",
+      "serial_number": "AY2M5430050",
+      "video_device": "/dev/video2",
+      "validate_rgb_mjpeg": false,
+      "rgb_profile": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "enabled": false
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "hardware",
+        "gstreamer_encoder": "mpph264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "exposure": 312,
+        "auto_exposure_priority": 0,
+        "power_line_frequency": 1
+      }
+    },
+    {
+      "camera_id": "cam03",
+      "capture_backend": "v4l2",
+      "serial_number": "AY2MC3100Z8",
+      "video_device": "/dev/video4",
+      "validate_rgb_mjpeg": false,
+      "rgb_profile": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "enabled": false
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "hardware",
+        "gstreamer_encoder": "mpph264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "exposure": 312,
+        "auto_exposure_priority": 0,
+        "power_line_frequency": 1
+      }
+    },
+    {
+      "camera_id": "cam04",
+      "capture_backend": "v4l2",
+      "serial_number": "AY2T7410103",
+      "video_device": "/dev/video6",
+      "validate_rgb_mjpeg": false,
+      "rgb_profile": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "format": "mjpg"
+      },
+      "depth_profile": {
+        "enabled": false
+      },
+      "rgb_encoding": {
+        "codec": "h264",
+        "mode": "hardware",
+        "gstreamer_encoder": "mpph264enc",
+        "bitrate_bps": 6000000
+      },
+      "color_controls": {
+        "auto_exposure": false,
+        "exposure": 312,
+        "auto_exposure_priority": 0,
+        "power_line_frequency": 1
+      }
+    }
+  ]
+}

@@ -28,6 +28,8 @@
   "state_path": "06_configs/receiver_runtime_state.json",
   "write_debug_h264": false,
   "write_debug_depth_raw": false,
-  "max_payload_mb": 128,
-  "record_queue_max_mb": 512
+  "max_payload_mb": 32,
+  "record_queue_max_mb": 512,
+  "record_queue_total_max_mb": 2048,
+  "min_free_disk_mb": 2048
 }

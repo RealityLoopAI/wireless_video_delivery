@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cerrno>
 #include <cctype>
 #include <csetjmp>
 #include <cstdio>
@@ -46,6 +47,12 @@
 #include <zlib.h>
 
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 namespace gwv3 {
 
@@ -70,10 +77,14 @@ constexpr auto kWebRgbPreviewMaxLease = std::chrono::seconds(10);
 constexpr size_t kMediaSlotsPerCamera = 3;
 constexpr size_t kDepthMediaQueuePerSlot = 4;
 constexpr size_t kDepthCompressionQueuePerSlot = 4;
+constexpr size_t kMediaQueueMaxBytesPerSlot = 256ull * 1024ull * 1024ull;
+constexpr size_t kPreviewQueueMaxBytesPerSlot = 16ull * 1024ull * 1024ull;
+constexpr size_t kDepthCompressionQueueMaxBytesPerSlot = 128ull * 1024ull * 1024ull;
 constexpr uint32_t kJpegDualNoMainOutputFallbackFrames = 60;
 constexpr uint64_t kRgbPtsMatchToleranceUs = 2000;
 constexpr uint64_t kRgbEncoderOutputLagResetUs = 500000;
 constexpr auto kWebRgbPreviewSuppressAfterEncoderLag = std::chrono::seconds(10);
+constexpr auto kGracefulQueueDrainTimeout = std::chrono::seconds(10);
 
 const char *stream_type_name(StreamType stream_type) {
     switch(stream_type) {
@@ -227,6 +238,7 @@ struct RgbEncodeTiming {
     uint64_t frame_id = 0;
     uint64_t device_timestamp_us = 0;
     uint64_t system_timestamp_us = 0;
+    uint64_t pair_id = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     RgbFrameDiagnostics diagnostics;
@@ -237,6 +249,8 @@ struct RgbEncodeTiming {
     uint64_t packet_queued_timestamp_us = 0;
 };
 
+class V4L2MjpegCapture;
+
 struct CameraRuntime {
     mutable std::mutex mutex;
     CameraConfig config;
@@ -245,6 +259,7 @@ struct CameraRuntime {
     std::string device_connection_type;
     std::shared_ptr<ob::Device> device;
     std::unique_ptr<ob::Pipeline> pipeline;
+    std::shared_ptr<V4L2MjpegCapture> v4l2_capture;
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     std::unique_ptr<GstH264Encoder> encoder;
@@ -276,6 +291,10 @@ struct CameraRuntime {
     bool rgb_sent_timing_seen = false;
     uint64_t rgb_last_sent_frame_id = 0;
     uint64_t rgb_last_sent_system_timestamp_us = 0;
+    uint64_t rgb_last_capture_system_timestamp_us = 0;
+    uint64_t depth_last_capture_system_timestamp_us = 0;
+    uint64_t capture_timestamp_fallbacks = 0;
+    uint64_t next_pair_id = 1;
     uint32_t media_outage_samples = 0;
     uint32_t capture_stall_samples = 0;
     std::string last_error;
@@ -357,26 +376,40 @@ public:
         if(occupied && reject_if_occupied) {
             return PublishResult::rejected_occupied;
         }
+        const size_t job_bytes = job.total_size();
+        const size_t max_bytes = job.stream_type == StreamType::rgb_preview ? kPreviewQueueMaxBytesPerSlot
+                                                                            : kMediaQueueMaxBytesPerSlot;
+        if(job_bytes > max_bytes) {
+            return PublishResult::rejected_occupied;
+        }
+        const auto discard_front = [&] {
+            slot.bytes -= std::min(slot.bytes, slot.jobs.front().total_size());
+            slot.jobs.pop_front();
+        };
         bool dropped = false;
         if(job.stream_type == StreamType::rgb_preview) {
             dropped = occupied;
             slot.jobs.clear();
+            slot.bytes = 0;
             slot.jobs.push_back(std::move(job));
         }
         else if(job.stream_type == StreamType::depth_raw) {
-            while(slot.jobs.size() >= depth_frames_per_slot_) {
-                slot.jobs.pop_front();
+            while(!slot.jobs.empty()
+                  && (slot.jobs.size() >= depth_frames_per_slot_ || job_bytes > max_bytes - std::min(slot.bytes, max_bytes))) {
+                discard_front();
                 dropped = true;
             }
             slot.jobs.push_back(std::move(job));
         }
         else {
-            while(slot.jobs.size() >= rgb_frames_per_slot_) {
-                slot.jobs.pop_front();
+            while(!slot.jobs.empty()
+                  && (slot.jobs.size() >= rgb_frames_per_slot_ || job_bytes > max_bytes - std::min(slot.bytes, max_bytes))) {
+                discard_front();
                 dropped = true;
             }
             slot.jobs.push_back(std::move(job));
         }
+        slot.bytes += job_bytes;
         cv_.notify_one();
         return dropped ? PublishResult::overwritten : PublishResult::queued;
     }
@@ -407,9 +440,15 @@ public:
         });
     }
 
+    bool empty() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return !has_packet_locked();
+    }
+
 private:
     struct Slot {
         std::deque<MediaPacketJob> jobs;
+        size_t bytes = 0;
     };
 
     template <typename Predicate>
@@ -419,6 +458,7 @@ private:
             if(!slots_[index].jobs.empty() && predicate(slots_[index].jobs.front().stream_type)) {
                 auto job = std::move(slots_[index].jobs.front());
                 slots_[index].jobs.pop_front();
+                slots_[index].bytes -= std::min(slots_[index].bytes, job.total_size());
                 next_slot_ = (index + 1) % slots_.size();
                 return job;
             }
@@ -475,11 +515,20 @@ public:
             return false;
         }
         auto &slot = slots_[slot_index];
+        const size_t job_bytes = job.raw_payload_size;
+        if(job_bytes == 0 || job_bytes > kDepthCompressionQueueMaxBytesPerSlot) {
+            return true;
+        }
         bool dropped = false;
-        while(slot.jobs.size() >= frames_per_slot_) {
+        while(!slot.jobs.empty()
+              && (slot.jobs.size() >= frames_per_slot_
+                  || job_bytes > kDepthCompressionQueueMaxBytesPerSlot
+                                     - std::min(slot.bytes, kDepthCompressionQueueMaxBytesPerSlot))) {
+            slot.bytes -= std::min(slot.bytes, slot.jobs.front().raw_payload_size);
             slot.jobs.pop_front();
             dropped = true;
         }
+        slot.bytes += job_bytes;
         slot.jobs.push_back(std::move(job));
         cv_.notify_one();
         return dropped;
@@ -496,6 +545,7 @@ public:
             if(!slots_[index].jobs.empty() && !slots_[index].in_flight) {
                 auto job = std::move(slots_[index].jobs.front());
                 slots_[index].jobs.pop_front();
+                slots_[index].bytes -= std::min(slots_[index].bytes, job.raw_payload_size);
                 slots_[index].in_flight = true;
                 next_slot_ = (index + 1) % slots_.size();
                 return DepthCompressionWorkItem{index, std::move(job)};
@@ -518,9 +568,20 @@ public:
         cv_.notify_all();
     }
 
+    bool empty() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return !has_job_locked();
+    }
+
+    bool stopping() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return stopping_;
+    }
+
 private:
     struct Slot {
         std::deque<DepthCompressionJob> jobs;
+        size_t bytes = 0;
         bool in_flight = false;
     };
 
@@ -573,10 +634,13 @@ std::string json_to_string(const Json::Value &value) {
 
 std::optional<Json::Value> parse_json_object(const std::string &payload) {
     Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    builder["failIfExtra"] = true;
+    builder["strictRoot"] = true;
     Json::Value root;
     std::string errors;
-    std::istringstream input(payload);
-    if(!Json::parseFromStream(builder, input, &root, &errors) || !root.isObject()) {
+    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if(!reader->parse(payload.data(), payload.data() + payload.size(), &root, &errors) || !root.isObject()) {
         return std::nullopt;
     }
     return root;
@@ -967,7 +1031,7 @@ void update_capture_stall_guard(CameraRuntime &camera, Logger &logger, const Cam
     const auto rgb_stale_for = now - camera.last_rgb_frame_at;
     const auto depth_stale_for = now - camera.last_depth_frame_at;
     const bool rgb_stalled = rgb_stale_for >= stall_threshold;
-    const bool depth_stalled = depth_stale_for >= stall_threshold;
+    const bool depth_stalled = camera.config.depth_profile.enabled && depth_stale_for >= stall_threshold;
     const bool worker_stuck = perf.wait_calls == 0 && (rgb_stalled || depth_stalled);
     if(!worker_stuck) {
         camera.capture_stall_samples = 0;
@@ -1013,7 +1077,7 @@ std::optional<std::string> capture_stream_stall_reason(CameraRuntime &camera, st
     const auto rgb_stale_for = now - camera.last_rgb_frame_at;
     const auto depth_stale_for = now - camera.last_depth_frame_at;
     const bool rgb_stalled = rgb_stale_for >= stall_threshold;
-    const bool depth_stalled = depth_stale_for >= stall_threshold;
+    const bool depth_stalled = camera.config.depth_profile.enabled && depth_stale_for >= stall_threshold;
     if(!rgb_stalled && !depth_stalled) {
         return std::nullopt;
     }
@@ -1113,6 +1177,28 @@ uint64_t frame_system_timestamp_us_or(const std::shared_ptr<FrameT> &frame, uint
     return timestamp == 0 ? fallback_us : timestamp;
 }
 
+uint64_t normalize_capture_system_timestamp(CameraRuntime &camera,
+                                            StreamType stream_type,
+                                            uint64_t sdk_timestamp_us,
+                                            uint64_t capture_host_us) {
+    constexpr uint64_t kMaxSdkHostSkewUs = 500'000;
+    const uint64_t skew = sdk_timestamp_us >= capture_host_us ? sdk_timestamp_us - capture_host_us : capture_host_us - sdk_timestamp_us;
+    bool used_fallback = sdk_timestamp_us == 0 || skew > kMaxSdkHostSkewUs;
+    uint64_t timestamp_us = used_fallback ? capture_host_us : sdk_timestamp_us;
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    uint64_t &last = stream_type == StreamType::rgb ? camera.rgb_last_capture_system_timestamp_us
+                                                    : camera.depth_last_capture_system_timestamp_us;
+    if(last > 0 && timestamp_us <= last) {
+        used_fallback = true;
+        timestamp_us = capture_host_us > last ? capture_host_us : last + 1;
+    }
+    if(used_fallback) {
+        camera.capture_timestamp_fallbacks++;
+    }
+    last = timestamp_us;
+    return timestamp_us;
+}
+
 template <typename FrameT>
 void append_frame_time_sync(std::ostringstream &oss, const std::string &prefix, const std::shared_ptr<FrameT> &frame, uint64_t host_now_us) {
     if(!frame) {
@@ -1159,6 +1245,9 @@ Json::Value base_message(const AppConfig &config, const std::string &type) {
     msg["protocol_version"] = kProtocolVersion;
     msg["message_type"] = type;
     msg["sender_id"] = config.sender_id;
+    msg["build_commit"] = GWV3_GIT_COMMIT;
+    msg["build_dirty"] = GWV3_GIT_DIRTY != 0;
+    msg["build_source_hash"] = GWV3_SOURCE_HASH;
     msg["timestamp_us"] = Json::UInt64(now_us());
     return msg;
 }
@@ -1169,6 +1258,23 @@ Json::Value profile_json(const std::shared_ptr<ob::VideoStreamProfile> &profile,
     value["width"] = profile ? profile->width() : 0;
     value["height"] = profile ? profile->height() : 0;
     value["fps"] = profile ? profile->fps() : 0;
+    value["pixel_format"] = pixel_format;
+    if(pixel_format == "uint16") {
+        value["compression"] = codec_or_compression;
+        value["depth_scale"] = depth_scale;
+    }
+    else {
+        value["codec"] = codec_or_compression;
+    }
+    return value;
+}
+
+Json::Value profile_json(const VideoProfileConfig &profile, const std::string &pixel_format, const std::string &codec_or_compression,
+                         float depth_scale = 0.0f) {
+    Json::Value value;
+    value["width"] = profile.enabled ? profile.width : 0;
+    value["height"] = profile.enabled ? profile.height : 0;
+    value["fps"] = profile.enabled ? profile.fps : 0;
     value["pixel_format"] = pixel_format;
     if(pixel_format == "uint16") {
         value["compression"] = codec_or_compression;
@@ -1457,6 +1563,357 @@ std::string read_text_file(const std::filesystem::path &path) {
     return trim_copy(value);
 }
 
+int checked_v4l2_ioctl(int fd, unsigned long request, void *arg) {
+    int result = 0;
+    do {
+        result = ioctl(fd, request, arg);
+    } while(result == -1 && errno == EINTR);
+    return result;
+}
+
+uint64_t v4l2_buffer_system_timestamp_us(const v4l2_buffer &buffer, uint64_t fallback_system_us) {
+    const uint64_t raw_us = static_cast<uint64_t>(buffer.timestamp.tv_sec) * 1'000'000ull
+                            + static_cast<uint64_t>(buffer.timestamp.tv_usec);
+    if(raw_us == 0) {
+        return fallback_system_us;
+    }
+#ifdef V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC
+    if((buffer.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
+        const auto steady_now = std::chrono::steady_clock::now().time_since_epoch();
+        const uint64_t steady_now_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(steady_now).count());
+        if(raw_us <= steady_now_us + 1'000'000ull) {
+            const int64_t age_us = static_cast<int64_t>(steady_now_us) - static_cast<int64_t>(raw_us);
+            const int64_t mapped = static_cast<int64_t>(fallback_system_us) - age_us;
+            return mapped > 0 ? static_cast<uint64_t>(mapped) : fallback_system_us;
+        }
+    }
+#endif
+    constexpr uint64_t kEarliestPlausibleEpochUs = 1'577'836'800ull * 1'000'000ull;
+    return raw_us >= kEarliestPlausibleEpochUs ? raw_us : fallback_system_us;
+}
+
+std::string v4l2_fourcc_string(uint32_t fourcc) {
+    std::string value(4, ' ');
+    value[0] = static_cast<char>(fourcc & 0xff);
+    value[1] = static_cast<char>((fourcc >> 8) & 0xff);
+    value[2] = static_cast<char>((fourcc >> 16) & 0xff);
+    value[3] = static_cast<char>((fourcc >> 24) & 0xff);
+    return value;
+}
+
+bool v4l2_device_supports_mjpeg(const std::string &path) {
+    const int fd = open(path.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if(fd < 0) {
+        return false;
+    }
+    v4l2_capability cap{};
+    const bool capture = checked_v4l2_ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0
+                         && ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) || (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE));
+    bool mjpeg = false;
+    if(capture) {
+        v4l2_fmtdesc desc{};
+        desc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        for(desc.index = 0; checked_v4l2_ioctl(fd, VIDIOC_ENUM_FMT, &desc) == 0; ++desc.index) {
+            if(desc.pixelformat == V4L2_PIX_FMT_MJPEG || desc.pixelformat == V4L2_PIX_FMT_JPEG) {
+                mjpeg = true;
+                break;
+            }
+        }
+    }
+    close(fd);
+    return capture && mjpeg;
+}
+
+std::string find_v4l2_device_by_serial(const std::string &serial) {
+    if(serial.empty()) {
+        return "";
+    }
+    const std::filesystem::path root = "/sys/class/video4linux";
+    std::error_code ec;
+    if(!std::filesystem::exists(root, ec)) {
+        return "";
+    }
+    std::vector<std::string> candidates;
+    for(const auto &entry : std::filesystem::directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if(ec) {
+            return "";
+        }
+        const auto name = entry.path().filename().string();
+        if(name.rfind("video", 0) != 0) {
+            continue;
+        }
+        if(read_text_file(entry.path() / "device" / ".." / "serial") != serial) {
+            continue;
+        }
+        candidates.push_back("/dev/" + name);
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const std::string &lhs, const std::string &rhs) {
+        const auto number = [](const std::string &path) {
+            const auto pos = path.find_last_not_of("0123456789");
+            return pos == std::string::npos ? 0 : std::stoi(path.substr(pos + 1));
+        };
+        return number(lhs) < number(rhs);
+    });
+    for(const auto &candidate : candidates) {
+        if(v4l2_device_supports_mjpeg(candidate)) {
+            return candidate;
+        }
+    }
+    return candidates.empty() ? "" : candidates.front();
+}
+
+class V4L2MjpegCapture {
+public:
+    struct Frame {
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        uint64_t frame_id = 0;
+        uint64_t system_timestamp_us = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        int buffer_index = -1;
+    };
+
+    ~V4L2MjpegCapture() { close_device(); }
+
+    void open_device(const CameraConfig &config) {
+        device_path_ = !config.video_device.empty() ? config.video_device : find_v4l2_device_by_serial(config.serial_number);
+        if(device_path_.empty()) {
+            throw std::runtime_error("v4l2 video device not found for serial=" + config.serial_number);
+        }
+        fd_ = open(device_path_.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if(fd_ < 0) {
+            throw std::runtime_error("failed to open v4l2 device " + device_path_ + ": " + std::strerror(errno));
+        }
+
+        v4l2_capability cap{};
+        if(checked_v4l2_ioctl(fd_, VIDIOC_QUERYCAP, &cap) < 0) {
+            throw std::runtime_error("VIDIOC_QUERYCAP failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        const auto capabilities = cap.device_caps ? cap.device_caps : cap.capabilities;
+        if((capabilities & V4L2_CAP_VIDEO_CAPTURE) == 0 || (capabilities & V4L2_CAP_STREAMING) == 0) {
+            throw std::runtime_error("v4l2 device does not support capture streaming: " + device_path_);
+        }
+
+        v4l2_format fmt{};
+        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        fmt.fmt.pix.width = static_cast<uint32_t>(config.rgb_profile.width);
+        fmt.fmt.pix.height = static_cast<uint32_t>(config.rgb_profile.height);
+        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+        fmt.fmt.pix.field = V4L2_FIELD_ANY;
+        if(checked_v4l2_ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0) {
+            throw std::runtime_error("VIDIOC_S_FMT MJPG failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        if(fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_MJPEG && fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_JPEG) {
+            throw std::runtime_error("v4l2 device returned non-MJPEG format " + v4l2_fourcc_string(fmt.fmt.pix.pixelformat)
+                                     + " for " + device_path_);
+        }
+        width_ = fmt.fmt.pix.width;
+        height_ = fmt.fmt.pix.height;
+        if(width_ != static_cast<uint32_t>(config.rgb_profile.width) || height_ != static_cast<uint32_t>(config.rgb_profile.height)) {
+            std::ostringstream oss;
+            oss << "v4l2 device returned unexpected size " << width_ << "x" << height_ << " for " << device_path_;
+            throw std::runtime_error(oss.str());
+        }
+
+        v4l2_streamparm parm{};
+        parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        parm.parm.capture.timeperframe.numerator = 1;
+        parm.parm.capture.timeperframe.denominator = static_cast<uint32_t>(std::max(1, config.rgb_profile.fps));
+        if(checked_v4l2_ioctl(fd_, VIDIOC_S_PARM, &parm) < 0) {
+            throw std::runtime_error("VIDIOC_S_PARM failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        fps_ = parm.parm.capture.timeperframe.numerator > 0
+                   ? static_cast<int>(parm.parm.capture.timeperframe.denominator / parm.parm.capture.timeperframe.numerator)
+                   : config.rgb_profile.fps;
+        if(fps_ <= 0) {
+            fps_ = config.rgb_profile.fps;
+        }
+        if(config.rgb_profile.fps > 0 && fps_ != config.rgb_profile.fps) {
+            throw std::runtime_error("v4l2 device returned unexpected fps " + std::to_string(fps_) + " for " + device_path_);
+        }
+        apply_color_controls(config.color_controls);
+
+        v4l2_requestbuffers req{};
+        req.count = 4;
+        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        req.memory = V4L2_MEMORY_MMAP;
+        if(checked_v4l2_ioctl(fd_, VIDIOC_REQBUFS, &req) < 0 || req.count < 2) {
+            throw std::runtime_error("VIDIOC_REQBUFS failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        buffers_.resize(req.count);
+        for(uint32_t i = 0; i < req.count; ++i) {
+            v4l2_buffer buf{};
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            if(checked_v4l2_ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0) {
+                throw std::runtime_error("VIDIOC_QUERYBUF failed for " + device_path_ + ": " + std::strerror(errno));
+            }
+            buffers_[i].length = buf.length;
+            buffers_[i].start = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, buf.m.offset);
+            if(buffers_[i].start == MAP_FAILED) {
+                buffers_[i].start = nullptr;
+                throw std::runtime_error("mmap failed for " + device_path_ + ": " + std::strerror(errno));
+            }
+            if(checked_v4l2_ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
+                throw std::runtime_error("VIDIOC_QBUF failed for " + device_path_ + ": " + std::strerror(errno));
+            }
+        }
+        v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if(checked_v4l2_ioctl(fd_, VIDIOC_STREAMON, &type) < 0) {
+            throw std::runtime_error("VIDIOC_STREAMON failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        streaming_ = true;
+    }
+
+    bool wait_frame(Frame &frame, std::chrono::milliseconds timeout) {
+        pollfd pfd{};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        const int poll_result = poll(&pfd, 1, static_cast<int>(timeout.count()));
+        if(poll_result == 0) {
+            return false;
+        }
+        if(poll_result < 0) {
+            if(errno == EINTR) {
+                return false;
+            }
+            throw std::runtime_error("poll failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        if((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            throw std::runtime_error("v4l2 poll error on " + device_path_);
+        }
+
+        v4l2_buffer buf{};
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        if(checked_v4l2_ioctl(fd_, VIDIOC_DQBUF, &buf) < 0) {
+            if(errno == EAGAIN) {
+                return false;
+            }
+            throw std::runtime_error("VIDIOC_DQBUF failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        if(buf.index >= buffers_.size()) {
+            throw std::runtime_error("v4l2 returned invalid buffer index for " + device_path_);
+        }
+        frame.data = static_cast<const uint8_t *>(buffers_[buf.index].start);
+        frame.size = buf.bytesused;
+        frame.frame_id = next_frame_id_++;
+        frame.system_timestamp_us = v4l2_buffer_system_timestamp_us(buf, now_us());
+        frame.width = width_;
+        frame.height = height_;
+        frame.buffer_index = static_cast<int>(buf.index);
+        return true;
+    }
+
+    void release_frame(Frame &frame) {
+        if(frame.buffer_index < 0 || fd_ < 0) {
+            return;
+        }
+        v4l2_buffer buf{};
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = static_cast<uint32_t>(frame.buffer_index);
+        if(checked_v4l2_ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
+            frame.buffer_index = -1;
+            frame.data = nullptr;
+            frame.size = 0;
+            throw std::runtime_error("VIDIOC_QBUF failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+        frame.buffer_index = -1;
+        frame.data = nullptr;
+        frame.size = 0;
+    }
+
+    void close_device() {
+        if(fd_ >= 0 && streaming_) {
+            v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            checked_v4l2_ioctl(fd_, VIDIOC_STREAMOFF, &type);
+            streaming_ = false;
+        }
+        for(auto &buffer : buffers_) {
+            if(buffer.start && buffer.length > 0) {
+                munmap(buffer.start, buffer.length);
+                buffer.start = nullptr;
+                buffer.length = 0;
+            }
+        }
+        buffers_.clear();
+        if(fd_ >= 0) {
+            close(fd_);
+            fd_ = -1;
+        }
+    }
+
+    const std::string &device_path() const { return device_path_; }
+    uint32_t width() const { return width_; }
+    uint32_t height() const { return height_; }
+    int fps() const { return fps_; }
+
+private:
+    struct Buffer {
+        void *start = nullptr;
+        size_t length = 0;
+    };
+
+    void set_control(uint32_t id, int value) {
+        v4l2_control control{};
+        control.id = id;
+        control.value = value;
+        if(checked_v4l2_ioctl(fd_, VIDIOC_S_CTRL, &control) < 0) {
+            throw std::runtime_error("VIDIOC_S_CTRL id=" + std::to_string(id) + " value=" + std::to_string(value)
+                                     + " failed for " + device_path_ + ": " + std::strerror(errno));
+        }
+    }
+
+    void set_control_if_configured(uint32_t id, const std::optional<int> &value) {
+        if(value) {
+            set_control(id, *value);
+        }
+    }
+
+    void set_bool_control_if_configured(uint32_t id, const std::optional<bool> &value) {
+        if(value) {
+            set_control(id, *value ? 1 : 0);
+        }
+    }
+
+    void apply_color_controls(const ColorControlsConfig &controls) {
+        if(controls.auto_exposure && !*controls.auto_exposure) {
+            set_control(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
+        }
+        set_control_if_configured(V4L2_CID_EXPOSURE_AUTO_PRIORITY, controls.auto_exposure_priority);
+        set_control_if_configured(V4L2_CID_POWER_LINE_FREQUENCY, controls.power_line_frequency);
+        set_control_if_configured(V4L2_CID_EXPOSURE_ABSOLUTE, controls.exposure);
+        set_control_if_configured(V4L2_CID_GAIN, controls.gain);
+        if(controls.auto_white_balance && !*controls.auto_white_balance) {
+            set_bool_control_if_configured(V4L2_CID_AUTO_WHITE_BALANCE, controls.auto_white_balance);
+        }
+        set_control_if_configured(V4L2_CID_WHITE_BALANCE_TEMPERATURE, controls.white_balance);
+        set_control_if_configured(V4L2_CID_BRIGHTNESS, controls.brightness);
+        set_control_if_configured(V4L2_CID_CONTRAST, controls.contrast);
+        set_control_if_configured(V4L2_CID_SATURATION, controls.saturation);
+        set_control_if_configured(V4L2_CID_GAMMA, controls.gamma);
+        set_control_if_configured(V4L2_CID_BACKLIGHT_COMPENSATION, controls.backlight_compensation);
+        if(controls.auto_white_balance && *controls.auto_white_balance) {
+            set_bool_control_if_configured(V4L2_CID_AUTO_WHITE_BALANCE, controls.auto_white_balance);
+        }
+        if(controls.auto_exposure && *controls.auto_exposure) {
+            set_control(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_APERTURE_PRIORITY);
+        }
+    }
+
+    int fd_ = -1;
+    bool streaming_ = false;
+    std::string device_path_;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    int fps_ = 0;
+    uint64_t next_frame_id_ = 0;
+    std::vector<Buffer> buffers_;
+};
+
 std::string existing_usb_device_name(std::string uid) {
     const std::filesystem::path root = "/sys/bus/usb/devices";
     if(uid.empty()) {
@@ -1743,12 +2200,17 @@ cv::Mat mjpg_to_bgr(const std::shared_ptr<ob::ColorFrame> &frame, int flags) {
     return cv::imdecode(raw, flags);
 }
 
-bool mjpg_has_complete_jpeg(const std::shared_ptr<ob::ColorFrame> &frame) {
-    if(!frame || !frame->data() || frame->dataSize() < 4) {
+cv::Mat mjpg_buffer_to_bgr(const uint8_t *data, size_t size, int flags) {
+    cv::Mat raw(1, static_cast<int>(size), CV_8UC1, const_cast<uint8_t *>(data));
+    return cv::imdecode(raw, flags);
+}
+
+bool mjpg_has_complete_jpeg_data(const void *payload, size_t payload_size) {
+    if(!payload || payload_size < 4) {
         return false;
     }
-    const auto *data = static_cast<const uint8_t *>(frame->data());
-    const size_t size = frame->dataSize();
+    const auto *data = static_cast<const uint8_t *>(payload);
+    const size_t size = payload_size;
     if(data[0] != 0xff || data[1] != 0xd8) {
         return false;
     }
@@ -1758,6 +2220,10 @@ bool mjpg_has_complete_jpeg(const std::shared_ptr<ob::ColorFrame> &frame) {
         --end;
     }
     return end >= 4 && data[end - 2] == 0xff && data[end - 1] == 0xd9;
+}
+
+bool mjpg_has_complete_jpeg(const std::shared_ptr<ob::ColorFrame> &frame) {
+    return frame && mjpg_has_complete_jpeg_data(frame->data(), frame->dataSize());
 }
 
 struct JpegValidationError {
@@ -1783,8 +2249,8 @@ void jpeg_validation_emit_message(j_common_ptr cinfo, int msg_level) {
     (*cinfo->err->format_message)(cinfo, error->message);
 }
 
-bool mjpg_decodes_cleanly(const std::shared_ptr<ob::ColorFrame> &frame, std::string &message) {
-    if(!mjpg_has_complete_jpeg(frame)) {
+bool mjpg_decodes_cleanly_data(const void *payload, size_t payload_size, std::string &message) {
+    if(!mjpg_has_complete_jpeg_data(payload, payload_size)) {
         message = "missing jpeg soi/eoi marker";
         return false;
     }
@@ -1806,7 +2272,7 @@ bool mjpg_decodes_cleanly(const std::shared_ptr<ob::ColorFrame> &frame, std::str
     }
 
     jpeg_create_decompress(&cinfo);
-    jpeg_mem_src(&cinfo, static_cast<const unsigned char *>(frame->data()), static_cast<unsigned long>(frame->dataSize()));
+    jpeg_mem_src(&cinfo, static_cast<const unsigned char *>(payload), static_cast<unsigned long>(payload_size));
     if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
         jpeg_destroy_decompress(&cinfo);
         message = "jpeg header validation failed";
@@ -1841,6 +2307,14 @@ bool mjpg_decodes_cleanly(const std::shared_ptr<ob::ColorFrame> &frame, std::str
     return true;
 }
 
+bool mjpg_decodes_cleanly(const std::shared_ptr<ob::ColorFrame> &frame, std::string &message) {
+    if(!frame) {
+        message = "missing color frame";
+        return false;
+    }
+    return mjpg_decodes_cleanly_data(frame->data(), frame->dataSize(), message);
+}
+
 void mark_corrupt_rgb_jpeg_frame(CameraRuntime &camera, Logger &logger, const std::shared_ptr<ob::ColorFrame> &color,
                                  std::chrono::steady_clock::time_point frame_now, const std::string &reason) {
     bool should_log = false;
@@ -1859,6 +2333,28 @@ void mark_corrupt_rgb_jpeg_frame(CameraRuntime &camera, Logger &logger, const st
         std::ostringstream oss;
         oss << "corrupt rgb mjpeg frame dropped camera_id=" << camera.config.camera_id << " frame_id=" << color->index()
             << " size=" << color->dataSize() << " reason=\"" << reason << "\"";
+        logger.warn(oss.str());
+    }
+}
+
+void mark_corrupt_rgb_jpeg_frame(CameraRuntime &camera, Logger &logger, uint64_t frame_id, size_t frame_size,
+                                 std::chrono::steady_clock::time_point frame_now, const std::string &reason) {
+    bool should_log = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        camera.perf.rgb_corrupt_jpeg_frames++;
+        camera.rgb_corrupt_jpeg++;
+        camera.rgb_dropped++;
+        camera.last_error = "corrupt rgb mjpeg frame dropped";
+        if(frame_now >= camera.next_jpeg_warning) {
+            camera.next_jpeg_warning = frame_now + std::chrono::seconds(1);
+            should_log = true;
+        }
+    }
+    if(should_log) {
+        std::ostringstream oss;
+        oss << "corrupt rgb mjpeg frame dropped camera_id=" << camera.config.camera_id << " frame_id=" << frame_id
+            << " size=" << frame_size << " reason=\"" << reason << "\"";
         logger.warn(oss.str());
     }
 }
@@ -2008,6 +2504,14 @@ void record_rgb_input(CameraRuntime &camera, const std::shared_ptr<ob::ColorFram
     camera.perf.rgb_input_frames++;
     camera.perf.rgb_input_bytes += color->dataSize();
     camera.perf.note_rgb_frame_id(color->index());
+    camera.last_rgb_frame_at = std::chrono::steady_clock::now();
+}
+
+void record_rgb_input(CameraRuntime &camera, size_t payload_size, uint64_t frame_id) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    camera.perf.rgb_input_frames++;
+    camera.perf.rgb_input_bytes += payload_size;
+    camera.perf.note_rgb_frame_id(frame_id);
     camera.last_rgb_frame_at = std::chrono::steady_clock::now();
 }
 
@@ -2856,20 +3360,31 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     Json::Value msg = base_message(config, "camera_announce");
     msg["camera_id"] = camera.config.camera_id;
-    auto info = camera.device->getDeviceInfo();
     Json::Value device;
     device["vendor"] = "orbbec";
-    device["model"] = info->name() ? info->name() : "";
-    device["serial_number"] = info->serialNumber() ? info->serialNumber() : "";
-    device["uid"] = info->uid() ? info->uid() : "";
-    device["paired_rgb_serial"] = paired_rgb_serial_for_depth_uid(device["uid"].asString());
+    device["model"] = camera.config.capture_backend == "v4l2" ? "UVC RGB" : "";
+    device["serial_number"] = camera.device_serial;
+    device["uid"] = camera.device_uid;
+    device["paired_rgb_serial"] = camera.config.capture_backend == "v4l2" ? camera.device_serial : paired_rgb_serial_for_depth_uid(camera.device_uid);
     device["configured_serial_number"] = camera.config.serial_number;
     device["configured_uid"] = camera.config.uid;
-    device["firmware_version"] = info->firmwareVersion() ? info->firmwareVersion() : "";
-    device["connection_type"] = info->connectionType() ? info->connectionType() : "";
+    device["firmware_version"] = "";
+    device["connection_type"] = camera.device_connection_type;
+    if(camera.device) {
+        auto info = camera.device->getDeviceInfo();
+        device["model"] = info->name() ? info->name() : "";
+        device["serial_number"] = info->serialNumber() ? info->serialNumber() : "";
+        device["uid"] = info->uid() ? info->uid() : "";
+        device["paired_rgb_serial"] = paired_rgb_serial_for_depth_uid(device["uid"].asString());
+        device["firmware_version"] = info->firmwareVersion() ? info->firmwareVersion() : "";
+        device["connection_type"] = info->connectionType() ? info->connectionType() : "";
+    }
     msg["device"] = device;
-    msg["rgb_profile"] = profile_json(camera.color_profile, "encoded_video", camera.config.rgb_encoding.codec);
-    msg["depth_profile"] = profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale);
+    msg["rgb_profile"] = camera.color_profile ? profile_json(camera.color_profile, "encoded_video", camera.config.rgb_encoding.codec)
+                                               : profile_json(camera.config.rgb_profile, "encoded_video", camera.config.rgb_encoding.codec);
+    msg["depth_profile"] = camera.depth_profile ? profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale)
+                                                 : profile_json(camera.config.depth_profile, "uint16", camera.config.depth_transport.compression,
+                                                                camera.depth_scale);
     Json::Value web_preview;
     web_preview["enabled"] = config.web_rgb_preview.enabled;
     web_preview["on_demand"] = config.web_rgb_preview.on_demand;
@@ -2880,7 +3395,15 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     web_preview["width"] = Json::UInt(camera.web_preview_width);
     web_preview["height"] = Json::UInt(camera.web_preview_height);
     msg["web_rgb_preview"] = web_preview;
-    msg["calibration"] = calibration_json(*camera.pipeline, camera.device, camera.color_profile, camera.depth_profile);
+    if(camera.pipeline && camera.device) {
+        msg["calibration"] = calibration_json(*camera.pipeline, camera.device, camera.color_profile, camera.depth_profile);
+    }
+    else {
+        Json::Value calibration;
+        calibration["available"] = false;
+        calibration["reason"] = "not_available_for_v4l2_rgb_only";
+        msg["calibration"] = calibration;
+    }
     return msg;
 }
 
@@ -3516,6 +4039,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.encoder.reset();
     camera.web_preview_encoder.reset();
     camera.jpeg_dual_encoder.reset();
+    camera.v4l2_capture.reset();
     camera.jpeg_dual_encoder_disabled = false;
     camera.jpeg_dual_no_main_output = 0;
     camera.web_preview_width = 0;
@@ -3538,7 +4062,71 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.latest_depth_color.release();
 }
 
+void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
+    auto capture = std::make_shared<V4L2MjpegCapture>();
+    capture->open_device(runtime.config);
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(runtime.mutex);
+        runtime.v4l2_capture = capture;
+        runtime.device_serial = runtime.config.serial_number;
+        runtime.device_uid = capture->device_path();
+        runtime.device_connection_type = "v4l2";
+        runtime.device.reset();
+        runtime.pipeline.reset();
+        runtime.color_profile.reset();
+        runtime.depth_profile.reset();
+        runtime.encoder.reset();
+        runtime.web_preview_encoder.reset();
+        runtime.jpeg_dual_encoder.reset();
+        runtime.jpeg_dual_encoder_disabled = false;
+        runtime.jpeg_dual_no_main_output = 0;
+        runtime.web_preview_width = 0;
+        runtime.web_preview_height = 0;
+        runtime.online = true;
+        runtime.announced = false;
+        runtime.hardware_encoder = false;
+        runtime.depth_scale = 0.0f;
+        runtime.last_error.clear();
+        runtime.perf = CameraPerfStats{};
+        runtime.perf.interval_started = now;
+        runtime.next_preview = now;
+        runtime.next_depth_emit = now;
+        runtime.next_time_sync_log = now;
+        runtime.next_jpeg_warning = now;
+        runtime.next_media_warning = now;
+        runtime.next_rgb_timing_warning = now;
+        runtime.last_rgb_frame_at = now;
+        runtime.last_depth_frame_at = now;
+        if(runtime.next_capture_stall_reconnect < now) {
+            runtime.next_capture_stall_reconnect = now;
+        }
+        runtime.capture_stall_samples = 0;
+        runtime.last_media_warning.clear();
+        runtime.rgb_sent_timing_seen = false;
+        runtime.rgb_last_sent_frame_id = 0;
+        runtime.rgb_last_sent_system_timestamp_us = 0;
+        runtime.rgb_encode_timings.clear();
+        runtime.latest_bgr.release();
+        runtime.latest_depth_color.release();
+    }
+
+    std::ostringstream oss;
+    oss << "v4l2 camera started camera_id=" << runtime.config.camera_id
+        << " video_device=" << capture->device_path()
+        << " color=" << capture->width() << "x" << capture->height() << "@" << capture->fps()
+        << " format=mjpg configured_serial=" << runtime.config.serial_number
+        << " depth=disabled";
+    logger.info(oss.str());
+}
+
 void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
+    if(runtime.config.capture_backend == "v4l2") {
+        start_v4l2_camera_runtime(runtime, logger);
+        return;
+    }
+
     ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
     auto context = std::make_shared<ob::Context>();
 
@@ -3553,11 +4141,16 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         auto candidate_config = std::make_shared<ob::Config>();
         auto candidate_color_profile =
             select_profile(*candidate_pipeline, OB_SENSOR_COLOR, runtime.config.rgb_profile, OB_FORMAT_MJPG, logger);
-        auto candidate_depth_profile =
-            select_profile(*candidate_pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
+        std::shared_ptr<ob::VideoStreamProfile> candidate_depth_profile;
+        if(runtime.config.depth_profile.enabled) {
+            candidate_depth_profile =
+                select_profile(*candidate_pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
+        }
         candidate_config->enableStream(candidate_color_profile);
-        candidate_config->enableStream(candidate_depth_profile);
-        if(aggregate_mode != OB_FRAME_AGGREGATE_OUTPUT_DISABLE) {
+        if(candidate_depth_profile) {
+            candidate_config->enableStream(candidate_depth_profile);
+        }
+        if(aggregate_mode != OB_FRAME_AGGREGATE_OUTPUT_DISABLE && candidate_depth_profile) {
             candidate_config->setFrameAggregateOutputMode(aggregate_mode);
         }
         candidate_pipeline->start(candidate_config);
@@ -3591,10 +4184,10 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const auto color_height = color_profile->height();
     const auto color_fps = color_profile->fps();
     const auto color_format = ob_format_name(color_profile->format());
-    const auto depth_width = depth_profile->width();
-    const auto depth_height = depth_profile->height();
-    const auto depth_fps = depth_profile->fps();
-    const auto depth_format = ob_format_name(depth_profile->format());
+    const auto depth_width = depth_profile ? depth_profile->width() : 0;
+    const auto depth_height = depth_profile ? depth_profile->height() : 0;
+    const auto depth_fps = depth_profile ? depth_profile->fps() : 0;
+    const auto depth_format = depth_profile ? ob_format_name(depth_profile->format()) : "disabled";
     const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(runtime.mutex);
@@ -3795,10 +4388,44 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
 }
 
 template <typename Sender>
-void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger &logger, std::mutex &transport_mutex) {
-    while(g_running) {
-        auto job = media_queue.wait_pop(std::chrono::milliseconds(100));
+void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger &logger, std::mutex &transport_mutex,
+                       const std::atomic<bool> *path_running = nullptr) {
+    auto next_idle_close_log = std::chrono::steady_clock::now();
+    std::optional<MediaPacketJob> retry_job;
+    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
+    while(true) {
+        const bool producers_active = path_running == nullptr ? g_running.load() : path_running->load();
+        if(!producers_active && !drain_deadline) {
+            drain_deadline = std::chrono::steady_clock::now() + kGracefulQueueDrainTimeout;
+        }
+        if(!producers_active && !retry_job && media_queue.empty()) {
+            break;
+        }
+        if(drain_deadline && std::chrono::steady_clock::now() >= *drain_deadline) {
+            logger.warn("media sender queue drain timed out; remaining packets discarded");
+            break;
+        }
+        std::optional<MediaPacketJob> job;
+        if(retry_job) {
+            job.emplace(std::move(*retry_job));
+            retry_job.reset();
+        }
+        else {
+            job = media_queue.wait_pop(std::chrono::milliseconds(100));
+        }
         if(!job || !job->camera) {
+            bool closed = false;
+            {
+                std::lock_guard<std::mutex> lock(transport_mutex);
+                closed = transport.close_if_media_peer_closed();
+            }
+            if(closed) {
+                const auto now = std::chrono::steady_clock::now();
+                if(now >= next_idle_close_log) {
+                    logger.info("media TCP idle peer close detected; socket will reconnect on next packet");
+                    next_idle_close_log = now + std::chrono::seconds(5);
+                }
+            }
             continue;
         }
 
@@ -3806,12 +4433,18 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         bool sent = false;
         std::string error;
         const auto packet = job->view();
-        {
+        try {
             std::lock_guard<std::mutex> lock(transport_mutex);
             sent = transport.send_media(packet);
             if(!sent) {
                 error = transport.last_error();
             }
+        }
+        catch(const std::exception &e) {
+            error = e.what();
+        }
+        catch(...) {
+            error = "unknown media transport exception";
         }
         const auto send_ended = std::chrono::steady_clock::now();
         const double send_ms = elapsed_ms(send_started, send_ended);
@@ -3823,12 +4456,28 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             if(job->stream_type == StreamType::rgb) {
                 arm_rgb_keyframe_guard(*job->camera, logger, error);
             }
+            if(job->stream_type != StreamType::rgb_preview && (!drain_deadline || std::chrono::steady_clock::now() < *drain_deadline)) {
+                retry_job = std::move(*job);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
         }
     }
 }
 
 void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, Logger &logger, size_t worker_index) {
-    while(g_running) {
+    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
+    while(true) {
+        const bool producers_active = !depth_queue.stopping();
+        if(!producers_active && !drain_deadline) {
+            drain_deadline = std::chrono::steady_clock::now() + kGracefulQueueDrainTimeout;
+        }
+        if(!producers_active && depth_queue.empty()) {
+            break;
+        }
+        if(drain_deadline && std::chrono::steady_clock::now() >= *drain_deadline) {
+            logger.warn("depth compression queue drain timed out worker=" + std::to_string(worker_index));
+            break;
+        }
         auto work = depth_queue.wait_pop(std::chrono::milliseconds(100));
         if(!work) {
             continue;
@@ -3856,6 +4505,11 @@ void depth_compression_loop(LatestDepthCompressionQueue &depth_queue, Logger &lo
             set_camera_last_error(*job.source_camera, e.what());
             logger.warn("depth compression failed worker=" + std::to_string(worker_index)
                         + " camera_id=" + job.source_camera->config.camera_id + " error=" + e.what());
+        }
+        catch(...) {
+            set_camera_last_error(*job.source_camera, "unknown depth compression exception");
+            logger.warn("depth compression failed worker=" + std::to_string(worker_index)
+                        + " camera_id=" + job.source_camera->config.camera_id + " error=unknown exception");
         }
         depth_queue.complete(work->slot_index);
     }
@@ -3896,6 +4550,7 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
         meta.frame_id = timing.frame_id;
         meta.timestamp_us = timing.device_timestamp_us;
         meta.system_timestamp_us = timing.system_timestamp_us;
+        meta.pair_id = timing.pair_id;
         meta.width = timing.width;
         meta.height = timing.height;
         meta.pixel_format = PixelFormat::encoded_video;
@@ -3930,6 +4585,7 @@ void publish_rgb_preview_units(const AppConfig &config, CameraRuntime &camera, L
         meta.frame_id = preview_timing.frame_id;
         meta.timestamp_us = preview_timing.device_timestamp_us;
         meta.system_timestamp_us = preview_timing.system_timestamp_us;
+        meta.pair_id = preview_timing.pair_id;
         meta.width = preview_width;
         meta.height = preview_height;
         meta.pixel_format = PixelFormat::encoded_video;
@@ -3981,11 +4637,284 @@ void configure_depth_remap_targets(const AppConfig &config, const std::vector<st
 }
 
 template <typename Sender>
+void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t primary_slot_base, size_t preview_slot_base,
+                             LatestMediaQueue &rgb_media_queue, LatestMediaQueue &preview_media_queue, Sender &transport, Logger &logger,
+                             std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
+    const size_t rgb_slot = primary_slot_base;
+    const size_t rgb_preview_slot = preview_slot_base + 2;
+
+    while(g_running) {
+        const auto loop_now = std::chrono::steady_clock::now();
+        if(!camera_is_online(camera)) {
+            if(camera_reconnect_enabled(camera)) {
+                retry_camera_reconnect(config, camera, transport, logger, transport_mutex, loop_now);
+            }
+            else {
+                logger.info("v4l2 camera worker exiting camera_id=" + camera.config.camera_id + " reason=reconnect_disabled");
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        std::shared_ptr<V4L2MjpegCapture> capture;
+        {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            capture = camera.v4l2_capture;
+        }
+        if(!capture) {
+            mark_camera_disconnected(config, camera, transport, logger, transport_mutex, "v4l2 capture is not open");
+            continue;
+        }
+
+        V4L2MjpegCapture::Frame frame;
+        try {
+            const auto wait_started = std::chrono::steady_clock::now();
+            const bool has_frame = capture->wait_frame(frame, std::chrono::milliseconds(100));
+            const auto wait_ended = std::chrono::steady_clock::now();
+            record_wait_result(camera, elapsed_ms(wait_started, wait_ended), !has_frame);
+            if(!has_frame) {
+                if(auto reason = capture_stream_stall_reason(camera, wait_ended)) {
+                    mark_camera_disconnected(config, camera, transport, logger, transport_mutex, *reason);
+                }
+                continue;
+            }
+        }
+        catch(const std::exception &e) {
+            mark_camera_disconnected(config, camera, transport, logger, transport_mutex, e.what());
+            continue;
+        }
+
+        try {
+            const auto frame_now = std::chrono::steady_clock::now();
+            bool preview_due = false;
+            {
+                std::lock_guard<std::mutex> lock(camera.mutex);
+                preview_due = config.preview.enabled && frame_now >= camera.next_preview;
+            }
+            const bool web_preview_due = web_rgb_preview_emit_due(config, camera, frame_now);
+            const bool web_preview_can_queue = web_preview_due && !rgb_media_queue.has_pending_primary();
+
+            record_rgb_input(camera, frame.size, frame.frame_id);
+            RgbFrameDiagnostics diagnostics;
+            RgbEncodeTiming rgb_capture_timing{frame.frame_id,
+                                               frame.system_timestamp_us,
+                                               frame.system_timestamp_us,
+                                               0,
+                                               frame.width,
+                                               frame.height,
+                                               diagnostics};
+            rgb_capture_timing.capture_host_timestamp_us = frame.system_timestamp_us;
+            rgb_capture_timing.timing_bound_timestamp_us = now_us();
+
+            bool rgb_usable = true;
+            if(!mjpg_has_complete_jpeg_data(frame.data, frame.size)) {
+                rgb_usable = false;
+                mark_corrupt_rgb_jpeg_frame(camera, logger, frame.frame_id, frame.size, frame_now, "missing jpeg soi/eoi marker");
+            }
+            else if(camera.config.validate_rgb_mjpeg) {
+                std::string jpeg_validation_message;
+                if(!mjpg_decodes_cleanly_data(frame.data, frame.size, jpeg_validation_message)) {
+                    rgb_usable = false;
+                    mark_corrupt_rgb_jpeg_frame(camera, logger, frame.frame_id, frame.size, frame_now, jpeg_validation_message);
+                }
+            }
+
+            cv::Mat bgr;
+            if(rgb_usable) {
+                if(preview_due) {
+                    const auto decode_started = std::chrono::steady_clock::now();
+                    auto preview_bgr = mjpg_buffer_to_bgr(frame.data, frame.size, cv::IMREAD_REDUCED_COLOR_2);
+                    record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
+                    set_latest_bgr(camera, preview_bgr, frame.frame_id, frame.system_timestamp_us);
+                }
+
+                if(!camera.encoder) {
+                    auto input_format = GstH264InputFormat::Jpeg;
+                    {
+                        std::lock_guard<std::mutex> encoder_lock(g_encoder_create_mutex);
+                        camera.encoder = std::make_unique<GstH264Encoder>(frame.width, frame.height, camera.config.rgb_profile.fps,
+                                                                            camera.config.rgb_encoding.bitrate_bps,
+                                                                            camera.config.rgb_encoding.gstreamer_encoder, input_format);
+                        if(!camera.encoder->ok()) {
+                            logger.warn("v4l2 jpeg rgb path unavailable, falling back to BGR encode path camera_id="
+                                        + camera.config.camera_id + " error=" + camera.encoder->error());
+                            input_format = GstH264InputFormat::Bgr;
+                            camera.encoder = std::make_unique<GstH264Encoder>(frame.width, frame.height, camera.config.rgb_profile.fps,
+                                                                                camera.config.rgb_encoding.bitrate_bps,
+                                                                                camera.config.rgb_encoding.gstreamer_encoder, input_format);
+                        }
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(camera.mutex);
+                        camera.encoder_input_format = input_format;
+                        camera.hardware_encoder = camera.encoder->ok();
+                        if(!camera.hardware_encoder) {
+                            camera.last_error = camera.encoder->error();
+                        }
+                    }
+                    if(!camera.encoder->ok()) {
+                        const auto error = camera.encoder->error();
+                        logger.error("encoder_init_failed: " + error);
+                        send_status_locked(transport, logger, transport_mutex,
+                                           event_message(config, "error", "encoder_init_failed", error, camera.config.camera_id));
+                    }
+                    else {
+                        logger.info("v4l2 rgb encoder ready camera_id=" + camera.config.camera_id
+                                    + " source=" + std::to_string(frame.width) + "x" + std::to_string(frame.height)
+                                    + " fps=" + std::to_string(camera.config.rgb_profile.fps)
+                                    + " input=" + std::string(input_format == GstH264InputFormat::Jpeg ? "mjpg" : "bgr"));
+                    }
+                }
+
+                if(web_preview_due && !camera.web_preview_encoder && !camera.encoder && false) {
+                    // Unreachable; kept intentionally empty so V4L2 preview never blocks main encoder creation.
+                }
+                if(web_preview_due && !camera.web_preview_encoder && camera.encoder) {
+                    const auto shape = resolve_web_rgb_preview_shape(config.web_rgb_preview, frame.width, frame.height);
+                    if(shape.width > 0 && shape.height > 0) {
+                        auto input_format = GstH264InputFormat::Jpeg;
+                        {
+                            std::lock_guard<std::mutex> encoder_lock(g_encoder_create_mutex);
+                            camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
+                                frame.width, frame.height, config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
+                                camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                            if(!camera.web_preview_encoder->ok()) {
+                                logger.warn("v4l2 jpeg web rgb preview path unavailable, falling back to BGR encode path camera_id="
+                                            + camera.config.camera_id + " error=" + camera.web_preview_encoder->error());
+                                input_format = GstH264InputFormat::Bgr;
+                                camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
+                                    frame.width, frame.height, config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
+                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                            }
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(camera.mutex);
+                            camera.web_preview_encoder_input_format = input_format;
+                            if(camera.web_preview_encoder->ok()) {
+                                camera.web_preview_width = static_cast<uint32_t>(camera.web_preview_encoder->output_width());
+                                camera.web_preview_height = static_cast<uint32_t>(camera.web_preview_encoder->output_height());
+                            }
+                            else {
+                                camera.web_preview_width = 0;
+                                camera.web_preview_height = 0;
+                                camera.last_error = camera.web_preview_encoder->error();
+                            }
+                        }
+                    }
+                }
+
+                if(camera.encoder && camera.encoder->ok()) {
+                    const auto input_format = encoder_input_format_for(camera);
+                    if(input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                        const auto decode_started = std::chrono::steady_clock::now();
+                        bgr = mjpg_buffer_to_bgr(frame.data, frame.size, cv::IMREAD_COLOR);
+                        record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
+                    }
+                    if(input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                        set_camera_last_error(camera, "v4l2 rgb decode produced empty frame");
+                        record_queue_overwrite(camera, StreamType::rgb);
+                    }
+                    else {
+                        uint64_t force_keyframe_request_id = 0;
+                        if(consume_rgb_keyframe_request(camera, force_keyframe_request_id)) {
+                            camera.encoder->request_keyframe();
+                            logger.info("rgb keyframe force event queued camera_id=" + camera.config.camera_id
+                                        + " request_id=" + std::to_string(force_keyframe_request_id));
+                        }
+                        RgbEncodeTiming submitted_timing = rgb_capture_timing;
+                        submitted_timing.encode_start_timestamp_us = now_us();
+                        remember_rgb_encode_timing(camera, submitted_timing);
+                        const auto encode_started = std::chrono::steady_clock::now();
+                        auto encoded_units = input_format == GstH264InputFormat::Jpeg
+                                                 ? camera.encoder->encode_jpeg(frame.data, frame.size, frame.system_timestamp_us)
+                                                 : camera.encoder->encode_bgr(bgr, frame.system_timestamp_us);
+                        const uint64_t encode_done_timestamp_us = now_us();
+                        submitted_timing.encode_done_timestamp_us = encode_done_timestamp_us;
+                        record_rgb_encode_ms(camera, elapsed_ms(encode_started, std::chrono::steady_clock::now()));
+                        publish_rgb_encoded_units(config, camera, rgb_media_queue, rgb_slot, encoded_units, submitted_timing,
+                                                  encode_done_timestamp_us, frame_now, logger);
+
+                        if(web_preview_can_queue && camera.web_preview_encoder && camera.web_preview_encoder->ok()) {
+                            const auto preview_input_format = web_preview_encoder_input_format_for(camera);
+                            if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                const auto decode_started = std::chrono::steady_clock::now();
+                                bgr = mjpg_buffer_to_bgr(frame.data, frame.size, cv::IMREAD_COLOR);
+                                record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
+                            }
+                            if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
+                                set_camera_last_error(camera, "v4l2 rgb preview decode produced empty frame");
+                            }
+                            else {
+                                RgbEncodeTiming preview_timing = rgb_capture_timing;
+                                preview_timing.encode_start_timestamp_us = now_us();
+                                auto preview_units = preview_input_format == GstH264InputFormat::Jpeg
+                                                         ? camera.web_preview_encoder->encode_jpeg(frame.data, frame.size,
+                                                                                                   frame.system_timestamp_us)
+                                                         : camera.web_preview_encoder->encode_bgr(bgr, frame.system_timestamp_us);
+                                preview_timing.encode_done_timestamp_us = now_us();
+                                publish_rgb_preview_units(config, camera, preview_media_queue, rgb_preview_slot, preview_units, preview_timing,
+                                                          static_cast<uint32_t>(camera.web_preview_encoder->output_width()),
+                                                          static_cast<uint32_t>(camera.web_preview_encoder->output_height()), logger);
+                            }
+                        }
+                    }
+                }
+            }
+            record_rgb_frame_done(camera);
+
+            if(auto reason = capture_stream_stall_reason(camera, frame_now)) {
+                mark_camera_disconnected(config, camera, transport, logger, transport_mutex, *reason);
+                capture->release_frame(frame);
+                continue;
+            }
+
+            if(!camera_announced(camera)) {
+                send_status_locked(transport, logger, transport_mutex, camera_announce(config, camera));
+                set_camera_announced(camera, true);
+            }
+            bool time_sync_log_due = false;
+            {
+                std::lock_guard<std::mutex> lock(camera.mutex);
+                time_sync_log_due = frame_now >= camera.next_time_sync_log;
+                if(time_sync_log_due) {
+                    camera.next_time_sync_log = frame_now + std::chrono::seconds(5);
+                }
+            }
+            if(time_sync_log_due) {
+                logger.info("time_sync camera_id=" + camera.config.camera_id
+                            + " host_now_us=" + std::to_string(now_us())
+                            + " rgb_present=1 rgb_frame_id=" + std::to_string(frame.frame_id)
+                            + " rgb_canonical_timestamp_us=" + std::to_string(frame.system_timestamp_us)
+                            + " rgb_device_timestamp_us=0"
+                            + " rgb_system_timestamp_us=" + std::to_string(frame.system_timestamp_us)
+                            + " depth_present=0");
+            }
+            if(preview_due) {
+                std::lock_guard<std::mutex> lock(camera.mutex);
+                camera.next_preview = frame_now + preview_interval;
+            }
+        }
+        catch(const std::exception &e) {
+            set_camera_last_error(camera, e.what());
+            logger.error("v4l2 rgb processing failed camera_id=" + camera.config.camera_id + " error=" + e.what());
+        }
+        capture->release_frame(frame);
+    }
+}
+
+template <typename Sender>
 void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t primary_slot_base, size_t preview_slot_base,
                         size_t compression_slot_base, LatestMediaQueue &rgb_media_queue, LatestMediaQueue &depth_media_queue,
                         LatestMediaQueue &preview_media_queue,
                         LatestDepthCompressionQueue &depth_compression_queue, Sender &transport, Logger &logger,
                         std::mutex &transport_mutex, std::chrono::milliseconds preview_interval) {
+    if(camera.config.capture_backend == "v4l2") {
+        v4l2_camera_worker_loop(config, camera, primary_slot_base, preview_slot_base, rgb_media_queue, preview_media_queue, transport, logger,
+                                transport_mutex, preview_interval);
+        return;
+    }
+
     const size_t rgb_slot = primary_slot_base;
     const size_t depth_slot = primary_slot_base + 1;
     const size_t rgb_preview_slot = preview_slot_base + 2;
@@ -4034,6 +4963,15 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
 
         const auto frame_now = std::chrono::steady_clock::now();
         const uint64_t frame_host_now_us = now_us();
+        depth_output_camera = depth ? depth_target_camera(config, camera) : nullptr;
+        uint64_t frameset_pair_id = 0;
+        if(color && depth && depth_output_camera == &camera) {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            frameset_pair_id = camera.next_pair_id++;
+            if(camera.next_pair_id == 0) {
+                camera.next_pair_id = 1;
+            }
+        }
         bool preview_due = false;
         {
             std::lock_guard<std::mutex> lock(camera.mutex);
@@ -4046,9 +4984,10 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             record_rgb_input(camera, color);
             update_color_metadata(camera, color);
             const uint64_t rgb_device_timestamp_us = color->timeStampUs();
-            const uint64_t rgb_system_timestamp_us = frame_system_timestamp_us_or(color, frame_host_now_us);
+            const uint64_t rgb_system_timestamp_us = normalize_capture_system_timestamp(
+                camera, StreamType::rgb, frame_system_timestamp_us_or(color, frame_host_now_us), frame_host_now_us);
             const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
-            RgbEncodeTiming rgb_capture_timing{color->index(), rgb_device_timestamp_us, rgb_system_timestamp_us,
+            RgbEncodeTiming rgb_capture_timing{color->index(), rgb_device_timestamp_us, rgb_system_timestamp_us, frameset_pair_id,
                                                static_cast<uint32_t>(color->width()), static_cast<uint32_t>(color->height()),
                                                rgb_frame_diagnostics(camera, color)};
             rgb_capture_timing.capture_host_timestamp_us = frame_host_now_us;
@@ -4317,8 +5256,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
         }
 
         if(depth) {
-            auto *depth_target = depth_target_camera(config, camera);
-            depth_output_camera = depth_target;
+            auto *depth_target = depth_output_camera;
             record_depth_input(camera, depth);
             set_depth_scale_if_empty(camera, depth->getValueScale());
             set_depth_scale_if_empty(*depth_target, depth->getValueScale());
@@ -4327,7 +5265,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                 const void *depth_payload = depth->data();
                 size_t depth_payload_size = depth->dataSize();
                 const uint64_t depth_device_timestamp_us = depth->timeStampUs();
-                const uint64_t depth_system_timestamp_us = frame_system_timestamp_us_or(depth, frame_host_now_us);
+                const uint64_t depth_system_timestamp_us = normalize_capture_system_timestamp(
+                    camera, StreamType::depth_raw, frame_system_timestamp_us_or(depth, frame_host_now_us), frame_host_now_us);
                 MediaFrameMeta meta;
                 meta.stream_type = StreamType::depth_raw;
                 meta.flags = has_system_timestamp;
@@ -4337,6 +5276,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                 meta.frame_id = depth->index();
                 meta.timestamp_us = depth_device_timestamp_us;
                 meta.system_timestamp_us = depth_system_timestamp_us;
+                meta.pair_id = frameset_pair_id;
                 meta.width = depth->width();
                 meta.height = depth->height();
                 meta.pixel_format = PixelFormat::depth_u16;
@@ -4384,7 +5324,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             continue;
         }
 
-        if(!camera_announced(camera) && depth && color) {
+        if(!camera_announced(camera) && color && (!camera.config.depth_profile.enabled || depth)) {
             send_status_locked(transport, logger, transport_mutex, camera_announce(config, camera));
             set_camera_announced(camera, true);
         }
@@ -4393,6 +5333,48 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
         if(preview_due) {
             std::lock_guard<std::mutex> lock(camera.mutex);
             camera.next_preview = frame_now + preview_interval;
+        }
+    }
+}
+
+template <typename Sender>
+void camera_worker_thread_entry(const AppConfig &config, CameraRuntime &camera, size_t primary_slot_base, size_t preview_slot_base,
+                                size_t compression_slot_base, LatestMediaQueue &rgb_media_queue, LatestMediaQueue &depth_media_queue,
+                                LatestMediaQueue &preview_media_queue, LatestDepthCompressionQueue &depth_compression_queue,
+                                Sender &transport, Logger &logger, std::mutex &transport_mutex,
+                                std::chrono::milliseconds preview_interval) {
+    while(g_running) {
+        try {
+            camera_worker_loop(config, camera, primary_slot_base, preview_slot_base, compression_slot_base,
+                               rgb_media_queue, depth_media_queue, preview_media_queue, depth_compression_queue,
+                               transport, logger, transport_mutex, preview_interval);
+            return;
+        }
+        catch(const ob::Error &e) {
+            try {
+                mark_camera_disconnected(config, camera, transport, logger, transport_mutex, ob_error_text(e));
+            }
+            catch(const std::exception &cleanup_error) {
+                logger.error("camera worker cleanup failed camera_id=" + camera.config.camera_id + " error=" + cleanup_error.what());
+                return;
+            }
+        }
+        catch(const std::exception &e) {
+            try {
+                mark_camera_disconnected(config, camera, transport, logger, transport_mutex, e.what());
+            }
+            catch(const std::exception &cleanup_error) {
+                logger.error("camera worker cleanup failed camera_id=" + camera.config.camera_id + " error=" + cleanup_error.what());
+                return;
+            }
+        }
+        catch(...) {
+            try {
+                mark_camera_disconnected(config, camera, transport, logger, transport_mutex, "unknown camera worker exception");
+            }
+            catch(...) {
+                return;
+            }
         }
     }
 }
@@ -4545,9 +5527,59 @@ struct MediaSenderPath {
     std::unique_ptr<Sender> transport;
     std::mutex mutex;
     std::thread thread;
+    std::atomic<bool> running{true};
 
     MediaSenderPath(size_t slot_count, size_t rgb_frames_per_slot, size_t depth_frames_per_slot, std::unique_ptr<Sender> sender)
         : queue(slot_count, rgb_frames_per_slot, depth_frames_per_slot), transport(std::move(sender)) {}
+
+    ~MediaSenderPath() {
+        running = false;
+        queue.stop();
+        if(thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
+class ThreadJoinGuard {
+public:
+    explicit ThreadJoinGuard(std::thread &thread) : thread_(thread) {}
+    ~ThreadJoinGuard() {
+        g_running = false;
+        if(thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    ThreadJoinGuard(const ThreadJoinGuard &) = delete;
+    ThreadJoinGuard &operator=(const ThreadJoinGuard &) = delete;
+
+private:
+    std::thread &thread_;
+};
+
+class ThreadVectorJoinGuard {
+public:
+    explicit ThreadVectorJoinGuard(std::vector<std::thread> &threads, std::function<void()> before_join = {})
+        : threads_(threads), before_join_(std::move(before_join)) {}
+    ~ThreadVectorJoinGuard() {
+        g_running = false;
+        if(before_join_) {
+            before_join_();
+        }
+        for(auto &thread : threads_) {
+            if(thread.joinable()) {
+                thread.join();
+            }
+        }
+    }
+
+    ThreadVectorJoinGuard(const ThreadVectorJoinGuard &) = delete;
+    ThreadVectorJoinGuard &operator=(const ThreadVectorJoinGuard &) = delete;
+
+private:
+    std::vector<std::thread> &threads_;
+    std::function<void()> before_join_;
 };
 
 template <typename Sender, typename MakeSender>
@@ -4556,7 +5588,17 @@ std::unique_ptr<MediaSenderPath<Sender>> start_media_sender_path(size_t slot_cou
     auto path = std::make_unique<MediaSenderPath<Sender>>(slot_count, rgb_frames_per_slot, depth_frames_per_slot, make_sender());
     auto *path_ptr = path.get();
     path_ptr->thread = std::thread([path_ptr, &logger] {
-        media_sender_loop(path_ptr->queue, *path_ptr->transport, logger, path_ptr->mutex);
+        try {
+            media_sender_loop(path_ptr->queue, *path_ptr->transport, logger, path_ptr->mutex, &path_ptr->running);
+        }
+        catch(const std::exception &e) {
+            logger.error(std::string("media sender path stopped unexpectedly: ") + e.what());
+            g_running = false;
+        }
+        catch(...) {
+            logger.error("media sender path stopped unexpectedly: unknown exception");
+            g_running = false;
+        }
     });
     return path;
 }
@@ -4658,9 +5700,9 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
         CameraRuntime *camera_ptr = runtime.get();
         cameras.push_back(std::move(runtime));
         camera_threads.emplace_back([&, camera_ptr, rgb_path_ptr, depth_path_ptr, primary_slot_base, preview_slot_base, compression_slot_base] {
-            camera_worker_loop(config, *camera_ptr, primary_slot_base, preview_slot_base, compression_slot_base,
-                               rgb_path_ptr->queue, depth_path_ptr->queue, preview_media_queue, depth_compression_queue,
-                               transport, logger, transport_mutex, preview_interval);
+            camera_worker_thread_entry(config, *camera_ptr, primary_slot_base, preview_slot_base, compression_slot_base,
+                                       rgb_path_ptr->queue, depth_path_ptr->queue, preview_media_queue, depth_compression_queue,
+                                       transport, logger, transport_mutex, preview_interval);
         });
         logger.info("hotplug camera started camera_id=" + camera_id + " preview_slot_base=" + std::to_string(preview_slot_base)
                     + " compression_slot_base=" + std::to_string(compression_slot_base) + " device=" + device_identity_summary(identity));
@@ -4765,26 +5807,52 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         depth_media_paths.push_back(
             start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger));
     }
-    std::thread preview_media_thread([&] { media_sender_loop(preview_media_queue, preview_media_transport, logger, preview_media_transport_mutex); });
+    std::thread preview_media_thread([&] {
+        try {
+            media_sender_loop(preview_media_queue, preview_media_transport, logger, preview_media_transport_mutex);
+        }
+        catch(const std::exception &e) {
+            logger.warn(std::string("preview media sender stopped unexpectedly: ") + e.what());
+        }
+        catch(...) {
+            logger.warn("preview media sender stopped unexpectedly: unknown exception");
+        }
+    });
+    ThreadJoinGuard preview_media_thread_guard(preview_media_thread);
     const size_t depth_worker_count = depth_compression_worker_count(cameras.size());
     logger.info("depth compression workers=" + std::to_string(depth_worker_count));
     std::vector<std::thread> depth_compression_threads;
+    ThreadVectorJoinGuard depth_compression_threads_guard(depth_compression_threads, [&] { depth_compression_queue.stop(); });
     depth_compression_threads.reserve(depth_worker_count);
     for(size_t worker = 0; worker < depth_worker_count; ++worker) {
-        depth_compression_threads.emplace_back([&, worker] { depth_compression_loop(depth_compression_queue, logger, worker); });
+        depth_compression_threads.emplace_back([&, worker] {
+            try {
+                depth_compression_loop(depth_compression_queue, logger, worker);
+            }
+            catch(const std::exception &e) {
+                logger.error("depth compression worker stopped worker=" + std::to_string(worker) + " error=" + e.what());
+                g_running = false;
+            }
+            catch(...) {
+                logger.error("depth compression worker stopped worker=" + std::to_string(worker) + " error=unknown exception");
+                g_running = false;
+            }
+        });
     }
     std::vector<std::thread> camera_threads;
+    ThreadVectorJoinGuard camera_threads_guard(camera_threads);
     camera_threads.reserve(cameras.size());
     for(size_t i = 0; i < cameras.size(); ++i) {
         auto *rgb_path = rgb_media_paths[i].get();
         auto *depth_path = depth_media_paths[i].get();
+        auto *camera = cameras[i].get();
         const size_t primary_slot_base = 0;
         const size_t preview_slot_base = i * kMediaSlotsPerCamera;
         const size_t compression_slot_base = i * kMediaSlotsPerCamera;
-        camera_threads.emplace_back([&, i, rgb_path, depth_path, primary_slot_base, preview_slot_base, compression_slot_base] {
-            camera_worker_loop(config, *cameras[i], primary_slot_base, preview_slot_base, compression_slot_base,
-                               rgb_path->queue, depth_path->queue, preview_media_queue, depth_compression_queue,
-                               status_transport, logger, status_transport_mutex, preview_interval);
+        camera_threads.emplace_back([&, camera, rgb_path, depth_path, primary_slot_base, preview_slot_base, compression_slot_base] {
+            camera_worker_thread_entry(config, *camera, primary_slot_base, preview_slot_base, compression_slot_base,
+                                       rgb_path->queue, depth_path->queue, preview_media_queue, depth_compression_queue,
+                                       status_transport, logger, status_transport_mutex, preview_interval);
         });
     }
 
@@ -4875,24 +5943,26 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         clock_sync->stop();
     }
     g_running = false;
-    depth_compression_queue.stop();
-    for(auto &path : rgb_media_paths) {
-        path->queue.stop();
-    }
-    for(auto &path : depth_media_paths) {
-        path->queue.stop();
-    }
-    preview_media_queue.stop();
     for(auto &thread : camera_threads) {
         if(thread.joinable()) {
             thread.join();
         }
     }
+    depth_compression_queue.stop();
     for(auto &thread : depth_compression_threads) {
         if(thread.joinable()) {
             thread.join();
         }
     }
+    for(auto &path : rgb_media_paths) {
+        path->running = false;
+        path->queue.stop();
+    }
+    for(auto &path : depth_media_paths) {
+        path->running = false;
+        path->queue.stop();
+    }
+    preview_media_queue.stop();
     for(auto &path : rgb_media_paths) {
         if(path->thread.joinable()) {
             path->thread.join();

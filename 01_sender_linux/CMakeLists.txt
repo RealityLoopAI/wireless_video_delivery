@@ -80,7 +80,7 @@ target_compile_options(gemini_sender PRIVATE
 )
 
 set_target_properties(gemini_sender PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
     INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
 )
@@ -116,7 +116,7 @@ target_compile_options(orbbec_depth_probe PRIVATE
 )
 
 set_target_properties(orbbec_depth_probe PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
     INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
 )
@@ -144,7 +144,7 @@ target_compile_options(orbbec_fps_probe PRIVATE
 )
 
 set_target_properties(orbbec_fps_probe PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
     INSTALL_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
 )
@@ -166,5 +166,16 @@ target_compile_options(depth_compression_bench PRIVATE
 )
 
 set_target_properties(depth_compression_bench PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(
+        NAME sender_config_validation
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_config.py"
+                --sender "$<TARGET_FILE:gemini_sender>"
+                --source-root "${CMAKE_SOURCE_DIR}"
+    )
+    set_tests_properties(sender_config_validation PROPERTIES TIMEOUT 120)
+endif()

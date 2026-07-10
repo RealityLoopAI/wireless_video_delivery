@@ -6,10 +6,14 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
+#include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <iomanip>
+#include <limits>
+#include <memory>
 #include <optional>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 
@@ -17,6 +21,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <json/json.h>
 
 namespace gwv3 {
 namespace {
@@ -57,27 +62,13 @@ std::string json_escape(const std::string &value) {
     return oss.str();
 }
 
-std::optional<std::string> json_string_field(const std::string &json, const std::string &key) {
-    const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
-    std::smatch match;
-    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
-        return match[1].str();
+bool is_valid_protocol_id(const std::string &value) {
+    if(value.empty() || value.size() > 64) {
+        return false;
     }
-    return std::nullopt;
-}
-
-std::optional<uint64_t> json_uint64_field(const std::string &json, const std::string &key) {
-    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
-    std::smatch match;
-    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
-        try {
-            return static_cast<uint64_t>(std::stoull(match[1].str()));
-        }
-        catch(const std::exception &) {
-            return std::nullopt;
-        }
-    }
-    return std::nullopt;
+    return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-';
+    });
 }
 
 sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
@@ -135,7 +126,26 @@ bool ClockSyncManager::start() {
     if(!running_.compare_exchange_strong(expected, true)) {
         return true;
     }
-    thread_ = std::thread([this] { run_loop(); });
+    try {
+        thread_ = std::thread([this] {
+            try {
+                run_loop();
+            }
+            catch(const std::exception &e) {
+                log_warn(std::string("clock_sync listener stopped after exception: ") + e.what());
+                running_ = false;
+            }
+            catch(...) {
+                log_warn("clock_sync listener stopped after unknown exception");
+                running_ = false;
+            }
+        });
+    }
+    catch(const std::exception &e) {
+        running_ = false;
+        log_warn(std::string("clock_sync listener thread start failed: ") + e.what());
+        return false;
+    }
     return true;
 }
 
@@ -146,18 +156,31 @@ void ClockSyncManager::stop() {
     }
 }
 
-void ClockSyncManager::update_from_sender_report(const std::string &sender_id,
+bool ClockSyncManager::update_from_sender_report(const std::string &sender_id,
                                                  int64_t offset_us,
                                                  int64_t delay_us,
                                                  double drift_ppm,
-                                                 uint64_t last_sync_us) {
-    if(sender_id.empty()) {
-        return;
+                                                 uint64_t last_sync_us,
+                                                 const std::string &source_ip) {
+    constexpr int64_t kMaxAcceptedOffsetUs = 24ll * 60ll * 60ll * 1000ll * 1000ll;
+    in_addr source_addr{};
+    if(!is_valid_protocol_id(sender_id) || inet_pton(AF_INET, source_ip.c_str(), &source_addr) != 1
+       || delay_us < 0 || delay_us > 100000 || !std::isfinite(drift_ppm) || std::abs(drift_ppm) > 1000.0
+       || offset_us < -kMaxAcceptedOffsetUs || offset_us > kMaxAcceptedOffsetUs
+       || last_sync_us > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return false;
     }
     ClockModel model;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto source = probe_source_ips_.find(sender_id);
+        if(source == probe_source_ips_.end() || source->second != source_addr.s_addr) {
+            return false;
+        }
         auto &entry = clock_models_[sender_id];
+        if(last_sync_us > 0 && entry.last_sync_us > 0 && last_sync_us < entry.last_sync_us) {
+            return false;
+        }
         entry.valid = last_sync_us > 0;
         entry.offset_us = offset_us;
         entry.delay_us = delay_us;
@@ -178,6 +201,7 @@ void ClockSyncManager::update_from_sender_report(const std::string &sender_id,
             << " valid=" << (model.valid ? "true" : "false");
         log_info(oss.str());
     }
+    return true;
 }
 
 ClockModel ClockSyncManager::get_model(const std::string &sender_id) const {
@@ -194,7 +218,20 @@ int64_t ClockSyncManager::get_global_timestamp_us(const std::string &sender_id, 
     if(!model.valid) {
         return static_cast<int64_t>(sender_timestamp_us);
     }
-    return static_cast<int64_t>(sender_timestamp_us) + model.offset_us;
+    long double adjusted_offset = static_cast<long double>(model.offset_us);
+    if(model.last_sync_us > 0 && std::isfinite(model.drift_ppm)) {
+        const long double elapsed_us = static_cast<long double>(sender_timestamp_us)
+                                       - static_cast<long double>(model.last_sync_us);
+        adjusted_offset += elapsed_us * model.drift_ppm / 1'000'000.0L;
+    }
+    const long double global = static_cast<long double>(sender_timestamp_us) + adjusted_offset;
+    if(global > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if(global < static_cast<long double>(std::numeric_limits<int64_t>::min())) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return static_cast<int64_t>(std::llround(global));
 }
 
 bool ClockSyncManager::has_valid_model(const std::string &sender_id) const {
@@ -255,23 +292,43 @@ void ClockSyncManager::run_loop() {
             log_warn(std::string("clock sync UDP recv failed: ") + std::strerror(errno));
             continue;
         }
-        handle_datagram(fd, buffer.data(), static_cast<size_t>(got), peer);
+        try {
+            handle_datagram(fd, buffer.data(), static_cast<size_t>(got), peer);
+        }
+        catch(const std::exception &e) {
+            log_warn(std::string("clock sync datagram rejected: ") + e.what());
+        }
     }
     close(fd);
 }
 
 void ClockSyncManager::handle_datagram(int fd, const char *data, size_t size, const sockaddr_in &peer) {
-    const uint64_t t2 = now_us();
-    const std::string json(data, size);
-    if(json_string_field(json, "protocol_version").value_or("") != kProtocolVersion
-       || json_string_field(json, "message_type").value_or("") != "clock_sync_probe") {
+    if(size == 0 || size > 4096) {
         return;
     }
-    const auto sender_id = json_string_field(json, "sender_id").value_or("");
-    const auto sequence = json_uint64_field(json, "sequence");
-    const auto t1 = json_uint64_field(json, "t1_sender_send_us");
-    if(sender_id.empty() || !sequence || !t1) {
+    const uint64_t t2 = now_us();
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    builder["failIfExtra"] = true;
+    builder["strictRoot"] = true;
+    Json::Value root;
+    std::string errors;
+    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if(!reader->parse(data, data + size, &root, &errors) || !root.isObject()
+       || !root["protocol_version"].isString() || root["protocol_version"].asString() != kProtocolVersion
+       || !root["message_type"].isString() || root["message_type"].asString() != "clock_sync_probe") {
         return;
+    }
+    const auto sender_id = root["sender_id"].isString() ? root["sender_id"].asString() : std::string{};
+    if(!is_valid_protocol_id(sender_id) || !root["sequence"].isUInt64() || !root["t1_sender_send_us"].isUInt64()) {
+        return;
+    }
+    const uint64_t sequence = root["sequence"].asUInt64();
+    const uint64_t t1 = root["t1_sender_send_us"].asUInt64();
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        probe_source_ips_[sender_id] = peer.sin_addr.s_addr;
     }
 
     const uint64_t t3 = now_us();
@@ -279,8 +336,8 @@ void ClockSyncManager::handle_datagram(int fd, const char *data, size_t size, co
     response << "{\"protocol_version\":\"" << kProtocolVersion << "\","
              << "\"message_type\":\"clock_sync_response\","
              << "\"sender_id\":\"" << json_escape(sender_id) << "\","
-             << "\"sequence\":" << *sequence << ','
-             << "\"t1_sender_send_us\":" << *t1 << ','
+             << "\"sequence\":" << sequence << ','
+             << "\"t1_sender_send_us\":" << t1 << ','
              << "\"t2_receiver_recv_us\":" << t2 << ','
              << "\"t3_receiver_send_us\":" << t3 << "}\n";
     const auto payload = response.str();
@@ -289,7 +346,7 @@ void ClockSyncManager::handle_datagram(int fd, const char *data, size_t size, co
         log_warn("clock_sync response send failed sender_id=" + sender_id + ": " + std::strerror(errno));
         return;
     }
-    log_info("clock_sync response sent sender_id=" + sender_id + " sequence=" + std::to_string(*sequence));
+    log_info("clock_sync response sent sender_id=" + sender_id + " sequence=" + std::to_string(sequence));
 }
 
 ClockModel ClockSyncManager::apply_timeout_locked(const ClockModel &model, uint64_t now) const {

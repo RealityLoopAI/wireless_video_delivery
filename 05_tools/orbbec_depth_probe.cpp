@@ -262,6 +262,13 @@ int main(int argc, char **argv) {
         print_int_property(device, OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, "color_power_line_frequency");
         print_bool_property(device, OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "color_auto_white_balance");
         print_int_property(device, OB_PROP_COLOR_WHITE_BALANCE_INT, "color_white_balance");
+        print_int_property(device, OB_PROP_COLOR_BRIGHTNESS_INT, "color_brightness");
+        print_int_property(device, OB_PROP_COLOR_SHARPNESS_INT, "color_sharpness");
+        print_int_property(device, OB_PROP_COLOR_SATURATION_INT, "color_saturation");
+        print_int_property(device, OB_PROP_COLOR_CONTRAST_INT, "color_contrast");
+        print_int_property(device, OB_PROP_COLOR_GAMMA_INT, "color_gamma");
+        print_int_property(device, OB_PROP_COLOR_BACKLIGHT_COMPENSATION_INT, "color_backlight_compensation");
+        print_int_property(device, OB_PROP_COLOR_HUE_INT, "color_hue");
 
         print_depth_work_modes(device);
         print_int_property(device, OB_PROP_DEPTH_PRECISION_LEVEL_INT, "depth_precision_level");

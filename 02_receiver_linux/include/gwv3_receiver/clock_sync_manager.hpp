@@ -52,11 +52,12 @@ public:
     bool start();
     void stop();
 
-    void update_from_sender_report(const std::string &sender_id,
+    bool update_from_sender_report(const std::string &sender_id,
                                    int64_t offset_us,
                                    int64_t delay_us,
                                    double drift_ppm,
-                                   uint64_t last_sync_us);
+                                   uint64_t last_sync_us,
+                                   const std::string &source_ip);
 
     ClockModel get_model(const std::string &sender_id) const;
     int64_t get_global_timestamp_us(const std::string &sender_id, uint64_t sender_timestamp_us) const;
@@ -76,6 +77,7 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, ClockModel> clock_models_;
+    std::unordered_map<std::string, uint32_t> probe_source_ips_;
 
     mutable std::mutex log_mutex_;
     std::function<void(const std::string &)> info_log_;

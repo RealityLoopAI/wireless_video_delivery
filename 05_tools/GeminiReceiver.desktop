@@ -2,6 +2,6 @@
 Type=Application
 Name=Gemini Receiver
 Comment=Start Gemini wireless video receiver and web monitor
-Exec=/home/fz/Desktop/gemini_wireless_video_v3_sender_handoff_20260509_161313/05_tools/start_receiver.sh
+Exec=/bin/bash -lc "exec \"\\$HOME/Desktop/wireless_video_delivery/05_tools/start_receiver.sh\""
 Terminal=true
 Categories=Utility;

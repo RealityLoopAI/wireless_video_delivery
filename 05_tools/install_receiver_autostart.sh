@@ -14,6 +14,7 @@ LOG_ROTATE_SERVICE="$UNIT_DIR/gwv3-receiver-log-rotate.service"
 LOG_ROTATE_TIMER="$UNIT_DIR/gwv3-receiver-log-rotate.timer"
 RECEIVER_PID="$BUILD_DIR/receiver.pid"
 WEB_PID="$BUILD_DIR/web_monitor.pid"
+WEB_AUTH_TOKEN_FILE="$BUILD_DIR/web_auth_token"
 
 fail() {
   echo "接收端自启动安装失败：$1" >&2
@@ -145,6 +146,12 @@ RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/08_reports/receiver_logs" "$UNIT_DIR"
+if [[ ! -s "$WEB_AUTH_TOKEN_FILE" ]]; then
+  umask 077
+  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$WEB_AUTH_TOKEN_FILE"
+fi
+chmod 600 "$WEB_AUTH_TOKEN_FILE"
+WEB_AUTH_TOKEN="$(<"$WEB_AUTH_TOKEN_FILE")"
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DGWV3_BUILD_RECEIVER=ON -DGWV3_BUILD_SENDER=OFF >/dev/null
 cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null
 [[ -x "$BIN" ]] || fail "接收端可执行文件不存在 $BIN"
@@ -152,7 +159,12 @@ cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
+REQUIREMENTS_HASH="$(sha256sum "$WEB_DIR/requirements.txt" | awk '{print $1}')"
+REQUIREMENTS_STAMP="$VENV/.requirements.sha256"
+if [[ ! -f "$REQUIREMENTS_STAMP" ]] || [[ "$(<"$REQUIREMENTS_STAMP")" != "$REQUIREMENTS_HASH" ]]; then
+  "$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
+  echo "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
+fi
 
 systemctl --user stop gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 request_receiver_record_stop
@@ -196,6 +208,7 @@ Wants=gwv3-gemini-receiver.service
 Type=simple
 WorkingDirectory=$WEB_DIR
 Environment=GWV3_RECEIVER_ADMIN=http://127.0.0.1:$ADMIN_PORT
+Environment=GWV3_WEB_AUTH_TOKEN=$WEB_AUTH_TOKEN
 ExecStart=$VENV/bin/python -m uvicorn server:app --host $WEB_BIND_IP --port $WEB_PORT --no-access-log
 Restart=on-failure
 RestartSec=2
@@ -210,6 +223,7 @@ StandardError=append:$WEB_STDOUT
 [Install]
 WantedBy=default.target
 EOF
+chmod 600 "$WEB_UNIT"
 
 cat > "$LOG_ROTATE_SERVICE" <<EOF
 [Unit]
@@ -250,6 +264,7 @@ done
 
 echo "接收端自启动已安装并启动。"
 echo "Web 地址：http://127.0.0.1:$WEB_PORT"
+echo "Web 访问令牌保存在：$WEB_AUTH_TOKEN_FILE"
 
 if command -v loginctl >/dev/null 2>&1; then
   linger="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)"

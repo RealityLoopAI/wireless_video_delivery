@@ -4,10 +4,16 @@ add_executable(gemini_receiver
 )
 
 find_package(ZLIB REQUIRED)
+find_path(JSONCPP_INCLUDE_DIR NAMES json/json.h PATH_SUFFIXES jsoncpp)
+find_library(JSONCPP_LIBRARY NAMES jsoncpp)
+if(NOT JSONCPP_INCLUDE_DIR OR NOT JSONCPP_LIBRARY)
+    message(FATAL_ERROR "jsoncpp headers and library are required")
+endif()
 
 target_include_directories(gemini_receiver PRIVATE
     include
     "${CMAKE_SOURCE_DIR}/03_common_core/include"
+    ${JSONCPP_INCLUDE_DIR}
 )
 
 target_compile_features(gemini_receiver PRIVATE cxx_std_17)
@@ -20,10 +26,22 @@ target_compile_options(gemini_receiver PRIVATE
 
 target_link_libraries(gemini_receiver PRIVATE
     ZLIB::ZLIB
+    ${JSONCPP_LIBRARY}
     ${CMAKE_DL_LIBS}
     pthread
 )
 
 set_target_properties(gemini_receiver PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/12_build/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME receiver_hardening_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_hardening.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+                --source-root ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(receiver_hardening_integration PROPERTIES TIMEOUT 90)
+endif()

@@ -151,6 +151,10 @@ int Transport::make_udp_socket() {
     if(fd < 0) {
         throw std::runtime_error(std::string("cannot create UDP socket: ") + std::strerror(errno));
     }
+    const int descriptor_flags = fcntl(fd, F_GETFD, 0);
+    if(descriptor_flags >= 0) {
+        fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC);
+    }
     return fd;
 }
 
@@ -159,6 +163,10 @@ int Transport::make_tcp_socket() {
     if(fd < 0) {
         set_error(std::string("cannot create TCP socket: ") + std::strerror(errno));
         return -1;
+    }
+    const int descriptor_flags = fcntl(fd, F_GETFD, 0);
+    if(descriptor_flags >= 0) {
+        fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC);
     }
     if(config_.transport.send_buffer_bytes > 0) {
         int requested = config_.transport.send_buffer_bytes;
@@ -201,7 +209,11 @@ std::optional<std::string> Transport::receive_status_control(int timeout_ms) {
     sockaddr_in peer{};
     socklen_t peer_len = sizeof(peer);
     const ssize_t got = recvfrom(status_udp_fd_, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr *>(&peer), &peer_len);
-    if(got <= 0) {
+    if(got <= 0 || static_cast<size_t>(got) == buffer.size()) {
+        return std::nullopt;
+    }
+    const auto expected_peer = endpoint(config_.receiver.ip, config_.receiver.status_port);
+    if(peer.sin_family != AF_INET || peer.sin_addr.s_addr != expected_peer.sin_addr.s_addr) {
         return std::nullopt;
     }
     return std::string(buffer.data(), static_cast<size_t>(got));
@@ -235,7 +247,7 @@ bool Transport::send_media(const MediaPacketView &packet) {
     if(!ensure_media_tcp_connected()) {
         return false;
     }
-    if(should_drop_before_write(media_tcp_fd_, packet.total_size())) {
+    if(!config_.recording_buffer.enabled && should_drop_before_write(media_tcp_fd_, packet.total_size())) {
         consecutive_media_backpressure_drops_++;
         if(consecutive_media_backpressure_drops_ >= 30) {
             const std::string previous = last_error_;
@@ -257,6 +269,16 @@ bool Transport::send_media(const MediaPacketView &packet) {
         consecutive_media_backpressure_drops_ = 0;
     }
     return false;
+}
+
+bool Transport::close_if_media_peer_closed() {
+    if(media_tcp_fd_ < 0 || !tcp_peer_closed(media_tcp_fd_)) {
+        return false;
+    }
+    close_media_socket();
+    last_media_connect_attempt_ = {};
+    set_error("media TCP peer closed while idle; socket closed for reconnect");
+    return true;
 }
 
 bool Transport::send_udp_status(const std::string &json_message) {
@@ -446,7 +468,9 @@ bool Transport::ensure_media_tcp_connected() {
 
 Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t size) {
     size_t offset = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.transport.send_timeout_ms);
+    const int timeout_ms = config_.recording_buffer.enabled ? std::max(5000, config_.transport.send_timeout_ms)
+                                                            : config_.transport.send_timeout_ms;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while(offset < size) {
         const ssize_t sent = send(fd, data + offset, size - offset, MSG_NOSIGNAL);
         if(sent > 0) {
@@ -504,7 +528,9 @@ Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t si
 Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet) {
     const size_t total_size = packet.total_size();
     size_t offset = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.transport.send_timeout_ms);
+    const int timeout_ms = config_.recording_buffer.enabled ? std::max(5000, config_.transport.send_timeout_ms)
+                                                            : config_.transport.send_timeout_ms;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
 
     while(offset < total_size) {
         std::array<iovec, 2> iovs{};
@@ -582,10 +608,6 @@ Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet)
 
 void Transport::close_media_socket() {
     if(media_tcp_fd_ >= 0) {
-        linger reset_linger{};
-        reset_linger.l_onoff = 1;
-        reset_linger.l_linger = 0;
-        setsockopt(media_tcp_fd_, SOL_SOCKET, SO_LINGER, &reset_linger, sizeof(reset_linger));
         close(media_tcp_fd_);
         media_tcp_fd_ = -1;
     }

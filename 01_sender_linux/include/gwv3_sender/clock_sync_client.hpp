@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -54,6 +55,7 @@ private:
     struct Sample {
         uint64_t sender_receive_us = 0;
         int64_t offset_us = 0;
+        int64_t delay_us = 0;
     };
 
     void run_loop();
@@ -70,6 +72,7 @@ private:
     mutable std::mutex state_mutex_;
     ClockSyncClientState state_;
     std::vector<Sample> samples_;
+    std::chrono::steady_clock::time_point last_sync_steady_{};
 
     mutable std::mutex log_mutex_;
     std::function<void(const std::string &)> info_log_;

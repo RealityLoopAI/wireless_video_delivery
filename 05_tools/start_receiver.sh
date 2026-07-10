@@ -14,6 +14,7 @@ VENV="$WEB_DIR/.venv"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
 MAX_LOG_BYTES=$((256 * 1024 * 1024))
+WEB_AUTH_TOKEN_FILE="$BUILD_DIR/web_auth_token"
 
 fail() {
   echo "接收端启动失败：$1" >&2
@@ -50,6 +51,12 @@ if [[ "$WEB_DISPLAY_HOST" == "0.0.0.0" ]]; then
 fi
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/08_reports/receiver_logs"
+if [[ ! -s "$WEB_AUTH_TOKEN_FILE" ]]; then
+  umask 077
+  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$WEB_AUTH_TOKEN_FILE"
+fi
+chmod 600 "$WEB_AUTH_TOKEN_FILE"
+WEB_AUTH_TOKEN="$(<"$WEB_AUTH_TOKEN_FILE")"
 
 shell_quote() {
   printf '%q' "$1"
@@ -153,7 +160,12 @@ cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
+REQUIREMENTS_HASH="$(sha256sum "$WEB_DIR/requirements.txt" | awk '{print $1}')"
+REQUIREMENTS_STAMP="$VENV/.requirements.sha256"
+if [[ ! -f "$REQUIREMENTS_STAMP" ]] || [[ "$(<"$REQUIREMENTS_STAMP")" != "$REQUIREMENTS_HASH" ]]; then
+  "$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
+  echo "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
+fi
 
 if systemd_user_available && unit_active "$RECEIVER_UNIT"; then
   write_unit_pid "$RECEIVER_UNIT" "$RECEIVER_PID" || true
@@ -184,12 +196,13 @@ else
       start_installed_unit "Web 监控" "$WEB_UNIT" "$WEB_PID"
     else
       start_systemd_unit "Web 监控" "$WEB_UNIT" "$WEB_PID" "$WEB_DIR" \
-        "export GWV3_RECEIVER_ADMIN=$(shell_quote "http://127.0.0.1:$ADMIN_PORT"); exec $(shell_quote "$VENV/bin/python") -m uvicorn server:app --host $(shell_quote "$WEB_BIND_IP") --port $(shell_quote "$WEB_PORT") --no-access-log >>$(shell_quote "$WEB_STDOUT") 2>&1"
+        "export GWV3_RECEIVER_ADMIN=$(shell_quote "http://127.0.0.1:$ADMIN_PORT") GWV3_WEB_AUTH_TOKEN=$(shell_quote "$WEB_AUTH_TOKEN"); exec $(shell_quote "$VENV/bin/python") -m uvicorn server:app --host $(shell_quote "$WEB_BIND_IP") --port $(shell_quote "$WEB_PORT") --no-access-log >>$(shell_quote "$WEB_STDOUT") 2>&1"
     fi
   else
     cd "$WEB_DIR"
-    GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" --no-access-log >>"$WEB_STDOUT" 2>&1 &
+    GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" GWV3_WEB_AUTH_TOKEN="$WEB_AUTH_TOKEN" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" --no-access-log >>"$WEB_STDOUT" 2>&1 &
     echo "$!" > "$WEB_PID"
   fi
   echo "Web 监控已启动，PID=$(cat "$WEB_PID")，地址：http://$WEB_DISPLAY_HOST:$WEB_PORT"
+  echo "Web 访问令牌保存在：$WEB_AUTH_TOKEN_FILE"
 fi
