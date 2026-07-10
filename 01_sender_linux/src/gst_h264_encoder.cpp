@@ -155,15 +155,15 @@ void GstH264Encoder::request_keyframe() {
 }
 
 void GstH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us) {
-    if(!force_keyframe_pending_ || !encoder_) {
+    if(!force_keyframe_pending_ || !appsink_) {
         return;
     }
     force_keyframe_pending_ = false;
-    (void)timestamp_us;
-    GstEvent *event = gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
+    GstEvent *event = gst_video_event_new_upstream_force_key_unit(running_time,
                                                                   TRUE,
                                                                   force_keyframe_count_++);
-    if(event && !gst_element_send_event(encoder_, event)) {
+    if(event && !gst_element_send_event(appsink_, event)) {
         // Ownership is transferred to gst_element_send_event even when it returns false.
     }
 }
@@ -329,16 +329,16 @@ void GstJpegDualH264Encoder::request_keyframe() {
     force_main_keyframe_pending_ = true;
 }
 
-void GstJpegDualH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us, GstElement *encoder, bool &pending, uint32_t &count) {
-    if(!pending || !encoder) {
+void GstJpegDualH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us, GstElement *sink, bool &pending, uint32_t &count) {
+    if(!pending || !sink) {
         return;
     }
     pending = false;
-    (void)timestamp_us;
-    GstEvent *event = gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
+    GstEvent *event = gst_video_event_new_upstream_force_key_unit(running_time,
                                                                   TRUE,
                                                                   count++);
-    if(event && !gst_element_send_event(encoder, event)) {
+    if(event && !gst_element_send_event(sink, event)) {
     }
 }
 
@@ -382,10 +382,10 @@ DualEncodedH264Frames GstJpegDualH264Encoder::encode_jpeg(const void *data, size
     }
     if(preview_active && !preview_active_) {
         bool preview_keyframe_pending = true;
-        send_pending_keyframe_event(timestamp_us, preview_encoder_, preview_keyframe_pending, force_preview_keyframe_count_);
+        send_pending_keyframe_event(timestamp_us, preview_sink_, preview_keyframe_pending, force_preview_keyframe_count_);
     }
     preview_active_ = preview_active;
-    send_pending_keyframe_event(timestamp_us, main_encoder_, force_main_keyframe_pending_, force_main_keyframe_count_);
+    send_pending_keyframe_event(timestamp_us, main_sink_, force_main_keyframe_pending_, force_main_keyframe_count_);
 
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, data, size);

@@ -284,6 +284,8 @@ struct CameraRuntime {
     uint64_t rgb_keyframe_guard_drops = 0;
     uint64_t force_rgb_keyframe_requests = 0;
     uint64_t force_rgb_keyframe_applied = 0;
+    uint64_t force_rgb_keyframe_observed = 0;
+    uint64_t force_rgb_keyframe_requested_at_us = 0;
     uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t rgb_timing_mismatch_drops = 0;
@@ -2410,6 +2412,7 @@ void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::stri
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
         request_id = ++camera.force_rgb_keyframe_requests;
+        camera.force_rgb_keyframe_requested_at_us = now_us();
     }
     logger.info("rgb keyframe requested camera_id=" + camera.config.camera_id + " request_id=" + std::to_string(request_id)
                 + (reason.empty() ? "" : " reason=" + reason));
@@ -2423,6 +2426,24 @@ bool consume_rgb_keyframe_request(CameraRuntime &camera, uint64_t &request_id) {
     camera.force_rgb_keyframe_applied = camera.force_rgb_keyframe_requests;
     request_id = camera.force_rgb_keyframe_applied;
     return true;
+}
+
+void report_forced_rgb_keyframe(CameraRuntime &camera, Logger &logger) {
+    uint64_t request_id = 0;
+    uint64_t requested_at_us = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_requests) {
+            return;
+        }
+        camera.force_rgb_keyframe_observed = camera.force_rgb_keyframe_requests;
+        request_id = camera.force_rgb_keyframe_observed;
+        requested_at_us = camera.force_rgb_keyframe_requested_at_us;
+    }
+    const uint64_t observed_at_us = now_us();
+    const uint64_t latency_us = requested_at_us != 0 && observed_at_us >= requested_at_us ? observed_at_us - requested_at_us : 0;
+    logger.info("rgb forced keyframe observed camera_id=" + camera.config.camera_id + " request_id=" + std::to_string(request_id)
+                + " latency_us=" + std::to_string(latency_us));
 }
 
 enum class RgbKeyframeDecision {
@@ -4521,6 +4542,9 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
     for(auto &encoded : encoded_units) {
         const bool encoded_has_vcl = h264_payload_has_vcl_nal(encoded.data);
         const bool is_key_frame = h264_payload_has_idr(encoded.data);
+        if(is_key_frame) {
+            report_forced_rgb_keyframe(camera, logger);
+        }
         const auto send_decision = decide_rgb_keyframe_send(camera, is_key_frame, frame_now, logger);
         if(send_decision == RgbKeyframeDecision::drop) {
             continue;
