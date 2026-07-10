@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /home/orangepi/Downloads/wireless_video_delivery
-exec ./05_tools/stop_sender.sh "$@"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+exec "$ROOT_DIR/05_tools/stop_sender.sh" "$@"

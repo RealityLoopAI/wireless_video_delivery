@@ -29,6 +29,7 @@ public:
     std::optional<std::string> receive_status_control(int timeout_ms);
     bool send_media(const std::vector<uint8_t> &packet);
     bool send_media(const MediaPacketView &packet);
+    bool close_if_media_peer_closed();
     std::string last_error() const;
 
 private:
@@ -73,6 +74,7 @@ public:
     std::optional<std::string> receive_status_control(int) { return std::nullopt; }
     bool send_media(const std::vector<uint8_t> &) { return true; }
     bool send_media(const MediaPacketView &) { return true; }
+    bool close_if_media_peer_closed() { return false; }
     std::string last_error() const { return {}; }
 };
 

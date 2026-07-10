@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <regex>
 #include <sstream>
 #include <set>
 #include <stdexcept>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <unistd.h>
 
 #include <json/json.h>
@@ -248,6 +251,7 @@ std::optional<bool> optional_bool_value(const Json::Value &node, const char *key
 
 VideoProfileConfig load_profile(const Json::Value &node) {
     VideoProfileConfig profile;
+    profile.enabled = optional_bool(node, "enabled", profile.enabled);
     profile.width = optional_int(node, "width", 0);
     profile.height = optional_int(node, "height", 0);
     profile.fps = optional_int(node, "fps", 0);
@@ -301,10 +305,15 @@ AppConfig load_config(const std::string &path) {
         throw std::runtime_error("cannot open config file: " + path);
     }
 
+    const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    builder["failIfExtra"] = true;
+    builder["strictRoot"] = true;
     Json::Value root;
     std::string errors;
-    if(!Json::parseFromStream(builder, input, &root, &errors)) {
+    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if(!reader->parse(json.data(), json.data() + json.size(), &root, &errors) || !root.isObject()) {
         throw std::runtime_error("config JSON parse failed: " + errors);
     }
 
@@ -425,8 +434,10 @@ AppConfig load_config(const std::string &path) {
         if(item.isMember("depth_camera_id")) {
             throw std::runtime_error("depth_camera_id is not supported; RGB and Depth are always sent with the same camera_id");
         }
+        camera.capture_backend = optional_string(item, "capture_backend", camera.capture_backend);
         camera.serial_number = optional_string(item, "serial_number", "");
         camera.uid = optional_string(item, "uid", "");
+        camera.video_device = optional_string(item, "video_device", "");
         camera.device_index = optional_int(item, "device_index", camera.device_index);
         camera.validate_rgb_mjpeg = optional_bool(item, "validate_rgb_mjpeg", camera.validate_rgb_mjpeg);
         camera.frame_aggregate_mode = optional_string(item, "frame_aggregate_mode", camera.frame_aggregate_mode);
@@ -460,31 +471,33 @@ void validate_config(const AppConfig &config) {
     if(!is_valid_protocol_id(config.sender_id)) {
         throw std::runtime_error("sender_id must be 1-64 ASCII letters/digits/_/-");
     }
-    if(config.receiver.ip.empty()) {
-        throw std::runtime_error("receiver.ip is required");
+    in_addr receiver_addr{};
+    if(inet_pton(AF_INET, config.receiver.ip.c_str(), &receiver_addr) != 1) {
+        throw std::runtime_error("receiver.ip must be a valid IPv4 address");
     }
-    if(config.heartbeat_interval_ms <= 0) {
-        throw std::runtime_error("heartbeat_interval_ms must be positive");
+    if(config.heartbeat_interval_ms <= 0 || config.heartbeat_interval_ms > 60000) {
+        throw std::runtime_error("heartbeat_interval_ms must be in range [1, 60000]");
     }
     if(config.clock_sync.enabled) {
-        if(config.clock_sync.receiver_ip.empty()) {
-            throw std::runtime_error("clock_sync.receiver_ip must be non-empty when clock_sync is enabled");
+        in_addr clock_receiver_addr{};
+        if(inet_pton(AF_INET, config.clock_sync.receiver_ip.c_str(), &clock_receiver_addr) != 1) {
+            throw std::runtime_error("clock_sync.receiver_ip must be a valid IPv4 address");
         }
-        if(config.clock_sync.interval_ms <= 0) {
-            throw std::runtime_error("clock_sync.interval_ms must be positive");
+        if(config.clock_sync.interval_ms <= 0 || config.clock_sync.interval_ms > 60000) {
+            throw std::runtime_error("clock_sync.interval_ms must be in range [1, 60000]");
         }
-        if(config.clock_sync.timeout_ms <= 0) {
-            throw std::runtime_error("clock_sync.timeout_ms must be positive");
+        if(config.clock_sync.timeout_ms <= 0 || config.clock_sync.timeout_ms > 60000) {
+            throw std::runtime_error("clock_sync.timeout_ms must be in range [1, 60000]");
         }
-        if(config.clock_sync.max_delay_us <= 0) {
-            throw std::runtime_error("clock_sync.max_delay_us must be positive");
+        if(config.clock_sync.max_delay_us <= 0 || config.clock_sync.max_delay_us > 10'000'000) {
+            throw std::runtime_error("clock_sync.max_delay_us must be in range [1, 10000000]");
         }
-        if(config.clock_sync.sample_window == 0) {
-            throw std::runtime_error("clock_sync.sample_window must be positive");
+        if(config.clock_sync.sample_window == 0 || config.clock_sync.sample_window > 1000) {
+            throw std::runtime_error("clock_sync.sample_window must be in range [1, 1000]");
         }
     }
-    if(config.cameras.empty()) {
-        throw std::runtime_error("at least one camera is required");
+    if(config.cameras.empty() || config.cameras.size() > 4) {
+        throw std::runtime_error("camera count must be in range [1, 4]");
     }
     if(config.transport.status_protocol != "udp") {
         throw std::runtime_error("only udp status_protocol is implemented in this sender build");
@@ -492,17 +505,17 @@ void validate_config(const AppConfig &config) {
     if(config.transport.media_protocol != "tcp" && config.transport.media_protocol != "udp") {
         throw std::runtime_error("transport.media_protocol must be tcp or udp");
     }
-    if(config.transport.connect_timeout_ms <= 0) {
-        throw std::runtime_error("transport.connect_timeout_ms must be positive");
+    if(config.transport.connect_timeout_ms <= 0 || config.transport.connect_timeout_ms > 60000) {
+        throw std::runtime_error("transport.connect_timeout_ms must be in range [1, 60000]");
     }
-    if(config.transport.send_timeout_ms <= 0) {
-        throw std::runtime_error("transport.send_timeout_ms must be positive");
+    if(config.transport.send_timeout_ms <= 0 || config.transport.send_timeout_ms > 60000) {
+        throw std::runtime_error("transport.send_timeout_ms must be in range [1, 60000]");
     }
-    if(config.transport.send_buffer_bytes < 0) {
-        throw std::runtime_error("transport.send_buffer_bytes must be non-negative");
+    if(config.transport.send_buffer_bytes < 0 || config.transport.send_buffer_bytes > 256 * 1024 * 1024) {
+        throw std::runtime_error("transport.send_buffer_bytes must be in range [0, 268435456]");
     }
-    if(config.transport.reconnect_interval_ms <= 0) {
-        throw std::runtime_error("transport.reconnect_interval_ms must be positive");
+    if(config.transport.reconnect_interval_ms <= 0 || config.transport.reconnect_interval_ms > 60000) {
+        throw std::runtime_error("transport.reconnect_interval_ms must be in range [1, 60000]");
     }
     if(config.media_udp.mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.media_udp.mtu_bytes > 65000) {
         throw std::runtime_error("media_udp.mtu_bytes must be > 32 and <= 65000");
@@ -510,17 +523,17 @@ void validate_config(const AppConfig &config) {
     if(config.swap_depth_between_cameras && config.cameras.size() != 2) {
         throw std::runtime_error("swap_depth_between_cameras requires exactly two cameras");
     }
-    if(config.web_rgb_preview.max_width <= 0) {
-        throw std::runtime_error("web_rgb_preview.max_width must be positive");
+    if(config.web_rgb_preview.max_width <= 0 || config.web_rgb_preview.max_width > 16384) {
+        throw std::runtime_error("web_rgb_preview.max_width must be in range [1, 16384]");
     }
-    if(config.web_rgb_preview.max_height <= 0) {
-        throw std::runtime_error("web_rgb_preview.max_height must be positive");
+    if(config.web_rgb_preview.max_height <= 0 || config.web_rgb_preview.max_height > 16384) {
+        throw std::runtime_error("web_rgb_preview.max_height must be in range [1, 16384]");
     }
-    if(config.web_rgb_preview.fps <= 0) {
-        throw std::runtime_error("web_rgb_preview.fps must be positive");
+    if(config.web_rgb_preview.fps <= 0 || config.web_rgb_preview.fps > 120) {
+        throw std::runtime_error("web_rgb_preview.fps must be in range [1, 120]");
     }
-    if(config.web_rgb_preview.bitrate_bps <= 0) {
-        throw std::runtime_error("web_rgb_preview.bitrate_bps must be positive");
+    if(config.web_rgb_preview.bitrate_bps <= 0 || config.web_rgb_preview.bitrate_bps > 200'000'000) {
+        throw std::runtime_error("web_rgb_preview.bitrate_bps must be in range [1, 200000000]");
     }
     if(config.web_rgb_preview.udp_mtu_bytes <= static_cast<int>(kPreviewUdpHeaderSize) || config.web_rgb_preview.udp_mtu_bytes > 65000) {
         throw std::runtime_error("web_rgb_preview.udp_mtu_bytes must be > 32 and <= 65000");
@@ -528,21 +541,29 @@ void validate_config(const AppConfig &config) {
     if(config.clock_sync.enabled && config.web_rgb_preview.udp_enabled && config.clock_sync.port == config.web_rgb_preview.udp_port) {
         throw std::runtime_error("clock_sync.port conflicts with enabled web_rgb_preview.udp_port");
     }
-    if(config.recording_buffer.rgb_frames_per_slot <= 0) {
-        throw std::runtime_error("recording_buffer.rgb_frames_per_slot must be positive");
+    if(config.recording_buffer.rgb_frames_per_slot <= 0 || config.recording_buffer.rgb_frames_per_slot > 1800) {
+        throw std::runtime_error("recording_buffer.rgb_frames_per_slot must be in range [1, 1800]");
     }
-    if(config.recording_buffer.depth_frames_per_slot <= 0) {
-        throw std::runtime_error("recording_buffer.depth_frames_per_slot must be positive");
+    if(config.recording_buffer.depth_frames_per_slot <= 0 || config.recording_buffer.depth_frames_per_slot > 1800) {
+        throw std::runtime_error("recording_buffer.depth_frames_per_slot must be in range [1, 1800]");
     }
-    if(config.recording_buffer.depth_compression_frames_per_slot <= 0) {
-        throw std::runtime_error("recording_buffer.depth_compression_frames_per_slot must be positive");
+    if(config.recording_buffer.depth_compression_frames_per_slot <= 0
+       || config.recording_buffer.depth_compression_frames_per_slot > 120) {
+        throw std::runtime_error("recording_buffer.depth_compression_frames_per_slot must be in range [1, 120]");
+    }
+    if(config.preview.fps <= 0 || config.preview.fps > 120) {
+        throw std::runtime_error("preview.fps must be in range [1, 120]");
+    }
+    if(config.logging.directory.empty() || config.logging.max_bytes > 1024ull * 1024ull * 1024ull) {
+        throw std::runtime_error("logging.directory must be non-empty and logging.max_bytes must be <= 1GiB");
     }
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
     std::set<std::string> uids;
     auto validate_profile = [](const VideoProfileConfig &profile, const std::string &name) {
-        if(profile.width < 0 || profile.height < 0 || profile.fps < 0) {
-            throw std::runtime_error(name + " width/height/fps must be non-negative");
+        if(profile.width < 0 || profile.height < 0 || profile.fps < 0
+           || profile.width > 16384 || profile.height > 16384 || profile.fps > 240) {
+            throw std::runtime_error(name + " width/height/fps are outside supported limits");
         }
     };
     for(const auto &camera : config.cameras) {
@@ -585,8 +606,8 @@ void validate_config(const AppConfig &config) {
         if(camera.rgb_encoding.gstreamer_encoder.empty()) {
             throw std::runtime_error("rgb_encoding.gstreamer_encoder must not be empty");
         }
-        if(camera.rgb_encoding.bitrate_bps <= 0) {
-            throw std::runtime_error("rgb_encoding.bitrate_bps must be positive");
+        if(camera.rgb_encoding.bitrate_bps <= 0 || camera.rgb_encoding.bitrate_bps > 200'000'000) {
+            throw std::runtime_error("rgb_encoding.bitrate_bps must be in range [1, 200000000]");
         }
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
            && camera.depth_transport.compression != "qdelta" && camera.depth_transport.compression != "pq12zlib"
@@ -595,11 +616,20 @@ void validate_config(const AppConfig &config) {
             throw std::runtime_error(
                 "only none/zlib/qdelta/pq12zlib/q8lz4/pq8zlib/pq8lz4 depth compression is implemented in this sender build");
         }
-        if(camera.depth_transport.quantization_step_mm <= 0.0) {
-            throw std::runtime_error("depth_transport.quantization_step_mm must be positive");
+        if(!std::isfinite(camera.depth_transport.quantization_step_mm)
+           || camera.depth_transport.quantization_step_mm <= 0.0 || camera.depth_transport.quantization_step_mm > 1000.0) {
+            throw std::runtime_error("depth_transport.quantization_step_mm must be in range (0, 1000]");
+        }
+        if(camera.capture_backend != "orbbec_sdk" && camera.capture_backend != "v4l2") {
+            throw std::runtime_error("camera.capture_backend must be orbbec_sdk or v4l2");
+        }
+        if(camera.capture_backend == "v4l2" && camera.video_device.empty() && camera.serial_number.empty()) {
+            throw std::runtime_error("v4l2 camera requires video_device or serial_number");
         }
         validate_profile(camera.rgb_profile, "rgb_profile");
-        validate_profile(camera.depth_profile, "depth_profile");
+        if(camera.depth_profile.enabled) {
+            validate_profile(camera.depth_profile, "depth_profile");
+        }
         validate_nonnegative(camera.color_controls.exposure, "color_controls.exposure");
         validate_nonnegative(camera.color_controls.gain, "color_controls.gain");
         validate_nonnegative(camera.color_controls.auto_exposure_priority, "color_controls.auto_exposure_priority");

@@ -5,8 +5,10 @@
 #include "libobsensor/hpp/Pipeline.hpp"
 #include "libobsensor/hpp/StreamProfile.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -26,6 +28,13 @@ struct Options {
     int gain = -1;
     int power_line_frequency = -1;
     int max_exposure = -1;
+    int auto_white_balance = -1;
+    int white_balance = -1;
+    int brightness = -1000;
+    int contrast = -1;
+    int saturation = -1;
+    int gamma = -1;
+    int backlight_compensation = -1;
     int color_width = 1920;
     int color_height = 1080;
     int depth_width = 320;
@@ -33,6 +42,8 @@ struct Options {
     int fps = 30;
     std::string color_format = "mjpg";
     std::string depth_format = "y16";
+    std::string save_prefix;
+    int save_after_frames = 30;
 };
 
 void usage(const char *argv0) {
@@ -40,8 +51,11 @@ void usage(const char *argv0) {
               << " [--serial SN] [--streams color|both] [--aggregate any|full|color|disable]"
                  " [--seconds N] [--index N] [--auto-exposure 0|1] [--exposure N] [--gain N]"
                  " [--ae-priority 0|1] [--power-line 0|1|2] [--max-exposure N]"
+                 " [--auto-white-balance 0|1] [--white-balance N] [--brightness N] [--contrast N]"
+                 " [--saturation N] [--gamma N] [--backlight N]"
                  " [--color-width N] [--color-height N] [--depth-width N] [--depth-height N] [--fps N]"
-                 " [--color-format mjpg|rgb|yuyv] [--depth-format y16|y12]\n";
+                 " [--color-format mjpg|rgb|yuyv] [--depth-format y16|y12]"
+                 " [--save-prefix PATH] [--save-after-frames N]\n";
 }
 
 Options parse_args(int argc, char **argv) {
@@ -87,6 +101,27 @@ Options parse_args(int argc, char **argv) {
         else if(arg == "--max-exposure") {
             options.max_exposure = std::stoi(require_value("--max-exposure"));
         }
+        else if(arg == "--auto-white-balance") {
+            options.auto_white_balance = std::stoi(require_value("--auto-white-balance"));
+        }
+        else if(arg == "--white-balance") {
+            options.white_balance = std::stoi(require_value("--white-balance"));
+        }
+        else if(arg == "--brightness") {
+            options.brightness = std::stoi(require_value("--brightness"));
+        }
+        else if(arg == "--contrast") {
+            options.contrast = std::stoi(require_value("--contrast"));
+        }
+        else if(arg == "--saturation") {
+            options.saturation = std::stoi(require_value("--saturation"));
+        }
+        else if(arg == "--gamma") {
+            options.gamma = std::stoi(require_value("--gamma"));
+        }
+        else if(arg == "--backlight") {
+            options.backlight_compensation = std::stoi(require_value("--backlight"));
+        }
         else if(arg == "--color-width") {
             options.color_width = std::stoi(require_value("--color-width"));
         }
@@ -107,6 +142,12 @@ Options parse_args(int argc, char **argv) {
         }
         else if(arg == "--depth-format") {
             options.depth_format = require_value("--depth-format");
+        }
+        else if(arg == "--save-prefix") {
+            options.save_prefix = require_value("--save-prefix");
+        }
+        else if(arg == "--save-after-frames") {
+            options.save_after_frames = std::stoi(require_value("--save-after-frames"));
         }
         else if(arg == "--help" || arg == "-h") {
             usage(argv[0]);
@@ -219,6 +260,24 @@ std::shared_ptr<ob::Device> select_device(const std::shared_ptr<ob::DeviceList> 
     throw std::runtime_error("device serial not found: " + options.serial);
 }
 
+void save_color_snapshot(const std::shared_ptr<ob::ColorFrame> &color, const std::string &prefix) {
+    if(!color || prefix.empty()) {
+        return;
+    }
+    const std::string extension = color->format() == OB_FORMAT_MJPG ? ".jpg" : ".raw";
+    const std::string path = prefix + "_frame" + std::to_string(color->index()) + "_" + std::to_string(color->width()) + "x"
+                             + std::to_string(color->height()) + extension;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if(!out) {
+        throw std::runtime_error("failed to open snapshot for write: " + path);
+    }
+    out.write(static_cast<const char *>(color->data()), static_cast<std::streamsize>(color->dataSize()));
+    if(!out) {
+        throw std::runtime_error("failed to write snapshot: " + path);
+    }
+    std::cout << "saved color snapshot path=" << path << " bytes=" << color->dataSize() << " format=" << color->format() << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -274,6 +333,18 @@ int main(int argc, char **argv) {
         set_int_if_supported(device, OB_PROP_COLOR_AE_MAX_EXPOSURE_INT, "max_exposure", options.max_exposure);
         set_int_if_supported(device, OB_PROP_COLOR_EXPOSURE_INT, "exposure", options.exposure);
         set_int_if_supported(device, OB_PROP_COLOR_GAIN_INT, "gain", options.gain);
+        if(options.auto_white_balance == 0) {
+            set_bool_if_supported(device, OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "auto_white_balance", options.auto_white_balance);
+        }
+        set_int_if_supported(device, OB_PROP_COLOR_WHITE_BALANCE_INT, "white_balance", options.white_balance);
+        set_int_if_supported(device, OB_PROP_COLOR_BRIGHTNESS_INT, "brightness", options.brightness);
+        set_int_if_supported(device, OB_PROP_COLOR_CONTRAST_INT, "contrast", options.contrast);
+        set_int_if_supported(device, OB_PROP_COLOR_SATURATION_INT, "saturation", options.saturation);
+        set_int_if_supported(device, OB_PROP_COLOR_GAMMA_INT, "gamma", options.gamma);
+        set_int_if_supported(device, OB_PROP_COLOR_BACKLIGHT_COMPENSATION_INT, "backlight_compensation", options.backlight_compensation);
+        if(options.auto_white_balance > 0) {
+            set_bool_if_supported(device, OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "auto_white_balance", options.auto_white_balance);
+        }
         if(options.auto_exposure > 0) {
             set_bool_if_supported(device, OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "auto_exposure", options.auto_exposure);
         }
@@ -292,6 +363,7 @@ int main(int argc, char **argv) {
         uint64_t last_color = 0;
         uint64_t last_depth = 0;
         uint64_t last_framesets = 0;
+        bool snapshot_saved = false;
         while(std::chrono::steady_clock::now() - started < std::chrono::seconds(options.seconds)) {
             auto frameset = pipeline.waitForFrames(200);
             if(!frameset) {
@@ -307,6 +379,10 @@ int main(int argc, char **argv) {
                 }
                 color_id_last = color->index();
                 ++color_count;
+                if(!snapshot_saved && !options.save_prefix.empty() && color_count >= static_cast<uint64_t>(std::max(1, options.save_after_frames))) {
+                    save_color_snapshot(color, options.save_prefix);
+                    snapshot_saved = true;
+                }
             }
             if(depth) {
                 if(depth_count == 0) {

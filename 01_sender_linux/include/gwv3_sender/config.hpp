@@ -8,6 +8,7 @@
 namespace gwv3 {
 
 struct VideoProfileConfig {
+    bool enabled = true;
     int width = 0;
     int height = 0;
     int fps = 0;
@@ -45,8 +46,10 @@ struct ColorControlsConfig {
 
 struct CameraConfig {
     std::string camera_id;
+    std::string capture_backend = "orbbec_sdk";
     std::string serial_number;
     std::string uid;
+    std::string video_device;
     int device_index = 0;
     bool validate_rgb_mjpeg = false;
     std::string frame_aggregate_mode = "disable";

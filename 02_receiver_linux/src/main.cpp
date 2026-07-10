@@ -18,6 +18,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -40,12 +41,16 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <json/json.h>
+
+extern char **environ;
 
 namespace gwv3 {
 namespace {
@@ -76,7 +81,7 @@ constexpr uint64_t kMainPreviewDecoderIdleStopUs = 30ull * 1000ull * 1000ull;
 constexpr uint64_t kWebRgbPreviewControlIntervalUs = 500ull * 1000ull;
 constexpr uint64_t kWebRgbPreviewKeyframeIntervalUs = 1ull * 1000ull * 1000ull;
 constexpr int kWebRgbPreviewControlLeaseMs = 2500;
-constexpr uint64_t kRgbDepthPairValidMaxDeltaUs = 100ull * 1000ull;
+constexpr uint64_t kRgbDepthPairValidMaxDeltaUs = 20ull * 1000ull;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
@@ -88,15 +93,51 @@ constexpr size_t kMaxPendingDepthRecordBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kDefaultRecordQueueMaxBytes = 512ull * 1024ull * 1024ull;
 constexpr uint64_t kRecordQueueWarnIntervalUs = 5ull * 1000ull * 1000ull;
 constexpr int kMaxActiveMediaClients = 32;
+constexpr int kMaxActiveAdminClients = 32;
+constexpr size_t kMaxTrackedCameras = 32;
+constexpr size_t kMaxTrackedSenders = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
 constexpr int kMediaSocketReceiveBufferBytes = 16 * 1024 * 1024;
 constexpr uint64_t kPreviewUdpAssemblyTimeoutUs = 1ull * 1000ull * 1000ull;
-constexpr size_t kPreviewUdpMaxAssemblies = 4096;
+constexpr size_t kPreviewUdpMaxAssemblies = 256;
+constexpr size_t kPreviewUdpMaxAssemblyBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kPreviewUdpMaxPacketBytes = 32ull * 1024ull * 1024ull;
+constexpr uint16_t kPreviewUdpMaxChunks = 32768;
+constexpr size_t kMaxDepthCompressionChunks = 256;
+constexpr size_t kMaxDepthDecompressionWorkers = 8;
+constexpr uint32_t kMaxMediaDimension = 16384;
+constexpr size_t kMaxProtocolIdBytes = 64;
+constexpr size_t kMaxCodecNameBytes = 32;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
+constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
 constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
 
 std::atomic<bool> g_running{true};
+
+template <typename Function>
+class ScopeExit {
+public:
+    explicit ScopeExit(Function function) : function_(std::move(function)) {}
+    ~ScopeExit() noexcept {
+        if(active_) {
+            try {
+                function_();
+            }
+            catch(...) {
+            }
+        }
+    }
+
+    void release() noexcept { active_ = false; }
+
+    ScopeExit(const ScopeExit &) = delete;
+    ScopeExit &operator=(const ScopeExit &) = delete;
+
+private:
+    Function function_;
+    bool active_ = true;
+};
 
 void handle_signal(int) {
     g_running = false;
@@ -208,6 +249,52 @@ std::string trim_copy(std::string value) {
     return value;
 }
 
+bool parse_json_object_strict(const std::string &json, Json::Value &root) {
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    builder["failIfExtra"] = true;
+    builder["strictRoot"] = true;
+    std::string errors;
+    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    return reader->parse(json.data(), json.data() + json.size(), &root, &errors) && root.isObject();
+}
+
+std::string json_string_value(const Json::Value &root, const char *key, const std::string &fallback = {}) {
+    const auto &value = root[key];
+    return value.isString() ? value.asString() : fallback;
+}
+
+std::optional<int64_t> json_int64_value(const Json::Value &root, const char *key) {
+    const auto &value = root[key];
+    if(value.isInt64()) {
+        return value.asInt64();
+    }
+    if(value.isUInt64() && value.asUInt64() <= static_cast<Json::UInt64>(std::numeric_limits<int64_t>::max())) {
+        return static_cast<int64_t>(value.asUInt64());
+    }
+    return std::nullopt;
+}
+
+std::optional<uint64_t> json_uint64_value(const Json::Value &root, const char *key) {
+    const auto &value = root[key];
+    if(value.isUInt64()) {
+        return value.asUInt64();
+    }
+    if(value.isInt64() && value.asInt64() >= 0) {
+        return static_cast<uint64_t>(value.asInt64());
+    }
+    return std::nullopt;
+}
+
+std::optional<double> json_double_value(const Json::Value &root, const char *key) {
+    const auto &value = root[key];
+    if(!value.isNumeric()) {
+        return std::nullopt;
+    }
+    const double result = value.asDouble();
+    return std::isfinite(result) ? std::optional<double>(result) : std::nullopt;
+}
+
 std::string url_decode(const std::string &value) {
     std::string out;
     for(size_t i = 0; i < value.size(); ++i) {
@@ -265,17 +352,8 @@ std::optional<int> json_int_field(const std::string &json, const std::string &ke
     const std::regex pattern("\"" + key + "\"\\s*:\\s*(-?[0-9]+)");
     std::smatch match;
     if(std::regex_search(json, match, pattern) && match.size() >= 2) {
-        return std::stoi(match[1].str());
-    }
-    return std::nullopt;
-}
-
-std::optional<int64_t> json_int64_field(const std::string &json, const std::string &key) {
-    const std::regex pattern("\"" + key + "\"\\s*:\\s*(-?[0-9]+)");
-    std::smatch match;
-    if(std::regex_search(json, match, pattern) && match.size() >= 2) {
         try {
-            return std::stoll(match[1].str());
+            return std::stoi(match[1].str());
         }
         catch(const std::exception &) {
             return std::nullopt;
@@ -395,34 +473,6 @@ std::optional<double> json_double_in_object(const std::string &json, const std::
         return std::nullopt;
     }
     return json_double_field(*object, field_key);
-}
-
-std::optional<bool> json_bool_in_object(const std::string &json, const std::string &object_key, const std::string &field_key) {
-    const auto object = json_object_field(json, object_key);
-    if(!object) {
-        return std::nullopt;
-    }
-    return json_bool_field(*object, field_key);
-}
-
-std::string config_string(const std::string &json, const std::string &key, const std::string &fallback) {
-    return json_string_field(json, key).value_or(fallback);
-}
-
-int config_int(const std::string &json, const std::string &key, int fallback) {
-    return json_int_field(json, key).value_or(fallback);
-}
-
-bool config_bool(const std::string &json, const std::string &key, bool fallback) {
-    return json_bool_field(json, key).value_or(fallback);
-}
-
-uint16_t config_port(const std::string &json, const std::string &key, uint16_t fallback) {
-    const int value = config_int(json, key, fallback);
-    if(value <= 0 || value > 65535) {
-        throw std::runtime_error("invalid port in receiver config: " + key);
-    }
-    return static_cast<uint16_t>(value);
 }
 
 uint16_t read_le16(const uint8_t *data) {
@@ -593,6 +643,15 @@ std::optional<sockaddr_in> parse_socket_endpoint(const std::string &endpoint) {
     return addr;
 }
 
+std::string socket_endpoint_ip(const std::string &endpoint) {
+    const auto parsed = parse_socket_endpoint(endpoint);
+    if(!parsed) {
+        return {};
+    }
+    char ip[INET_ADDRSTRLEN] = {};
+    return inet_ntop(AF_INET, &parsed->sin_addr, ip, sizeof(ip)) ? std::string(ip) : std::string{};
+}
+
 bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &payload) {
     const auto addr = parse_socket_endpoint(endpoint);
     if(!addr) {
@@ -602,6 +661,7 @@ bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &p
     if(fd < 0) {
         return false;
     }
+    set_fd_cloexec(fd);
     const auto sent = sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr *>(&*addr), sizeof(*addr));
     close(fd);
     return sent >= 0 && static_cast<size_t>(sent) == payload.size();
@@ -609,6 +669,24 @@ bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &p
 
 std::string camera_key(const std::string &sender_id, const std::string &camera_id) {
     return sender_id + "_" + camera_id;
+}
+
+bool is_valid_protocol_id(const std::string &value) {
+    if(value.empty() || value.size() > kMaxProtocolIdBytes) {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-';
+    });
+}
+
+bool is_valid_codec_name(const std::string &value) {
+    if(value.empty() || value.size() > kMaxCodecNameBytes) {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-';
+    });
 }
 
 bool is_safe_storage_text(const std::string &value) {
@@ -940,8 +1018,10 @@ struct Config {
     int depth_fps = 30;
     bool write_debug_h264 = false;
     bool write_debug_depth_raw = false;
-    size_t max_payload_bytes = kMaxReasonablePayload;
+    size_t max_payload_bytes = 32ull * 1024ull * 1024ull;
     size_t record_queue_max_bytes = kDefaultRecordQueueMaxBytes;
+    size_t record_queue_total_max_bytes = 2ull * 1024ull * 1024ull * 1024ull;
+    uint64_t min_free_disk_bytes = 2ull * 1024ull * 1024ull * 1024ull;
 };
 
 Config load_config(const std::string &path) {
@@ -950,39 +1030,95 @@ Config load_config(const std::string &path) {
         throw std::runtime_error("cannot open receiver config: " + path);
     }
     const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    Json::Value root;
+    if(!parse_json_object_strict(json, root)) {
+        throw std::runtime_error("invalid receiver JSON config: " + path);
+    }
+
+    const auto string_value = [](const Json::Value &object, const char *key, const std::string &fallback) {
+        const auto &value = object[key];
+        if(value.isNull()) {
+            return fallback;
+        }
+        if(!value.isString()) {
+            throw std::runtime_error(std::string("receiver config field must be a string: ") + key);
+        }
+        return value.asString();
+    };
+    const auto int_value = [](const Json::Value &object, const char *key, int fallback) {
+        const auto &value = object[key];
+        if(value.isNull()) {
+            return fallback;
+        }
+        if(!value.isInt()) {
+            throw std::runtime_error(std::string("receiver config field must be an integer: ") + key);
+        }
+        return value.asInt();
+    };
+    const auto bool_value = [](const Json::Value &object, const char *key, bool fallback) {
+        const auto &value = object[key];
+        if(value.isNull()) {
+            return fallback;
+        }
+        if(!value.isBool()) {
+            throw std::runtime_error(std::string("receiver config field must be a boolean: ") + key);
+        }
+        return value.asBool();
+    };
+    const auto port_value = [&](const Json::Value &object, const char *key, uint16_t fallback) {
+        const int value = int_value(object, key, fallback);
+        if(value <= 0 || value > 65535) {
+            throw std::runtime_error(std::string("invalid receiver config port: ") + key);
+        }
+        return static_cast<uint16_t>(value);
+    };
 
     Config cfg;
-    cfg.status_bind_ip = config_string(json, "status_bind_ip", cfg.status_bind_ip);
-    cfg.status_port = config_port(json, "status_port", cfg.status_port);
-    cfg.media_bind_ip = config_string(json, "media_bind_ip", cfg.media_bind_ip);
-    cfg.media_port = config_port(json, "media_port", cfg.media_port);
-    cfg.preview_enabled = config_bool(json, "preview_enabled", cfg.preview_enabled);
-    cfg.media_udp_enabled = config_bool(json, "media_udp_enabled", cfg.media_udp_enabled);
-    cfg.media_udp_bind_ip = config_string(json, "media_udp_bind_ip", cfg.media_udp_bind_ip);
-    cfg.media_udp_port = config_port(json, "media_udp_port", cfg.media_udp_port);
-    cfg.preview_udp_enabled = config_bool(json, "preview_udp_enabled", cfg.preview_udp_enabled);
-    cfg.preview_udp_bind_ip = config_string(json, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
-    cfg.preview_udp_port = config_port(json, "preview_udp_port", cfg.preview_udp_port);
-    cfg.clock_sync.enabled = json_bool_in_object(json, "clock_sync", "enabled").value_or(cfg.clock_sync.enabled);
-    cfg.clock_sync.bind_ip = json_string_in_object(json, "clock_sync", "bind_ip").value_or(cfg.clock_sync.bind_ip);
-    const int clock_sync_port = json_int_in_object(json, "clock_sync", "port").value_or(cfg.clock_sync.port);
-    if(clock_sync_port <= 0 || clock_sync_port > 65535) {
-        throw std::runtime_error("invalid port in receiver config: clock_sync.port");
+    cfg.status_bind_ip = string_value(root, "status_bind_ip", cfg.status_bind_ip);
+    cfg.status_port = port_value(root, "status_port", cfg.status_port);
+    cfg.media_bind_ip = string_value(root, "media_bind_ip", cfg.media_bind_ip);
+    cfg.media_port = port_value(root, "media_port", cfg.media_port);
+    cfg.preview_enabled = bool_value(root, "preview_enabled", cfg.preview_enabled);
+    cfg.media_udp_enabled = bool_value(root, "media_udp_enabled", cfg.media_udp_enabled);
+    cfg.media_udp_bind_ip = string_value(root, "media_udp_bind_ip", cfg.media_udp_bind_ip);
+    cfg.media_udp_port = port_value(root, "media_udp_port", cfg.media_udp_port);
+    cfg.preview_udp_enabled = bool_value(root, "preview_udp_enabled", cfg.preview_udp_enabled);
+    cfg.preview_udp_bind_ip = string_value(root, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
+    cfg.preview_udp_port = port_value(root, "preview_udp_port", cfg.preview_udp_port);
+    Json::Value clock_sync(Json::objectValue);
+    if(!root["clock_sync"].isNull()) {
+        if(!root["clock_sync"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: clock_sync");
+        }
+        clock_sync = root["clock_sync"];
     }
-    cfg.clock_sync.port = static_cast<uint16_t>(clock_sync_port);
-    cfg.clock_sync.model_timeout_ms = json_int_in_object(json, "clock_sync", "model_timeout_ms").value_or(cfg.clock_sync.model_timeout_ms);
-    cfg.admin_bind_ip = config_string(json, "admin_bind_ip", cfg.admin_bind_ip);
-    cfg.admin_port = config_port(json, "admin_port", cfg.admin_port);
-    cfg.nas_root = config_string(json, "nas_root", cfg.nas_root);
-    cfg.log_directory = config_string(json, "log_directory", cfg.log_directory);
-    cfg.state_path = config_string(json, "state_path", cfg.state_path);
-    cfg.ffmpeg_path = config_string(json, "ffmpeg_path", cfg.ffmpeg_path);
-    cfg.segment_seconds = config_int(json, "segment_seconds", cfg.segment_seconds);
-    cfg.depth_fps = config_int(json, "depth_fps", cfg.depth_fps);
-    cfg.write_debug_h264 = config_bool(json, "write_debug_h264", cfg.write_debug_h264);
-    cfg.write_debug_depth_raw = config_bool(json, "write_debug_depth_raw", cfg.write_debug_depth_raw);
-    cfg.max_payload_bytes = static_cast<size_t>(std::max(1, config_int(json, "max_payload_mb", 128))) * 1024ull * 1024ull;
-    cfg.record_queue_max_bytes = static_cast<size_t>(std::max(1, config_int(json, "record_queue_max_mb", 512))) * 1024ull * 1024ull;
+    cfg.clock_sync.enabled = bool_value(clock_sync, "enabled", cfg.clock_sync.enabled);
+    cfg.clock_sync.bind_ip = string_value(clock_sync, "bind_ip", cfg.clock_sync.bind_ip);
+    cfg.clock_sync.port = port_value(clock_sync, "port", cfg.clock_sync.port);
+    cfg.clock_sync.model_timeout_ms = int_value(clock_sync, "model_timeout_ms", cfg.clock_sync.model_timeout_ms);
+    cfg.admin_bind_ip = string_value(root, "admin_bind_ip", cfg.admin_bind_ip);
+    cfg.admin_port = port_value(root, "admin_port", cfg.admin_port);
+    cfg.nas_root = string_value(root, "nas_root", cfg.nas_root);
+    cfg.log_directory = string_value(root, "log_directory", cfg.log_directory);
+    cfg.state_path = string_value(root, "state_path", cfg.state_path);
+    cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
+    cfg.segment_seconds = int_value(root, "segment_seconds", cfg.segment_seconds);
+    cfg.depth_fps = int_value(root, "depth_fps", cfg.depth_fps);
+    cfg.write_debug_h264 = bool_value(root, "write_debug_h264", cfg.write_debug_h264);
+    cfg.write_debug_depth_raw = bool_value(root, "write_debug_depth_raw", cfg.write_debug_depth_raw);
+    const int max_payload_mb = int_value(root, "max_payload_mb", 32);
+    const int record_queue_max_mb = int_value(root, "record_queue_max_mb", 512);
+    const int min_free_disk_mb = int_value(root, "min_free_disk_mb", 2048);
+    const int record_queue_total_max_mb = int_value(root, "record_queue_total_max_mb", 2048);
+    if(max_payload_mb <= 0 || max_payload_mb > 128 || record_queue_max_mb <= 0 || record_queue_max_mb > 4096
+       || record_queue_total_max_mb <= 0 || record_queue_total_max_mb > 16384
+       || min_free_disk_mb < 0 || min_free_disk_mb > 1024 * 1024) {
+        throw std::runtime_error("receiver payload/record queue limits are out of range");
+    }
+    cfg.max_payload_bytes = static_cast<size_t>(max_payload_mb) * 1024ull * 1024ull;
+    cfg.record_queue_max_bytes = static_cast<size_t>(record_queue_max_mb) * 1024ull * 1024ull;
+    cfg.record_queue_total_max_bytes = static_cast<size_t>(record_queue_total_max_mb) * 1024ull * 1024ull;
+    cfg.min_free_disk_bytes = static_cast<uint64_t>(min_free_disk_mb) * 1024ull * 1024ull;
 
     if(cfg.segment_seconds <= 0) {
         throw std::runtime_error("segment_seconds must be positive");
@@ -993,8 +1129,29 @@ Config load_config(const std::string &path) {
     if(cfg.clock_sync.model_timeout_ms <= 0) {
         throw std::runtime_error("clock_sync.model_timeout_ms must be positive");
     }
-    if(cfg.clock_sync.enabled && cfg.preview_udp_enabled && cfg.clock_sync.port == cfg.preview_udp_port) {
-        throw std::runtime_error("clock_sync.port conflicts with enabled preview_udp_port");
+    if(cfg.admin_bind_ip != "127.0.0.1") {
+        throw std::runtime_error("admin_bind_ip must remain 127.0.0.1; expose only the authenticated Web proxy");
+    }
+    (void)make_bind_addr(cfg.status_bind_ip, cfg.status_port);
+    (void)make_bind_addr(cfg.media_bind_ip, cfg.media_port);
+    (void)make_bind_addr(cfg.media_udp_bind_ip, cfg.media_udp_port);
+    (void)make_bind_addr(cfg.preview_udp_bind_ip, cfg.preview_udp_port);
+    (void)make_bind_addr(cfg.admin_bind_ip, cfg.admin_port);
+    if(cfg.nas_root.empty() || cfg.log_directory.empty() || cfg.state_path.empty() || cfg.ffmpeg_path.empty()) {
+        throw std::runtime_error("receiver path fields must not be empty");
+    }
+    std::set<uint16_t> udp_ports{cfg.status_port};
+    const auto add_udp_port = [&](bool enabled, uint16_t port, const char *name) {
+        if(enabled && !udp_ports.insert(port).second) {
+            throw std::runtime_error(std::string("receiver UDP port conflict: ") + name);
+        }
+    };
+    add_udp_port(cfg.clock_sync.enabled, cfg.clock_sync.port, "clock_sync.port");
+    add_udp_port(cfg.media_udp_enabled, cfg.media_udp_port, "media_udp_port");
+    add_udp_port(cfg.preview_enabled && cfg.preview_udp_enabled, cfg.preview_udp_port, "preview_udp_port");
+    if(cfg.admin_port == cfg.media_port
+       && (cfg.admin_bind_ip == cfg.media_bind_ip || cfg.admin_bind_ip == "0.0.0.0" || cfg.media_bind_ip == "0.0.0.0")) {
+        throw std::runtime_error("admin_port conflicts with media_port on the same bind address");
     }
     return cfg;
 }
@@ -1006,97 +1163,34 @@ struct RuntimeState {
     std::map<std::string, std::string> camera_announces;
 };
 
-std::map<std::string, std::string> json_string_map_field(const std::string &json, const std::string &key) {
+std::map<std::string, std::string> json_string_map_field(const Json::Value &root, const char *key) {
     std::map<std::string, std::string> result;
-    const auto object = json_object_field(json, key);
-    if(!object) {
+    const auto &object = root[key];
+    if(!object.isObject()) {
         return result;
     }
-    const std::regex pair_pattern("\"([^\"]+)\"\\s*:\\s*\"([^\"]*)\"");
-    for(auto it = std::sregex_iterator(object->begin(), object->end(), pair_pattern); it != std::sregex_iterator(); ++it) {
-        if(it->size() >= 3) {
-            result[(*it)[1].str()] = (*it)[2].str();
+    for(const auto &name : object.getMemberNames()) {
+        if(result.size() >= kMaxTrackedCameras || name.size() > 160 || !is_safe_storage_text(name) || !object[name].isString()) {
+            continue;
         }
+        result[name] = object[name].asString();
     }
     return result;
 }
 
-std::map<std::string, std::string> json_object_map_field(const std::string &json, const std::string &key) {
+std::map<std::string, std::string> json_object_map_field(const Json::Value &root, const char *key) {
     std::map<std::string, std::string> result;
-    const auto object = json_object_field(json, key);
-    if(!object) {
+    const auto &object = root[key];
+    if(!object.isObject()) {
         return result;
     }
-
-    size_t pos = 0;
-    while(pos < object->size()) {
-        const size_t key_start = object->find('"', pos);
-        if(key_start == std::string::npos) {
-            break;
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    for(const auto &name : object.getMemberNames()) {
+        if(result.size() >= kMaxTrackedCameras || name.size() > 160 || !is_safe_storage_text(name) || !object[name].isObject()) {
+            continue;
         }
-        bool escaped = false;
-        size_t key_end = std::string::npos;
-        for(size_t i = key_start + 1; i < object->size(); ++i) {
-            const char ch = (*object)[i];
-            if(escaped) {
-                escaped = false;
-            }
-            else if(ch == '\\') {
-                escaped = true;
-            }
-            else if(ch == '"') {
-                key_end = i;
-                break;
-            }
-        }
-        if(key_end == std::string::npos) {
-            break;
-        }
-        const std::string item_key = object->substr(key_start + 1, key_end - key_start - 1);
-        const size_t colon = object->find(':', key_end + 1);
-        if(colon == std::string::npos) {
-            break;
-        }
-        const size_t value_start = object->find('{', colon + 1);
-        if(value_start == std::string::npos) {
-            break;
-        }
-
-        bool in_string = false;
-        escaped = false;
-        int depth = 0;
-        for(size_t i = value_start; i < object->size(); ++i) {
-            const char ch = (*object)[i];
-            if(in_string) {
-                if(escaped) {
-                    escaped = false;
-                }
-                else if(ch == '\\') {
-                    escaped = true;
-                }
-                else if(ch == '"') {
-                    in_string = false;
-                }
-                continue;
-            }
-            if(ch == '"') {
-                in_string = true;
-            }
-            else if(ch == '{') {
-                ++depth;
-            }
-            else if(ch == '}') {
-                --depth;
-                if(depth == 0) {
-                    result[item_key] = object->substr(value_start, i - value_start + 1);
-                    pos = i + 1;
-                    break;
-                }
-            }
-        }
-        if(depth != 0) {
-            break;
-        }
+        result[name] = Json::writeString(builder, object[name]);
     }
     return result;
 }
@@ -1108,10 +1202,14 @@ RuntimeState load_runtime_state(const std::string &path) {
         return state;
     }
     const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    state.default_file_prefix = json_string_field(json, "default_file_prefix").value_or("");
-    state.camera_names = json_string_map_field(json, "camera_names");
-    state.camera_file_prefixes = json_string_map_field(json, "camera_file_prefixes");
-    state.camera_announces = json_object_map_field(json, "camera_announces");
+    Json::Value root;
+    if(!parse_json_object_strict(json, root)) {
+        return state;
+    }
+    state.default_file_prefix = root["default_file_prefix"].isString() ? root["default_file_prefix"].asString() : std::string{};
+    state.camera_names = json_string_map_field(root, "camera_names");
+    state.camera_file_prefixes = json_string_map_field(root, "camera_file_prefixes");
+    state.camera_announces = json_object_map_field(root, "camera_announces");
     if(!is_safe_storage_text(state.default_file_prefix)) {
         state.default_file_prefix.clear();
     }
@@ -1145,40 +1243,30 @@ void save_runtime_state_file(const std::string &path, const RuntimeState &state)
     if(!out) {
         throw std::runtime_error("cannot write receiver state: " + tmp_path);
     }
-    out << "{\n";
-    out << "  \"default_file_prefix\": \"" << json_escape(state.default_file_prefix) << "\",\n";
-    out << "  \"camera_names\": {\n";
-    bool first = true;
+    Json::Value root(Json::objectValue);
+    root["default_file_prefix"] = state.default_file_prefix;
+    root["camera_names"] = Json::Value(Json::objectValue);
     for(const auto &item : state.camera_names) {
-        if(!first) {
-            out << ",\n";
-        }
-        first = false;
-        out << "    \"" << json_escape(item.first) << "\": \"" << json_escape(item.second) << "\"";
+        root["camera_names"][item.first] = item.second;
     }
-    out << "\n  },\n";
-    out << "  \"camera_file_prefixes\": {\n";
-    first = true;
+    root["camera_file_prefixes"] = Json::Value(Json::objectValue);
     for(const auto &item : state.camera_file_prefixes) {
-        if(!first) {
-            out << ",\n";
-        }
-        first = false;
-        out << "    \"" << json_escape(item.first) << "\": \"" << json_escape(item.second) << "\"";
+        root["camera_file_prefixes"][item.first] = item.second;
     }
-    out << "\n  },\n";
-    out << "  \"camera_announces\": {\n";
-    first = true;
+    root["camera_announces"] = Json::Value(Json::objectValue);
     for(const auto &item : state.camera_announces) {
-        if(!first) {
-            out << ",\n";
+        Json::Value announce;
+        if(parse_json_object_strict(item.second, announce)) {
+            root["camera_announces"][item.first] = std::move(announce);
         }
-        first = false;
-        out << "    \"" << json_escape(item.first) << "\": " << item.second;
     }
-    out << "\n  }\n";
-    out << "}\n";
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "  ";
+    out << Json::writeString(builder, root) << '\n';
     out.close();
+    if(!out) {
+        throw std::runtime_error("cannot finish receiver state: " + tmp_path);
+    }
     std::filesystem::rename(tmp_path, state_path);
 }
 
@@ -1257,37 +1345,55 @@ public:
             return false;
         }
 
-        const pid_t pid = fork();
-        if(pid < 0) {
-            close_pipe(stdin_pipe);
-            close_pipe(stdout_pipe);
-            logger.warn("rgb preview decoder fork failed: " + std::string(std::strerror(errno)));
-            return false;
+        for(int fd : {stdin_pipe[0], stdin_pipe[1], stdout_pipe[0], stdout_pipe[1]}) {
+            set_fd_cloexec(fd);
         }
 
-        if(pid == 0) {
-            dup2(stdin_pipe[0], STDIN_FILENO);
-            dup2(stdout_pipe[1], STDOUT_FILENO);
-            const int dev_null = open("/dev/null", O_WRONLY);
-            if(dev_null >= 0) {
-                dup2(dev_null, STDERR_FILENO);
-                close(dev_null);
-            }
+        const std::string scale = target_width == 0 ? "fps=" + std::to_string(preview_fps)
+                                                    : "fps=" + std::to_string(preview_fps) + ",scale=" + std::to_string(target_width) + ":-2";
+        const std::string jpeg_quality = std::to_string(kRgbPreviewJpegQuality);
+        std::vector<std::string> arguments = {
+            cfg.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+            "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
+            "-vf", scale, "-q:v", jpeg_quality, "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"};
+        std::vector<char *> argv;
+        argv.reserve(arguments.size() + 1);
+        for(auto &argument : arguments) {
+            argv.push_back(argument.data());
+        }
+        argv.push_back(nullptr);
+
+        posix_spawn_file_actions_t actions;
+        int spawn_rc = posix_spawn_file_actions_init(&actions);
+        const bool actions_initialized = spawn_rc == 0;
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawn_file_actions_adddup2(&actions, stdin_pipe[0], STDIN_FILENO);
+        }
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
+        }
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+        }
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawn_file_actions_addclose(&actions, stdin_pipe[1]);
+        }
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
+        }
+
+        pid_t pid = -1;
+        if(spawn_rc == 0) {
+            spawn_rc = posix_spawnp(&pid, cfg.ffmpeg_path.c_str(), &actions, nullptr, argv.data(), environ);
+        }
+        if(actions_initialized) {
+            posix_spawn_file_actions_destroy(&actions);
+        }
+        if(spawn_rc != 0) {
             close_pipe(stdin_pipe);
             close_pipe(stdout_pipe);
-            const long max_fd = std::min<long>(sysconf(_SC_OPEN_MAX), 4096);
-            for(int fd = 3; fd < max_fd; ++fd) {
-                close(fd);
-            }
-
-            const std::string scale = target_width == 0 ? "fps=" + std::to_string(preview_fps)
-                                                        : "fps=" + std::to_string(preview_fps) + ",scale=" + std::to_string(target_width) + ":-2";
-            const std::string jpeg_quality = std::to_string(kRgbPreviewJpegQuality);
-            execlp(cfg.ffmpeg_path.c_str(), cfg.ffmpeg_path.c_str(), "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
-                   "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-avioflags", "direct", "-f", "h264", "-i", "pipe:0",
-                   "-vf", scale.c_str(), "-q:v", jpeg_quality.c_str(), "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
-                   static_cast<char *>(nullptr));
-            _exit(127);
+            logger.warn("rgb preview decoder spawn failed: " + std::string(std::strerror(spawn_rc)));
+            return false;
         }
 
         close(stdin_pipe[0]);
@@ -1298,13 +1404,15 @@ public:
         set_fd_nonblocking(stdin_fd_);
         pid_ = pid;
         running_ = true;
-        reader_ = std::thread([this] { read_loop(); });
+        const int reader_fd = stdout_fd_;
+        reader_ = std::thread([this, reader_fd] { read_loop(reader_fd); });
         writer_ = std::thread([this] { write_loop(); });
         logger.info("rgb preview decoder started: " + key_);
         return true;
     }
 
     bool active() const {
+        std::lock_guard<std::mutex> lock(process_mutex_);
         return running_ && stdin_fd_ >= 0;
     }
 
@@ -1466,12 +1574,12 @@ private:
         }
     }
 
-    void read_loop() {
+    void read_loop(int fd) {
         std::vector<uint8_t> buffer;
         buffer.reserve(512 * 1024);
         std::vector<uint8_t> chunk(32 * 1024);
         while(true) {
-            const ssize_t got = read(stdout_fd_, chunk.data(), chunk.size());
+            const ssize_t got = read(fd, chunk.data(), chunk.size());
             if(got <= 0) {
                 break;
             }
@@ -1557,16 +1665,6 @@ private:
     uint64_t latest_frame_us_ = 0;
 };
 
-void cleanup_rgb_decoder_async(std::unique_ptr<RgbPreviewDecoder> decoder) {
-    if(!decoder) {
-        return;
-    }
-    std::thread([decoder = std::move(decoder)]() mutable {
-        decoder->stop();
-        decoder.reset();
-    }).detach();
-}
-
 struct MediaPacket {
     StreamType stream_type = StreamType::rgb;
     uint32_t flags = 0;
@@ -1604,6 +1702,191 @@ struct MediaPacketReadBuffers {
     std::vector<uint8_t> header;
     std::vector<char> text;
 };
+
+void validate_media_packet_metadata(const MediaPacket &packet, size_t max_payload_bytes) {
+    if(!is_valid_protocol_id(packet.sender_id) || !is_valid_protocol_id(packet.camera_id)) {
+        throw std::runtime_error("invalid media sender_id/camera_id");
+    }
+    if(!is_valid_codec_name(packet.codec_or_compression)) {
+        throw std::runtime_error("invalid media codec/compression name");
+    }
+    if(packet.stream_type != StreamType::rgb && packet.stream_type != StreamType::rgb_preview
+       && packet.stream_type != StreamType::depth_raw) {
+        throw std::runtime_error("invalid media stream type");
+    }
+    if(packet.width == 0 || packet.height == 0 || packet.width > kMaxMediaDimension || packet.height > kMaxMediaDimension) {
+        throw std::runtime_error("invalid media dimensions");
+    }
+    if(packet.payload_size == 0 || packet.payload_size > max_payload_bytes) {
+        throw std::runtime_error("invalid media payload size");
+    }
+    if(packet.uncompressed_size > kMaxReasonablePayload) {
+        throw std::runtime_error("invalid media uncompressed size");
+    }
+    if(packet.stream_type == StreamType::depth_raw) {
+        if(packet.pixel_format != PixelFormat::depth_u16) {
+            throw std::runtime_error("invalid depth pixel format");
+        }
+        const uint64_t expected_raw_size = static_cast<uint64_t>(packet.width) * packet.height * sizeof(uint16_t);
+        if(expected_raw_size > kMaxReasonablePayload || packet.uncompressed_size != expected_raw_size) {
+            throw std::runtime_error("depth dimensions and uncompressed size disagree");
+        }
+        if(packet.codec_or_compression == "none" && packet.payload_size != expected_raw_size) {
+            throw std::runtime_error("raw depth payload size disagrees with dimensions");
+        }
+        static const std::set<std::string> supported_depth_codecs = {
+            "none", "zlib", "rvl", "qdelta", "lz4", "plz4", "pzlib", "q8lz4", "q8zlib", "pq12zlib", "pq8zlib", "pq8lz4"};
+        if(supported_depth_codecs.count(packet.codec_or_compression) == 0) {
+            throw std::runtime_error("unsupported depth compression");
+        }
+    }
+    else {
+        if(packet.pixel_format != PixelFormat::encoded_video || packet.codec_or_compression != "h264") {
+            throw std::runtime_error("invalid RGB media format metadata");
+        }
+    }
+}
+
+class DepthDecompressionExecutor {
+public:
+    DepthDecompressionExecutor() {
+        const size_t hardware_workers = std::max<size_t>(1, std::thread::hardware_concurrency());
+        const size_t worker_count = std::min(hardware_workers, kMaxDepthDecompressionWorkers);
+        workers_.reserve(worker_count);
+        for(size_t i = 0; i < worker_count; ++i) {
+            try {
+                workers_.emplace_back([this] { worker_loop(); });
+            }
+            catch(...) {
+                break;
+            }
+        }
+    }
+
+    ~DepthDecompressionExecutor() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        for(auto &worker : workers_) {
+            if(worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    DepthDecompressionExecutor(const DepthDecompressionExecutor &) = delete;
+    DepthDecompressionExecutor &operator=(const DepthDecompressionExecutor &) = delete;
+
+    bool try_submit(std::function<void()> task) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(stopping_ || workers_.empty() || tasks_.size() >= kMaxQueuedTasks) {
+            return false;
+        }
+        tasks_.push_back(std::move(task));
+        cv_.notify_one();
+        return true;
+    }
+
+private:
+    void worker_loop() {
+        for(;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [&] { return stopping_ || !tasks_.empty(); });
+                if(tasks_.empty()) {
+                    if(stopping_) {
+                        return;
+                    }
+                    continue;
+                }
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+            try {
+                task();
+            }
+            catch(...) {
+            }
+        }
+    }
+
+    static constexpr size_t kMaxQueuedTasks = 128;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::function<void()>> tasks_;
+    std::vector<std::thread> workers_;
+    bool stopping_ = false;
+};
+
+DepthDecompressionExecutor &depth_decompression_executor() {
+    static DepthDecompressionExecutor executor;
+    return executor;
+}
+
+template <typename Function>
+void bounded_parallel_for(size_t count, Function &&function) {
+    if(count == 0) {
+        return;
+    }
+    const size_t hardware_workers = std::max<size_t>(1, std::thread::hardware_concurrency());
+    const size_t worker_count = std::min({count, hardware_workers, kMaxDepthDecompressionWorkers});
+    std::atomic<size_t> next{0};
+    std::atomic<bool> failed{false};
+    std::mutex error_mutex;
+    std::exception_ptr error;
+    auto worker = [&] {
+        while(!failed.load(std::memory_order_relaxed)) {
+            const size_t index = next.fetch_add(1, std::memory_order_relaxed);
+            if(index >= count) {
+                break;
+            }
+            try {
+                function(index);
+            }
+            catch(...) {
+                failed.store(true, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(error_mutex);
+                if(!error) {
+                    error = std::current_exception();
+                }
+                break;
+            }
+        }
+    };
+
+    std::atomic<size_t> pending_workers{0};
+    std::mutex completion_mutex;
+    std::condition_variable completion_cv;
+    for(size_t i = 1; i < worker_count; ++i) {
+        pending_workers.fetch_add(1, std::memory_order_relaxed);
+        bool queued = false;
+        try {
+            queued = depth_decompression_executor().try_submit([&] {
+                worker();
+                pending_workers.fetch_sub(1, std::memory_order_release);
+                completion_cv.notify_one();
+            });
+        }
+        catch(...) {
+            queued = false;
+        }
+        if(!queued) {
+            pending_workers.fetch_sub(1, std::memory_order_relaxed);
+            break;
+        }
+    }
+    worker();
+    {
+        std::unique_lock<std::mutex> lock(completion_mutex);
+        completion_cv.wait(lock, [&] { return pending_workers.load(std::memory_order_acquire) == 0; });
+    }
+    if(error) {
+        std::rethrow_exception(error);
+    }
+}
 
 void copy_media_packet_metadata(const MediaPacket &src, MediaPacket &dst) {
     dst.stream_type = src.stream_type;
@@ -1704,6 +1987,11 @@ void read_media_packet_into(int fd, size_t max_payload_bytes, MediaPacketReadBuf
     const uint16_t camera_id_len = read_le16(header.data() + 16);
     const uint16_t codec_len = read_le16(header.data() + 18);
     const uint64_t payload_size = read_le64(header.data() + 62);
+    if(sender_id_len == 0 || sender_id_len > kMaxProtocolIdBytes
+       || camera_id_len == 0 || camera_id_len > kMaxProtocolIdBytes
+       || codec_len == 0 || codec_len > kMaxCodecNameBytes) {
+        throw std::runtime_error("media packet string field length is invalid");
+    }
     if(payload_size > max_payload_bytes) {
         throw std::runtime_error("media payload too large");
     }
@@ -1743,6 +2031,8 @@ void read_media_packet_into(int fd, size_t max_payload_bytes, MediaPacketReadBuf
     packet.camera_id.assign(text + sender_id_len, camera_id_len);
     packet.codec_or_compression.assign(text + sender_id_len + camera_id_len, codec_len);
 
+    validate_media_packet_metadata(packet, max_payload_bytes);
+
     packet.payload.resize(static_cast<size_t>(payload_size));
     if(payload_size > 0 && !read_exact(fd, packet.payload.data(), packet.payload.size())) {
         throw std::runtime_error("connection closed while reading payload");
@@ -1766,12 +2056,17 @@ MediaPacket parse_media_packet_buffer(const uint8_t *data, size_t size, size_t m
     const uint16_t camera_id_len = read_le16(data + 16);
     const uint16_t codec_len = read_le16(data + 18);
     const uint64_t payload_size = read_le64(data + 62);
+    if(sender_id_len == 0 || sender_id_len > kMaxProtocolIdBytes
+       || camera_id_len == 0 || camera_id_len > kMaxProtocolIdBytes
+       || codec_len == 0 || codec_len > kMaxCodecNameBytes) {
+        throw std::runtime_error("UDP media packet string field length is invalid");
+    }
     if(payload_size > max_payload_bytes) {
         throw std::runtime_error("UDP media payload too large");
     }
     const size_t text_size = static_cast<size_t>(sender_id_len) + static_cast<size_t>(camera_id_len) + static_cast<size_t>(codec_len);
     const size_t payload_offset = static_cast<size_t>(header_size) + text_size;
-    if(payload_offset > size || payload_size > size - payload_offset) {
+    if(payload_offset > size || payload_size != size - payload_offset) {
         throw std::runtime_error("truncated UDP media packet");
     }
 
@@ -1805,6 +2100,7 @@ MediaPacket parse_media_packet_buffer(const uint8_t *data, size_t size, size_t m
     packet.sender_id.assign(text, sender_id_len);
     packet.camera_id.assign(text + sender_id_len, camera_id_len);
     packet.codec_or_compression.assign(text + sender_id_len + camera_id_len, codec_len);
+    validate_media_packet_metadata(packet, max_payload_bytes);
     packet.payload.assign(data + payload_offset, data + payload_offset + static_cast<size_t>(payload_size));
     return packet;
 }
@@ -1878,7 +2174,7 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
     const uint16_t version = read_le16(packet.payload.data() + 4);
     const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
     const uint32_t raw_total = read_le32(packet.payload.data() + 8);
-    if(magic != 0x345a4c50u || version != 1 || chunk_count == 0 || raw_total == 0
+    if(magic != 0x345a4c50u || version != 1 || chunk_count == 0 || chunk_count > kMaxDepthCompressionChunks || raw_total == 0
        || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
         throw std::runtime_error("invalid plz4 depth header");
     }
@@ -1890,6 +2186,7 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
     std::vector<Plz4ChunkEntry> chunks;
     chunks.reserve(chunk_count);
     size_t compressed_offset = table_size;
+    uint32_t expected_raw_offset = 0;
     for(uint16_t i = 0; i < chunk_count; ++i) {
         const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
         Plz4ChunkEntry chunk;
@@ -1897,24 +2194,24 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
         chunk.raw_size = read_le32(entry + 4);
         chunk.compressed_size = read_le32(entry + 8);
         chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
-        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+        if(chunk.raw_offset != expected_raw_offset || chunk.raw_size == 0 || chunk.raw_offset > raw_total
+           || chunk.raw_size > raw_total - chunk.raw_offset
            || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
            || chunk.compressed_size > packet.payload.size() - compressed_offset) {
             throw std::runtime_error("invalid plz4 depth chunk");
         }
+        expected_raw_offset += chunk.raw_size;
         compressed_offset += chunk.compressed_size;
         chunks.push_back(chunk);
     }
-    if(compressed_offset != packet.payload.size()) {
+    if(expected_raw_offset != raw_total || compressed_offset != packet.payload.size()) {
         throw std::runtime_error("plz4 depth payload has trailing bytes");
     }
 
     std::vector<uint8_t> out(raw_total);
     auto &api = lz4_api();
-    std::vector<std::future<void>> futures;
-    futures.reserve(chunks.size());
-    for(const auto &chunk : chunks) {
-        futures.emplace_back(std::async(std::launch::async, [&packet, &out, &api, chunk] {
+    bounded_parallel_for(chunks.size(), [&](size_t index) {
+            const auto &chunk = chunks[index];
             const int rc = api.decompress_safe(
                 reinterpret_cast<const char *>(packet.payload.data() + chunk.compressed_offset),
                 reinterpret_cast<char *>(out.data() + chunk.raw_offset),
@@ -1923,11 +2220,7 @@ std::vector<uint8_t> plz4_decompress_payload(const MediaPacket &packet) {
             if(rc != static_cast<int>(chunk.raw_size)) {
                 throw std::runtime_error("plz4 depth chunk decompression failed");
             }
-        }));
-    }
-    for(auto &future : futures) {
-        future.get();
-    }
+        });
     return out;
 }
 
@@ -1939,7 +2232,7 @@ std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
     const uint16_t version = read_le16(packet.payload.data() + 4);
     const uint16_t chunk_count = read_le16(packet.payload.data() + 6);
     const uint32_t raw_total = read_le32(packet.payload.data() + 8);
-    if(magic != 0x424c5a50u || version != 1 || chunk_count == 0 || raw_total == 0
+    if(magic != 0x424c5a50u || version != 1 || chunk_count == 0 || chunk_count > kMaxDepthCompressionChunks || raw_total == 0
        || raw_total > kMaxReasonablePayload || packet.uncompressed_size != raw_total) {
         throw std::runtime_error("invalid pzlib depth header");
     }
@@ -1951,6 +2244,7 @@ std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
     std::vector<Plz4ChunkEntry> chunks;
     chunks.reserve(chunk_count);
     size_t compressed_offset = table_size;
+    uint32_t expected_raw_offset = 0;
     for(uint16_t i = 0; i < chunk_count; ++i) {
         const uint8_t *entry = packet.payload.data() + 16ull + static_cast<size_t>(i) * 12ull;
         Plz4ChunkEntry chunk;
@@ -1958,24 +2252,24 @@ std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
         chunk.raw_size = read_le32(entry + 4);
         chunk.compressed_size = read_le32(entry + 8);
         chunk.compressed_offset = static_cast<uint32_t>(compressed_offset);
-        if(chunk.raw_size == 0 || chunk.raw_offset > raw_total || chunk.raw_size > raw_total - chunk.raw_offset
+        if(chunk.raw_offset != expected_raw_offset || chunk.raw_size == 0 || chunk.raw_offset > raw_total
+           || chunk.raw_size > raw_total - chunk.raw_offset
            || chunk.compressed_size == 0 || compressed_offset > packet.payload.size()
            || chunk.compressed_size > packet.payload.size() - compressed_offset
            || chunk.raw_size > static_cast<uint32_t>(std::numeric_limits<uLongf>::max())) {
             throw std::runtime_error("invalid pzlib depth chunk");
         }
+        expected_raw_offset += chunk.raw_size;
         compressed_offset += chunk.compressed_size;
         chunks.push_back(chunk);
     }
-    if(compressed_offset != packet.payload.size()) {
+    if(expected_raw_offset != raw_total || compressed_offset != packet.payload.size()) {
         throw std::runtime_error("pzlib depth payload has trailing bytes");
     }
 
     std::vector<uint8_t> out(raw_total);
-    std::vector<std::future<void>> futures;
-    futures.reserve(chunks.size());
-    for(const auto &chunk : chunks) {
-        futures.emplace_back(std::async(std::launch::async, [&packet, &out, chunk] {
+    bounded_parallel_for(chunks.size(), [&](size_t index) {
+            const auto &chunk = chunks[index];
             uLongf out_size = static_cast<uLongf>(chunk.raw_size);
             const int rc =
                 uncompress(out.data() + chunk.raw_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
@@ -1983,11 +2277,7 @@ std::vector<uint8_t> pzlib_decompress_payload(const MediaPacket &packet) {
             if(rc != Z_OK || out_size != chunk.raw_size) {
                 throw std::runtime_error("pzlib depth chunk decompression failed");
             }
-        }));
-    }
-    for(auto &future : futures) {
-        future.get();
-    }
+        });
     return out;
 }
 
@@ -2096,7 +2386,8 @@ std::vector<uint8_t> pq12zlib_decompress_payload(const MediaPacket &packet) {
     const uint32_t sample_count = read_le32(packet.payload.data() + 8);
     const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
     const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
-    if(magic != 0x5a323150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+    if(magic != 0x5a323150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0
+       || chunk_count > kMaxDepthCompressionChunks) {
         throw std::runtime_error("invalid pq12zlib depth header");
     }
     const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
@@ -2130,10 +2421,8 @@ std::vector<uint8_t> pq12zlib_decompress_payload(const MediaPacket &packet) {
     }
 
     std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
-    std::vector<std::future<void>> futures;
-    futures.reserve(chunks.size());
-    for(const auto &chunk : chunks) {
-        futures.emplace_back(std::async(std::launch::async, [&packet, &out, raw_step, chunk] {
+    bounded_parallel_for(chunks.size(), [&](size_t index) {
+            const auto &chunk = chunks[index];
             std::vector<uint8_t> packed(packed_depth12_size(chunk.sample_count));
             uLongf out_size = static_cast<uLongf>(packed.size());
             const int rc =
@@ -2143,11 +2432,7 @@ std::vector<uint8_t> pq12zlib_decompress_payload(const MediaPacket &packet) {
                 throw std::runtime_error("pq12zlib depth chunk decompression failed");
             }
             unpack_depth12_into(packed, raw_step, out, chunk.sample_offset, chunk.sample_count);
-        }));
-    }
-    for(auto &future : futures) {
-        future.get();
-    }
+        });
     return out;
 }
 
@@ -2162,7 +2447,8 @@ std::vector<uint8_t> pq8zlib_decompress_payload(const MediaPacket &packet) {
     const uint32_t sample_count = read_le32(packet.payload.data() + 8);
     const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
     const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
-    if(magic != 0x5a385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+    if(magic != 0x5a385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0
+       || chunk_count > kMaxDepthCompressionChunks) {
         throw std::runtime_error("invalid pq8zlib depth header");
     }
     const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
@@ -2196,10 +2482,8 @@ std::vector<uint8_t> pq8zlib_decompress_payload(const MediaPacket &packet) {
     }
 
     std::vector<uint8_t> quantized(expected_sample_count);
-    std::vector<std::future<void>> futures;
-    futures.reserve(chunks.size());
-    for(const auto &chunk : chunks) {
-        futures.emplace_back(std::async(std::launch::async, [&packet, &quantized, chunk] {
+    bounded_parallel_for(chunks.size(), [&](size_t index) {
+            const auto &chunk = chunks[index];
             uLongf out_size = static_cast<uLongf>(chunk.sample_count);
             const int rc =
                 uncompress(quantized.data() + chunk.sample_offset, &out_size, packet.payload.data() + chunk.compressed_offset,
@@ -2207,11 +2491,7 @@ std::vector<uint8_t> pq8zlib_decompress_payload(const MediaPacket &packet) {
             if(rc != Z_OK || out_size != chunk.sample_count) {
                 throw std::runtime_error("pq8zlib depth chunk decompression failed");
             }
-        }));
-    }
-    for(auto &future : futures) {
-        future.get();
-    }
+        });
 
     std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
     for(size_t i = 0; i < quantized.size(); ++i) {
@@ -2236,7 +2516,8 @@ std::vector<uint8_t> pq8lz4_decompress_payload(const MediaPacket &packet) {
     const uint32_t sample_count = read_le32(packet.payload.data() + 8);
     const uint16_t chunk_count = read_le16(packet.payload.data() + 12);
     const size_t expected_sample_count = static_cast<size_t>(packet.uncompressed_size / sizeof(uint16_t));
-    if(magic != 0x4c385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0) {
+    if(magic != 0x4c385150u || version != 1 || raw_step == 0 || sample_count != expected_sample_count || chunk_count == 0
+       || chunk_count > kMaxDepthCompressionChunks) {
         throw std::runtime_error("invalid pq8lz4 depth header");
     }
     const size_t table_size = 20ull + static_cast<size_t>(chunk_count) * 12ull;
@@ -2272,10 +2553,8 @@ std::vector<uint8_t> pq8lz4_decompress_payload(const MediaPacket &packet) {
 
     std::vector<uint8_t> quantized(expected_sample_count);
     auto &api = lz4_api();
-    std::vector<std::future<void>> futures;
-    futures.reserve(chunks.size());
-    for(const auto &chunk : chunks) {
-        futures.emplace_back(std::async(std::launch::async, [&packet, &quantized, &api, chunk] {
+    bounded_parallel_for(chunks.size(), [&](size_t index) {
+            const auto &chunk = chunks[index];
             const int decoded_size =
                 api.decompress_safe(reinterpret_cast<const char *>(packet.payload.data() + chunk.compressed_offset),
                                     reinterpret_cast<char *>(quantized.data() + chunk.sample_offset),
@@ -2284,11 +2563,7 @@ std::vector<uint8_t> pq8lz4_decompress_payload(const MediaPacket &packet) {
             if(decoded_size != static_cast<int>(chunk.sample_count)) {
                 throw std::runtime_error("pq8lz4 depth chunk decompression failed");
             }
-        }));
-    }
-    for(auto &future : futures) {
-        future.get();
-    }
+        });
 
     std::vector<uint8_t> out(static_cast<size_t>(packet.uncompressed_size), 0);
     for(size_t i = 0; i < quantized.size(); ++i) {
@@ -2375,14 +2650,14 @@ std::vector<uint8_t> rvl_decompress_payload(const MediaPacket &packet) {
         }
         for(uint32_t i = 0; i < nonzeros; ++i) {
             const uint32_t zigzag = rvl_read_vle(reader);
-            const int32_t delta = (zigzag & 1u) != 0u ? -static_cast<int32_t>((zigzag + 1u) >> 1u)
-                                                      : static_cast<int32_t>(zigzag >> 1u);
-            const int32_t current = previous + delta;
-            if(current < 0 || current > static_cast<int32_t>(std::numeric_limits<uint16_t>::max())) {
+            const int64_t delta = (zigzag & 1u) != 0u ? -static_cast<int64_t>((static_cast<uint64_t>(zigzag) + 1u) >> 1u)
+                                                      : static_cast<int64_t>(zigzag >> 1u);
+            const int64_t current = static_cast<int64_t>(previous) + delta;
+            if(current < 0 || current > static_cast<int64_t>(std::numeric_limits<uint16_t>::max())) {
                 throw std::runtime_error("invalid rvl depth sample");
             }
             write_depth_u16le(out, index, static_cast<uint16_t>(current));
-            previous = current;
+            previous = static_cast<int32_t>(current);
             ++index;
         }
     }
@@ -2413,8 +2688,8 @@ uint32_t read_varuint_checked(const std::vector<uint8_t> &data, size_t &offset) 
     throw std::runtime_error("truncated qdelta varuint");
 }
 
-int32_t zigzag_decode_i32(uint32_t value) {
-    return static_cast<int32_t>((value >> 1u) ^ (~(value & 1u) + 1u));
+int64_t zigzag_decode_i64(uint32_t value) {
+    return static_cast<int64_t>(value >> 1u) ^ -static_cast<int64_t>(value & 1u);
 }
 
 std::vector<uint8_t> qdelta_decompress_payload(const MediaPacket &packet) {
@@ -2431,7 +2706,7 @@ std::vector<uint8_t> qdelta_decompress_payload(const MediaPacket &packet) {
     const size_t sample_count = out.size() / sizeof(uint16_t);
     size_t offset = 8;
     size_t index = 0;
-    int32_t previous = 0;
+    int64_t previous = 0;
     while(index < sample_count) {
         if(offset >= packet.payload.size()) {
             throw std::runtime_error("truncated qdelta depth payload");
@@ -2457,12 +2732,13 @@ std::vector<uint8_t> qdelta_decompress_payload(const MediaPacket &packet) {
             throw std::runtime_error("invalid qdelta nonzero run");
         }
         for(uint32_t i = 0; i < nonzeros; ++i) {
-            const int32_t delta = zigzag_decode_i32(read_varuint_checked(packet.payload, offset));
-            const int32_t quantized = previous + delta;
-            if(quantized < 0) {
+            const int64_t delta = zigzag_decode_i64(read_varuint_checked(packet.payload, offset));
+            const int64_t quantized = previous + delta;
+            if(quantized < 0 || quantized > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
                 throw std::runtime_error("invalid qdelta depth sample");
             }
-            const uint32_t raw_value = std::min<uint32_t>(static_cast<uint32_t>(quantized) * raw_step, std::numeric_limits<uint16_t>::max());
+            const uint64_t scaled = static_cast<uint64_t>(quantized) * raw_step;
+            const uint32_t raw_value = static_cast<uint32_t>(std::min<uint64_t>(scaled, std::numeric_limits<uint16_t>::max()));
             write_depth_u16le(out, index, static_cast<uint16_t>(raw_value));
             previous = quantized;
             ++index;
@@ -2576,6 +2852,11 @@ public:
             logger.error("failed to start ffmpeg pipe: " + command + ": " + std::strerror(errno));
             return false;
         }
+        if(setvbuf(pipe_, nullptr, _IONBF, 0) != 0) {
+            logger.error("failed to configure unbuffered ffmpeg pipe: " + std::string(std::strerror(errno)));
+            close();
+            return false;
+        }
         return true;
     }
 
@@ -2634,6 +2915,7 @@ struct FrameInfo {
     uint64_t frame_id = 0;
     uint64_t timestamp_us = 0;
     uint64_t system_timestamp_us = 0;
+    uint64_t pair_id = 0;
     int32_t exposure_us = -1;
     int32_t gain = -1;
     int32_t auto_exposure = -1;
@@ -2659,6 +2941,7 @@ struct RecordJob {
     std::string storage_key;
     std::string file_prefix;
     std::string announce_json;
+    uint64_t record_generation = 0;
     size_t queue_bytes = 0;
     uint64_t enqueue_us = 0;
 };
@@ -2743,6 +3026,16 @@ struct FpsProbe {
     uint32_t frames = 0;
 
     void add(uint64_t local_us) {
+        constexpr uint64_t kMaxPlausibleFrameGapUs = 500'000;
+        if(local_us == 0) {
+            return;
+        }
+        if(last_us > 0 && (local_us <= last_us || local_us - last_us > kMaxPlausibleFrameGapUs)) {
+            first_us = local_us;
+            last_us = local_us;
+            frames = 1;
+            return;
+        }
         if(first_us == 0) {
             first_us = local_us;
         }
@@ -2794,15 +3087,41 @@ public:
     void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &camera_name,
                const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json, Logger &logger) {
         close(cfg, sender_id, camera_id, announce_json, logger);
+        ScopeExit rollback_guard([this] { reset_after_close(); });
         start_us_ = now_us();
         start_steady_ = std::chrono::steady_clock::now();
         camera_name_ = camera_name;
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
         file_prefix_ = file_prefix;
-        directory_ = (std::filesystem::path(cfg.nas_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_)).string();
-        std::filesystem::create_directories(directory_);
+        std::error_code root_ec;
+        std::filesystem::create_directories(cfg.nas_root, root_ec);
+        if(root_ec) {
+            throw std::runtime_error("cannot create NAS root: " + cfg.nas_root + ": " + root_ec.message());
+        }
+        const auto space = std::filesystem::space(cfg.nas_root, root_ec);
+        if(root_ec || space.available < cfg.min_free_disk_bytes) {
+            throw std::runtime_error("insufficient free space under NAS root: " + cfg.nas_root);
+        }
+        const auto directory_base = std::filesystem::path(cfg.nas_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_);
+        auto directory = directory_base;
+        std::error_code ec;
+        for(unsigned suffix = 1; std::filesystem::exists(directory, ec); ++suffix) {
+            if(ec) {
+                throw std::runtime_error("cannot inspect recording directory: " + directory.string() + ": " + ec.message());
+            }
+            std::ostringstream name;
+            name << directory_base.filename().string() << '_' << std::setw(3) << std::setfill('0') << suffix;
+            directory = directory_base.parent_path() / name.str();
+        }
+        if(!std::filesystem::create_directories(directory, ec) || ec) {
+            throw std::runtime_error("cannot create recording directory: " + directory.string() + ": " + ec.message());
+        }
+        directory_ = directory.string();
 
         frames_csv_.open(file_path("frames.csv"), std::ios::out | std::ios::trunc);
+        if(!frames_csv_) {
+            throw std::runtime_error("cannot open frames.csv: " + file_path("frames.csv").string());
+        }
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
                        "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
                        "rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,rgb_frame_interval_us,codec_or_compression,"
@@ -2812,8 +3131,11 @@ public:
                        "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
                        "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
                        "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us,"
-                       "rgb_depth_pair_valid\n";
+                       "rgb_depth_pair_valid,pair_delta_us,pair_delta_source,pair_id_valid\n";
         rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
+        if(!rgb_recorded_frames_csv_) {
+            throw std::runtime_error("cannot open RGB frame index CSV: " + file_path("rgb_recorded_frames.csv").string());
+        }
         rgb_recorded_frames_csv_
             << "video_frame_index,local_time_us,frame_id,timestamp_us,frame_system_timestamp_us,width,height,payload_size,"
                "packet_system_timestamp_us,rgb_exposure_us,rgb_gain,rgb_auto_exposure,rgb_actual_fps,codec_or_compression,"
@@ -2831,10 +3153,21 @@ public:
         }
         if(cfg.write_debug_depth_raw) {
             depth_debug_.open(file_path("depth_debug.raw"), std::ios::binary | std::ios::out | std::ios::trunc);
+            if(!depth_debug_) {
+                throw std::runtime_error("cannot open depth debug file: " + file_path("depth_debug.raw").string());
+            }
         }
 
         write_meta(cfg, sender_id, camera_id, announce_json, false);
         active_ = true;
+        rgb_pipe_failed_ = false;
+        depth_pipe_failed_ = false;
+        depth_part_index_ = 0;
+        depth_part_paths_.clear();
+        csv_rows_since_flush_ = 0;
+        storage_check_packets_ = 0;
+        storage_failed_ = false;
+        rollback_guard.release();
         logger.info("recording segment started: " + directory_);
     }
 
@@ -2842,7 +3175,15 @@ public:
         if(!active_) {
             return;
         }
-        flush_pending_media(cfg, logger);
+        ScopeExit reset_guard([this] { reset_after_close(); });
+        std::exception_ptr flush_error;
+        try {
+            flush_pending_media(cfg, logger);
+        }
+        catch(...) {
+            flush_error = std::current_exception();
+            logger.warn("recording pending media flush failed; continuing container finalization: " + directory_);
+        }
         if(frames_csv_) {
             frames_csv_.flush();
             frames_csv_.close();
@@ -2861,16 +3202,38 @@ public:
         const int rgb_rc = rgb_pipe_.close();
         const int depth_rc = depth_pipe_.close();
         end_us_ = now_us();
-        write_meta(cfg, sender_id, camera_id, announce_json, true);
-        set_segment_mtime_to_start(logger);
         if(rgb_rc != 0) {
+            rgb_pipe_failed_ = true;
             logger.warn("rgb ffmpeg exited with non-zero status (" + process_status_text(rgb_rc) + ") for segment: " + directory_);
         }
         if(depth_rc != 0) {
+            depth_pipe_failed_ = true;
             logger.warn("depth ffmpeg exited with non-zero status (" + process_status_text(depth_rc) + ") for segment: " + directory_);
         }
-        finalize_completed_media(cfg);
+        finalize_completed_media(cfg, logger);
+        write_meta(cfg, sender_id, camera_id, announce_json, true);
+        set_segment_mtime_to_start(logger);
         logger.info("recording segment closed: " + directory_);
+        if(flush_error) {
+            std::rethrow_exception(flush_error);
+        }
+    }
+
+    void reset_after_close() {
+        if(frames_csv_) {
+            frames_csv_.close();
+        }
+        if(rgb_recorded_frames_csv_) {
+            rgb_recorded_frames_csv_.close();
+        }
+        if(rgb_debug_) {
+            rgb_debug_.close();
+        }
+        if(depth_debug_) {
+            depth_debug_.close();
+        }
+        rgb_pipe_.close();
+        depth_pipe_.close();
         active_ = false;
         directory_.clear();
         camera_name_.clear();
@@ -2896,19 +3259,54 @@ public:
         rgb_stats_.reset();
         rgb_recorded_stats_.reset();
         depth_stats_.reset();
+        rgb_pipe_failed_ = false;
+        depth_pipe_failed_ = false;
+        depth_part_index_ = 0;
+        depth_part_paths_.clear();
+        csv_rows_since_flush_ = 0;
+        storage_check_packets_ = 0;
+        storage_failed_ = false;
     }
 
     bool should_rotate(const Config &cfg) const {
         return active_ && std::chrono::steady_clock::now() - start_steady_ >= std::chrono::seconds(cfg.segment_seconds);
     }
 
+    bool stream_profile_changed(const MediaPacket &packet) const {
+        const StreamRecordStats *stats = nullptr;
+        if(packet.stream_type == StreamType::rgb) {
+            stats = &rgb_stats_;
+        }
+        else if(packet.stream_type == StreamType::depth_raw) {
+            stats = &depth_stats_;
+        }
+        return stats && stats->frames > 0
+               && (stats->width != packet.width || stats->height != packet.height
+                   || stats->codec_or_compression != packet.codec_or_compression);
+    }
+
     void write_packet(const Config &cfg, const MediaPacket &packet, const std::string &sender_id, const std::string &camera_id,
                       const std::string &camera_name, const std::string &storage_key, const std::string &file_prefix,
-                      const std::string &announce_json, Logger &logger) {
+                      const std::string &announce_json, Logger &logger, bool allow_rotate = true) {
         if(!active_) {
             start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
         }
-        if(should_rotate(cfg)) {
+        if(storage_failed_) {
+            throw std::runtime_error("recording storage previously failed: " + directory_);
+        }
+        if(++storage_check_packets_ >= 30) {
+            storage_check_packets_ = 0;
+            std::error_code ec;
+            const auto space = std::filesystem::space(directory_, ec);
+            if(ec || space.available < cfg.min_free_disk_bytes) {
+                storage_failed_ = true;
+                throw std::runtime_error("recording stopped because NAS free space is below the configured reserve: " + directory_);
+            }
+        }
+        if(stream_profile_changed(packet) || (allow_rotate && should_rotate(cfg))) {
+            if(stream_profile_changed(packet)) {
+                logger.warn("media profile changed; rotating segment camera=" + camera_key(sender_id, camera_id));
+            }
             close(cfg, sender_id, camera_id, announce_json, logger);
             start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
         }
@@ -2925,8 +3323,8 @@ public:
                                             ? static_cast<int64_t>(packet.system_timestamp_us - last_rgb_.system_timestamp_us)
                                             : -static_cast<int64_t>(last_rgb_.system_timestamp_us - packet.system_timestamp_us);
                 }
-                last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.rgb_exposure_us,
-                                      packet.rgb_gain, packet.rgb_auto_exposure, packet.rgb_actual_fps};
+                last_rgb_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.pair_id,
+                                      packet.rgb_exposure_us, packet.rgb_gain, packet.rgb_auto_exposure, packet.rgb_actual_fps};
                 last_rgb_frame_interval_us_ = frame_interval_us;
                 rgb_stats_.add(packet, packet_local_us);
             }
@@ -2936,7 +3334,7 @@ public:
                 depth_debug_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
             }
             write_depth_packet(cfg, packet, packet_local_us, logger);
-            last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us};
+            last_depth_ = FrameInfo{true, packet.frame_id, packet.timestamp_us, packet.system_timestamp_us, packet.pair_id};
             depth_stats_.add(packet, packet_local_us);
         }
 
@@ -2994,7 +3392,33 @@ public:
             write_pipeline_diagnostics_columns(frames_csv_, packet, packet_local_us);
             write_clock_sync_columns(frames_csv_, packet);
             write_pair_quality_column(frames_csv_, last_rgb_, last_depth_);
+            frames_csv_ << ',';
+            if(last_rgb_.valid && last_depth_.valid) {
+                const bool use_system = last_rgb_.system_timestamp_us > 0 && last_depth_.system_timestamp_us > 0;
+                const uint64_t rgb_time = use_system ? last_rgb_.system_timestamp_us : last_rgb_.timestamp_us;
+                const uint64_t depth_time = use_system ? last_depth_.system_timestamp_us : last_depth_.timestamp_us;
+                const int64_t signed_delta = depth_time >= rgb_time ? static_cast<int64_t>(depth_time - rgb_time)
+                                                                    : -static_cast<int64_t>(rgb_time - depth_time);
+                frames_csv_ << signed_delta << ',' << (use_system ? "system_timestamp_us" : "device_timestamp_us");
+            }
+            else {
+                frames_csv_ << ',';
+            }
+            const bool pair_id_valid = last_rgb_.valid && last_depth_.valid && last_rgb_.pair_id != 0
+                                       && last_rgb_.pair_id == last_depth_.pair_id;
+            frames_csv_ << ',' << (pair_id_valid ? 1 : 0);
             frames_csv_ << '\n';
+            if(!frames_csv_) {
+                throw std::runtime_error("frames.csv write failed: " + file_path("frames.csv").string());
+            }
+            if(++csv_rows_since_flush_ >= 30) {
+                frames_csv_.flush();
+                rgb_recorded_frames_csv_.flush();
+                if(!frames_csv_ || !rgb_recorded_frames_csv_) {
+                    throw std::runtime_error("recording CSV flush failed: " + directory_);
+                }
+                csv_rows_since_flush_ = 0;
+            }
         }
     }
 
@@ -3047,6 +3471,10 @@ private:
             csv << 0;
             return;
         }
+        if(rgb.pair_id != 0 && depth.pair_id != 0 && rgb.pair_id != depth.pair_id) {
+            csv << 0;
+            return;
+        }
         const bool use_system_pair_delta = rgb.system_timestamp_us > 0 && depth.system_timestamp_us > 0;
         const uint64_t rgb_pair_us = use_system_pair_delta ? rgb.system_timestamp_us : rgb.timestamp_us;
         const uint64_t depth_pair_us = use_system_pair_delta ? depth.system_timestamp_us : depth.timestamp_us;
@@ -3094,6 +3522,9 @@ private:
         write_pipeline_diagnostics_columns(rgb_recorded_frames_csv_, packet, packet_local_us);
         write_clock_sync_columns(rgb_recorded_frames_csv_, packet);
         rgb_recorded_frames_csv_ << '\n';
+        if(!rgb_recorded_frames_csv_) {
+            throw std::runtime_error("RGB frame index CSV write failed: " + file_path("rgb_recorded_frames.csv").string());
+        }
         rgb_recorded_stats_.add(packet, packet_local_us);
     }
 
@@ -3302,16 +3733,23 @@ private:
         depth_width_ = width;
         depth_height_ = height;
         const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
-        const auto depth_mkv = shell_quote(file_path("depth.mkv").string());
+        std::ostringstream part_name;
+        part_name << "depth_part_" << std::setw(3) << std::setfill('0') << depth_part_index_ << ".mkv";
+        const auto part_path = file_path(part_name.str());
+        const auto depth_mkv = shell_quote(part_path.string());
         std::ostringstream cmd;
         cmd << shell_quote(cfg.ffmpeg_path)
             << " -hide_banner -loglevel warning -y -f rawvideo -pixel_format gray16le -video_size " << width << "x" << height
             << " -framerate " << format_fps(fps) << " -i pipe:0 -c:v ffv1 -level 3 " << depth_mkv << " 2>>" << ffmpeg_log;
-        depth_pipe_.open(cmd.str(), logger);
+        if(depth_pipe_.open(cmd.str(), logger)) {
+            if(depth_part_paths_.empty() || depth_part_paths_.back() != part_path) {
+                depth_part_paths_.push_back(part_path);
+            }
+        }
     }
 
     void ensure_rgb_pipe(const Config &cfg, double fps, Logger &logger) {
-        if(rgb_pipe_.active()) {
+        if(rgb_pipe_.active() || rgb_pipe_failed_) {
             return;
         }
         const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
@@ -3321,13 +3759,22 @@ private:
                                     " -f h264 -i pipe:0 -c:v copy -movflags " + kRgbMp4RecordMuxFlags +
                                     " -flush_packets 1 " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
-        rgb_pipe_.open(rgb_cmd, logger);
+        if(!rgb_pipe_.open(rgb_cmd, logger)) {
+            rgb_pipe_failed_ = true;
+        }
     }
 
     void write_rgb_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
+        if(rgb_pipe_failed_) {
+            if(write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger)) {
+                write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
+            }
+            return;
+        }
         if(rgb_pipe_.active()) {
             const bool recovery_ok = write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger);
             const bool pipe_ok = rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            rgb_pipe_failed_ = !pipe_ok;
             if(pipe_ok || recovery_ok) {
                 write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
             }
@@ -3337,9 +3784,16 @@ private:
         if(rgb_pending_has_decodable_start_ && rgb_pending_.size() + packet.payload.size() > kMaxPendingRgbRecordBytes) {
             flush_rgb_pending(cfg, logger);
         }
+        if(rgb_pipe_failed_) {
+            if(write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger)) {
+                write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
+            }
+            return;
+        }
         if(rgb_pipe_.active()) {
             const bool recovery_ok = write_rgb_recovery_bytes(packet.payload.data(), packet.payload.size(), logger);
             const bool pipe_ok = rgb_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            rgb_pipe_failed_ = !pipe_ok;
             if(pipe_ok || recovery_ok) {
                 write_rgb_recorded_frame(packet, packet_local_us, packet.payload.size());
             }
@@ -3379,7 +3833,14 @@ private:
 
     void write_depth_packet(const Config &cfg, const MediaPacket &packet, uint64_t packet_local_us, Logger &logger) {
         if(depth_pipe_.active()) {
-            depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(!depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                depth_pipe_failed_ = true;
+                ++depth_part_index_;
+                ensure_depth_pipe(cfg, packet.width, packet.height, depth_record_fps_ > 0.0 ? depth_record_fps_ : cfg.depth_fps, logger);
+                if(!depth_pipe_.active() || !depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                    throw std::runtime_error("depth ffmpeg recovery part write failed");
+                }
+            }
             return;
         }
         if(depth_width_ == 0 || depth_height_ == 0) {
@@ -3390,7 +3851,14 @@ private:
             flush_depth_pending(cfg, logger);
         }
         if(depth_pipe_.active()) {
-            depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger);
+            if(!depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                depth_pipe_failed_ = true;
+                ++depth_part_index_;
+                ensure_depth_pipe(cfg, packet.width, packet.height, depth_record_fps_ > 0.0 ? depth_record_fps_ : cfg.depth_fps, logger);
+                if(!depth_pipe_.active() || !depth_pipe_.write(packet.payload.data(), packet.payload.size(), logger)) {
+                    throw std::runtime_error("depth ffmpeg recovery part write failed");
+                }
+            }
             return;
         }
 
@@ -3414,10 +3882,19 @@ private:
         }
         rgb_record_fps_ = rgb_fps_probe_.estimate(30.0);
         ensure_rgb_pipe(cfg, rgb_record_fps_, logger);
+        if(rgb_pipe_failed_) {
+            if(write_rgb_recovery_bytes(rgb_pending_.data(), rgb_pending_.size(), logger)) {
+                write_pending_rgb_recorded_frames();
+            }
+            rgb_pending_.clear();
+            rgb_pending_infos_.clear();
+            return;
+        }
         if(rgb_pipe_.active()) {
             logger.info("rgb record fps estimated: " + format_fps(rgb_record_fps_));
             const bool recovery_ok = write_rgb_recovery_bytes(rgb_pending_.data(), rgb_pending_.size(), logger);
             const bool pipe_ok = rgb_pipe_.write(rgb_pending_.data(), rgb_pending_.size(), logger);
+            rgb_pipe_failed_ = !pipe_ok;
             if(pipe_ok || recovery_ok) {
                 write_pending_rgb_recorded_frames();
             }
@@ -3435,7 +3912,14 @@ private:
         if(depth_pipe_.active()) {
             logger.info("depth record fps estimated: " + format_fps(depth_record_fps_));
             for(const auto &payload : depth_pending_) {
-                depth_pipe_.write(payload.data(), payload.size(), logger);
+                if(!depth_pipe_.write(payload.data(), payload.size(), logger)) {
+                    depth_pipe_failed_ = true;
+                    ++depth_part_index_;
+                    ensure_depth_pipe(cfg, depth_width_, depth_height_, depth_record_fps_, logger);
+                    if(!depth_pipe_.active() || !depth_pipe_.write(payload.data(), payload.size(), logger)) {
+                        throw std::runtime_error("depth ffmpeg pending recovery part write failed");
+                    }
+                }
             }
             depth_pending_.clear();
             depth_pending_bytes_ = 0;
@@ -3565,7 +4049,120 @@ private:
         utimensat(AT_FDCWD, path.c_str(), times, 0);
     }
 
-    void finalize_completed_media(const Config &cfg) const {
+    static std::string ffconcat_quote(const std::string &value) {
+        std::string out;
+        out.reserve(value.size() + 8);
+        for(char ch : value) {
+            if(ch == '\\' || ch == '\'') {
+                out.push_back('\\');
+            }
+            out.push_back(ch);
+        }
+        return out;
+    }
+
+    bool replace_with_valid_media(const std::filesystem::path &temporary,
+                                  const std::filesystem::path &destination,
+                                  const std::string &ffprobe_path,
+                                  Logger &logger) const {
+        if(!media_file_readable(ffprobe_path, temporary)) {
+            logger.warn("recovered media validation failed: " + temporary.string());
+            return false;
+        }
+        std::error_code ec;
+        std::filesystem::rename(temporary, destination, ec);
+        if(ec) {
+            logger.warn("cannot replace recovered media " + destination.string() + ": " + ec.message());
+            return false;
+        }
+        return true;
+    }
+
+    bool rebuild_rgb_from_recovery(const Config &cfg, const std::string &ffprobe_path, Logger &logger) const {
+        if(!file_size_nonzero(rgb_debug_path_)) {
+            return false;
+        }
+        const auto temporary = file_path("rgb_recovered.tmp.mp4");
+        std::error_code ec;
+        std::filesystem::remove(temporary, ec);
+        const double fps = rgb_record_fps_ > 0.0 ? rgb_record_fps_ : 30.0;
+        const std::string command = shell_quote(cfg.ffmpeg_path)
+                                    + " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps)
+                                    + " -f h264 -i " + shell_quote(rgb_debug_path_.string())
+                                    + " -c:v copy -movflags " + kRgbMp4RecordMuxFlags + " -flush_packets 1 "
+                                    + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
+        if(std::system(command.c_str()) != 0) {
+            logger.warn("RGB automatic recovery remux failed: " + directory_);
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+        if(!replace_with_valid_media(temporary, file_path("rgb.mp4"), ffprobe_path, logger)) {
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+        logger.info("RGB recording rebuilt from recovery stream: " + file_path("rgb.mp4").string());
+        return true;
+    }
+
+    bool finalize_depth_parts(const Config &cfg, const std::string &ffprobe_path, Logger &logger) const {
+        std::vector<std::filesystem::path> parts;
+        for(const auto &path : depth_part_paths_) {
+            if(file_size_nonzero(path) && media_file_readable(ffprobe_path, path)) {
+                parts.push_back(path);
+            }
+            else if(file_size_nonzero(path)) {
+                logger.warn("invalid depth part retained for offline inspection: " + path.string());
+            }
+        }
+        if(parts.empty()) {
+            return false;
+        }
+
+        const auto destination = file_path("depth.mkv");
+        std::error_code ec;
+        if(parts.size() == 1) {
+            std::filesystem::rename(parts.front(), destination, ec);
+            if(ec) {
+                logger.warn("cannot finalize depth recording: " + ec.message());
+                return false;
+            }
+            return true;
+        }
+
+        const auto list_path = file_path("depth_parts.concat.txt");
+        const auto temporary = file_path("depth_recovered.tmp.mkv");
+        std::ofstream list(list_path, std::ios::out | std::ios::trunc);
+        if(!list) {
+            logger.warn("cannot create depth concat list: " + list_path.string());
+            return false;
+        }
+        for(const auto &part : parts) {
+            list << "file '" << ffconcat_quote(part.string()) << "'\n";
+        }
+        list.close();
+        if(!list) {
+            logger.warn("cannot finish depth concat list: " + list_path.string());
+            return false;
+        }
+        std::filesystem::remove(temporary, ec);
+        const std::string command = shell_quote(cfg.ffmpeg_path)
+                                    + " -hide_banner -loglevel warning -y -f concat -safe 0 -i " + shell_quote(list_path.string())
+                                    + " -c copy " + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
+        const int rc = std::system(command.c_str());
+        std::filesystem::remove(list_path, ec);
+        if(rc != 0 || !replace_with_valid_media(temporary, destination, ffprobe_path, logger)) {
+            std::filesystem::remove(temporary, ec);
+            logger.warn("depth part concatenation failed; part files retained: " + directory_);
+            return false;
+        }
+        for(const auto &part : parts) {
+            std::filesystem::remove(part, ec);
+        }
+        logger.info("depth recording finalized from " + std::to_string(parts.size()) + " parts: " + destination.string());
+        return true;
+    }
+
+    void finalize_completed_media(const Config &cfg, Logger &logger) const {
         const auto ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
         const auto log_path = file_path("ffmpeg.log");
         bool checked_any_media = false;
@@ -3582,7 +4179,10 @@ private:
             return ok;
         };
 
-        const bool rgb_ok = validate_media(file_path("rgb.mp4"), "rgb");
+        bool rgb_ok = validate_media(file_path("rgb.mp4"), "rgb");
+        if((rgb_pipe_failed_ || !rgb_ok) && rebuild_rgb_from_recovery(cfg, ffprobe_path, logger)) {
+            rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_recovered");
+        }
         if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
             std::error_code ec;
             if(std::filesystem::exists(rgb_debug_path_, ec)) {
@@ -3599,6 +4199,7 @@ private:
             append_retime_log(log_path, "rgb recovery h264 kept for offline repair");
         }
 
+        finalize_depth_parts(cfg, ffprobe_path, logger);
         validate_media(file_path("depth.mkv"), "depth");
         if(checked_any_media) {
             append_retime_log(log_path, "realtime remux disabled; media kept in recorder output format");
@@ -3753,34 +4354,6 @@ private:
             }
         }
 
-        std::string cmd = "touch -c -d " + shell_quote("@" + std::to_string(start_us_ / 1'000'000ull)) + " --";
-        for(const auto &path : paths) {
-            cmd += " " + shell_quote(path.string());
-        }
-        const int rc = std::system(cmd.c_str());
-        if(rc != 0) {
-            logger.warn("touch command failed while setting segment mtime to start: " + directory_);
-        }
-
-        const auto delayed_paths = paths;
-        const auto delayed_start_us = start_us_;
-        std::thread([delayed_paths, delayed_start_us] {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-
-            timespec delayed_times[2]{};
-            delayed_times[0].tv_sec = static_cast<time_t>(delayed_start_us / 1'000'000ull);
-            delayed_times[0].tv_nsec = static_cast<long>((delayed_start_us % 1'000'000ull) * 1000ull);
-            delayed_times[1] = delayed_times[0];
-            for(const auto &path : delayed_paths) {
-                utimensat(AT_FDCWD, path.c_str(), delayed_times, 0);
-            }
-
-            std::string delayed_cmd = "touch -c -d " + shell_quote("@" + std::to_string(delayed_start_us / 1'000'000ull)) + " --";
-            for(const auto &path : delayed_paths) {
-                delayed_cmd += " " + shell_quote(path.string());
-            }
-            std::system(delayed_cmd.c_str());
-        }).detach();
     }
 
     bool active_ = false;
@@ -3798,6 +4371,13 @@ private:
     std::ofstream depth_debug_;
     FfmpegPipe rgb_pipe_;
     FfmpegPipe depth_pipe_;
+    bool rgb_pipe_failed_ = false;
+    bool depth_pipe_failed_ = false;
+    unsigned depth_part_index_ = 0;
+    std::vector<std::filesystem::path> depth_part_paths_;
+    unsigned csv_rows_since_flush_ = 0;
+    unsigned storage_check_packets_ = 0;
+    bool storage_failed_ = false;
     std::vector<uint8_t> rgb_pending_;
     std::vector<PendingRgbPacketInfo> rgb_pending_infos_;
     bool rgb_pending_has_vcl_ = false;
@@ -3934,6 +4514,7 @@ struct CameraState {
     std::string key;
     std::string camera_name;
     std::string camera_file_prefix;
+    std::mutex preview_mutex;
     uint64_t recording_start_us = 0;
     std::string recording_file_prefix;
     bool online = true;
@@ -3983,6 +4564,9 @@ struct CameraState {
     std::mutex record_mutex;
     std::condition_variable record_cv;
     std::deque<RecordJob> record_queue;
+    bool record_accepting = false;
+    bool record_finalizing = false;
+    uint64_t record_generation = 0;
     size_t record_queue_bytes = 0;
     size_t record_queue_peak_bytes = 0;
     size_t record_queue_peak_packets = 0;
@@ -3991,6 +4575,7 @@ struct CameraState {
     uint64_t record_backpressure_waits = 0;
     uint64_t record_oversize_packets = 0;
     uint64_t record_write_errors = 0;
+    uint64_t last_record_write_error_log_us = 0;
     uint32_t record_active_writes = 0;
     bool record_worker_started = false;
     bool record_worker_stop = false;
@@ -4011,6 +4596,10 @@ public:
         logger_.info("receiver state loaded: " + config_.state_path);
     }
 
+    ~ReceiverApp() {
+        stop();
+    }
+
     struct SegmentCloseTask {
         std::shared_ptr<CameraState> cam;
         std::string sender_id;
@@ -4027,6 +4616,8 @@ public:
     struct PreviewUdpAssembly {
         std::vector<uint8_t> bytes;
         std::vector<uint8_t> received;
+        std::vector<uint32_t> chunk_offsets;
+        std::vector<uint16_t> chunk_sizes;
         size_t received_count = 0;
         uint32_t total_size = 0;
         uint16_t chunk_count = 0;
@@ -4035,20 +4626,51 @@ public:
         uint64_t updated_us = 0;
     };
 
+    struct ClientThread {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+
     void start() {
+        bool expected = false;
+        if(!started_.compare_exchange_strong(expected, true)) {
+            return;
+        }
         running_ = true;
-        clock_sync_manager_.set_log_callbacks([this](const std::string &message) { logger_.info(message); },
-                                             [this](const std::string &message) { logger_.warn(message); });
-        clock_sync_manager_.start();
-        udp_thread_ = std::thread([this] { udp_loop(); });
-        if(config_.media_udp_enabled) {
-            media_udp_thread_ = std::thread([this] { media_udp_loop(); });
+        listener_start_failed_ = false;
+        status_udp_ready_ = false;
+        media_tcp_ready_ = false;
+        media_udp_ready_ = false;
+        preview_udp_ready_ = false;
+        admin_ready_ = false;
+        try {
+            start_decoder_cleanup_worker();
+            clock_sync_manager_.set_log_callbacks([this](const std::string &message) { logger_.info(message); },
+                                                 [this](const std::string &message) { logger_.warn(message); });
+            clock_sync_manager_.start();
+            udp_thread_ = std::thread([this] { udp_loop(); });
+            if(config_.media_udp_enabled) {
+                media_udp_thread_ = std::thread([this] { media_udp_loop(); });
+            }
+            if(config_.preview_enabled && config_.preview_udp_enabled) {
+                preview_udp_thread_ = std::thread([this] { preview_udp_loop(); });
+            }
+            tcp_thread_ = std::thread([this] { tcp_loop(); });
+            admin_thread_ = std::thread([this] { admin_loop(); });
+            const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while(!required_listeners_ready() && !listener_start_failed_
+                  && std::chrono::steady_clock::now() < ready_deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if(!required_listeners_ready()) {
+                throw std::runtime_error(listener_start_failed_ ? "receiver listener startup failed"
+                                                                : "receiver listener startup timed out");
+            }
         }
-        if(config_.preview_enabled && config_.preview_udp_enabled) {
-            preview_udp_thread_ = std::thread([this] { preview_udp_loop(); });
+        catch(...) {
+            stop();
+            throw;
         }
-        tcp_thread_ = std::thread([this] { tcp_loop(); });
-        admin_thread_ = std::thread([this] { admin_loop(); });
         logger_.info("receiver started: media tcp " + config_.media_bind_ip + ":" + std::to_string(config_.media_port) +
                      ", status udp " + config_.status_bind_ip + ":" + std::to_string(config_.status_port) +
                      ", clock sync udp "
@@ -4063,8 +4685,12 @@ public:
     }
 
     void stop() {
+        if(!started_.exchange(false)) {
+            return;
+        }
         running_ = false;
         clock_sync_manager_.stop();
+        shutdown_client_sockets();
         if(udp_thread_.joinable()) {
             udp_thread_.join();
         }
@@ -4080,12 +4706,15 @@ public:
         if(admin_thread_.joinable()) {
             admin_thread_.join();
         }
+        shutdown_client_sockets();
+        join_client_threads();
         wait_segment_close_futures();
         std::vector<SegmentCloseTask> close_tasks;
         std::vector<std::shared_ptr<CameraState>> camera_snapshot;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for(auto &item : cameras_) {
+                std::lock_guard<std::mutex> preview_lock(item.second->preview_mutex);
                 cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
                 cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
                 camera_snapshot.push_back(item.second);
@@ -4096,13 +4725,28 @@ public:
         stop_record_workers_sync(camera_snapshot);
         for(auto &task : close_tasks) {
             std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
-            task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+            try {
+                task.cam->segment.close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+            }
+            catch(const std::exception &e) {
+                logger_.warn("recording segment close failed during receiver stop camera=" + task.cam->key + ": " + e.what());
+            }
         }
+        stop_decoder_cleanup_worker();
         logger_.info("receiver stopped");
     }
 
     std::string status_json() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+        if(!lock.owns_lock()) {
+            std::lock_guard<std::mutex> cache_lock(status_cache_mutex_);
+            if(!status_cache_.empty()) {
+                return status_cache_;
+            }
+            return "{\"running\":true,\"status_stale\":true,\"build_commit\":\"" + std::string(GWV3_GIT_COMMIT)
+                   + "\",\"build_dirty\":" + std::string(GWV3_GIT_DIRTY != 0 ? "true" : "false")
+                   + ",\"build_source_hash\":\"" + std::string(GWV3_SOURCE_HASH) + "\",\"cameras\":[]}";
+        }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
         UdpReassemblyStats media_udp_stats;
@@ -4125,6 +4769,9 @@ public:
         std::ostringstream out;
         out << "{";
         out << "\"running\":true,";
+        out << "\"build_commit\":\"" << json_escape(GWV3_GIT_COMMIT) << "\",";
+        out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
+        out << "\"build_source_hash\":\"" << GWV3_SOURCE_HASH << "\",";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
         out << "\"recording_start_us\":" << recording_all_start_us_ << ',';
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
@@ -4137,6 +4784,8 @@ public:
         out << "\"preview_udp_enabled\":" << (config_.preview_enabled && config_.preview_udp_enabled ? "true" : "false") << ',';
         out << "\"preview_udp_port\":" << config_.preview_udp_port << ',';
         out << "\"active_media_clients\":" << active_media_clients_.load() << ',';
+        out << "\"active_admin_clients\":" << active_admin_clients_.load() << ',';
+        out << "\"record_queue_total_bytes\":" << total_record_queue_bytes_.load() << ',';
         out << "\"media_udp_stats\":";
         append_udp_reassembly_stats_json(out, media_udp_stats, active_media_udp_assemblies);
         out << ',';
@@ -4171,6 +4820,7 @@ public:
         bool first = true;
         for(const auto &item : cameras_) {
             auto &cam = *item.second;
+            std::lock_guard<std::mutex> preview_lock(cam.preview_mutex);
             const auto last_seen = camera_last_seen_us(cam);
             const bool status_live = cam.online && is_recent_us(now, cam.last_status_us, kCameraOnlineTimeoutUs);
             const bool media_live = cam.online && is_recent_us(now, cam.last_media_us, kCameraOnlineTimeoutUs);
@@ -4240,6 +4890,8 @@ public:
             uint64_t record_write_errors = 0;
             uint32_t record_active_writes = 0;
             bool record_worker_started = false;
+            bool record_accepting = false;
+            bool record_finalizing = false;
             {
                 std::lock_guard<std::mutex> record_lock(cam.record_mutex);
                 record_queue_packets = cam.record_queue.size();
@@ -4253,6 +4905,8 @@ public:
                 record_write_errors = cam.record_write_errors;
                 record_active_writes = cam.record_active_writes;
                 record_worker_started = cam.record_worker_started;
+                record_accepting = cam.record_accepting;
+                record_finalizing = cam.record_finalizing;
             }
             if(!first) {
                 out << ',';
@@ -4287,6 +4941,8 @@ public:
             out << "\"record_oversize_packets\":" << record_oversize_packets << ',';
             out << "\"record_write_errors\":" << record_write_errors << ',';
             out << "\"record_worker_started\":" << (record_worker_started ? "true" : "false") << ',';
+            out << "\"record_accepting\":" << (record_accepting ? "true" : "false") << ',';
+            out << "\"record_finalizing\":" << (record_finalizing ? "true" : "false") << ',';
             out << "\"last_status_us\":" << cam.last_status_us << ',';
             out << "\"last_media_us\":" << cam.last_media_us << ',';
             out << "\"last_seen_us\":" << last_seen << ',';
@@ -4336,12 +4992,20 @@ public:
             out << "}";
         }
         out << "]}";
-        return out.str();
+        auto status = out.str();
+        {
+            std::lock_guard<std::mutex> cache_lock(status_cache_mutex_);
+            status_cache_ = status;
+        }
+        return status;
     }
 
     std::string config_json() const {
         std::ostringstream out;
         out << "{";
+        out << "\"build_commit\":\"" << json_escape(GWV3_GIT_COMMIT) << "\",";
+        out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
+        out << "\"build_source_hash\":\"" << GWV3_SOURCE_HASH << "\",";
         out << "\"status_bind_ip\":\"" << json_escape(config_.status_bind_ip) << "\",";
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"media_bind_ip\":\"" << json_escape(config_.media_bind_ip) << "\",";
@@ -4366,6 +5030,7 @@ public:
         out << "\"segment_seconds\":" << config_.segment_seconds << ',';
         out << "\"max_payload_mb\":" << (config_.max_payload_bytes / (1024ull * 1024ull)) << ',';
         out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
+        out << ",\"record_queue_total_max_mb\":" << (config_.record_queue_total_max_bytes / (1024ull * 1024ull));
         out << "}";
         return out.str();
     }
@@ -4456,14 +5121,29 @@ public:
                 record_packet = &*decoded_depth_packet;
             }
             catch(const std::exception &e) {
+                bool should_log = false;
                 {
                     std::lock_guard<std::mutex> record_lock(cam->record_mutex);
                     cam->record_write_errors++;
+                    const uint64_t current_us = now_us();
+                    should_log = cam->last_record_write_error_log_us == 0
+                                 || current_us - cam->last_record_write_error_log_us >= kRecordQueueWarnIntervalUs;
+                    if(should_log) {
+                        cam->last_record_write_error_log_us = current_us;
+                    }
                 }
-                logger_.warn(std::string("depth record packet ignored camera=") + cam->key + " frame=" + std::to_string(job.packet.frame_id)
-                             + ": " + e.what());
+                if(should_log) {
+                    logger_.warn(std::string("depth record packet ignored camera=") + cam->key + " frame="
+                                 + std::to_string(job.packet.frame_id) + ": " + e.what());
+                }
                 return;
             }
+        }
+
+        bool allow_segment_rotate = true;
+        {
+            std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+            allow_segment_rotate = !cam->record_finalizing;
         }
 
         try {
@@ -4472,7 +5152,7 @@ public:
             {
                 std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
                 cam->segment.write_packet(config_, *record_packet, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
-                                          job.file_prefix, job.announce_json, logger_);
+                                          job.file_prefix, job.announce_json, logger_, allow_segment_rotate);
                 segment_active = cam->segment.active();
                 segment_dir = cam->segment.directory();
             }
@@ -4483,12 +5163,37 @@ public:
             }
         }
         catch(const std::exception &e) {
+            bool should_log = false;
             {
                 std::lock_guard<std::mutex> record_lock(cam->record_mutex);
                 cam->record_write_errors++;
+                cam->record_accepting = false;
+                cam->record_generation++;
+                const size_t discarded_queue_bytes = cam->record_queue_bytes;
+                cam->record_queue.clear();
+                cam->record_queue_bytes = 0;
+                if(discarded_queue_bytes > 0) {
+                    const size_t total_before = total_record_queue_bytes_.fetch_sub(discarded_queue_bytes);
+                    if(total_before < discarded_queue_bytes) {
+                        total_record_queue_bytes_.store(0);
+                    }
+                }
+                const uint64_t current_us = now_us();
+                should_log = cam->last_record_write_error_log_us == 0
+                             || current_us - cam->last_record_write_error_log_us >= kRecordQueueWarnIntervalUs;
+                if(should_log) {
+                    cam->last_record_write_error_log_us = current_us;
+                }
             }
-            logger_.warn(std::string("record packet write failed camera=") + cam->key + " frame=" + std::to_string(job.packet.frame_id)
-                         + ": " + e.what());
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cam->last_error = std::string("recording_write_failed: ") + e.what();
+            }
+            cam->record_cv.notify_all();
+            if(should_log) {
+                logger_.warn(std::string("record packet write failed; recording input paused camera=") + cam->key
+                             + " frame=" + std::to_string(job.packet.frame_id) + ": " + e.what());
+            }
         }
     }
 
@@ -4513,6 +5218,10 @@ public:
                 else {
                     cam->record_queue_bytes = 0;
                 }
+                const size_t total_before = total_record_queue_bytes_.fetch_sub(job.queue_bytes);
+                if(total_before < job.queue_bytes) {
+                    total_record_queue_bytes_.store(0);
+                }
                 cam->record_dequeued_packets++;
                 cam->record_active_writes++;
             }
@@ -4532,18 +5241,52 @@ public:
     }
 
     void start_record_worker_if_needed(const std::shared_ptr<CameraState> &cam) {
-        bool should_start = false;
+        std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+        if(cam->record_worker_started) {
+            return;
+        }
+        cam->record_worker_stop = false;
+        try {
+            cam->record_worker = std::thread([this, cam] { record_worker_loop(cam); });
+            cam->record_worker_started = true;
+        }
+        catch(...) {
+            cam->record_worker_stop = false;
+            cam->record_worker_started = false;
+            throw;
+        }
+    }
+
+    static void set_record_accepting(const std::shared_ptr<CameraState> &cam, bool accepting) {
+        if(!cam) {
+            return;
+        }
+        bool changed = false;
         {
             std::lock_guard<std::mutex> record_lock(cam->record_mutex);
-            if(!cam->record_worker_started) {
-                cam->record_worker_started = true;
-                cam->record_worker_stop = false;
-                should_start = true;
+            if(cam->record_accepting != accepting) {
+                cam->record_accepting = accepting;
+                cam->record_generation++;
+                changed = true;
             }
         }
-        if(should_start) {
-            cam->record_worker = std::thread([this, cam] { record_worker_loop(cam); });
+        if(changed) {
+            cam->record_cv.notify_all();
         }
+    }
+
+    static void set_record_finalizing(const std::shared_ptr<CameraState> &cam, bool finalizing) {
+        if(!cam) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+            cam->record_finalizing = finalizing;
+            if(!finalizing) {
+                return;
+            }
+        }
+        cam->record_cv.notify_all();
     }
 
     bool enqueue_record_job(const std::shared_ptr<CameraState> &cam, RecordJob job) {
@@ -4558,15 +5301,46 @@ public:
         if(job.queue_bytes > max_bytes) {
             cam->record_oversize_packets++;
         }
-        while(!cam->record_worker_stop && !cam->record_queue.empty() && cam->record_queue_bytes + job.queue_bytes > max_bytes) {
+        bool total_reserved = false;
+        while(!cam->record_worker_stop) {
+            if(!cam->record_accepting || cam->record_generation != job.record_generation) {
+                return false;
+            }
+            const bool camera_has_room = cam->record_queue.empty()
+                                         || (cam->record_queue_bytes <= max_bytes
+                                             && job.queue_bytes <= max_bytes - cam->record_queue_bytes);
+            if(camera_has_room) {
+                size_t total = total_record_queue_bytes_.load();
+                while(total <= config_.record_queue_total_max_bytes
+                      && job.queue_bytes <= config_.record_queue_total_max_bytes - total) {
+                    if(total_record_queue_bytes_.compare_exchange_weak(total, total + job.queue_bytes)) {
+                        total_reserved = true;
+                        break;
+                    }
+                }
+                if(total_reserved) {
+                    break;
+                }
+            }
             cam->record_backpressure_waits++;
             cam->record_cv.wait_for(record_lock, std::chrono::milliseconds(100));
         }
-        if(cam->record_worker_stop) {
+        if(cam->record_worker_stop || !cam->record_accepting || cam->record_generation != job.record_generation) {
+            if(total_reserved) {
+                total_record_queue_bytes_.fetch_sub(job.queue_bytes);
+            }
             return false;
         }
-        cam->record_queue_bytes += job.queue_bytes;
-        cam->record_queue.push_back(std::move(job));
+        const size_t queue_bytes = job.queue_bytes;
+        try {
+            cam->record_queue_bytes += queue_bytes;
+            cam->record_queue.push_back(std::move(job));
+        }
+        catch(...) {
+            cam->record_queue_bytes -= queue_bytes;
+            total_record_queue_bytes_.fetch_sub(queue_bytes);
+            throw;
+        }
         cam->record_enqueued_packets++;
         cam->record_queue_peak_bytes = std::max(cam->record_queue_peak_bytes, cam->record_queue_bytes);
         cam->record_queue_peak_packets = std::max(cam->record_queue_peak_packets, cam->record_queue.size());
@@ -4635,12 +5409,14 @@ public:
             task.cam->segment_active = segment_active;
             task.cam->segment_finalizing = false;
             task.cam->segment_dir = std::move(segment_dir);
+            set_record_finalizing(task.cam, false);
         }
         catch(const std::exception &e) {
             logger_.warn("recording segment finalize failed camera=" + task.cam->key + ": " + e.what());
             std::lock_guard<std::mutex> lock(mutex_);
             task.cam->segment_finalizing = false;
             task.cam->last_error = std::string("recording_finalize_failed: ") + e.what();
+            set_record_finalizing(task.cam, false);
         }
     }
 
@@ -4676,15 +5452,33 @@ public:
             return;
         }
         reap_segment_close_futures();
-        auto future = std::async(std::launch::async, [this, close_tasks = std::move(close_tasks), done_log_message]() mutable {
-            logger_.info(done_log_message + " started");
-            for(auto &task : close_tasks) {
+        auto tasks = std::make_shared<std::vector<SegmentCloseTask>>(std::move(close_tasks));
+        try {
+            auto future = std::async(std::launch::async, [this, tasks, done_log_message]() mutable {
+                logger_.info(done_log_message + " started");
+                for(auto &task : *tasks) {
+                    close_segment_task(task, done_log_message);
+                }
+                logger_.info(done_log_message);
+            });
+            try {
+                std::lock_guard<std::mutex> lock(segment_close_futures_mutex_);
+                segment_close_futures_.push_back(std::move(future));
+            }
+            catch(...) {
+                if(future.valid()) {
+                    future.get();
+                }
+                throw;
+            }
+        }
+        catch(const std::exception &e) {
+            logger_.warn(done_log_message + " async launch failed; finalizing synchronously: " + e.what());
+            for(auto &task : *tasks) {
                 close_segment_task(task, done_log_message);
             }
             logger_.info(done_log_message);
-        });
-        std::lock_guard<std::mutex> lock(segment_close_futures_mutex_);
-        segment_close_futures_.push_back(std::move(future));
+        }
     }
 
     void close_segments_sync(std::vector<SegmentCloseTask> close_tasks, const std::string &done_log_message) {
@@ -4711,6 +5505,12 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             refresh_camera_liveness_locked(now_us());
+            const bool any_finalizing = std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
+                return item.second->segment_finalizing || item.second->record_finalizing;
+            });
+            if(any_finalizing) {
+                return json_error("recording segments are still finalizing; retry after finalizing=false");
+            }
             const bool already_recording = recording_all_;
             if(!already_recording) {
                 recording_all_start_us_ = now_us();
@@ -4726,6 +5526,7 @@ public:
                     item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
                 }
                 item.second->recording_requested = true;
+                set_record_accepting(item.second, true);
                 if(control_needed && item.second->online && !item.second->status_endpoint.empty()) {
                     control_targets.push_back({item.second->sender_id, item.second->camera_id, item.second->status_endpoint});
                 }
@@ -4763,12 +5564,18 @@ public:
             recording_all_has_file_prefix_override_ = false;
             recording_all_file_prefix_.clear();
             for(auto &item : cameras_) {
-                const bool needs_close = item.second->recording_requested || item.second->segment_active || item.second->segment_finalizing;
+                const bool already_finalizing = item.second->segment_finalizing || item.second->record_finalizing;
+                const bool needs_close = item.second->recording_requested || item.second->segment_active;
                 item.second->recording_requested = false;
                 item.second->recording_start_us = 0;
                 item.second->recording_file_prefix.clear();
-                if(needs_close) {
+                set_record_accepting(item.second, false);
+                if(already_finalizing) {
+                    finalizing = true;
+                }
+                else if(needs_close) {
                     item.second->segment_finalizing = true;
+                    set_record_finalizing(item.second, true);
                     finalizing = true;
                     close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
                                            item.second->last_announce_live ? item.second->last_announce_json : ""});
@@ -4801,7 +5608,11 @@ public:
         std::vector<SenderControlTarget> control_targets;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            auto &cam = ensure_camera_locked(sender_id, camera_id);
+            auto cam_ptr = ensure_camera_ptr_locked(sender_id, camera_id);
+            auto &cam = *cam_ptr;
+            if(cam.segment_finalizing || cam.record_finalizing) {
+                return json_error("recording segment is still finalizing; retry after finalizing=false");
+            }
             const bool was_recording = recording_all_ || cam.recording_requested || cam.segment_active;
             if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
                 cam.recording_start_us = now_us();
@@ -4812,6 +5623,7 @@ public:
                 cam.recording_file_prefix = recording_all_ ? effective_file_prefix_locked(cam) : file_prefix_override.value_or(cam.camera_file_prefix);
             }
             cam.recording_requested = true;
+            set_record_accepting(cam_ptr, true);
             response_start_us = cam.recording_start_us;
             response_file_prefix = cam.recording_file_prefix;
             if(!was_recording && cam.online && !cam.status_endpoint.empty()) {
@@ -4843,21 +5655,25 @@ public:
             if(it == cameras_.end()) {
                 return "{\"ok\":false,\"error\":\"camera not found\"}";
             }
+            if(recording_all_) {
+                return json_error("cannot stop one camera while start-all recording is active; use stop-all");
+            }
             cam = it->second;
             announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             recording_start_us = cam->recording_start_us;
-            finalizing = recording_all_ || cam->recording_requested || cam->segment_active || cam->segment_finalizing;
+            if(cam->segment_finalizing || cam->record_finalizing) {
+                return "{\"ok\":true,\"finalizing\":true,\"finalized\":false}";
+            }
+            finalizing = cam->recording_requested || cam->segment_active;
             cam->recording_requested = false;
             if(finalizing) {
                 cam->segment_finalizing = true;
             }
-            if(recording_all_) {
-                cam->recording_start_us = recording_all_start_us_;
-                cam->recording_file_prefix = effective_file_prefix_locked(*cam);
-            }
-            else {
-                cam->recording_start_us = 0;
-                cam->recording_file_prefix.clear();
+            cam->recording_start_us = 0;
+            cam->recording_file_prefix.clear();
+            set_record_accepting(cam, false);
+            if(finalizing) {
+                set_record_finalizing(cam, true);
             }
         }
         logger_.info("recording stop requested: " + key);
@@ -4970,6 +5786,7 @@ public:
             return std::nullopt;
         }
         it->second->depth_preview_requested_until_us = now + kPreviewRequestKeepaliveUs;
+        std::lock_guard<std::mutex> preview_lock(it->second->preview_mutex);
         if(!is_recent_us(now, it->second->depth_preview_us, kPreviewFreshUs) || it->second->depth_preview_ppm.empty()) {
             return std::nullopt;
         }
@@ -4996,6 +5813,7 @@ public:
             }
             auto &cam = *it->second;
             cam.rgb_preview_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            std::lock_guard<std::mutex> preview_lock(cam.preview_mutex);
             if(!is_recent_us(request_us, cam.rgb_preview_us, kPreviewFreshUs) || !cam.rgb_decoder) {
                 keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(cam, request_us);
             }
@@ -5030,6 +5848,7 @@ public:
             if(target_changed) {
                 for(auto &item : cameras_) {
                     if(item.first != key) {
+                        std::lock_guard<std::mutex> preview_lock(item.second->preview_mutex);
                         cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
                         item.second->main_rgb_preview_requested_until_us = 0;
                         item.second->main_rgb_preview_us = 0;
@@ -5040,6 +5859,7 @@ public:
             }
             main_preview_key_ = key;
             it->second->main_rgb_preview_requested_until_us = request_us + kMainPreviewRequestKeepaliveUs;
+            std::lock_guard<std::mutex> preview_lock(it->second->preview_mutex);
             if(target_changed || !is_recent_us(request_us, it->second->main_rgb_preview_us, kPreviewFreshUs) || !it->second->main_rgb_decoder) {
                 keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
             }
@@ -5074,6 +5894,9 @@ public:
             auto &cam = *it->second;
             if(key == main_preview_key_) {
                 cam.main_rgb_preview_requested_until_us = request_us + kMainPreviewRequestKeepaliveUs;
+            }
+            std::lock_guard<std::mutex> preview_lock(cam.preview_mutex);
+            if(key == main_preview_key_) {
                 if(!is_recent_us(request_us, cam.main_rgb_preview_us, kPreviewFreshUs) || !cam.main_rgb_decoder) {
                     keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(cam, request_us);
                 }
@@ -5363,6 +6186,138 @@ public:
     }
 
 private:
+    bool required_listeners_ready() const {
+        return status_udp_ready_ && media_tcp_ready_ && admin_ready_
+               && (!config_.media_udp_enabled || media_udp_ready_)
+               && (!(config_.preview_enabled && config_.preview_udp_enabled) || preview_udp_ready_);
+    }
+
+    void start_decoder_cleanup_worker() {
+        std::lock_guard<std::mutex> lock(decoder_cleanup_mutex_);
+        if(decoder_cleanup_running_) {
+            return;
+        }
+        decoder_cleanup_running_ = true;
+        decoder_cleanup_thread_ = std::thread([this] {
+            for(;;) {
+                std::unique_ptr<RgbPreviewDecoder> decoder;
+                {
+                    std::unique_lock<std::mutex> cleanup_lock(decoder_cleanup_mutex_);
+                    decoder_cleanup_cv_.wait(cleanup_lock, [&] {
+                        return !decoder_cleanup_running_ || !decoder_cleanup_queue_.empty();
+                    });
+                    if(decoder_cleanup_queue_.empty()) {
+                        if(!decoder_cleanup_running_) {
+                            return;
+                        }
+                        continue;
+                    }
+                    decoder = std::move(decoder_cleanup_queue_.front());
+                    decoder_cleanup_queue_.pop_front();
+                }
+                decoder->stop();
+            }
+        });
+    }
+
+    void cleanup_rgb_decoder_async(std::unique_ptr<RgbPreviewDecoder> decoder) {
+        if(!decoder) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(decoder_cleanup_mutex_);
+            if(decoder_cleanup_running_) {
+                decoder_cleanup_queue_.push_back(std::move(decoder));
+                decoder_cleanup_cv_.notify_one();
+                return;
+            }
+        }
+        decoder->stop();
+    }
+
+    void stop_decoder_cleanup_worker() {
+        {
+            std::lock_guard<std::mutex> lock(decoder_cleanup_mutex_);
+            decoder_cleanup_running_ = false;
+        }
+        decoder_cleanup_cv_.notify_all();
+        if(decoder_cleanup_thread_.joinable()) {
+            decoder_cleanup_thread_.join();
+        }
+    }
+
+    void reap_completed_client_threads_locked() {
+        for(auto it = client_threads_.begin(); it != client_threads_.end();) {
+            if(it->done && it->done->load(std::memory_order_acquire)) {
+                if(it->thread.joinable()) {
+                    it->thread.join();
+                }
+                it = client_threads_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+
+    void launch_client_thread(int fd, const std::string &label, std::function<void()> task) {
+        std::lock_guard<std::mutex> lock(client_threads_mutex_);
+        reap_completed_client_threads_locked();
+        client_fds_.insert(fd);
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        try {
+            client_threads_.push_back(ClientThread{});
+            auto &client = client_threads_.back();
+            client.done = done;
+            client.thread = std::thread([this, fd, label, task = std::move(task), done]() mutable {
+                try {
+                    task();
+                }
+                catch(const std::exception &e) {
+                    logger_.warn(label + " client handler failed: " + e.what());
+                }
+                catch(...) {
+                    logger_.warn(label + " client handler failed: unknown exception");
+                }
+                {
+                    std::lock_guard<std::mutex> client_lock(client_threads_mutex_);
+                    client_fds_.erase(fd);
+                }
+                shutdown(fd, SHUT_RDWR);
+                close(fd);
+                done->store(true, std::memory_order_release);
+            });
+        }
+        catch(...) {
+            if(!client_threads_.empty() && !client_threads_.back().thread.joinable()) {
+                client_threads_.pop_back();
+            }
+            client_fds_.erase(fd);
+            close(fd);
+            throw;
+        }
+    }
+
+    void shutdown_client_sockets() {
+        std::lock_guard<std::mutex> lock(client_threads_mutex_);
+        for(int fd : client_fds_) {
+            shutdown(fd, SHUT_RDWR);
+        }
+    }
+
+    void join_client_threads() {
+        std::vector<ClientThread> threads;
+        {
+            std::lock_guard<std::mutex> lock(client_threads_mutex_);
+            threads.swap(client_threads_);
+        }
+        for(auto &client : threads) {
+            if(client.thread.joinable()) {
+                client.thread.join();
+            }
+        }
+    }
+
     static uint64_t camera_last_seen_us(const CameraState &cam) {
         return std::max(cam.last_status_us, cam.last_media_us);
     }
@@ -5385,7 +6340,36 @@ private:
         return static_cast<int64_t>((now - timestamp_us) / 1000ull);
     }
 
+    bool bind_sender_source_locked(const std::string &sender_id, const std::string &peer_endpoint, uint64_t now) {
+        const auto source_ip = socket_endpoint_ip(peer_endpoint);
+        if(source_ip.empty()) {
+            return false;
+        }
+        auto source = sender_source_ips_.find(sender_id);
+        if(source == sender_source_ips_.end()) {
+            if(sender_source_ips_.size() >= kMaxTrackedSenders) {
+                return false;
+            }
+            sender_source_ips_[sender_id] = source_ip;
+            return true;
+        }
+        if(source->second == source_ip) {
+            return true;
+        }
+        const bool old_source_still_live = std::any_of(cameras_.begin(), cameras_.end(), [&](const auto &item) {
+            return item.second->sender_id == sender_id
+                   && is_recent_us(now, camera_last_seen_us(*item.second), kCameraOnlineTimeoutUs);
+        });
+        if(old_source_still_live) {
+            return false;
+        }
+        logger_.warn("sender source IP changed after timeout sender_id=" + sender_id + " old=" + source->second + " new=" + source_ip);
+        source->second = source_ip;
+        return true;
+    }
+
     void clear_camera_live_cache_locked(CameraState &cam) {
+        std::lock_guard<std::mutex> preview_lock(cam.preview_mutex);
         cam.rgb_preview_prefix_h264.clear();
         cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
         cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
@@ -5438,8 +6422,6 @@ private:
 
             if(!cam.online && !cam.recording_requested && !cam.segment_active && !cam.record_worker_started &&
                is_older_than_us(now, last_seen, kOfflineCameraPurgeUs)) {
-                cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
-                cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
                 logger_.info("camera purged: " + cam.key);
                 it = cameras_.erase(it);
                 continue;
@@ -5481,7 +6463,13 @@ private:
                                                           bool mark_online = true) {
         const auto key = camera_key(sender_id, camera_id);
         auto it = cameras_.find(key);
+        if(it != cameras_.end() && (it->second->sender_id != sender_id || it->second->camera_id != camera_id)) {
+            throw std::runtime_error("camera key collision for " + key);
+        }
         if(it == cameras_.end()) {
+            if(cameras_.size() >= kMaxTrackedCameras) {
+                throw std::runtime_error("maximum tracked camera count reached");
+            }
             auto state = std::make_shared<CameraState>(sender_id, camera_id);
             const auto name = runtime_state_.camera_names.find(key);
             if(name != runtime_state_.camera_names.end()) {
@@ -5500,6 +6488,8 @@ private:
             if(recording_all_) {
                 state->recording_start_us = recording_all_start_us_;
                 state->recording_file_prefix = effective_file_prefix_locked(*state);
+                state->record_accepting = true;
+                state->record_generation = 1;
             }
             it = cameras_.emplace(key, std::move(state)).first;
             logger_.info("camera discovered: " + key);
@@ -5516,24 +6506,58 @@ private:
 
     void handle_status_message(const std::string &payload, const std::string &peer_endpoint) {
         const auto json = trim_copy(payload);
-        const auto type = json_string_field(json, "message_type").value_or("unknown");
-        const auto sender_id = json_string_field(json, "sender_id").value_or("");
-        const auto camera_id = json_string_field(json, "camera_id").value_or("");
+        Json::Value root;
+        if(!parse_json_object_strict(json, root)) {
+            logger_.warn("malformed status JSON ignored from=" + peer_endpoint);
+            return;
+        }
+        const auto type = json_string_value(root, "message_type", "unknown");
+        const auto sender_id = json_string_value(root, "sender_id");
+        const auto camera_id = json_string_value(root, "camera_id");
+        if(json_string_value(root, "protocol_version") != kProtocolVersion) {
+            logger_.warn("status protocol version mismatch ignored from=" + peer_endpoint);
+            return;
+        }
+        static const std::set<std::string> supported_types = {
+            "sender_hello", "heartbeat", "clock_sync_report", "camera_announce", "camera_offline", "event"};
+        if(supported_types.count(type) == 0) {
+            logger_.warn("unsupported status message ignored type=" + type + " from=" + peer_endpoint);
+            return;
+        }
         bool should_log_status = type != "heartbeat" && type != "sender_hello";
 
+        if(!is_valid_protocol_id(sender_id) || (!camera_id.empty() && !is_valid_protocol_id(camera_id))) {
+            logger_.warn("status packet with invalid sender_id/camera_id ignored from=" + peer_endpoint);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!bind_sender_source_locked(sender_id, peer_endpoint, now_us())) {
+                logger_.warn("status sender source mismatch ignored sender_id=" + sender_id + " from=" + peer_endpoint);
+                return;
+            }
+        }
+
         if(!sender_id.empty() && (type == "heartbeat" || type == "clock_sync_report")) {
-            const bool clock_valid = json_bool_field(json, "clock_sync_valid").value_or(false);
-            const auto offset_us = json_int64_field(json, "clock_offset_us").value_or(0);
-            const auto delay_us = json_int64_field(json, "clock_delay_us").value_or(0);
-            const auto drift_ppm = json_double_field(json, "clock_drift_ppm").value_or(0.0);
-            const auto last_sync_us = clock_valid ? json_uint64_field(json, "clock_last_sync_us").value_or(0) : 0;
-            clock_sync_manager_.update_from_sender_report(sender_id, offset_us, delay_us, drift_ppm, last_sync_us);
+            const bool clock_valid = root["clock_sync_valid"].isBool() && root["clock_sync_valid"].asBool();
+            const auto offset_us = json_int64_value(root, "clock_offset_us").value_or(0);
+            const auto delay_us = json_int64_value(root, "clock_delay_us").value_or(0);
+            const auto drift_ppm = json_double_value(root, "clock_drift_ppm").value_or(0.0);
+            const auto last_sync_us = clock_valid ? json_uint64_value(root, "clock_last_sync_us").value_or(0) : 0;
+            clock_sync_manager_.update_from_sender_report(sender_id, offset_us, delay_us, drift_ppm, last_sync_us,
+                                                          socket_endpoint_ip(peer_endpoint));
         }
 
         if(!sender_id.empty() && !camera_id.empty()) {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto key = camera_key(sender_id, camera_id);
-            const auto code = type == "event" ? json_string_field(json, "event_code").value_or("event") : "";
+            const auto existing = cameras_.find(key);
+            if(existing != cameras_.end()
+               && (existing->second->sender_id != sender_id || existing->second->camera_id != camera_id)) {
+                logger_.warn("status camera identity collision ignored key=" + key + " from=" + peer_endpoint);
+                return;
+            }
+            const auto code = type == "event" ? json_string_value(root, "event_code", "event") : "";
             const bool marks_online = type == "camera_announce" || code == "camera_connected" || code == "camera_reconnected";
             auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
             const auto received_us = now_us();
@@ -5572,10 +6596,10 @@ private:
                 cam.last_announce_live = false;
                 cam.last_announce_received_us = 0;
                 clear_camera_live_cache_locked(cam);
-                cam.last_error = json_string_field(json, "reason").value_or("camera_offline");
+                cam.last_error = json_string_value(root, "reason", "camera_offline");
             }
             else if(type == "event") {
-                const auto message = json_string_field(json, "message").value_or("");
+                const auto message = json_string_value(root, "message");
                 cam.last_error = code + (message.empty() ? "" : ": " + message);
                 if(code == "camera_unavailable" || code == "camera_disconnected") {
                     cam.online = false;
@@ -5643,7 +6667,15 @@ private:
         return true;
     }
 
-    void update_rgb_preview_locked(CameraState &cam, const MediaPacket &packet, bool has_idr, bool has_vcl) {
+    void update_rgb_preview_locked(CameraState &cam,
+                                   const MediaPacket &packet,
+                                   bool has_idr,
+                                   bool has_vcl,
+                                   bool thumbnail_requested,
+                                   bool thumbnail_expired,
+                                   bool main_requested,
+                                   bool main_expired,
+                                   bool is_main_camera) {
         if(!config_.preview_enabled) {
             cam.rgb_preview_prefix_h264.clear();
             cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
@@ -5683,24 +6715,22 @@ private:
             return;
         }
 
-        const auto now = now_us();
-        if(is_recent_us(now, cam.rgb_preview_requested_until_us, 0)) {
+        if(thumbnail_requested) {
             feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.rgb_decoder, kRgbPreviewWidth, kRgbPreviewFps, cam.key, cam.rgb_preview_width,
                                             cam.rgb_preview_height, cam.rgb_preview_us);
         }
-        else if(cam.rgb_decoder && is_older_than_us(now, cam.rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs)) {
+        else if(cam.rgb_decoder && thumbnail_expired) {
             cleanup_rgb_decoder_async(std::move(cam.rgb_decoder));
             cam.rgb_preview_width = 0;
             cam.rgb_preview_height = 0;
             cam.rgb_preview_us = 0;
         }
 
-        if(kEnableJpegMainPreview && cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0)) {
+        if(kEnableJpegMainPreview && is_main_camera && main_requested) {
             feed_rgb_preview_decoder_locked(cam, packet, has_idr, cam.main_rgb_decoder, kRgbMainPreviewWidth, kRgbMainPreviewFps, cam.key + ":main",
                                             cam.main_rgb_preview_width, cam.main_rgb_preview_height, cam.main_rgb_preview_us);
         }
-        else if(cam.main_rgb_decoder &&
-                (cam.key != main_preview_key_ || is_older_than_us(now, cam.main_rgb_preview_requested_until_us, kMainPreviewDecoderIdleStopUs))) {
+        else if(cam.main_rgb_decoder && (!is_main_camera || main_expired)) {
             cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
             cam.main_rgb_preview_width = 0;
             cam.main_rgb_preview_height = 0;
@@ -5708,24 +6738,34 @@ private:
         }
     }
 
-    void handle_media_packet(MediaPacket packet) {
-        if(packet.sender_id.empty() || packet.camera_id.empty()) {
-            logger_.warn("media packet with empty sender_id/camera_id ignored");
+    void handle_media_packet(MediaPacket packet, const std::string &peer_endpoint) {
+        if(!is_valid_protocol_id(packet.sender_id) || !is_valid_protocol_id(packet.camera_id)) {
+            logger_.warn("media packet with invalid sender_id/camera_id ignored");
             return;
         }
         const uint64_t packet_receive_us = now_us();
         packet.receiver_receive_timestamp_us = packet_receive_us;
         const auto clock_model = clock_sync_manager_.get_model(packet.sender_id);
-        packet.clock_sync_valid = clock_model.valid;
+        const bool sender_system_time_available = (packet.flags & has_system_timestamp) != 0u && packet.system_timestamp_us > 0;
+        packet.clock_sync_valid = false;
         packet.sender_offset_us = clock_model.offset_us;
         packet.sender_delay_us = clock_model.delay_us;
         packet.sender_drift_ppm = clock_model.drift_ppm;
         // The offset model maps sender system time to receiver time.
-        const uint64_t sender_clock_timestamp_us = packet.system_timestamp_us > 0 ? packet.system_timestamp_us : packet.timestamp_us;
-        const int64_t global_timestamp_us = clock_model.valid
-                                                ? static_cast<int64_t>(sender_clock_timestamp_us) + clock_model.offset_us
-                                                : static_cast<int64_t>(sender_clock_timestamp_us);
-        packet.global_timestamp_us = global_timestamp_us > 0 ? static_cast<uint64_t>(global_timestamp_us) : 0;
+        const uint64_t fallback_timestamp_us = sender_system_time_available ? packet.system_timestamp_us : packet.timestamp_us;
+        packet.global_timestamp_us = fallback_timestamp_us;
+        if(clock_model.valid && sender_system_time_available) {
+            const int64_t candidate = clock_sync_manager_.get_global_timestamp_us(packet.sender_id, packet.system_timestamp_us);
+            if(candidate > 0) {
+                const uint64_t candidate_us = static_cast<uint64_t>(candidate);
+                const uint64_t receiver_skew_us = candidate_us >= packet_receive_us ? candidate_us - packet_receive_us
+                                                                                     : packet_receive_us - candidate_us;
+                if(receiver_skew_us <= kMaxGlobalTimestampReceiverSkewUs) {
+                    packet.clock_sync_valid = true;
+                    packet.global_timestamp_us = candidate_us;
+                }
+            }
+        }
 
         const bool rgb_stream_packet = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::rgb_preview;
         const bool rgb_has_idr = rgb_stream_packet &&
@@ -5738,6 +6778,13 @@ private:
         double depth_preview_scale = fallback_depth_scale_for_camera(packet.sender_id, packet.camera_id);
         std::vector<SenderControlTarget> web_preview_control_targets;
         uint64_t web_preview_control_request_us = 0;
+        H264StreamBuffer *rgb_stream_update = nullptr;
+        bool update_rgb_preview = false;
+        bool thumbnail_preview_requested = false;
+        bool thumbnail_preview_expired = false;
+        bool main_preview_requested = false;
+        bool main_preview_expired = false;
+        bool is_main_preview_camera = false;
         bool should_record = false;
         std::string record_sender_id;
         std::string record_camera_id;
@@ -5745,9 +6792,20 @@ private:
         std::string record_storage_key;
         std::string record_file_prefix;
         std::string record_announce_json;
+        uint64_t record_generation = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
+            if(!bind_sender_source_locked(packet.sender_id, peer_endpoint, packet_receive_us)) {
+                logger_.warn("media sender source mismatch ignored sender_id=" + packet.sender_id + " from=" + peer_endpoint);
+                return;
+            }
+            try {
+                cam = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
+            }
+            catch(const std::exception &e) {
+                logger_.warn(std::string("media packet identity rejected: ") + e.what());
+                return;
+            }
             cam->last_media_us = packet_receive_us;
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
@@ -5755,17 +6813,17 @@ private:
                 if(config_.preview_enabled) {
                     const auto media_now = cam->last_media_us;
                     const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
-                    const bool jpeg_requested =
-                        is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0) ||
-                        (cam->key == main_preview_key_ && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0));
-                    const bool decoder_active = static_cast<bool>(cam->rgb_decoder) || static_cast<bool>(cam->main_rgb_decoder);
+                    const bool thumbnail_requested = is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0);
                     if(stream_requested) {
-                        update_h264_stream_buffer_locked(cam->rgb_stream, packet, rgb_has_idr, rgb_has_vcl);
+                        rgb_stream_update = &cam->rgb_stream;
                     }
                     const bool preview_stream_fresh = is_recent_us(media_now, cam->last_rgb_preview_packet_us, kPreviewFreshUs);
-                    if(!preview_stream_fresh && (jpeg_requested || decoder_active)) {
-                        update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
-                    }
+                    update_rgb_preview = !preview_stream_fresh;
+                    thumbnail_preview_requested = thumbnail_requested;
+                    thumbnail_preview_expired = is_older_than_us(media_now, cam->rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs);
+                    is_main_preview_camera = cam->key == main_preview_key_;
+                    main_preview_requested = is_main_preview_camera && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0);
+                    main_preview_expired = is_older_than_us(media_now, cam->main_rgb_preview_requested_until_us, kMainPreviewDecoderIdleStopUs);
                     if(auto target = maybe_web_rgb_preview_control_target_locked(*cam, media_now)) {
                         web_preview_control_request_us = media_now;
                         web_preview_control_targets.push_back(*target);
@@ -5777,19 +6835,16 @@ private:
                 if(config_.preview_enabled) {
                     const auto media_now = cam->last_media_us;
                     const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
-                    const bool jpeg_requested =
-                        is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0) ||
-                        (cam->key == main_preview_key_ && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0));
-                    const bool decoder_active = static_cast<bool>(cam->rgb_decoder) || static_cast<bool>(cam->main_rgb_decoder);
+                    const bool thumbnail_requested = is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0);
                     if(stream_requested) {
-                        update_h264_stream_buffer_locked(cam->rgb_preview_stream, packet, rgb_has_idr, rgb_has_vcl);
+                        rgb_stream_update = &cam->rgb_preview_stream;
                     }
-                    if(jpeg_requested || decoder_active) {
-                        update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl);
-                        cam->rgb_preview_width = packet.width;
-                        cam->rgb_preview_height = packet.height;
-                        cam->rgb_preview_us = cam->last_media_us;
-                    }
+                    update_rgb_preview = true;
+                    thumbnail_preview_requested = thumbnail_requested;
+                    thumbnail_preview_expired = is_older_than_us(media_now, cam->rgb_preview_requested_until_us, kPreviewDecoderIdleStopUs);
+                    is_main_preview_camera = cam->key == main_preview_key_;
+                    main_preview_requested = is_main_preview_camera && is_recent_us(media_now, cam->main_rgb_preview_requested_until_us, 0);
+                    main_preview_expired = is_older_than_us(media_now, cam->main_rgb_preview_requested_until_us, kMainPreviewDecoderIdleStopUs);
                     if(auto target = maybe_web_rgb_preview_control_target_locked(*cam, media_now)) {
                         web_preview_control_request_us = media_now;
                         web_preview_control_targets.push_back(*target);
@@ -5806,6 +6861,17 @@ private:
 
             should_record = (recording_all_ || cam->recording_requested) && packet.stream_type != StreamType::rgb_preview;
             if(should_record) {
+                {
+                    std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                    if(!cam->record_accepting) {
+                        should_record = false;
+                    }
+                    else {
+                        record_generation = cam->record_generation;
+                    }
+                }
+            }
+            if(should_record) {
                 if(cam->recording_start_us == 0) {
                     cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
                     cam->recording_file_prefix = effective_file_prefix_locked(*cam);
@@ -5817,6 +6883,15 @@ private:
                 record_file_prefix = cam->recording_file_prefix;
                 record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             }
+        }
+        if(rgb_stream_update) {
+            update_h264_stream_buffer_locked(*rgb_stream_update, packet, rgb_has_idr, rgb_has_vcl);
+        }
+        if(update_rgb_preview) {
+            std::lock_guard<std::mutex> preview_lock(cam->preview_mutex);
+            update_rgb_preview_locked(*cam, packet, rgb_has_idr, rgb_has_vcl,
+                                      thumbnail_preview_requested, thumbnail_preview_expired,
+                                      main_preview_requested, main_preview_expired, is_main_preview_camera);
         }
         if(!web_preview_control_targets.empty()) {
             send_web_rgb_preview_controls(web_preview_control_targets, web_preview_control_request_us);
@@ -5849,6 +6924,7 @@ private:
                 if(config_.preview_enabled && cam->online &&
                    is_recent_us(now_us(), cam->depth_preview_requested_until_us, 0) &&
                    cam->last_media_us >= depth_preview_media_us) {
+                    std::lock_guard<std::mutex> preview_lock(cam->preview_mutex);
                     cam->depth_preview_ppm = std::move(preview.bytes);
                     cam->depth_preview_width = preview.width;
                     cam->depth_preview_height = preview.height;
@@ -5866,6 +6942,7 @@ private:
             job.storage_key = std::move(record_storage_key);
             job.file_prefix = std::move(record_file_prefix);
             job.announce_json = std::move(record_announce_json);
+            job.record_generation = record_generation;
             enqueue_record_job(cam, std::move(job));
         }
     }
@@ -5929,16 +7006,38 @@ private:
                 ++it;
             }
         }
-        if(preview_udp_assemblies_.size() <= kPreviewUdpMaxAssemblies) {
-            return;
+        size_t allocated_bytes = 0;
+        for(const auto &item : preview_udp_assemblies_) {
+            allocated_bytes += item.second.bytes.size();
         }
-        while(preview_udp_assemblies_.size() > kPreviewUdpMaxAssemblies / 2) {
+        while(preview_udp_assemblies_.size() > kPreviewUdpMaxAssemblies || allocated_bytes > kPreviewUdpMaxAssemblyBytes) {
             auto oldest = preview_udp_assemblies_.begin();
             for(auto it = preview_udp_assemblies_.begin(); it != preview_udp_assemblies_.end(); ++it) {
                 if(it->second.updated_us < oldest->second.updated_us) {
                     oldest = it;
                 }
             }
+            allocated_bytes -= std::min(allocated_bytes, oldest->second.bytes.size());
+            account_incomplete_udp_assembly_locked(oldest->second, true);
+            preview_udp_assemblies_.erase(oldest);
+        }
+    }
+
+    void reserve_udp_assembly_budget_locked(size_t requested_bytes) {
+        size_t allocated_bytes = 0;
+        for(const auto &item : preview_udp_assemblies_) {
+            allocated_bytes += item.second.bytes.size();
+        }
+        while(!preview_udp_assemblies_.empty()
+              && (preview_udp_assemblies_.size() >= kPreviewUdpMaxAssemblies
+                  || allocated_bytes > kPreviewUdpMaxAssemblyBytes - requested_bytes)) {
+            auto oldest = preview_udp_assemblies_.begin();
+            for(auto it = preview_udp_assemblies_.begin(); it != preview_udp_assemblies_.end(); ++it) {
+                if(it->second.updated_us < oldest->second.updated_us) {
+                    oldest = it;
+                }
+            }
+            allocated_bytes -= std::min(allocated_bytes, oldest->second.bytes.size());
             account_incomplete_udp_assembly_locked(oldest->second, true);
             preview_udp_assemblies_.erase(oldest);
         }
@@ -5969,27 +7068,37 @@ private:
         const uint32_t total_size = read_le32(data + 16);
         const uint32_t chunk_offset = read_le32(data + 20);
         const uint16_t chunk_size = read_le16(data + 24);
-        if(chunk_count == 0 || chunk_index >= chunk_count || total_size == 0 || total_size > config_.max_payload_bytes
-           || chunk_offset > total_size || chunk_size > total_size - chunk_offset || size < header_size + chunk_size) {
+        const size_t udp_packet_limit = std::min(config_.max_payload_bytes, kPreviewUdpMaxPacketBytes);
+        if(chunk_count == 0 || chunk_count > kPreviewUdpMaxChunks || chunk_count > total_size || chunk_index >= chunk_count || total_size == 0
+           || total_size > udp_packet_limit
+           || chunk_size == 0 || chunk_offset > total_size || chunk_size > total_size - chunk_offset
+           || size != header_size + chunk_size) {
             record_udp_invalid_datagram(media_udp);
             return;
         }
 
         std::vector<uint8_t> completed;
         const uint64_t now = now_us();
-        const std::string key = peer_endpoint + "#" + std::to_string(sequence);
+        const std::string key = std::string(media_udp ? "media#" : "preview#") + peer_endpoint + "#" + std::to_string(sequence);
         {
             std::lock_guard<std::mutex> lock(preview_udp_mutex_);
             cleanup_preview_udp_assemblies_locked(now);
             auto &stats = udp_stats_locked(media_udp);
             stats.valid_fragments++;
-            auto &assembly = preview_udp_assemblies_[key];
+            auto existing = preview_udp_assemblies_.find(key);
+            if(existing == preview_udp_assemblies_.end()) {
+                reserve_udp_assembly_budget_locked(total_size);
+                existing = preview_udp_assemblies_.emplace(key, PreviewUdpAssembly{}).first;
+            }
+            auto &assembly = existing->second;
             if(assembly.bytes.size() != total_size || assembly.chunk_count != chunk_count || assembly.media_udp != media_udp) {
                 if(!assembly.bytes.empty()) {
                     account_incomplete_udp_assembly_locked(assembly, true);
                 }
                 assembly.bytes.assign(total_size, 0);
                 assembly.received.assign(chunk_count, 0);
+                assembly.chunk_offsets.assign(chunk_count, 0);
+                assembly.chunk_sizes.assign(chunk_count, 0);
                 assembly.received_count = 0;
                 assembly.total_size = total_size;
                 assembly.chunk_count = chunk_count;
@@ -6008,12 +7117,29 @@ private:
             if(!assembly.received[chunk_index]) {
                 std::memcpy(assembly.bytes.data() + chunk_offset, data + header_size, chunk_size);
                 assembly.received[chunk_index] = 1;
+                assembly.chunk_offsets[chunk_index] = chunk_offset;
+                assembly.chunk_sizes[chunk_index] = chunk_size;
                 assembly.received_count++;
             }
             else {
                 stats.duplicate_fragments++;
             }
             if(assembly.received_count == assembly.chunk_count) {
+                uint64_t expected_offset = 0;
+                bool layout_valid = true;
+                for(size_t i = 0; i < assembly.chunk_count; ++i) {
+                    if(assembly.chunk_offsets[i] != expected_offset || assembly.chunk_sizes[i] == 0) {
+                        layout_valid = false;
+                        break;
+                    }
+                    expected_offset += assembly.chunk_sizes[i];
+                }
+                if(!layout_valid || expected_offset != assembly.total_size) {
+                    stats.invalid_datagrams++;
+                    account_incomplete_udp_assembly_locked(assembly, true);
+                    preview_udp_assemblies_.erase(key);
+                    return;
+                }
                 stats.completed_packets++;
                 stats.completed_bytes += assembly.total_size;
                 completed = std::move(assembly.bytes);
@@ -6030,7 +7156,7 @@ private:
                                             : (packet.stream_type == StreamType::rgb_preview);
             record_udp_stream_result(media_udp, packet.stream_type, accepted);
             if(accepted) {
-                handle_media_packet(std::move(packet));
+                handle_media_packet(std::move(packet), peer_endpoint);
             }
         }
         catch(const std::exception &e) {
@@ -6043,6 +7169,7 @@ private:
     void udp_loop() {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if(fd < 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot create UDP socket: ") + std::strerror(errno));
             return;
         }
@@ -6052,10 +7179,12 @@ private:
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.status_bind_ip, config_.status_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot bind status UDP: ") + std::strerror(errno));
             close(fd);
             return;
         }
+        status_udp_ready_ = true;
 
         std::vector<char> buffer(65536);
         while(running_ && g_running) {
@@ -6070,7 +7199,12 @@ private:
                 continue;
             }
             buffer[static_cast<size_t>(got)] = '\0';
-            handle_status_message(std::string(buffer.data(), static_cast<size_t>(got)), socket_endpoint(peer));
+            try {
+                handle_status_message(std::string(buffer.data(), static_cast<size_t>(got)), socket_endpoint(peer));
+            }
+            catch(const std::exception &e) {
+                logger_.warn(std::string("status UDP packet rejected: ") + e.what());
+            }
         }
         close(fd);
     }
@@ -6078,6 +7212,7 @@ private:
     void preview_udp_loop() {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if(fd < 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot create preview UDP socket: ") + std::strerror(errno));
             return;
         }
@@ -6090,10 +7225,12 @@ private:
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.preview_udp_bind_ip, config_.preview_udp_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot bind preview UDP: ") + std::strerror(errno));
             close(fd);
             return;
         }
+        preview_udp_ready_ = true;
         logger_.info("preview UDP listening on " + config_.preview_udp_bind_ip + ":" + std::to_string(config_.preview_udp_port));
 
         std::vector<uint8_t> buffer(65536);
@@ -6108,7 +7245,12 @@ private:
                 logger_.warn(std::string("preview UDP recv failed: ") + std::strerror(errno));
                 continue;
             }
-            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), false);
+            try {
+                handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), false);
+            }
+            catch(const std::exception &e) {
+                logger_.warn(std::string("preview UDP datagram rejected: ") + e.what());
+            }
         }
         close(fd);
     }
@@ -6116,6 +7258,7 @@ private:
     void media_udp_loop() {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if(fd < 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot create media UDP socket: ") + std::strerror(errno));
             return;
         }
@@ -6128,10 +7271,12 @@ private:
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.media_udp_bind_ip, config_.media_udp_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot bind media UDP: ") + std::strerror(errno));
             close(fd);
             return;
         }
+        media_udp_ready_ = true;
         logger_.info("media UDP listening on " + config_.media_udp_bind_ip + ":" + std::to_string(config_.media_udp_port));
 
         std::vector<uint8_t> buffer(65536);
@@ -6146,14 +7291,19 @@ private:
                 logger_.warn(std::string("media UDP recv failed: ") + std::strerror(errno));
                 continue;
             }
-            handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), true);
+            try {
+                handle_fragmented_udp_datagram(buffer.data(), static_cast<size_t>(got), socket_endpoint(peer), true);
+            }
+            catch(const std::exception &e) {
+                logger_.warn(std::string("media UDP datagram rejected: ") + e.what());
+            }
         }
-        close(fd);
     }
 
     void tcp_loop() {
         const int fd = socket(AF_INET, SOCK_STREAM, 0);
         if(fd < 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot create TCP socket: ") + std::strerror(errno));
             return;
         }
@@ -6166,15 +7316,18 @@ private:
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.media_bind_ip, config_.media_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot bind media TCP: ") + std::strerror(errno));
             close(fd);
             return;
         }
         if(listen(fd, 16) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot listen media TCP: ") + std::strerror(errno));
             close(fd);
             return;
         }
+        media_tcp_ready_ = true;
 
         while(running_ && g_running) {
             sockaddr_in peer{};
@@ -6199,10 +7352,22 @@ private:
                 continue;
             }
             set_socket_timeout(client, kMediaClientSocketTimeoutSec);
-            std::thread([this, client, peer_endpoint] {
-                media_client_loop(client, peer_endpoint);
+            try {
+                launch_client_thread(client, "media", [this, client, peer_endpoint] {
+                    try {
+                        media_client_loop(client, peer_endpoint);
+                    }
+                    catch(...) {
+                        active_media_clients_.fetch_sub(1);
+                        throw;
+                    }
+                    active_media_clients_.fetch_sub(1);
+                });
+            }
+            catch(const std::exception &e) {
                 active_media_clients_.fetch_sub(1);
-            }).detach();
+                logger_.warn(std::string("cannot start media client thread: ") + e.what());
+            }
         }
         close(fd);
     }
@@ -6222,7 +7387,7 @@ private:
                 last_camera = packet.camera_id;
                 last_stream = stream_type_name(packet.stream_type);
                 last_frame_id = packet.frame_id;
-                handle_media_packet(std::move(packet));
+                handle_media_packet(std::move(packet), peer_endpoint);
             }
             catch(const std::exception &e) {
                 std::ostringstream msg;
@@ -6237,12 +7402,12 @@ private:
                 break;
             }
         }
-        close(fd);
     }
 
     void admin_loop() {
         const int fd = socket(AF_INET, SOCK_STREAM, 0);
         if(fd < 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot create admin socket: ") + std::strerror(errno));
             return;
         }
@@ -6252,15 +7417,18 @@ private:
         set_socket_timeout(fd, 1);
         const auto addr = make_bind_addr(config_.admin_bind_ip, config_.admin_port);
         if(bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot bind admin HTTP: ") + std::strerror(errno));
             close(fd);
             return;
         }
         if(listen(fd, 16) != 0) {
+            listener_start_failed_ = true;
             logger_.error(std::string("cannot listen admin HTTP: ") + std::strerror(errno));
             close(fd);
             return;
         }
+        admin_ready_ = true;
 
         while(running_ && g_running) {
             const int client = accept(fd, nullptr, nullptr);
@@ -6273,10 +7441,28 @@ private:
             }
             set_fd_cloexec(client);
             set_socket_timeout(client, 2);
-            std::thread([this, client] {
-                handle_admin_client(client);
+            const int previous_clients = active_admin_clients_.fetch_add(1);
+            if(previous_clients >= kMaxActiveAdminClients) {
+                active_admin_clients_.fetch_sub(1);
                 close(client);
-            }).detach();
+                continue;
+            }
+            try {
+                launch_client_thread(client, "admin", [this, client] {
+                    try {
+                        handle_admin_client(client);
+                    }
+                    catch(...) {
+                        active_admin_clients_.fetch_sub(1);
+                        throw;
+                    }
+                    active_admin_clients_.fetch_sub(1);
+                });
+            }
+            catch(const std::exception &e) {
+                active_admin_clients_.fetch_sub(1);
+                logger_.warn(std::string("cannot start admin client thread: ") + e.what());
+            }
         }
         close(fd);
     }
@@ -6309,7 +7495,13 @@ private:
         int status = 200;
         std::string content_type = "application/json";
         std::string body;
-        if(method == "GET" && path == "/api/status") {
+        const bool invalid_sender_id = args.count("sender_id") && !is_valid_protocol_id(args.at("sender_id"));
+        const bool invalid_camera_id = args.count("camera_id") && !is_valid_protocol_id(args.at("camera_id"));
+        if(invalid_sender_id || invalid_camera_id) {
+            status = 400;
+            body = "{\"ok\":false,\"error\":\"invalid sender_id/camera_id\"}";
+        }
+        else if(method == "GET" && path == "/api/status") {
             body = status_json();
         }
         else if(method == "GET" && path == "/api/config") {
@@ -6395,7 +7587,8 @@ private:
         }
 
         std::ostringstream response;
-        response << "HTTP/1.1 " << status << (status == 200 ? " OK" : " Not Found") << "\r\n";
+        const char *reason = status == 200 ? "OK" : (status == 400 ? "Bad Request" : "Not Found");
+        response << "HTTP/1.1 " << status << ' ' << reason << "\r\n";
         response << "Content-Type: " << content_type << "\r\n";
         response << "Cache-Control: no-store\r\n";
         response << "Content-Length: " << body.size() << "\r\n";
@@ -6409,8 +7602,17 @@ private:
     Logger logger_;
     RuntimeState runtime_state_;
     ClockSyncManager clock_sync_manager_;
+    std::atomic<bool> started_{false};
     std::atomic<bool> running_{false};
+    std::atomic<bool> listener_start_failed_{false};
+    std::atomic<bool> status_udp_ready_{false};
+    std::atomic<bool> media_tcp_ready_{false};
+    std::atomic<bool> media_udp_ready_{false};
+    std::atomic<bool> preview_udp_ready_{false};
+    std::atomic<bool> admin_ready_{false};
     std::atomic<int> active_media_clients_{0};
+    std::atomic<int> active_admin_clients_{0};
+    std::atomic<size_t> total_record_queue_bytes_{0};
     std::thread udp_thread_;
     std::thread media_udp_thread_;
     std::thread preview_udp_thread_;
@@ -6419,6 +7621,11 @@ private:
     std::mutex mutex_;
     std::mutex segment_close_futures_mutex_;
     std::mutex preview_udp_mutex_;
+    std::mutex client_threads_mutex_;
+    std::mutex decoder_cleanup_mutex_;
+    std::mutex status_cache_mutex_;
+    std::condition_variable decoder_cleanup_cv_;
+    bool decoder_cleanup_running_ = false;
     std::string main_preview_key_;
     bool recording_all_ = false;
     uint64_t recording_all_start_us_ = 0;
@@ -6426,9 +7633,15 @@ private:
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
     std::vector<std::future<void>> segment_close_futures_;
+    std::vector<ClientThread> client_threads_;
+    std::deque<std::unique_ptr<RgbPreviewDecoder>> decoder_cleanup_queue_;
+    std::set<int> client_fds_;
+    std::string status_cache_;
     std::unordered_map<std::string, PreviewUdpAssembly> preview_udp_assemblies_;
+    std::unordered_map<std::string, std::string> sender_source_ips_;
     UdpReassemblyStats media_udp_stats_;
     UdpReassemblyStats preview_udp_stats_;
+    std::thread decoder_cleanup_thread_;
 };
 
 struct Args {

@@ -2,6 +2,6 @@
 Type=Application
 Name=Stop Gemini Sender
 Comment=Stop Gemini wireless video sender
-Exec=/home/orangepi/Desktop/gemini_wireless_video_v3/05_tools/desktop_stop_sender.sh
+Exec=/bin/bash -lc "for d in \"\\$HOME/Desktop/wireless_video_delivery\" \"\\$HOME/Downloads/wireless_video_delivery\"; do if [ -x \"\\$d/05_tools/desktop_stop_sender.sh\" ]; then exec \"\\$d/05_tools/desktop_stop_sender.sh\"; fi; done; exit 1"
 Terminal=true
 Categories=Utility;
