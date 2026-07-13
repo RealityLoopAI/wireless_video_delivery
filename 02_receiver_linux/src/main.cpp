@@ -3118,9 +3118,11 @@ public:
         }
         directory_ = directory.string();
 
-        frames_csv_.open(file_path("frames.csv"), std::ios::out | std::ios::trunc);
+        // Publish frames.csv only after media finalization and RGB index merging complete.
+        // Consumers must never mistake the live packet journal for the final MP4 frame map.
+        frames_csv_.open(file_path("frames.csv.inprogress"), std::ios::out | std::ios::trunc);
         if(!frames_csv_) {
-            throw std::runtime_error("cannot open frames.csv: " + file_path("frames.csv").string());
+            throw std::runtime_error("cannot open frames.csv staging file: " + file_path("frames.csv.inprogress").string());
         }
         frames_csv_ << "local_time_us,stream_type,rgb_frame_id,rgb_timestamp_us,depth_frame_id,depth_timestamp_us,pair_id,pair_delta_ms,width,height,payload_size,"
                        "packet_system_timestamp_us,rgb_system_timestamp_us,depth_system_timestamp_us,frame_id,timestamp_us,frame_system_timestamp_us,"
@@ -3211,7 +3213,9 @@ public:
             logger.warn("depth ffmpeg exited with non-zero status (" + process_status_text(depth_rc) + ") for segment: " + directory_);
         }
         finalize_completed_media(cfg, logger);
+        publish_finalized_frames(logger);
         write_meta(cfg, sender_id, camera_id, announce_json, true);
+        write_recording_ready_marker(sender_id, camera_id);
         set_segment_mtime_to_start(logger);
         logger.info("recording segment closed: " + directory_);
         if(flush_error) {
@@ -3409,7 +3413,7 @@ public:
             frames_csv_ << ',' << (pair_id_valid ? 1 : 0);
             frames_csv_ << '\n';
             if(!frames_csv_) {
-                throw std::runtime_error("frames.csv write failed: " + file_path("frames.csv").string());
+                throw std::runtime_error("frames.csv staging write failed: " + file_path("frames.csv.inprogress").string());
             }
             if(++csv_rows_since_flush_ >= 30) {
                 frames_csv_.flush();
@@ -3577,7 +3581,8 @@ private:
     }
 
     void merge_rgb_recorded_frames_into_frames(Logger &logger) {
-        const auto frames_path = file_path("frames.csv");
+        const auto frames_path = file_path("frames.csv.inprogress");
+        const auto finalized_path = file_path("frames.csv.finalizing");
         const auto recorded_path = file_path("rgb_recorded_frames.csv");
         std::error_code ec;
         if(!std::filesystem::exists(frames_path, ec)) {
@@ -3628,7 +3633,7 @@ private:
                         + " first_key=\"" + first_duplicate_recorded_key + "\"");
         }
 
-        const auto tmp_path = frames_path.string() + ".merge_tmp";
+        const auto tmp_path = finalized_path.string() + ".merge_tmp";
         std::ofstream merged(tmp_path, std::ios::out | std::ios::trunc);
         if(!merged) {
             logger.warn("failed to create merged frames.csv tmp: " + tmp_path);
@@ -3688,9 +3693,9 @@ private:
             std::filesystem::remove(tmp_path, ec);
             return;
         }
-        std::filesystem::rename(tmp_path, frames_path, ec);
+        std::filesystem::rename(tmp_path, finalized_path, ec);
         if(ec) {
-            logger.warn("failed to replace frames.csv with merged RGB frame index version: " + ec.message());
+            logger.warn("failed to stage finalized frames.csv with merged RGB frame indexes: " + ec.message());
             std::filesystem::remove(tmp_path, ec);
             return;
         }
@@ -3699,6 +3704,55 @@ private:
             if(ec) {
                 logger.warn("failed to remove merged rgb_recorded_frames.csv: " + ec.message());
             }
+        }
+    }
+
+    void publish_finalized_frames(Logger &logger) {
+        const auto staging_path = file_path("frames.csv.inprogress");
+        const auto finalized_path = file_path("frames.csv.finalizing");
+        const auto published_path = file_path("frames.csv");
+        std::error_code ec;
+        if(!std::filesystem::exists(finalized_path, ec) || ec) {
+            throw std::runtime_error("finalized frames.csv is unavailable for publication: " + finalized_path.string());
+        }
+        std::filesystem::rename(finalized_path, published_path, ec);
+        if(ec) {
+            throw std::runtime_error("cannot publish finalized frames.csv: " + ec.message());
+        }
+        std::filesystem::remove(staging_path, ec);
+        if(ec) {
+            logger.warn("cannot remove frames.csv staging file after publication: " + ec.message());
+        }
+        logger.info("finalized frames.csv published atomically: " + published_path.string());
+    }
+
+    void write_recording_ready_marker(const std::string &sender_id, const std::string &camera_id) const {
+        const auto marker_path = file_path("recording_ready.json");
+        const auto temporary_path = file_path("recording_ready.json.tmp");
+        std::ofstream marker(temporary_path, std::ios::out | std::ios::trunc);
+        if(!marker) {
+            throw std::runtime_error("cannot create recording ready marker: " + temporary_path.string());
+        }
+        marker << "{\n";
+        marker << "  \"schema\": \"gwv3_recording_ready_v1\",\n";
+        marker << "  \"ready\": true,\n";
+        marker << "  \"finalized_at_us\": " << now_us() << ",\n";
+        marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
+        marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
+        marker << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
+        marker << "  \"meta_file\": \"" << json_escape(prefixed_filename(file_prefix_, "meta.json")) << "\",\n";
+        marker << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
+        marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
+        marker << "  \"rgb_frame_index_mode\": \"frames_csv_rgb_recorded_columns\"\n";
+        marker << "}\n";
+        marker.close();
+        if(!marker) {
+            throw std::runtime_error("cannot finish recording ready marker: " + temporary_path.string());
+        }
+        std::error_code ec;
+        std::filesystem::rename(temporary_path, marker_path, ec);
+        if(ec) {
+            throw std::runtime_error("cannot publish recording ready marker: " + ec.message());
         }
     }
 
@@ -4235,6 +4289,9 @@ private:
         meta << "  \"segment_start_us\": " << start_us_ << ",\n";
         meta << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
+        meta << "  \"frames_publish_state\": \"" << (closed ? "finalized" : "recording") << "\",\n";
+        meta << "  \"recording_ready_file\": \""
+             << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
         meta << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
         meta << "  \"rgb_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb_debug.h264")) << "\",\n";
         meta << "  \"rgb_frame_index_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
@@ -4271,6 +4328,10 @@ private:
         meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
         meta << "  \"camera_announce_raw\": \"" << json_escape(announce_json) << "\"\n";
         meta << "}\n";
+        meta.close();
+        if(!meta) {
+            throw std::runtime_error("cannot finish recording metadata: " + file_path("meta.json").string());
+        }
     }
 
     void write_calibration(const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, bool closed) const {

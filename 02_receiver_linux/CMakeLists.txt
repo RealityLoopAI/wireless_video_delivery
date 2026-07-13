@@ -44,4 +44,8 @@ if(BUILD_TESTING)
                 --source-root ${CMAKE_SOURCE_DIR}
     )
     set_tests_properties(receiver_hardening_integration PROPERTIES TIMEOUT 90)
+    add_test(
+        NAME sync_input_guard_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_sync_input_guard.py
+    )
 endif()

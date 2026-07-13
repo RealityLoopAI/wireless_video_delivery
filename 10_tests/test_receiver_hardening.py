@@ -256,8 +256,21 @@ def assert_recording_output(nas_root: Path) -> None:
     frames_files = list(nas_root.rglob("frames.csv"))
     assert frames_files, "frames.csv missing"
     header = frames_files[0].read_text(encoding="utf-8").splitlines()[0].split(",")
-    for field in ("global_timestamp_us", "pair_delta_us", "pair_delta_source", "pair_id_valid"):
+    for field in (
+        "global_timestamp_us",
+        "pair_delta_us",
+        "pair_delta_source",
+        "pair_id_valid",
+        "rgb_recorded",
+        "rgb_video_frame_index",
+    ):
         assert field in header, f"missing CSV field {field}"
+    assert not list(nas_root.rglob("*frames.csv.inprogress")), "live frames.csv staging file was not removed"
+    assert not list(nas_root.rglob("*frames.csv.finalizing")), "finalizing frames.csv was not published"
+    ready_files = list(nas_root.rglob("*recording_ready.json"))
+    assert ready_files, "recording ready marker missing"
+    for ready_file in ready_files:
+        assert json.loads(ready_file.read_text(encoding="utf-8")).get("ready") is True
 
 
 def run(args) -> None:
@@ -380,6 +393,17 @@ def run(args) -> None:
                     media.sendall(rgb_packet("test-sender", "cam01", 1, 64, 48, start_timestamp, h264_fixture))
                     for frame_id in range(70):
                         media.sendall(depth_packet("test-sender", "cam01", frame_id, 64, 48, start_timestamp + frame_id * 33333))
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    staging_files = list((temporary / "nas").rglob("*frames.csv.inprogress"))
+                    if staging_files:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("live frames.csv staging file was not created")
+                for staging_file in staging_files:
+                    published_file = Path(str(staging_file).removesuffix(".inprogress"))
+                    assert not published_file.exists(), "frames.csv became visible before recording finalization"
                 assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=20)[0] == 200
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
