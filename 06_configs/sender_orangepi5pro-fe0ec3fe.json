@@ -63,7 +63,6 @@
   "cameras": [
     {
       "camera_id": "cam01",
-      "serial_number": "AY2T7410103",
       "device_index": 0,
       "capture_backend": "orbbec_sdk",
       "device_model": "SV1301S_U3",

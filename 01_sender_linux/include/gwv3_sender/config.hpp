@@ -47,6 +47,7 @@ struct ColorControlsConfig {
 struct CameraConfig {
     std::string camera_id;
     std::string capture_backend = "orbbec_sdk";
+    std::string device_model;
     std::string serial_number;
     std::string uid;
     std::string video_device;

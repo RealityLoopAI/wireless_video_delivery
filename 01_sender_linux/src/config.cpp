@@ -435,6 +435,7 @@ AppConfig load_config(const std::string &path) {
             throw std::runtime_error("depth_camera_id is not supported; RGB and Depth are always sent with the same camera_id");
         }
         camera.capture_backend = optional_string(item, "capture_backend", camera.capture_backend);
+        camera.device_model = trim_copy(optional_string(item, "device_model", ""));
         camera.serial_number = optional_string(item, "serial_number", "");
         camera.uid = optional_string(item, "uid", "");
         camera.video_device = optional_string(item, "video_device", "");
@@ -586,6 +587,10 @@ void validate_config(const AppConfig &config) {
         }
         if(config.cameras.size() > 1 && camera.serial_number.empty() && camera.uid.empty()) {
             throw std::runtime_error("multi-camera configs require serial_number or uid for every camera: " + camera.camera_id);
+        }
+        if(camera.device_model.size() > 128
+           || std::any_of(camera.device_model.begin(), camera.device_model.end(), [](unsigned char ch) { return std::iscntrl(ch); })) {
+            throw std::runtime_error("camera.device_model must be at most 128 characters without control characters");
         }
         if(camera.frame_aggregate_mode != "disable" && camera.frame_aggregate_mode != "any_situation"
            && camera.frame_aggregate_mode != "full_frame_require" && camera.frame_aggregate_mode != "color_frame_require") {

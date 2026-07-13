@@ -2016,11 +2016,24 @@ std::string paired_rgb_serial_for_depth_uid(const std::string &uid) {
 
 struct OrbbecDeviceIdentity {
     uint32_t index = 0;
+    std::string model;
     std::string serial;
     std::string uid;
     std::string paired_rgb_serial;
     std::string connection_type;
 };
+
+std::string device_list_model_or_empty(ob::DeviceList &devices, uint32_t index) {
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    const char *model = devices.name(index);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    return model ? model : "";
+}
 
 std::vector<OrbbecDeviceIdentity> enumerate_orbbec_devices(ob::Context &ctx) {
     std::vector<OrbbecDeviceIdentity> identities;
@@ -2029,6 +2042,7 @@ std::vector<OrbbecDeviceIdentity> enumerate_orbbec_devices(ob::Context &ctx) {
     for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
         OrbbecDeviceIdentity identity;
         identity.index = i;
+        identity.model = device_list_model_or_empty(*devices, i);
         identity.serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
         identity.uid = devices->uid(i) ? devices->uid(i) : "";
         identity.paired_rgb_serial = paired_rgb_serial_for_depth_uid(identity.uid);
@@ -2039,11 +2053,17 @@ std::vector<OrbbecDeviceIdentity> enumerate_orbbec_devices(ob::Context &ctx) {
 }
 
 bool device_identity_matches_config(const OrbbecDeviceIdentity &identity, const CameraConfig &camera) {
+    if(!camera.device_model.empty() && identity.model != camera.device_model) {
+        return false;
+    }
     if(!camera.uid.empty() && usb_uid_matches(camera.uid, identity.uid)) {
         return true;
     }
     if(!camera.serial_number.empty()
        && (identity.serial == camera.serial_number || identity.paired_rgb_serial == camera.serial_number)) {
+        return true;
+    }
+    if(camera.uid.empty() && camera.serial_number.empty() && !camera.device_model.empty()) {
         return true;
     }
     if(camera.uid.empty() && camera.serial_number.empty() && camera.device_index >= 0
@@ -2055,7 +2075,7 @@ bool device_identity_matches_config(const OrbbecDeviceIdentity &identity, const 
 
 std::string device_identity_summary(const OrbbecDeviceIdentity &identity) {
     std::ostringstream oss;
-    oss << "index=" << identity.index << " serial=" << identity.serial << " uid=" << identity.uid
+    oss << "index=" << identity.index << " model=" << identity.model << " serial=" << identity.serial << " uid=" << identity.uid
         << " paired_rgb_serial=" << identity.paired_rgb_serial << " connection=" << identity.connection_type;
     return oss.str();
 }
@@ -2094,6 +2114,7 @@ std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devic
         if(i > 0) {
             oss << "; ";
         }
+        const std::string model = device_list_model_or_empty(*devices, i);
         const std::string uid = devices->uid(i) ? devices->uid(i) : "";
         const std::string paired_rgb_serial = paired_rgb_serial_for_depth_uid(uid);
         std::string info_serial;
@@ -2104,7 +2125,8 @@ std::string safe_device_list_string(const std::shared_ptr<ob::DeviceList> &devic
         }
         catch(...) {
         }
-        oss << "index=" << i << " serial=" << (devices->serialNumber(i) ? devices->serialNumber(i) : "")
+        oss << "index=" << i << " model=" << model
+            << " serial=" << (devices->serialNumber(i) ? devices->serialNumber(i) : "")
             << " info_serial=" << info_serial << " uid=" << uid << " paired_rgb_serial=" << paired_rgb_serial
             << " connection=" << (devices->connectionType(i) ? devices->connectionType(i) : "");
     }
@@ -2116,6 +2138,19 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
     if(devices->deviceCount() == 0) {
         throw std::runtime_error("no Orbbec device found");
     }
+    const auto model_at = [&devices](uint32_t index) {
+        return device_list_model_or_empty(*devices, index);
+    };
+    const auto require_model_match = [&](uint32_t index, const std::string &matched_by) {
+        const std::string actual_model = model_at(index);
+        if(!camera.device_model.empty() && actual_model != camera.device_model) {
+            std::ostringstream oss;
+            oss << "configured camera " << matched_by << " but device_model mismatched camera_id=" << camera.camera_id
+                << " configured_model=" << camera.device_model << " actual_model=" << actual_model
+                << " available=[" << safe_device_list_string(devices) << "]";
+            throw std::runtime_error(oss.str());
+        }
+    };
     if(!camera.uid.empty()) {
         for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
             const std::string serial = devices->serialNumber(i) ? devices->serialNumber(i) : "";
@@ -2124,6 +2159,7 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
             if(!usb_uid_matches(camera.uid, uid)) {
                 continue;
             }
+            require_model_match(i, "uid matched");
             auto device = devices->getDevice(i);
             const auto info_serial = device_info_serial_or_empty(device);
             if(camera.serial_number.empty() || serial_matches_device(camera.serial_number, serial, info_serial, paired_rgb_serial)) {
@@ -2154,6 +2190,7 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
             auto device = devices->getDevice(i);
             const auto info_serial = device_info_serial_or_empty(device);
             if(serial == camera.serial_number || info_serial == camera.serial_number) {
+                require_model_match(i, "serial_number matched");
                 return device;
             }
         }
@@ -2166,6 +2203,7 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
             if(paired_rgb_serial != camera.serial_number) {
                 continue;
             }
+            require_model_match(i, "paired RGB serial_number matched");
             if(paired_match) {
                 std::ostringstream oss;
                 oss << "configured serial_number is ambiguous camera_id=" << camera.camera_id
@@ -2185,6 +2223,36 @@ std::shared_ptr<ob::Device> select_device(ob::Context &ctx, const CameraConfig &
         std::ostringstream oss;
         oss << "configured camera not found camera_id=" << camera.camera_id << " serial=" << camera.serial_number;
         oss << " available=[" << safe_device_list_string(devices) << "]";
+        throw std::runtime_error(oss.str());
+    }
+
+    if(!camera.device_model.empty()) {
+        std::vector<uint32_t> model_matches;
+        for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
+            if(model_at(i) == camera.device_model) {
+                model_matches.push_back(i);
+            }
+        }
+        if(model_matches.empty()) {
+            std::ostringstream oss;
+            oss << "configured camera model not found camera_id=" << camera.camera_id
+                << " device_model=" << camera.device_model
+                << " available=[" << safe_device_list_string(devices) << "]";
+            throw std::runtime_error(oss.str());
+        }
+        if(model_matches.size() == 1) {
+            return devices->getDevice(model_matches.front());
+        }
+        if(camera.device_index >= 0) {
+            const auto configured_index = static_cast<uint32_t>(camera.device_index);
+            if(std::find(model_matches.begin(), model_matches.end(), configured_index) != model_matches.end()) {
+                return devices->getDevice(configured_index);
+            }
+        }
+        std::ostringstream oss;
+        oss << "configured camera model is ambiguous camera_id=" << camera.camera_id
+            << " device_model=" << camera.device_model << " device_index=" << camera.device_index
+            << " available=[" << safe_device_list_string(devices) << "]";
         throw std::runtime_error(oss.str());
     }
 
@@ -3387,6 +3455,7 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     device["serial_number"] = camera.device_serial;
     device["uid"] = camera.device_uid;
     device["paired_rgb_serial"] = camera.config.capture_backend == "v4l2" ? camera.device_serial : paired_rgb_serial_for_depth_uid(camera.device_uid);
+    device["configured_model"] = camera.config.device_model;
     device["configured_serial_number"] = camera.config.serial_number;
     device["configured_uid"] = camera.config.uid;
     device["firmware_version"] = "";
@@ -4154,6 +4223,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     auto device = select_device(*context, runtime.config);
     auto device_info = device->getDeviceInfo();
     const std::string device_serial = device_info->serialNumber() ? device_info->serialNumber() : "";
+    const std::string device_model = device_info->name() ? device_info->name() : "";
     const std::string device_uid = device_info->uid() ? device_info->uid() : "";
     const std::string device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
 
@@ -4259,6 +4329,8 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         << color_height << "@" << color_fps << " format=" << color_format
         << " depth=" << depth_width << "x" << depth_height << "@" << depth_fps
         << " format=" << depth_format
+        << " configured_model=" << runtime.config.device_model
+        << " device_model=" << device_model
         << " configured_serial=" << runtime.config.serial_number
         << " configured_uid=" << runtime.config.uid
         << " device_serial=" << device_serial

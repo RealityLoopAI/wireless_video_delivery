@@ -53,6 +53,10 @@ def run(args) -> None:
         invalid["cameras"][0]["rgb_profile"]["width"] = 10**9
         expect_invalid(args.sender, temporary, "oversized_profile", invalid)
 
+        invalid = copy.deepcopy(base)
+        invalid["cameras"][0]["device_model"] = "bad\nmodel"
+        expect_invalid(args.sender, temporary, "invalid_device_model", invalid)
+
         trailing = temporary / "trailing.json"
         trailing.write_text(json.dumps(base) + "{}", encoding="utf-8")
         result = validate(args.sender, trailing)
