@@ -170,6 +170,7 @@ values = {
     "SENDER_VERSION": cfg.get("sender_version", ""),
     "CAMERA_COUNT": len(cams),
     "CAMERA_ID": cam.get("camera_id", ""),
+    "CAMERA_MODEL": cam.get("device_model", ""),
     "CAMERA_SERIAL": cam.get("serial_number", ""),
     "RECEIVER_IP": receiver.get("ip", ""),
     "MEDIA_PORT": receiver.get("media_port", ""),
@@ -227,8 +228,9 @@ for item in cams:
         f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in controls_item.items()
     ) or "未配置"
     camera_summaries.append(
-        "{camera_id} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} aggregate={aggregate} color_controls={controls}".format(
+        "{camera_id} model={model} serial={serial} uid={uid} rgb={rgb_w}x{rgb_h}@{rgb_fps} {rgb_fmt}->{codec}/{encoder} depth={depth_w}x{depth_h}@{depth_fps} {depth_fmt} compression={compression} aggregate={aggregate} color_controls={controls}".format(
             camera_id=item.get("camera_id", ""),
+            model=item.get("device_model", "") or "未指定",
             serial=item.get("serial_number", "") or "未指定",
             uid=item.get("uid", "") or "未指定",
             rgb_w=rgb_item.get("width", ""),

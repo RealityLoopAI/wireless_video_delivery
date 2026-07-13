@@ -62,7 +62,6 @@
   "cameras": [
     {
       "camera_id": "cam01",
-      "serial_number": "CV2R46P00091",
       "capture_backend": "orbbec_sdk",
       "device_model": "Orbbec Gemini 305",
       "validate_rgb_mjpeg": true,
