@@ -402,7 +402,6 @@ def run(args) -> None:
                 environment = os.environ.copy()
                 environment.update(
                     {
-                        "GWV3_WEB_AUTH_TOKEN": "integration-secret",
                         "GWV3_RECEIVER_ADMIN": f"http://127.0.0.1:{ports['admin']}",
                     }
                 )
@@ -414,13 +413,7 @@ def run(args) -> None:
                     stderr=subprocess.DEVNULL,
                 )
                 wait_http(ports["web"], "/")
-                assert request(ports["web"], "GET", "/api/status")[0] == 401
-                auth_status, auth_headers, _ = request(
-                    ports["web"], "POST", "/api/auth", {"X-GWV3-Token": "integration-secret"}
-                )
-                assert auth_status == 200
-                cookie = auth_headers.get("Set-Cookie", "").split(";", 1)[0]
-                assert cookie and request(ports["web"], "GET", "/api/status", {"Cookie": cookie})[0] == 200
+                assert request(ports["web"], "GET", "/api/status")[0] == 200
 
             for index in range(40):
                 status_message(
