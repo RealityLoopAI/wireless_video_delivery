@@ -131,6 +131,32 @@ def generate_h264_fixture() -> bytes:
     return result.stdout
 
 
+def mp4_top_level_atoms(path: Path) -> set[bytes]:
+    atoms = set()
+    file_size = path.stat().st_size
+    offset = 0
+    with path.open("rb") as stream:
+        while offset + 8 <= file_size:
+            stream.seek(offset)
+            header = stream.read(8)
+            assert len(header) == 8, "truncated MP4 atom header"
+            atom_size = int.from_bytes(header[:4], "big")
+            atom_type = header[4:8]
+            header_size = 8
+            if atom_size == 1:
+                extended_size = stream.read(8)
+                assert len(extended_size) == 8, "truncated extended MP4 atom header"
+                atom_size = int.from_bytes(extended_size, "big")
+                header_size = 16
+            elif atom_size == 0:
+                atom_size = file_size - offset
+            assert header_size <= atom_size <= file_size - offset, "invalid MP4 atom size"
+            atoms.add(atom_type)
+            offset += atom_size
+    assert offset == file_size, "trailing bytes after final MP4 atom"
+    return atoms
+
+
 def compressed_depth_bomb_packet(sender_id: str, camera_id: str, timestamp_us: int) -> bytes:
     sender = sender_id.encode("ascii")
     camera = camera_id.encode("ascii")
@@ -228,6 +254,8 @@ def assert_recording_output(nas_root: Path) -> None:
         metadata = json.loads(probe.stdout)
         assert metadata.get("streams", [{}])[0].get("codec_name") == "h264"
         assert float(metadata.get("format", {}).get("duration", 0)) > 1.0
+        atoms = mp4_top_level_atoms(rgb_file)
+        assert {b"moov", b"moof", b"sidx", b"mfra"}.issubset(atoms), "fragmented MP4 completion index missing"
         seek = subprocess.run(
             ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(rgb_file), "-frames:v", "1", "-f", "null", "-"],
             stdout=subprocess.PIPE,

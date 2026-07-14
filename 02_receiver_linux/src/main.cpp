@@ -111,7 +111,7 @@ constexpr size_t kMaxCodecNameBytes = 32;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
-constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
+constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof+global_sidx";
 
 std::atomic<bool> g_running{true};
 
@@ -4037,50 +4037,96 @@ private:
                std::filesystem::file_size(path, ec) > 0 && !ec;
     }
 
-    static bool mp4_has_moov_atom(const std::filesystem::path &path) {
+    struct Mp4TopLevelAtoms {
+        bool moov = false;
+        bool moof = false;
+        bool sidx = false;
+        bool mfra = false;
+    };
+
+    static uint32_t read_be_u32(const unsigned char *data) {
+        return (static_cast<uint32_t>(data[0]) << 24u) | (static_cast<uint32_t>(data[1]) << 16u)
+               | (static_cast<uint32_t>(data[2]) << 8u) | static_cast<uint32_t>(data[3]);
+    }
+
+    static uint64_t read_be_u64(const unsigned char *data) {
+        uint64_t value = 0;
+        for(size_t i = 0; i < 8; ++i) {
+            value = (value << 8u) | static_cast<uint64_t>(data[i]);
+        }
+        return value;
+    }
+
+    static std::optional<Mp4TopLevelAtoms> inspect_mp4_top_level_atoms(const std::filesystem::path &path) {
+        std::error_code ec;
+        const auto file_size_value = std::filesystem::file_size(path, ec);
+        if(ec || file_size_value < 8 || file_size_value > std::numeric_limits<uint64_t>::max()) {
+            return std::nullopt;
+        }
+        const uint64_t file_size = static_cast<uint64_t>(file_size_value);
         std::ifstream input(path, std::ios::binary);
         if(!input) {
-            return false;
+            return std::nullopt;
         }
-        constexpr size_t kChunkSize = 64 * 1024;
-        constexpr size_t kMaxMoovScanBytes = 8ull * 1024ull * 1024ull;
-        std::vector<char> buffer(kChunkSize + 3);
-        size_t carry = 0;
-        size_t scanned = 0;
-        while(input) {
-            const size_t remaining = kMaxMoovScanBytes > scanned ? kMaxMoovScanBytes - scanned : 0;
-            if(remaining == 0) {
-                break;
+
+        Mp4TopLevelAtoms atoms;
+        uint64_t offset = 0;
+        while(offset + 8 <= file_size) {
+            if(offset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+                return std::nullopt;
             }
-            const size_t to_read = std::min(kChunkSize, remaining);
-            input.read(buffer.data() + static_cast<std::streamoff>(carry), static_cast<std::streamsize>(to_read));
-            const auto read_count = input.gcount();
-            const size_t read_size = static_cast<size_t>(std::max<std::streamsize>(read_count, 0));
-            scanned += read_size;
-            const size_t total = carry + read_size;
-            if(total >= 4) {
-                const char *begin = buffer.data();
-                const char *end = buffer.data() + total;
-                constexpr char kMoovAtom[] = {'m', 'o', 'o', 'v'};
-                if(std::search(begin, end, std::begin(kMoovAtom), std::end(kMoovAtom)) != end) {
-                    return true;
+            input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+            unsigned char header[16]{};
+            input.read(reinterpret_cast<char *>(header), 8);
+            if(input.gcount() != 8) {
+                return std::nullopt;
+            }
+
+            uint64_t atom_size = read_be_u32(header);
+            uint64_t header_size = 8;
+            if(atom_size == 1) {
+                input.read(reinterpret_cast<char *>(header + 8), 8);
+                if(input.gcount() != 8) {
+                    return std::nullopt;
                 }
-                carry = std::min<size_t>(3, total);
-                std::memmove(buffer.data(), end - static_cast<std::ptrdiff_t>(carry), carry);
+                atom_size = read_be_u64(header + 8);
+                header_size = 16;
             }
-            if(read_count <= 0) {
+            else if(atom_size == 0) {
+                atom_size = file_size - offset;
+            }
+            if(atom_size < header_size || atom_size > file_size - offset) {
+                return std::nullopt;
+            }
+
+            const std::string atom_type(reinterpret_cast<const char *>(header + 4), 4);
+            atoms.moov = atoms.moov || atom_type == "moov";
+            atoms.moof = atoms.moof || atom_type == "moof";
+            atoms.sidx = atoms.sidx || atom_type == "sidx";
+            atoms.mfra = atoms.mfra || atom_type == "mfra";
+            offset += atom_size;
+            if(offset == file_size) {
                 break;
             }
         }
-        return false;
+        if(offset != file_size) {
+            return std::nullopt;
+        }
+        return atoms;
     }
 
     static bool media_file_readable(const std::string &ffprobe_path, const std::filesystem::path &media_path) {
         if(!file_size_nonzero(media_path)) {
             return false;
         }
-        if(media_path.extension().string() == ".mp4" && !mp4_has_moov_atom(media_path)) {
-            return false;
+        if(media_path.extension().string() == ".mp4") {
+            const auto atoms = inspect_mp4_top_level_atoms(media_path);
+            if(!atoms || !atoms->moov) {
+                return false;
+            }
+            if(atoms->moof && (!atoms->sidx || !atoms->mfra)) {
+                return false;
+            }
         }
         return probe_media_duration_seconds(ffprobe_path, media_path).has_value();
     }

@@ -91,10 +91,11 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
-        "gain": 90,
-        "contrast": 48,
-        "saturation": 88,
-        "gamma": 90,
+        "gain": 0,
+        "brightness": 5,
+        "contrast": 28,
+        "saturation": 64,
+        "gamma": 150,
         "backlight_compensation": 0,
         "auto_white_balance": true
       }
