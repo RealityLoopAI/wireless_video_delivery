@@ -51,14 +51,15 @@ Orbbec RGB frame
   -> 发送端获取 RGB 帧号和时间戳
   -> H.264 编码
   -> TCP 媒体包 stream_type=rgb
-  -> 接收端写入 fragmented rgb.mp4
+  -> 接收端录制阶段写入 fragmented rgb.mp4
+  -> 正常停止后无损重封装并原子发布普通 rgb.mp4
   -> 接收端在 frames.csv 中记录对应关系
 ```
 
 当前设计要点：
 
 1. RGB 正式录制文件是 `rgb.mp4`。
-2. 接收端使用 fragmented MP4，降低异常收尾时缺 `moov` 导致整段不可读的风险。
+2. 录制阶段使用 fragmented MP4，降低异常中断时缺 `moov` 导致整段不可读的风险；正常停止后转换为普通 MP4，兼容 Windows 等播放器的进度条拖动。
 3. RGB 视频帧和 `frames.csv` 行之间不能靠“第 N 行等于第 N 帧”这种隐含假设。
 4. 当前正式做法是在 `frames.csv` 中写 `rgb_recorded` 和 `rgb_video_frame_index`。
 5. 下游读取 `rgb.mp4` 时，应通过 `rgb_video_frame_index` 找到对应的视频帧。
@@ -153,7 +154,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 | 文件 | 当前作用 |
 | --- | --- |
-| `rgb.mp4` | RGB 正式视频文件，H.264，fragmented MP4 |
+| `rgb.mp4` | RGB 正式视频文件，H.264；录制中为 fragmented MP4，正常收尾后原子替换为普通可拖动 MP4 |
 | `depth.mkv` | Depth 正式文件，FFV1 封装 `uint16` 深度帧 |
 | `frames.csv` | 每个媒体包和录制帧的帧号、时间戳、诊断字段和 RGB 视频帧索引 |
 | `meta.json` | 录制段元信息、实际帧率、文件名、帧数和状态 |

@@ -255,7 +255,7 @@ def assert_recording_output(nas_root: Path) -> None:
         assert metadata.get("streams", [{}])[0].get("codec_name") == "h264"
         assert float(metadata.get("format", {}).get("duration", 0)) > 1.0
         atoms = mp4_top_level_atoms(rgb_file)
-        assert {b"moov", b"moof", b"sidx", b"mfra"}.issubset(atoms), "fragmented MP4 completion index missing"
+        assert b"moov" in atoms and b"moof" not in atoms, "finalized RGB must be a conventional MP4"
         seek = subprocess.run(
             ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(rgb_file), "-frames:v", "1", "-f", "null", "-"],
             stdout=subprocess.PIPE,
@@ -265,7 +265,7 @@ def assert_recording_output(nas_root: Path) -> None:
         )
         assert seek.returncode == 0, "finalized rgb.mp4 is not seekable"
         assert not (rgb_file.parent / "rgb_debug.h264").exists(), "validated RGB recovery sidecar was not removed"
-        assert not list(rgb_file.parent.glob("rgb_finalized*.mp4")), "realtime faststart temporary file must not be created"
+        assert not list(rgb_file.parent.glob("*rgb_seekable.tmp.mp4")), "RGB compatibility temporary file was not removed"
 
     depth_files = list(nas_root.rglob("depth.mkv"))
     assert depth_files, "depth.mkv was not finalized"

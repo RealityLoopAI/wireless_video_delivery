@@ -1448,20 +1448,26 @@ public:
         if(writer_.joinable()) {
             writer_.join();
         }
-        if(reader_.joinable()) {
-            reader_.join();
-        }
         if(pid > 0) {
             int status = 0;
             for(int i = 0; i < 10; ++i) {
                 const pid_t done = waitpid(pid, &status, WNOHANG);
                 if(done == pid || (done < 0 && errno == ECHILD)) {
-                    return;
+                    pid = -1;
+                    break;
                 }
                 usleep(50 * 1000);
             }
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+            if(pid > 0) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+            }
+        }
+        // A blocking read on a pipe is not guaranteed to be interrupted when
+        // another thread closes its descriptor. Reap the child first so the
+        // writer end closes and the reader observes EOF before it is joined.
+        if(reader_.joinable()) {
+            reader_.join();
         }
     }
 
@@ -4178,6 +4184,59 @@ private:
         return true;
     }
 
+    bool finalize_rgb_player_compatible(const Config &cfg, const std::string &ffprobe_path, Logger &logger) const {
+        const auto destination = file_path("rgb.mp4");
+        const auto source_atoms = inspect_mp4_top_level_atoms(destination);
+        if(!source_atoms || !source_atoms->moov) {
+            return false;
+        }
+        if(!source_atoms->moof) {
+            return true;
+        }
+
+        const auto source_duration = probe_media_duration_seconds(ffprobe_path, destination);
+        const auto temporary = file_path("rgb_seekable.tmp.mp4");
+        const auto log_path = file_path("ffmpeg.log");
+        std::error_code ec;
+        std::filesystem::remove(temporary, ec);
+
+        // Keep the crash-tolerant fragmented MP4 in place until a conventional
+        // MP4 has been completely written and validated in the same directory.
+        const std::string command = shell_quote(cfg.ffmpeg_path)
+                                    + " -hide_banner -loglevel warning -y -i " + shell_quote(destination.string())
+                                    + " -map 0:v:0 -c:v copy " + shell_quote(temporary.string())
+                                    + " 2>>" + shell_quote(log_path.string());
+        const int rc = std::system(command.c_str());
+        if(rc != 0) {
+            append_retime_log(log_path, "rgb player-compatible remux failed: " + process_status_text(rc));
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+
+        const auto temporary_atoms = inspect_mp4_top_level_atoms(temporary);
+        const auto temporary_duration = probe_media_duration_seconds(ffprobe_path, temporary);
+        bool valid = temporary_atoms && temporary_atoms->moov && !temporary_atoms->moof && temporary_duration.has_value();
+        if(valid && source_duration) {
+            const double tolerance = std::max(0.25, *source_duration * 0.001);
+            valid = std::fabs(*temporary_duration - *source_duration) <= tolerance;
+        }
+        if(!valid) {
+            append_retime_log(log_path, "rgb player-compatible remux validation failed");
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+
+        std::filesystem::rename(temporary, destination, ec);
+        if(ec) {
+            append_retime_log(log_path, "rgb player-compatible publish failed: " + ec.message());
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+        append_retime_log(log_path, "rgb player-compatible MP4 published atomically");
+        logger.info("RGB recording finalized as conventional seekable MP4: " + destination.string());
+        return true;
+    }
+
     bool rebuild_rgb_from_recovery(const Config &cfg, const std::string &ffprobe_path, Logger &logger) const {
         if(!file_size_nonzero(rgb_debug_path_)) {
             return false;
@@ -4283,6 +4342,12 @@ private:
         if((rgb_pipe_failed_ || !rgb_ok) && rebuild_rgb_from_recovery(cfg, ffprobe_path, logger)) {
             rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_recovered");
         }
+        if(rgb_ok) {
+            rgb_ok = finalize_rgb_player_compatible(cfg, ffprobe_path, logger);
+            if(rgb_ok) {
+                rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_compatible");
+            }
+        }
         if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
             std::error_code ec;
             if(std::filesystem::exists(rgb_debug_path_, ec)) {
@@ -4302,8 +4367,11 @@ private:
         finalize_depth_parts(cfg, ffprobe_path, logger);
         validate_media(file_path("depth.mkv"), "depth");
         if(checked_any_media) {
-            append_retime_log(log_path, "realtime remux disabled; media kept in recorder output format");
+            append_retime_log(log_path, "recording media finalization completed");
             set_file_mtime_to_start(log_path, start_us_);
+        }
+        if(!rgb_ok && (file_size_nonzero(file_path("rgb.mp4")) || file_size_nonzero(rgb_debug_path_))) {
+            throw std::runtime_error("RGB recording could not be finalized as a player-compatible MP4: " + directory_);
         }
     }
 
