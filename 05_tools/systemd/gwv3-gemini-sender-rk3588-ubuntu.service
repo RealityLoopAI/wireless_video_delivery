@@ -1,0 +1,22 @@
+[Unit]
+Description=GWV3 Gemini RGBD Sender (rk3588-ubuntu)
+Wants=network-online.target
+After=network-online.target chrony.service rk3588-usb-prepare.service
+
+[Service]
+Type=simple
+User=linaro
+Group=linaro
+SupplementaryGroups=video render
+WorkingDirectory=/home/linaro/桌面/wireless_video_delivery
+Environment=HOME=/home/linaro
+Environment=GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES=30
+ExecStartPre=+/home/linaro/桌面/wireless_video_delivery/05_tools/prepare_rk3588_usb.sh
+ExecStart=/home/linaro/桌面/wireless_video_delivery/05_tools/sender_watchdog.sh /home/linaro/桌面/wireless_video_delivery/06_configs/sender_rk3588-ubuntu_one_camera.json no-local-preview
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
