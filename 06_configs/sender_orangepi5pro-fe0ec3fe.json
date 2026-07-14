@@ -92,7 +92,7 @@
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
-        "gain": 60,
+        "gain": 80,
         "auto_white_balance": true,
         "power_line_frequency": 1
       }
