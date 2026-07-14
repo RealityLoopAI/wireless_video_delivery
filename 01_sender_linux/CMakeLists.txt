@@ -23,6 +23,27 @@ set(ORBBEC_SDK_ROOT "${_ORBBEC_SDK_DEFAULT_ROOT}" CACHE PATH "Orbbec SDK root")
 
 set(ORBBEC_SDK_INCLUDE_DIR "${ORBBEC_SDK_ROOT}/include")
 set(ORBBEC_SDK_LIBRARY_DIR "${ORBBEC_SDK_ROOT}/lib")
+
+include(CheckCXXSourceCompiles)
+set(_GWV3_REQUIRED_INCLUDES_SAVED "${CMAKE_REQUIRED_INCLUDES}")
+set(CMAKE_REQUIRED_INCLUDES "${ORBBEC_SDK_INCLUDE_DIR}")
+unset(GWV3_ORBBEC_HAS_COLOR_AE_MAX_GAIN CACHE)
+unset(GWV3_ORBBEC_HAS_COLOR_MAXIMAL_GAIN CACHE)
+check_cxx_source_compiles(
+    "#include <libobsensor/ObSensor.hpp>\nint main() { return static_cast<int>(OB_PROP_COLOR_AE_MAX_GAIN_INT); }"
+    GWV3_ORBBEC_HAS_COLOR_AE_MAX_GAIN)
+check_cxx_source_compiles(
+    "#include <libobsensor/ObSensor.hpp>\nint main() { return static_cast<int>(OB_PROP_COLOR_MAXIMAL_GAIN_INT); }"
+    GWV3_ORBBEC_HAS_COLOR_MAXIMAL_GAIN)
+set(CMAKE_REQUIRED_INCLUDES "${_GWV3_REQUIRED_INCLUDES_SAVED}")
+if(GWV3_ORBBEC_HAS_COLOR_AE_MAX_GAIN)
+    set(GWV3_ORBBEC_MAX_GAIN_PROPERTY OB_PROP_COLOR_AE_MAX_GAIN_INT)
+elseif(GWV3_ORBBEC_HAS_COLOR_MAXIMAL_GAIN)
+    set(GWV3_ORBBEC_MAX_GAIN_PROPERTY OB_PROP_COLOR_MAXIMAL_GAIN_INT)
+else()
+    message(FATAL_ERROR "Orbbec SDK does not expose a supported color AE max gain property")
+endif()
+
 set(ORBBEC_SDK_CONFIG "")
 foreach(_ORBBEC_SDK_CONFIG_CANDIDATE
         "${CMAKE_SOURCE_DIR}/OrbbecSDKConfig_v1.0.xml"
@@ -79,6 +100,10 @@ target_compile_options(gemini_sender PRIVATE
     -Wpedantic
 )
 
+target_compile_definitions(gemini_sender PRIVATE
+    GWV3_ORBBEC_MAX_GAIN_PROPERTY=${GWV3_ORBBEC_MAX_GAIN_PROPERTY}
+)
+
 set_target_properties(gemini_sender PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_RPATH "${ORBBEC_SDK_LIBRARY_DIR}"
@@ -113,6 +138,10 @@ target_compile_options(orbbec_depth_probe PRIVATE
     -Wall
     -Wextra
     -Wpedantic
+)
+
+target_compile_definitions(orbbec_depth_probe PRIVATE
+    GWV3_ORBBEC_MAX_GAIN_PROPERTY=${GWV3_ORBBEC_MAX_GAIN_PROPERTY}
 )
 
 set_target_properties(orbbec_depth_probe PROPERTIES

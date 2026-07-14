@@ -41,6 +41,7 @@
 #include <jpeglib.h>
 #include <libobsensor/ObSensor.hpp>
 #include <libobsensor/hpp/Error.hpp>
+#include <libobsensor/h/Version.h>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -278,6 +279,7 @@ struct CameraRuntime {
     bool hardware_encoder = false;
     uint32_t reconnect_attempts = 0;
     uint32_t disconnects = 0;
+    std::deque<std::chrono::steady_clock::time_point> recent_disconnects;
     uint64_t rgb_frames = 0;
     uint64_t depth_frames = 0;
     bool rgb_waiting_for_keyframe_after_transport_loss = false;
@@ -694,28 +696,6 @@ int32_t diagnostic_i32_or_unknown(int64_t value) {
     return static_cast<int32_t>(value);
 }
 
-int64_t bool_property_or(const std::shared_ptr<ob::Device> &device, OBPropertyID property_id, int64_t fallback = -1) {
-    try {
-        if(device && device->isPropertySupported(property_id, OB_PERMISSION_READ)) {
-            return device->getBoolProperty(property_id) ? 1 : 0;
-        }
-    }
-    catch(const std::exception &) {
-    }
-    return fallback;
-}
-
-int64_t int_property_or(const std::shared_ptr<ob::Device> &device, OBPropertyID property_id, int64_t fallback = -1) {
-    try {
-        if(device && device->isPropertySupported(property_id, OB_PERMISSION_READ)) {
-            return device->getIntProperty(property_id);
-        }
-    }
-    catch(const std::exception &) {
-    }
-    return fallback;
-}
-
 std::string bool_text(bool value) {
     return value ? "true" : "false";
 }
@@ -796,7 +776,7 @@ void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     set_int_property_if_configured(camera, logger, "auto_exposure_priority", OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT,
                                    controls.auto_exposure_priority);
     set_int_property_if_configured(camera, logger, "max_exposure", OB_PROP_COLOR_AE_MAX_EXPOSURE_INT, controls.max_exposure);
-    set_int_property_if_configured(camera, logger, "max_gain", OB_PROP_COLOR_MAXIMAL_GAIN_INT, controls.max_gain);
+    set_int_property_if_configured(camera, logger, "max_gain", GWV3_ORBBEC_MAX_GAIN_PROPERTY, controls.max_gain);
     set_int_property_if_configured(camera, logger, "power_line_frequency", OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT,
                                    controls.power_line_frequency);
     set_int_property_if_configured(camera, logger, "exposure", OB_PROP_COLOR_EXPOSURE_INT, controls.exposure);
@@ -853,16 +833,6 @@ RgbFrameDiagnostics rgb_frame_diagnostics(CameraRuntime &camera, const std::shar
     return diagnostics;
 }
 
-void update_color_properties(CameraRuntime &camera) {
-    if(!camera.device) {
-        return;
-    }
-    camera.live.color_auto_exposure = bool_property_or(camera.device, OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, camera.live.color_auto_exposure);
-    camera.live.color_exposure = int_property_or(camera.device, OB_PROP_COLOR_EXPOSURE_INT, camera.live.color_exposure);
-    camera.live.color_gain = int_property_or(camera.device, OB_PROP_COLOR_GAIN_INT, camera.live.color_gain);
-    camera.live.color_exposure_priority = int_property_or(camera.device, OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT, camera.live.color_exposure_priority);
-}
-
 int media_outage_restart_samples() {
     const char *value = std::getenv("GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES");
     if(value == nullptr || value[0] == '\0') {
@@ -916,6 +886,32 @@ int capture_stall_reconnect_cooldown_seconds() {
     }
     catch(const std::exception &) {
         return 30;
+    }
+}
+
+int camera_flap_restart_events() {
+    const char *value = std::getenv("GEMINI_SENDER_CAMERA_FLAP_RESTART_EVENTS");
+    if(value == nullptr || value[0] == '\0') {
+        return 3;
+    }
+    try {
+        return std::max(0, std::stoi(value));
+    }
+    catch(const std::exception &) {
+        return 3;
+    }
+}
+
+int camera_flap_window_seconds() {
+    const char *value = std::getenv("GEMINI_SENDER_CAMERA_FLAP_WINDOW_SECONDS");
+    if(value == nullptr || value[0] == '\0') {
+        return 300;
+    }
+    try {
+        return std::max(10, std::stoi(value));
+    }
+    catch(const std::exception &) {
+        return 300;
     }
 }
 
@@ -1098,9 +1094,6 @@ std::optional<std::string> capture_stream_stall_reason(CameraRuntime &camera, st
 
 void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(camera.mutex);
-    if(camera.online) {
-        update_color_properties(camera);
-    }
     auto &perf = camera.perf;
     const double seconds = std::chrono::duration<double>(now - perf.interval_started).count();
     if(seconds <= 0.0) {
@@ -1250,6 +1243,9 @@ Json::Value base_message(const AppConfig &config, const std::string &type) {
     msg["build_commit"] = GWV3_GIT_COMMIT;
     msg["build_dirty"] = GWV3_GIT_DIRTY != 0;
     msg["build_source_hash"] = GWV3_SOURCE_HASH;
+    msg["orbbec_sdk_version"] = std::to_string(ob_get_major_version()) + "." + std::to_string(ob_get_minor_version()) + "."
+                                   + std::to_string(ob_get_patch_version());
+    msg["orbbec_sdk_version_number"] = ob_get_version();
     msg["timestamp_us"] = Json::UInt64(now_us());
     return msg;
 }
@@ -4189,9 +4185,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.next_rgb_timing_warning = now;
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
-        if(runtime.next_capture_stall_reconnect < now) {
-            runtime.next_capture_stall_reconnect = now;
-        }
+        runtime.next_capture_stall_reconnect = now;
         runtime.capture_stall_samples = 0;
         runtime.last_media_warning.clear();
         runtime.rgb_sent_timing_seen = false;
@@ -4311,9 +4305,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.next_rgb_timing_warning = now;
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
-        if(runtime.next_capture_stall_reconnect < now) {
-            runtime.next_capture_stall_reconnect = now;
-        }
+        runtime.next_capture_stall_reconnect = now;
         runtime.capture_stall_samples = 0;
         runtime.last_media_warning.clear();
         runtime.rgb_sent_timing_seen = false;
@@ -4407,13 +4399,32 @@ template <typename Sender>
 void mark_camera_disconnected(const AppConfig &config, CameraRuntime &camera, Sender &transport, Logger &logger,
                               std::mutex &transport_mutex, const std::string &error) {
     const bool should_reconnect = camera_reconnect_enabled(camera);
+    const auto disconnected_at = std::chrono::steady_clock::now();
+    const int flap_restart_events = camera_flap_restart_events();
+    const int flap_window_seconds = camera_flap_window_seconds();
+    size_t recent_disconnects = 0;
+    bool restart_for_flapping = false;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
         camera.disconnects++;
         camera.reconnect_attempts = 0;
         camera.last_error = error;
+        const auto oldest_allowed = disconnected_at - std::chrono::seconds(flap_window_seconds);
+        while(!camera.recent_disconnects.empty() && camera.recent_disconnects.front() < oldest_allowed) {
+            camera.recent_disconnects.pop_front();
+        }
+        camera.recent_disconnects.push_back(disconnected_at);
+        recent_disconnects = camera.recent_disconnects.size();
+        restart_for_flapping = flap_restart_events > 0 && recent_disconnects >= static_cast<size_t>(flap_restart_events);
     }
     logger.error("camera disconnected camera_id=" + camera.config.camera_id + " error=" + error);
+    if(restart_for_flapping) {
+        logger.error("camera flap guard exiting sender for watchdog restart camera_id=" + camera.config.camera_id
+                     + " events=" + std::to_string(recent_disconnects)
+                     + " threshold=" + std::to_string(flap_restart_events)
+                     + " window_s=" + std::to_string(flap_window_seconds));
+        std::_Exit(75);
+    }
     send_status_locked(transport, logger, transport_mutex, camera_offline_message(config, camera.config.camera_id, error));
     stop_camera(camera, logger);
     if(should_reconnect) {
@@ -6106,7 +6117,10 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        logger.info("gemini sender starting, sender_id=" + config.sender_id + ", receiver=" + config.receiver.ip);
+        const std::string sdk_version = std::to_string(ob_get_major_version()) + "." + std::to_string(ob_get_minor_version()) + "."
+                                        + std::to_string(ob_get_patch_version());
+        logger.info("gemini sender starting, sender_id=" + config.sender_id + ", receiver=" + config.receiver.ip
+                    + ", orbbec_sdk=" + sdk_version);
         if(args.no_send) {
             NullTransport transport;
             auto make_media_sender = [] {
