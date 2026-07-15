@@ -89,6 +89,7 @@
       },
       "color_controls": {
         "auto_exposure": true,
+        "max_exposure": 280,
         "brightness": -35,
         "contrast": 50,
         "saturation": 64,
