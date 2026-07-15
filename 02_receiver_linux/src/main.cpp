@@ -1914,7 +1914,13 @@ void bounded_parallel_for(size_t count, Function &&function) {
         try {
             queued = depth_decompression_executor().try_submit([&] {
                 worker();
-                pending_workers.fetch_sub(1, std::memory_order_release);
+                // Publish completion while holding the same mutex used by the
+                // waiter. Otherwise notify_one() can land between the
+                // predicate check and the wait, leaving a completed job asleep.
+                {
+                    std::lock_guard<std::mutex> lock(completion_mutex);
+                    pending_workers.fetch_sub(1, std::memory_order_release);
+                }
                 completion_cv.notify_one();
             });
         }
@@ -1922,7 +1928,10 @@ void bounded_parallel_for(size_t count, Function &&function) {
             queued = false;
         }
         if(!queued) {
-            pending_workers.fetch_sub(1, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lock(completion_mutex);
+                pending_workers.fetch_sub(1, std::memory_order_relaxed);
+            }
             break;
         }
     }
@@ -2895,7 +2904,10 @@ public:
     bool open(const std::string &command, Logger &logger) {
         close();
         command_ = command;
-        pipe_ = popen(command.c_str(), "w");
+        // glibc's 'e' mode atomically marks the parent pipe end close-on-exec.
+        // Preview/recording children are spawned concurrently, so setting
+        // FD_CLOEXEC with a later fcntl() would still leave an inheritance race.
+        pipe_ = popen(command.c_str(), "we");
         if(!pipe_) {
             logger.error("failed to start ffmpeg pipe: " + command + ": " + std::strerror(errno));
             return false;
@@ -5695,8 +5707,15 @@ public:
         try {
             auto future = std::async(std::launch::async, [this, tasks, done_log_message]() mutable {
                 logger_.info(done_log_message + " started");
+                std::vector<std::future<void>> camera_futures;
+                camera_futures.reserve(tasks->size());
                 for(auto &task : *tasks) {
-                    close_segment_task(task, done_log_message);
+                    camera_futures.emplace_back(std::async(std::launch::async, [this, &task, &done_log_message] {
+                        close_segment_task(task, done_log_message);
+                    }));
+                }
+                for(auto &camera_future : camera_futures) {
+                    camera_future.get();
                 }
                 logger_.info(done_log_message);
             });
