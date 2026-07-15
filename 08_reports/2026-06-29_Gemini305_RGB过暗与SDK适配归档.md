@@ -85,4 +85,5 @@
 - 之前同时使用 `brightness=40`、`gamma=400` 会显著改变 ISP 曲线。尤其高 gamma 压暗画面后再提高 brightness，会抬高暗部并降低观感对比度，形成灰雾，不能作为正常曝光补偿方案。
 - 官方资料说明 Gemini 305 的 color brightness 用于自动曝光模式下的亮度调节；gamma 越低画面越亮。后续不再用正 brightness 和高 gamma 补偿手动欠曝。
 - Gemini 305 固件虽然将 `OB_STRUCT_COLOR_AE_ROI` 报告为可读写，但写入桌面 ROI 后读回仍为 `0,0,0,0`，画面测光没有变化，因此没有将该无效能力接入正式 sender。
-- 当前使用自动曝光，通过 `brightness=-64` 降低 AE 亮度目标、`max_exposure=220` 限制曝光时长，并将 `backlight_compensation` 从默认 `3` 降到 `0` 进一步压低传感器侧曝光；`gamma=300`、`contrast=50`、`saturation=64` 保持官方默认。实测当前场景平均亮度约 `78/255`、最大亮度约 `210/255`，亮度不低于 235 及任一 RGB 通道达到 255 的像素均为 0。
+- 当前使用自动曝光，通过 `brightness=-64` 降低 AE 亮度目标、`max_exposure=220` 限制曝光时长，并将 `backlight_compensation` 从默认 `3` 降到 `0`；在用户仍认为主观观感偏亮后，将 `gamma` 提高到设备上限 `500` 继续压低中间调，`contrast=50`、`saturation=64` 保持官方默认。
+- SDK 属性探测确认 Gemini 305 固件 `1.0.70` 不支持 `OB_PROP_COLOR_AE_MAX_GAIN_INT`，不能在自动曝光模式下单独限制最大增益。最终画面实测平均亮度约 `100/255`、最大亮度约 `226/255`，亮度不低于 235 的像素为 0；场景构图变化会影响平均值，因此高光剪切比例和用户实际观感应同时判断。
