@@ -760,13 +760,25 @@
           optimizeForLatency: true,
           avc: {format: 'annexb'}
         };
+        if (this.camera.rgb_h264_full_range) {
+          baseConfig.colorSpace = {
+            matrix: 'smpte170m',
+            fullRange: true
+          };
+        }
         try {
           this.decoder.configure(baseConfig);
         }
         catch (_) {
           const fallback = {...baseConfig};
           delete fallback.avc;
-          this.decoder.configure(fallback);
+          try {
+            this.decoder.configure(fallback);
+          }
+          catch (_) {
+            delete fallback.colorSpace;
+            this.decoder.configure(fallback);
+          }
         }
         this.configured = true;
       }

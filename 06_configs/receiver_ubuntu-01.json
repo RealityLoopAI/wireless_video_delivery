@@ -28,6 +28,9 @@
   "state_path": "06_configs/receiver_runtime_state.json",
   "write_debug_h264": false,
   "write_debug_depth_raw": false,
+  "rgb_h264_full_range_camera_keys": [
+    "orangepi5pro-d12a4719_cam01"
+  ],
   "max_payload_mb": 32,
   "record_queue_max_mb": 512,
   "record_queue_total_max_mb": 2048,

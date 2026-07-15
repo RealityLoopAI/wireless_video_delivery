@@ -112,6 +112,8 @@ constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
 constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof+global_sidx";
+constexpr const char *kH264FullRangeMetadataBsf =
+    "h264_metadata=video_full_range_flag=1:matrix_coefficients=6";
 
 std::atomic<bool> g_running{true};
 
@@ -1018,6 +1020,7 @@ struct Config {
     int depth_fps = 30;
     bool write_debug_h264 = false;
     bool write_debug_depth_raw = false;
+    std::set<std::string> rgb_h264_full_range_camera_keys;
     size_t max_payload_bytes = 32ull * 1024ull * 1024ull;
     size_t record_queue_max_bytes = kDefaultRecordQueueMaxBytes;
     size_t record_queue_total_max_bytes = 2ull * 1024ull * 1024ull * 1024ull;
@@ -1065,6 +1068,23 @@ Config load_config(const std::string &path) {
         }
         return value.asBool();
     };
+    const auto string_set_value = [](const Json::Value &object, const char *key) {
+        std::set<std::string> values;
+        const auto &value = object[key];
+        if(value.isNull()) {
+            return values;
+        }
+        if(!value.isArray()) {
+            throw std::runtime_error(std::string("receiver config field must be a string array: ") + key);
+        }
+        for(const auto &item : value) {
+            if(!item.isString() || item.asString().empty()) {
+                throw std::runtime_error(std::string("receiver config field contains an invalid camera key: ") + key);
+            }
+            values.insert(item.asString());
+        }
+        return values;
+    };
     const auto port_value = [&](const Json::Value &object, const char *key, uint16_t fallback) {
         const int value = int_value(object, key, fallback);
         if(value <= 0 || value > 65535) {
@@ -1106,6 +1126,7 @@ Config load_config(const std::string &path) {
     cfg.depth_fps = int_value(root, "depth_fps", cfg.depth_fps);
     cfg.write_debug_h264 = bool_value(root, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = bool_value(root, "write_debug_depth_raw", cfg.write_debug_depth_raw);
+    cfg.rgb_h264_full_range_camera_keys = string_set_value(root, "rgb_h264_full_range_camera_keys");
     const int max_payload_mb = int_value(root, "max_payload_mb", 32);
     const int record_queue_max_mb = int_value(root, "record_queue_max_mb", 512);
     const int min_free_disk_mb = int_value(root, "min_free_disk_mb", 2048);
@@ -1140,6 +1161,14 @@ Config load_config(const std::string &path) {
     if(cfg.nas_root.empty() || cfg.log_directory.empty() || cfg.state_path.empty() || cfg.ffmpeg_path.empty()) {
         throw std::runtime_error("receiver path fields must not be empty");
     }
+    for(const auto &key : cfg.rgb_h264_full_range_camera_keys) {
+        if(key.size() > kMaxProtocolIdBytes * 2 + 1
+           || !std::all_of(key.begin(), key.end(), [](unsigned char ch) {
+                  return std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.';
+              })) {
+            throw std::runtime_error("invalid camera key in rgb_h264_full_range_camera_keys: " + key);
+        }
+    }
     std::set<uint16_t> udp_ports{cfg.status_port};
     const auto add_udp_port = [&](bool enabled, uint16_t port, const char *name) {
         if(enabled && !udp_ports.insert(port).second) {
@@ -1154,6 +1183,10 @@ Config load_config(const std::string &path) {
         throw std::runtime_error("admin_port conflicts with media_port on the same bind address");
     }
     return cfg;
+}
+
+bool rgb_h264_full_range_for_camera(const Config &cfg, const std::string &sender_id, const std::string &camera_id) {
+    return cfg.rgb_h264_full_range_camera_keys.count(camera_key(sender_id, camera_id)) != 0;
 }
 
 struct RuntimeState {
@@ -1328,6 +1361,7 @@ public:
                uint32_t height,
                uint32_t target_width,
                uint32_t preview_fps,
+               bool h264_full_range,
                Logger &logger) {
         stop();
         key_ = key;
@@ -1349,8 +1383,16 @@ public:
             set_fd_cloexec(fd);
         }
 
-        const std::string scale = target_width == 0 ? "fps=" + std::to_string(preview_fps)
-                                                    : "fps=" + std::to_string(preview_fps) + ",scale=" + std::to_string(target_width) + ":-2";
+        std::string scale = "fps=" + std::to_string(preview_fps);
+        if(h264_full_range) {
+            scale += ",setparams=range=full:colorspace=smpte170m";
+        }
+        if(target_width != 0) {
+            scale += ",scale=" + std::to_string(target_width) + ":-2";
+            if(h264_full_range) {
+                scale += ":in_color_matrix=smpte170m:out_color_matrix=smpte170m:in_range=full:out_range=full";
+            }
+        }
         const std::string jpeg_quality = std::to_string(kRgbPreviewJpegQuality);
         std::vector<std::string> arguments = {
             cfg.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
@@ -1407,7 +1449,7 @@ public:
         const int reader_fd = stdout_fd_;
         reader_ = std::thread([this, reader_fd] { read_loop(reader_fd); });
         writer_ = std::thread([this] { write_loop(); });
-        logger.info("rgb preview decoder started: " + key_);
+        logger.info("rgb preview decoder started: " + key_ + " h264_full_range=" + (h264_full_range ? "true" : "false"));
         return true;
     }
 
@@ -3099,6 +3141,7 @@ public:
         camera_name_ = camera_name;
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
         file_prefix_ = file_prefix;
+        rgb_h264_full_range_ = rgb_h264_full_range_for_camera(cfg, sender_id, camera_id);
         std::error_code root_ec;
         std::filesystem::create_directories(cfg.nas_root, root_ec);
         if(root_ec) {
@@ -3249,6 +3292,7 @@ public:
         camera_name_.clear();
         storage_key_.clear();
         file_prefix_.clear();
+        rgb_h264_full_range_ = false;
         depth_width_ = 0;
         depth_height_ = 0;
         last_rgb_ = {};
@@ -3814,9 +3858,12 @@ private:
         }
         const auto ffmpeg_log = shell_quote(file_path("ffmpeg.log").string());
         const auto rgb_mp4 = shell_quote(file_path("rgb.mp4").string());
+        const std::string metadata_bsf = rgb_h264_full_range_
+                                             ? " -bsf:v " + shell_quote(kH264FullRangeMetadataBsf)
+                                             : "";
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
                                     " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps) +
-                                    " -f h264 -i pipe:0 -c:v copy -movflags " + kRgbMp4RecordMuxFlags +
+                                    " -f h264 -i pipe:0 -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags +
                                     " -flush_packets 1 " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
         if(!rgb_pipe_.open(rgb_cmd, logger)) {
@@ -4245,10 +4292,13 @@ private:
         std::error_code ec;
         std::filesystem::remove(temporary, ec);
         const double fps = rgb_record_fps_ > 0.0 ? rgb_record_fps_ : 30.0;
+        const std::string metadata_bsf = rgb_h264_full_range_
+                                             ? " -bsf:v " + shell_quote(kH264FullRangeMetadataBsf)
+                                             : "";
         const std::string command = shell_quote(cfg.ffmpeg_path)
                                     + " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps)
                                     + " -f h264 -i " + shell_quote(rgb_debug_path_.string())
-                                    + " -c:v copy -movflags " + kRgbMp4RecordMuxFlags + " -flush_packets 1 "
+                                    + " -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags + " -flush_packets 1 "
                                     + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
         if(std::system(command.c_str()) != 0) {
             logger.warn("RGB automatic recovery remux failed: " + directory_);
@@ -4397,6 +4447,7 @@ private:
         meta << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         meta << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         meta << "  \"camera_key\": \"" << json_escape(camera_key(sender_id, camera_id)) << "\",\n";
+        meta << "  \"rgb_h264_full_range\": " << (rgb_h264_full_range_ ? "true" : "false") << ",\n";
         meta << "  \"camera_name\": \"" << json_escape(camera_name_) << "\",\n";
         meta << "  \"storage_key\": \"" << json_escape(storage_key_) << "\",\n";
         meta << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
@@ -4539,6 +4590,7 @@ private:
     std::string camera_name_;
     std::string storage_key_;
     std::string file_prefix_;
+    bool rgb_h264_full_range_ = false;
     std::ofstream frames_csv_;
     std::ofstream rgb_recorded_frames_csv_;
     std::ofstream rgb_debug_;
@@ -5132,6 +5184,8 @@ public:
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
             out << "\"depth_bytes\":" << cam.depth_bytes << ',';
+            out << "\"rgb_h264_full_range\":"
+                << (rgb_h264_full_range_for_camera(config_, cam.sender_id, cam.camera_id) ? "true" : "false") << ',';
             out << "\"rgb_preview_available\":" << (rgb_preview_report_available ? "true" : "false") << ',';
             out << "\"rgb_h264_preview_available\":" << (rgb_h264_preview_fresh ? "true" : "false") << ',';
             out << "\"rgb_h264_preview_width\":" << rgb_h264_preview_width << ',';
@@ -5196,6 +5250,16 @@ public:
         out << "\"clock_sync_bind_ip\":\"" << json_escape(config_.clock_sync.bind_ip) << "\",";
         out << "\"clock_sync_port\":" << config_.clock_sync.port << ',';
         out << "\"clock_sync_model_timeout_ms\":" << config_.clock_sync.model_timeout_ms << ',';
+        out << "\"rgb_h264_full_range_camera_keys\":[";
+        bool first_full_range_key = true;
+        for(const auto &key : config_.rgb_h264_full_range_camera_keys) {
+            if(!first_full_range_key) {
+                out << ',';
+            }
+            first_full_range_key = false;
+            out << '"' << json_escape(key) << '"';
+        }
+        out << "],";
         out << "\"admin_bind_ip\":\"" << json_escape(config_.admin_bind_ip) << "\",";
         out << "\"admin_port\":" << config_.admin_port << ',';
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
@@ -6805,7 +6869,8 @@ private:
             if(!decoder) {
                 decoder = std::make_unique<RgbPreviewDecoder>();
             }
-            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps, logger_);
+            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps,
+                           rgb_h264_full_range_for_camera(config_, cam.sender_id, cam.camera_id), logger_);
             auto decoder_prefix = cam.rgb_preview_prefix_h264;
             const auto packet_prefix = h264_non_vcl_prefix(packet.payload);
             if(!packet_prefix.empty() && h264_payload_has_sps_and_pps(packet_prefix)) {
