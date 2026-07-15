@@ -255,6 +255,7 @@ class V4L2MjpegCapture;
 struct CameraRuntime {
     mutable std::mutex mutex;
     CameraConfig config;
+    std::string device_model;
     std::string device_serial;
     std::string device_uid;
     std::string device_connection_type;
@@ -319,6 +320,8 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point last_depth_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_capture_stall_reconnect = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point web_rgb_preview_suppressed_until = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point gemini305_manual_exposure_reapply_at = std::chrono::steady_clock::time_point::min();
+    bool gemini305_manual_exposure_reapply_pending = false;
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
@@ -4070,6 +4073,91 @@ std::string lower_copy(std::string value) {
     return value;
 }
 
+bool gemini305_manual_exposure_requested(const CameraConfig &config, const std::string &device_model) {
+    const auto &controls = config.color_controls;
+    return controls.auto_exposure && !*controls.auto_exposure
+           && lower_copy(device_model).find("gemini 305") != std::string::npos;
+}
+
+bool ensure_gemini305_manual_exposure(const CameraConfig &config, const std::string &device_model,
+                                      const std::string &device_serial, Logger &logger, bool force_reapply = false) {
+    const auto &controls = config.color_controls;
+    if(!gemini305_manual_exposure_requested(config, device_model)) {
+        return true;
+    }
+
+    const auto video_device = find_v4l2_device_by_serial(device_serial);
+    if(video_device.empty()) {
+        logger.warn("Gemini305 manual exposure verification skipped camera_id=" + config.camera_id
+                    + " reason=v4l2_device_not_found serial=" + device_serial);
+        return false;
+    }
+
+    const int fd = open(video_device.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if(fd < 0) {
+        logger.warn("Gemini305 manual exposure verification skipped camera_id=" + config.camera_id
+                    + " device=" + video_device + " error=" + std::strerror(errno));
+        return false;
+    }
+
+    int control_errno = 0;
+    auto get_control = [&](uint32_t id, int &value) {
+        v4l2_control control{};
+        control.id = id;
+        if(checked_v4l2_ioctl(fd, VIDIOC_G_CTRL, &control) < 0) {
+            control_errno = errno;
+            return false;
+        }
+        value = control.value;
+        return true;
+    };
+    auto set_control = [&](uint32_t id, int value) {
+        v4l2_control control{};
+        control.id = id;
+        control.value = value;
+        if(checked_v4l2_ioctl(fd, VIDIOC_S_CTRL, &control) < 0) {
+            control_errno = errno;
+            return false;
+        }
+        return true;
+    };
+
+    int exposure_mode = -1;
+    const bool mode_readable = get_control(V4L2_CID_EXPOSURE_AUTO, exposure_mode);
+    const bool applied_fallback = mode_readable && exposure_mode != V4L2_EXPOSURE_MANUAL;
+    bool success = mode_readable;
+    if(mode_readable && (applied_fallback || force_reapply)) {
+        success = set_control(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
+        if(success && controls.exposure) {
+            success = set_control(V4L2_CID_EXPOSURE_ABSOLUTE, *controls.exposure);
+        }
+        if(success && controls.gain) {
+            success = set_control(V4L2_CID_GAIN, *controls.gain);
+        }
+    }
+
+    int verified_mode = -1;
+    const bool verified = success && get_control(V4L2_CID_EXPOSURE_AUTO, verified_mode)
+                          && verified_mode == V4L2_EXPOSURE_MANUAL;
+    close(fd);
+
+    if(!verified) {
+        logger.warn("Gemini305 manual exposure verification failed camera_id=" + config.camera_id
+                    + " device=" + video_device + " sdk_mode=" + std::to_string(exposure_mode)
+                    + " verified_mode=" + std::to_string(verified_mode) + " error="
+                    + (control_errno ? std::strerror(control_errno) : "unexpected_mode"));
+        return false;
+    }
+
+    logger.info("Gemini305 manual exposure verified camera_id=" + config.camera_id
+                + " device=" + video_device + " mode=manual exposure="
+                + (controls.exposure ? std::to_string(*controls.exposure) : "unchanged") + " gain="
+                + (controls.gain ? std::to_string(*controls.gain) : "unchanged")
+                + " fallback_applied=" + (applied_fallback ? "true" : "false")
+                + " force_reapply=" + (force_reapply ? "true" : "false"));
+    return true;
+}
+
 bool is_frame_sync_unsupported_error(const std::string &error) {
     const auto lower = lower_copy(error);
     return lower.find("frame sync") != std::string::npos
@@ -4156,6 +4244,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     {
         std::lock_guard<std::mutex> lock(runtime.mutex);
         runtime.v4l2_capture = capture;
+        runtime.device_model = runtime.config.device_model;
         runtime.device_serial = runtime.config.serial_number;
         runtime.device_uid = capture->device_path();
         runtime.device_connection_type = "v4l2";
@@ -4186,6 +4275,8 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
         runtime.next_capture_stall_reconnect = now;
+        runtime.gemini305_manual_exposure_reapply_pending = false;
+        runtime.gemini305_manual_exposure_reapply_at = std::chrono::steady_clock::time_point::min();
         runtime.capture_stall_samples = 0;
         runtime.last_media_warning.clear();
         runtime.rgb_sent_timing_seen = false;
@@ -4264,6 +4355,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     control_runtime.config = runtime.config;
     control_runtime.device = device;
     apply_color_controls(control_runtime, logger);
+    ensure_gemini305_manual_exposure(runtime.config, device_model, device_serial, logger);
 
     const auto color_width = color_profile->width();
     const auto color_height = color_profile->height();
@@ -4277,6 +4369,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     {
         std::lock_guard<std::mutex> lock(runtime.mutex);
         runtime.device = std::move(device);
+        runtime.device_model = device_model;
         runtime.device_serial = device_serial;
         runtime.device_uid = device_uid;
         runtime.device_connection_type = device_connection_type;
@@ -4306,6 +4399,11 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
         runtime.next_capture_stall_reconnect = now;
+        runtime.gemini305_manual_exposure_reapply_pending =
+            gemini305_manual_exposure_requested(runtime.config, device_model);
+        runtime.gemini305_manual_exposure_reapply_at = runtime.gemini305_manual_exposure_reapply_pending
+                                                          ? now + std::chrono::seconds(2)
+                                                          : std::chrono::steady_clock::time_point::min();
         runtime.capture_stall_samples = 0;
         runtime.last_media_warning.clear();
         runtime.rgb_sent_timing_seen = false;
@@ -5070,6 +5168,25 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
 
         const auto frame_now = std::chrono::steady_clock::now();
         const uint64_t frame_host_now_us = now_us();
+        bool reapply_gemini305_manual_exposure = false;
+        std::string reapply_device_model;
+        std::string reapply_device_serial;
+        if(color) {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            if(camera.gemini305_manual_exposure_reapply_pending
+               && frame_now >= camera.gemini305_manual_exposure_reapply_at) {
+                camera.gemini305_manual_exposure_reapply_pending = false;
+                reapply_gemini305_manual_exposure = true;
+                reapply_device_model = camera.device_model;
+                reapply_device_serial = camera.device_serial;
+            }
+        }
+        if(reapply_gemini305_manual_exposure
+           && !ensure_gemini305_manual_exposure(camera.config, reapply_device_model, reapply_device_serial, logger, true)) {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            camera.gemini305_manual_exposure_reapply_pending = true;
+            camera.gemini305_manual_exposure_reapply_at = frame_now + std::chrono::seconds(1);
+        }
         depth_output_camera = depth ? depth_target_camera(config, camera) : nullptr;
         uint64_t frameset_pair_id = 0;
         if(color && depth && depth_output_camera == &camera) {
