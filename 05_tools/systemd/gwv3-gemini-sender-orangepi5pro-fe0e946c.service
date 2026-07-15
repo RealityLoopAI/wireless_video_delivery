@@ -1,0 +1,23 @@
+[Unit]
+Description=GWV3 Gemini RGBD Sender (orangepi5pro-fe0e946c)
+After=network-online.target chrony.service rk3588-usb-prepare.service
+Wants=network-online.target chrony.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+SupplementaryGroups=video render
+WorkingDirectory=/home/orangepi/Desktop/wireless_video_delivery
+Environment=HOME=/home/orangepi
+Environment=ORBBEC_SDK_ROOT=/home/orangepi/Desktop/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6
+Environment=GEMINI_CHRONY_MAX_CORRECTION_S=0.010
+ExecStartPre=+/home/orangepi/Desktop/wireless_video_delivery/05_tools/prepare_rk3588_usb.sh
+ExecStart=/home/orangepi/Desktop/wireless_video_delivery/05_tools/sender_watchdog.sh /home/orangepi/Desktop/wireless_video_delivery/06_configs/sender_orangepi5pro-fe0e946c_gemini305.json no-local-preview
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
