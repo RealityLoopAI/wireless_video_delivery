@@ -84,4 +84,4 @@
   - `auto_white_balance=true`
 - 之前使用 `brightness=40`、`gamma=400`、`backlight_compensation=0` 会显著改变 ISP 曲线。尤其高 gamma 压暗画面后再提高 brightness，会抬高暗部并降低观感对比度，形成灰雾，不能作为正常曝光补偿方案。
 - 官方资料说明 Gemini 305 的 color brightness 用于自动曝光模式下的亮度调节；gamma 越低画面越亮。后续不再用正 brightness 和高 gamma 补偿手动欠曝。
-- 当前改为自动曝光，并显式恢复官方 ISP 默认值；通过 `brightness=-64` 降低 AE 亮度目标，通过 `max_exposure=220` 限制曝光时长。实测当前场景最大亮度约 `207/255`，亮度不低于 235 的像素为 0，RGB 任一通道达到 255 的像素为 0。
+- 当前改为自动曝光，并以官方 ISP 默认值为基线；通过 `brightness=-64` 降低 AE 亮度目标，通过 `max_exposure=220` 限制曝光时长。根据现场观感再将 `gamma` 从默认 `300` 小幅提高到 `330`，仅压低中高亮，不再抬高 brightness。实测当前场景亮度不低于 235 的像素为 0。

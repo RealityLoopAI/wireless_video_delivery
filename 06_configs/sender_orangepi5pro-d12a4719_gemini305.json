@@ -93,7 +93,7 @@
         "brightness": -64,
         "contrast": 50,
         "saturation": 64,
-        "gamma": 300,
+        "gamma": 330,
         "backlight_compensation": 3,
         "auto_white_balance": true,
         "auto_exposure_priority": 0,
