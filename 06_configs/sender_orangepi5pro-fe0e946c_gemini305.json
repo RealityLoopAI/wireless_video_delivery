@@ -51,7 +51,7 @@
     "max_bytes": 10485760
   },
   "hotplug": {
-    "enabled": false
+    "enabled": true
   },
   "recording_buffer": {
     "enabled": true,

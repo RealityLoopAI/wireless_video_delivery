@@ -26,6 +26,7 @@
 - chrony 已固定使用接收端 `192.168.66.196` 作为时间源。
 - 已安装 CMake 3.22.1，并完成 `gemini_sender` 本机增量构建验证。
 - 已关闭 Wi-Fi 省电。
+- 已启用相机热插拔扫描；固定 `cam01` 同时保留断线自动重连。
 - 已禁用克隆镜像中无实际用途且端口冲突的 `dnsmasq.service`。
 
 新机发送端源码与 d12 及本地主分支 `c676f08` 的关键源文件校验一致，
@@ -60,3 +61,13 @@
 配置或服务初始化问题。保持目标配置不降档；需要重新插拔 USB3 接头、改用
 USB3 数据线或更换到 SuperSpeed 端口，直到 `lsusb -t` 显示相机位于 Bus 06、
 速率为 `5000M`，随后 sender 会通过重连机制恢复目标 30 fps 档位。
+
+## 热插拔复测
+
+后续复测已将 `hotplug.enabled` 改为 `true`。相机曾在 `Bus 06` 以
+`5000M / SuperSpeed` 枚举，证明端口选择正确，但随后内核连续报告
+`device not accepting address, error -71`、xHCI setup timeout，并将设备从总线
+移除。停止 sender 后软重置 xHCI 控制器仍得到同样错误，因此该次掉线发生在
+USB 枚举层，不是 SDK 热插拔扫描导致。sender 服务保持运行并持续重连；需要
+重新插紧两端接头、替换 USB3 数据线或排查相机供电，直至 `lsusb -t` 能持续
+显示 `Bus 06 ... 5000M`。
