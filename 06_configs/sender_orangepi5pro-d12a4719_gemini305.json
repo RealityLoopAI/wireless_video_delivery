@@ -89,11 +89,11 @@
       },
       "color_controls": {
         "auto_exposure": true,
-        "max_exposure": 280,
+        "max_exposure": 220,
         "brightness": -35,
-        "contrast": 50,
+        "contrast": 40,
         "saturation": 64,
-        "gamma": 300,
+        "gamma": 220,
         "backlight_compensation": 0,
         "auto_exposure_priority": 0,
         "power_line_frequency": 3
