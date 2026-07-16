@@ -764,6 +764,64 @@ void set_int_property_if_configured(CameraRuntime &camera, Logger &logger, const
     }
 }
 
+void apply_stream_rotation(CameraRuntime &camera, Logger &logger) {
+    if(!camera.config.rotation_degrees) {
+        return;
+    }
+
+    struct RotationProperty {
+        OBPropertyID id;
+        const char *name;
+        std::optional<int> previous_value;
+    };
+
+    std::vector<RotationProperty> properties{{OB_PROP_COLOR_ROTATE_INT, "color", std::nullopt}};
+    if(camera.config.depth_profile.enabled) {
+        properties.push_back({OB_PROP_DEPTH_ROTATE_INT, "depth", std::nullopt});
+    }
+
+    for(auto &property : properties) {
+        if(!camera.device->isPropertySupported(property.id, OB_PERMISSION_WRITE)) {
+            throw std::runtime_error(std::string("configured stream rotation is unsupported for ") + property.name
+                                     + " camera_id=" + camera.config.camera_id);
+        }
+        if(camera.device->isPropertySupported(property.id, OB_PERMISSION_READ)) {
+            property.previous_value = camera.device->getIntProperty(property.id);
+        }
+    }
+
+    try {
+        for(auto &property : properties) {
+            camera.device->setIntProperty(property.id, *camera.config.rotation_degrees);
+        }
+        for(const auto &property : properties) {
+            if(camera.device->isPropertySupported(property.id, OB_PERMISSION_READ)) {
+                const int readback = camera.device->getIntProperty(property.id);
+                if(readback != *camera.config.rotation_degrees) {
+                    throw std::runtime_error(std::string(property.name) + " rotation readback=" + std::to_string(readback));
+                }
+            }
+        }
+    }
+    catch(const std::exception &e) {
+        for(auto property = properties.rbegin(); property != properties.rend(); ++property) {
+            if(property->previous_value) {
+                try {
+                    camera.device->setIntProperty(property->id, *property->previous_value);
+                }
+                catch(...) {
+                }
+            }
+        }
+        throw std::runtime_error("cannot apply atomic RGB/Depth stream rotation camera_id=" + camera.config.camera_id
+                                 + " error=" + e.what());
+    }
+
+    logger.info("stream rotation set camera_id=" + camera.config.camera_id
+                + " degrees=" + std::to_string(*camera.config.rotation_degrees)
+                + " color=true depth=" + bool_text(camera.config.depth_profile.enabled));
+}
+
 void apply_color_controls(CameraRuntime &camera, Logger &logger) {
     const auto &controls = camera.config.color_controls;
     if(!controls.auto_exposure && !controls.exposure && !controls.gain && !controls.auto_exposure_priority && !controls.max_exposure
@@ -3474,6 +3532,9 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     msg["depth_profile"] = camera.depth_profile ? profile_json(camera.depth_profile, "uint16", camera.config.depth_transport.compression, camera.depth_scale)
                                                  : profile_json(camera.config.depth_profile, "uint16", camera.config.depth_transport.compression,
                                                                 camera.depth_scale);
+    if(camera.config.rotation_degrees) {
+        msg["rotation_degrees"] = *camera.config.rotation_degrees;
+    }
     Json::Value web_preview;
     web_preview["enabled"] = config.web_rgb_preview.enabled;
     web_preview["on_demand"] = config.web_rgb_preview.on_demand;
@@ -4312,6 +4373,11 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const std::string device_uid = device_info->uid() ? device_info->uid() : "";
     const std::string device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
 
+    CameraRuntime control_runtime;
+    control_runtime.config = runtime.config;
+    control_runtime.device = device;
+    apply_stream_rotation(control_runtime, logger);
+
     auto start_pipeline = [&](OBFrameAggregateOutputMode aggregate_mode) {
         auto candidate_pipeline = std::make_unique<ob::Pipeline>(device);
         auto candidate_config = std::make_shared<ob::Config>();
@@ -4351,9 +4417,6 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         std::tie(pipeline, color_profile, depth_profile) = start_pipeline(aggregate_mode);
     }
 
-    CameraRuntime control_runtime;
-    control_runtime.config = runtime.config;
-    control_runtime.device = device;
     apply_color_controls(control_runtime, logger);
     ensure_gemini305_manual_exposure(runtime.config, device_model, device_serial, logger);
 

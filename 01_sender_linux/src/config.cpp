@@ -442,6 +442,9 @@ AppConfig load_config(const std::string &path) {
         camera.device_index = optional_int(item, "device_index", camera.device_index);
         camera.validate_rgb_mjpeg = optional_bool(item, "validate_rgb_mjpeg", camera.validate_rgb_mjpeg);
         camera.frame_aggregate_mode = optional_string(item, "frame_aggregate_mode", camera.frame_aggregate_mode);
+        if(item.isMember("rotation_degrees")) {
+            camera.rotation_degrees = optional_int(item, "rotation_degrees", 0);
+        }
         camera.rgb_profile = load_profile(item["rgb_profile"]);
         camera.depth_profile = load_profile(item["depth_profile"]);
 
@@ -630,6 +633,13 @@ void validate_config(const AppConfig &config) {
         }
         if(camera.capture_backend == "v4l2" && camera.video_device.empty() && camera.serial_number.empty()) {
             throw std::runtime_error("v4l2 camera requires video_device or serial_number");
+        }
+        if(camera.rotation_degrees && *camera.rotation_degrees != 0 && *camera.rotation_degrees != 90
+           && *camera.rotation_degrees != 180 && *camera.rotation_degrees != 270) {
+            throw std::runtime_error("camera.rotation_degrees must be one of 0, 90, 180, 270");
+        }
+        if(camera.capture_backend != "orbbec_sdk" && camera.rotation_degrees) {
+            throw std::runtime_error("camera.rotation_degrees is only supported by the orbbec_sdk capture backend");
         }
         validate_profile(camera.rgb_profile, "rgb_profile");
         if(camera.depth_profile.enabled) {

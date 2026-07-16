@@ -65,6 +65,7 @@
       "capture_backend": "orbbec_sdk",
       "device_model": "Orbbec Gemini 305",
       "validate_rgb_mjpeg": true,
+      "rotation_degrees": 180,
       "rgb_profile": {
         "width": 1280,
         "height": 800,
