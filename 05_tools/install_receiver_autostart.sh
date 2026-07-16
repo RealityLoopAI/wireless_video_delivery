@@ -100,6 +100,8 @@ except Exception:
     sys.exit(1)
 
 busy = bool(data.get("recording_all"))
+if int(data.get("record_finalize_outstanding_segments") or 0) > 0:
+    busy = True
 for cam in data.get("cameras", []):
     if cam.get("recording") or cam.get("segment_active") or cam.get("segment_finalizing") or cam.get("record_finalizing"):
         busy = True
@@ -118,7 +120,7 @@ request_receiver_record_stop() {
     return 0
   fi
   echo "已请求接收端停止录制，等待切片收尾..."
-  for _ in {1..120}; do
+  for _ in {1..900}; do
     local status
     status="$(curl -fsS --max-time 3 "$base_url/api/status" 2>/dev/null || true)"
     if [[ -n "$status" ]] && status_is_idle <<<"$status"; then
@@ -180,10 +182,11 @@ ExecStart=$BIN --config $CONFIG
 Restart=on-failure
 RestartSec=2
 KillMode=mixed
-TimeoutStopSec=180s
+TimeoutStopSec=900s
 SendSIGKILL=no
 MemoryHigh=3G
 MemoryMax=4G
+ManagedOOMPreference=avoid
 StandardOutput=append:$RECEIVER_STDOUT
 StandardError=append:$RECEIVER_STDOUT
 

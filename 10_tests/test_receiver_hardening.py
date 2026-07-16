@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import http.client
 import json
 import os
@@ -9,6 +10,7 @@ import socket
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 
 
@@ -115,11 +117,11 @@ def rgb_packet(sender_id: str, camera_id: str, frame_id: int, width: int, height
     return header + sender + camera + codec + payload
 
 
-def generate_h264_fixture() -> bytes:
+def generate_h264_fixture(frame_count: int = 60) -> bytes:
     result = subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30",
-            "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-frames:v", str(frame_count), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-x264-params", "repeat-headers=1:keyint=30", "-f", "h264", "pipe:1",
         ],
         stdout=subprocess.PIPE,
@@ -129,6 +131,33 @@ def generate_h264_fixture() -> bytes:
     )
     assert result.returncode == 0 and result.stdout, result.stderr.decode(errors="replace")
     return result.stdout
+
+
+def create_ffmpeg_test_wrappers(root: Path) -> Path:
+    wrapper_dir = root / "ffmpeg-bin"
+    wrapper_dir.mkdir()
+    real_ffmpeg = shutil.which("ffmpeg")
+    real_ffprobe = shutil.which("ffprobe")
+    assert real_ffmpeg and real_ffprobe
+    ffmpeg_wrapper = wrapper_dir / "ffmpeg"
+    ffmpeg_wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys, time\n"
+        "if any('rgb_seekable.tmp.mp4' in arg for arg in sys.argv[1:]):\n"
+        "    time.sleep(float(os.environ.get('GWV3_TEST_REMUX_DELAY_SEC', '0')))\n"
+        f"os.execv({real_ffmpeg!r}, [{real_ffmpeg!r}, *sys.argv[1:]])\n",
+        encoding="ascii",
+    )
+    ffprobe_wrapper = wrapper_dir / "ffprobe"
+    ffprobe_wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        f"os.execv({real_ffprobe!r}, [{real_ffprobe!r}, *sys.argv[1:]])\n",
+        encoding="ascii",
+    )
+    ffmpeg_wrapper.chmod(0o755)
+    ffprobe_wrapper.chmod(0o755)
+    return ffmpeg_wrapper
 
 
 def mp4_top_level_atoms(path: Path) -> set[bytes]:
@@ -237,7 +266,183 @@ def send_incomplete_udp_assemblies(port: int, count: int = 300) -> None:
             sock.sendto(header + b"x", ("127.0.0.1", port))
 
 
-def assert_recording_output(nas_root: Path) -> None:
+def exercise_runtime_state_save_isolation(ports: dict, state_path: Path) -> None:
+    fifo_path = Path(f"{state_path}.tmp")
+    if fifo_path.exists():
+        fifo_path.unlink()
+    os.mkfifo(fifo_path)
+    sender_id = "slow-state-save-test"
+    camera_id = "cam01"
+    reader_errors = []
+    persisted_payloads = []
+
+    def drain_fifo() -> None:
+        try:
+            with fifo_path.open("rb", buffering=0) as handle:
+                persisted_payloads.append(handle.read())
+        except Exception as exc:  # pragma: no cover - only reports cleanup failures
+            reader_errors.append(exc)
+
+    reader = None
+    try:
+        status_message(
+            ports["status"],
+            {
+                "protocol_version": "3.0",
+                "message_type": "camera_announce",
+                "sender_id": sender_id,
+                "camera_id": camera_id,
+                "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+                "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+            },
+        )
+        time.sleep(0.1)
+        timestamp = int(time.time() * 1_000_000)
+        with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+            media.sendall(depth_packet(sender_id, camera_id, 1, 64, 48, timestamp))
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            current = json.loads(request(ports["admin"], "GET", "/api/status", timeout=1)[2])
+            cameras = [camera for camera in current.get("cameras", []) if camera.get("sender_id") == sender_id]
+            if cameras and int(cameras[0].get("depth_packets", 0)) >= 1:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("runtime state persistence blocked media ingress")
+    finally:
+        reader = threading.Thread(target=drain_fifo, daemon=True)
+        reader.start()
+        reader.join(timeout=5)
+        assert not reader.is_alive(), "runtime state FIFO writer did not drain"
+        assert not reader_errors, reader_errors
+        rename_deadline = time.monotonic() + 2
+        while fifo_path.exists() and time.monotonic() < rename_deadline:
+            time.sleep(0.01)
+        assert not fifo_path.exists(), "runtime state FIFO was not atomically published"
+        state_path.unlink(missing_ok=True)
+        state_path.write_bytes(persisted_payloads[0] if persisted_payloads else b"{}\n")
+
+
+def exercise_media_session_fencing(ports: dict) -> None:
+    sender_id = "session-fence-test"
+    camera_id = "cam01"
+    status_message(
+        ports["status"],
+        {
+            "protocol_version": "3.0",
+            "message_type": "camera_announce",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+            "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+        },
+    )
+    baseline = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+    superseded_before = int(baseline.get("media_ingress_superseded_sessions", 0))
+    timestamp = int(time.time() * 1_000_000)
+    old_media = socket.create_connection(("127.0.0.1", ports["media"]), timeout=3)
+    new_media = None
+    try:
+        old_media.sendall(depth_packet(sender_id, camera_id, 1, 64, 48, timestamp))
+        time.sleep(0.05)
+        new_media = socket.create_connection(("127.0.0.1", ports["media"]), timeout=3)
+        new_media.sendall(depth_packet(sender_id, camera_id, 2, 64, 48, timestamp + 33333))
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+            if int(current.get("media_ingress_superseded_sessions", 0)) > superseded_before:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("new media session did not supersede the old route owner")
+
+        old_media.settimeout(1)
+        try:
+            assert old_media.recv(1) == b"", "superseded media connection remained readable"
+        except (ConnectionResetError, OSError):
+            pass
+        new_media.sendall(depth_packet(sender_id, camera_id, 3, 64, 48, timestamp + 66666))
+    finally:
+        old_media.close()
+        if new_media is not None:
+            new_media.close()
+
+
+def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
+    sender_id = "rotation-test"
+    camera_ids = ["cam01", "cam02", "cam03"]
+    for camera_id in camera_ids:
+        status_message(
+            ports["status"],
+            {
+                "protocol_version": "3.0",
+                "message_type": "camera_announce",
+                "sender_id": sender_id,
+                "camera_id": camera_id,
+                "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+                "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+            },
+        )
+    time.sleep(0.1)
+    assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+
+    h264_frame = generate_h264_fixture(1)
+    first_timestamp = int(time.time() * 1_000_000)
+    observed_directories = {camera_id: set() for camera_id in camera_ids}
+    max_finalize_outstanding = 0
+    max_finalize_active = 0
+    max_record_queue_peak = 0
+    frame_id = 0
+    deadline = time.monotonic() + 3.4
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        while time.monotonic() < deadline:
+            timestamp = first_timestamp + frame_id * 33333
+            for camera_id in camera_ids:
+                media.sendall(rgb_packet(sender_id, camera_id, frame_id, 64, 48, timestamp, h264_frame))
+                media.sendall(depth_packet(sender_id, camera_id, frame_id, 64, 48, timestamp, pair_id=frame_id & 0xFF))
+            frame_id += 1
+            current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+            max_finalize_outstanding = max(
+                max_finalize_outstanding, int(current.get("record_finalize_outstanding_segments", 0))
+            )
+            max_finalize_active = max(max_finalize_active, int(current.get("record_finalize_active_segments", 0)))
+            for camera in current.get("cameras", []):
+                if camera.get("sender_id") != sender_id:
+                    continue
+                camera_id = camera.get("camera_id")
+                if camera.get("segment_dir"):
+                    observed_directories[camera_id].add(camera["segment_dir"])
+                max_record_queue_peak = max(max_record_queue_peak, int(camera.get("record_queue_peak_bytes", 0)))
+            time.sleep(max(0.0, first_timestamp / 1_000_000 + frame_id / 30 - time.time()))
+
+    assert all(len(directories) >= 2 for directories in observed_directories.values()), observed_directories
+    assert max_finalize_outstanding >= 2, "slow finalization did not overlap active recording"
+    assert max_finalize_active == 1, "more than one heavyweight segment finalizer ran concurrently"
+    assert max_record_queue_peak < 4 * 1024 * 1024, f"record queue grew during background finalization: {max_record_queue_peak}"
+
+    assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
+    finalization_deadline = time.monotonic() + 30
+    while time.monotonic() < finalization_deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status", timeout=2)[2])
+        rotation_cameras = [camera for camera in current.get("cameras", []) if camera.get("sender_id") == sender_id]
+        if (
+            int(current.get("record_finalize_outstanding_segments", 0)) == 0
+            and all(not camera.get("segment_active") and not camera.get("segment_finalizing") for camera in rotation_cameras)
+        ):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("background segment finalization did not drain")
+
+    for camera_id in camera_ids:
+        camera_root = nas_root / f"{sender_id}_{camera_id}"
+        ready_files = list(camera_root.rglob("recording_ready.json"))
+        assert len(ready_files) >= 2, f"finalized rotated segments missing for {camera_id}"
+
+
+def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -> None:
     rgb_files = list(nas_root.rglob("rgb.mp4"))
     assert rgb_files, "rgb.mp4 was not finalized"
     for rgb_file in rgb_files:
@@ -253,7 +458,7 @@ def assert_recording_output(nas_root: Path) -> None:
         assert probe.returncode == 0, probe.stderr
         metadata = json.loads(probe.stdout)
         assert metadata.get("streams", [{}])[0].get("codec_name") == "h264"
-        assert float(metadata.get("format", {}).get("duration", 0)) > 1.0
+        assert float(metadata.get("format", {}).get("duration", 0)) > minimum_rgb_duration
         atoms = mp4_top_level_atoms(rgb_file)
         assert b"moov" in atoms and b"moof" not in atoms, "finalized RGB must be a conventional MP4"
         seek = subprocess.run(
@@ -300,10 +505,25 @@ def assert_recording_output(nas_root: Path) -> None:
     for ready_file in ready_files:
         assert json.loads(ready_file.read_text(encoding="utf-8")).get("ready") is True
 
+    for frames_file in nas_root.rglob("*frames.csv"):
+        last_global_timestamp = None
+        with frames_file.open("r", newline="", encoding="utf-8-sig") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("stream_type") != "rgb" or row.get("rgb_recorded") != "1":
+                    continue
+                global_timestamp = int(row["global_timestamp_us"])
+                if last_global_timestamp is not None:
+                    assert global_timestamp > last_global_timestamp, (
+                        f"non-monotonic recorded RGB timestamp in {frames_file}: "
+                        f"{global_timestamp} <= {last_global_timestamp}"
+                    )
+                last_global_timestamp = global_timestamp
+
 
 def run(args) -> None:
     with tempfile.TemporaryDirectory(prefix="gwv3_receiver_test_") as temporary_text:
         temporary = Path(temporary_text)
+        ffmpeg_wrapper = create_ffmpeg_test_wrappers(temporary) if shutil.which("ffmpeg") and shutil.which("ffprobe") else None
         ports = {
             "status": free_port(socket.SOCK_DGRAM),
             "media": free_port(socket.SOCK_STREAM),
@@ -328,24 +548,37 @@ def run(args) -> None:
             "nas_root": str(temporary / "nas"),
             "log_directory": str(temporary / "logs"),
             "state_path": str(temporary / "state.json"),
-            "ffmpeg_path": shutil.which("ffmpeg") or "ffmpeg",
-            "segment_seconds": 60,
+            "ffmpeg_path": str(ffmpeg_wrapper) if ffmpeg_wrapper else "ffmpeg",
+            "segment_seconds": 1,
             "depth_fps": 30,
             "max_payload_mb": 8,
             "record_queue_max_mb": 16,
+            "record_finalize_max_pending_segments": 4,
         }
         config_path = temporary / "receiver.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
         receiver_log = (temporary / "receiver.log").open("wb")
-        receiver = subprocess.Popen([args.receiver, "--config", str(config_path)], stdout=receiver_log, stderr=subprocess.STDOUT)
+        receiver_environment = os.environ.copy()
+        receiver_environment["GWV3_TEST_REMUX_DELAY_SEC"] = "0.75"
+        receiver = subprocess.Popen(
+            [args.receiver, "--config", str(config_path)],
+            env=receiver_environment,
+            stdout=receiver_log,
+            stderr=subprocess.STDOUT,
+        )
         web = None
         idle_client = None
         try:
             wait_http(ports["admin"])
 
+            exercise_runtime_state_save_isolation(ports, temporary / "state.json")
+
             duplicate_log = (temporary / "duplicate_receiver.log").open("wb")
             duplicate = subprocess.Popen(
-                [args.receiver, "--config", str(config_path)], stdout=duplicate_log, stderr=subprocess.STDOUT
+                [args.receiver, "--config", str(config_path)],
+                env=receiver_environment,
+                stdout=duplicate_log,
+                stderr=subprocess.STDOUT,
             )
             try:
                 duplicate.wait(timeout=8)
@@ -383,6 +616,7 @@ def run(args) -> None:
             time.sleep(0.1)
             udp_status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
             assert udp_status["media_udp_stats"]["active_assemblies"] <= 256
+            exercise_media_session_fencing(ports)
 
             assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
             stop_one = json.loads(
@@ -443,6 +677,8 @@ def run(args) -> None:
                 else:
                     raise AssertionError("recording did not finalize")
                 assert_recording_output(temporary / "nas")
+                exercise_async_segment_rotation(ports, temporary / "nas")
+                assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)
             else:
                 print("recording finalization check skipped: ffmpeg/ffprobe unavailable")
 
