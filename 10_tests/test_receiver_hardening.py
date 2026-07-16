@@ -370,6 +370,90 @@ def exercise_media_session_fencing(ports: dict) -> None:
             new_media.close()
 
 
+def direct_ffmpeg_children(parent_pid: int) -> list[int]:
+    children_path = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
+    if not children_path.exists():
+        return []
+    result = []
+    for value in children_path.read_text(encoding="ascii").split():
+        pid = int(value)
+        try:
+            command = Path(f"/proc/{pid}/comm").read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            continue
+        if command == "ffmpeg":
+            result.append(pid)
+    return result
+
+
+def exercise_preview_decoder_cleanup(ports: dict, receiver_pid: int) -> None:
+    sender_id = "preview-cleanup-test"
+    camera_ids = ["cam01", "cam02"]
+    for camera_id in camera_ids:
+        status_message(
+            ports["status"],
+            {
+                "protocol_version": "3.0",
+                "message_type": "camera_announce",
+                "sender_id": sender_id,
+                "camera_id": camera_id,
+                "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+                "depth_profile": {"enabled": False},
+            },
+        )
+    time.sleep(0.1)
+    h264_fixture = generate_h264_fixture(30)
+    timestamp = int(time.time() * 1_000_000)
+    previous_camera = None
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        for frame_id in range(24):
+            camera_id = camera_ids[frame_id % len(camera_ids)]
+            target_path = f"/api/preview/main-target?sender_id={sender_id}&camera_id={camera_id}"
+            assert request(ports["admin"], "POST", target_path)[0] == 200
+            if previous_camera is not None:
+                media.sendall(
+                    rgb_packet(sender_id, previous_camera, frame_id * 2, 64, 48, timestamp + frame_id * 33333, h264_fixture)
+                )
+            media.sendall(
+                rgb_packet(sender_id, camera_id, frame_id * 2 + 1, 64, 48, timestamp + frame_id * 33333 + 1, h264_fixture)
+            )
+            preview_path = f"/api/preview/rgb-main?sender_id={sender_id}&camera_id={camera_id}"
+            deadline = time.monotonic() + 2
+            feed_index = 0
+            while time.monotonic() < deadline:
+                status, _, body = request(ports["admin"], "GET", preview_path)
+                if status == 200 and body.startswith(b"\xff\xd8") and body.endswith(b"\xff\xd9"):
+                    break
+                feed_index += 1
+                media.sendall(
+                    rgb_packet(
+                        sender_id,
+                        camera_id,
+                        10_000 + frame_id * 100 + feed_index,
+                        64,
+                        48,
+                        timestamp + frame_id * 33333 + feed_index,
+                        h264_fixture,
+                    )
+                )
+                time.sleep(0.02)
+            else:
+                raise AssertionError(f"RGB main preview did not refresh for {camera_id}")
+            previous_camera = camera_id
+
+        other_camera = camera_ids[(camera_ids.index(previous_camera) + 1) % len(camera_ids)]
+        target_path = f"/api/preview/main-target?sender_id={sender_id}&camera_id={other_camera}"
+        assert request(ports["admin"], "POST", target_path)[0] == 200
+        media.sendall(rgb_packet(sender_id, previous_camera, 1000, 64, 48, timestamp + 1_000_000, h264_fixture))
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if len(direct_ffmpeg_children(receiver_pid)) <= 1:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"preview FFmpeg children leaked: {direct_ffmpeg_children(receiver_pid)}")
+
+
 def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
     sender_id = "rotation-test"
     camera_ids = ["cam01", "cam02", "cam03"]
@@ -537,7 +621,7 @@ def run(args) -> None:
             "status_port": ports["status"],
             "media_bind_ip": "127.0.0.1",
             "media_port": ports["media"],
-            "preview_enabled": False,
+            "preview_enabled": True,
             "media_udp_enabled": True,
             "media_udp_bind_ip": "127.0.0.1",
             "media_udp_port": ports["media_udp"],
@@ -617,6 +701,8 @@ def run(args) -> None:
             udp_status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
             assert udp_status["media_udp_stats"]["active_assemblies"] <= 256
             exercise_media_session_fencing(ports)
+            if shutil.which("ffmpeg"):
+                exercise_preview_decoder_cleanup(ports, receiver.pid)
 
             assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
             stop_one = json.loads(

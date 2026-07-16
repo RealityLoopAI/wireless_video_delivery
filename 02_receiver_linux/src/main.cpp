@@ -67,6 +67,7 @@ constexpr int kRgbPreviewJpegQuality = 10;
 constexpr bool kEnableRgbThumbnailPreview = true;
 constexpr bool kEnableJpegMainPreview = true;
 constexpr int kRgbPreviewPipeBytes = 1024 * 1024;
+constexpr int kRgbPreviewReadPollMs = 100;
 constexpr int kRgbPreviewWritePollMs = 2;
 constexpr int kRgbPreviewWriteBudgetMs = 25;
 constexpr size_t kRgbPreviewDecoderMaxQueuedPackets = 8;
@@ -540,6 +541,23 @@ void set_fd_cloexec(int fd) {
     if(flags >= 0) {
         fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
     }
+}
+
+bool create_cloexec_pipe(int fds[2]) {
+#if defined(__linux__) && defined(O_CLOEXEC)
+    if(pipe2(fds, O_CLOEXEC) == 0) {
+        return true;
+    }
+    if(errno != ENOSYS && errno != EINVAL) {
+        return false;
+    }
+#endif
+    if(pipe(fds) != 0) {
+        return false;
+    }
+    set_fd_cloexec(fds[0]);
+    set_fd_cloexec(fds[1]);
+    return true;
 }
 
 void set_fd_nonblocking(int fd) {
@@ -1378,15 +1396,12 @@ public:
 
         int stdin_pipe[2] = {-1, -1};
         int stdout_pipe[2] = {-1, -1};
-        if(pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
+        if(!create_cloexec_pipe(stdin_pipe) || !create_cloexec_pipe(stdout_pipe)) {
+            const int pipe_errno = errno;
             close_pipe(stdin_pipe);
             close_pipe(stdout_pipe);
-            logger.warn("rgb preview decoder pipe creation failed: " + std::string(std::strerror(errno)));
+            logger.warn("rgb preview decoder pipe creation failed: " + std::string(std::strerror(pipe_errno)));
             return false;
-        }
-
-        for(int fd : {stdin_pipe[0], stdin_pipe[1], stdout_pipe[0], stdout_pipe[1]}) {
-            set_fd_cloexec(fd);
         }
 
         std::string scale = "fps=" + std::to_string(preview_fps);
@@ -1429,6 +1444,12 @@ public:
         if(spawn_rc == 0) {
             spawn_rc = posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
         }
+        if(spawn_rc == 0 && stdin_pipe[0] != STDIN_FILENO) {
+            spawn_rc = posix_spawn_file_actions_addclose(&actions, stdin_pipe[0]);
+        }
+        if(spawn_rc == 0 && stdout_pipe[1] != STDOUT_FILENO) {
+            spawn_rc = posix_spawn_file_actions_addclose(&actions, stdout_pipe[1]);
+        }
 
         pid_t pid = -1;
         if(spawn_rc == 0) {
@@ -1450,6 +1471,7 @@ public:
         stdout_fd_ = stdout_pipe[0];
         set_pipe_size_if_supported(stdin_fd_, kRgbPreviewPipeBytes);
         set_fd_nonblocking(stdin_fd_);
+        set_fd_nonblocking(stdout_fd_);
         pid_ = pid;
         running_ = true;
         const int reader_fd = stdout_fd_;
@@ -1490,9 +1512,6 @@ public:
         if(pid > 0) {
             kill(pid, SIGTERM);
         }
-        if(stdout_fd >= 0) {
-            close(stdout_fd);
-        }
         if(writer_.joinable()) {
             writer_.join();
         }
@@ -1516,6 +1535,9 @@ public:
         // writer end closes and the reader observes EOF before it is joined.
         if(reader_.joinable()) {
             reader_.join();
+        }
+        if(stdout_fd >= 0) {
+            close(stdout_fd);
         }
     }
 
@@ -1632,15 +1654,40 @@ private:
         std::vector<uint8_t> buffer;
         buffer.reserve(512 * 1024);
         std::vector<uint8_t> chunk(32 * 1024);
-        while(true) {
-            const ssize_t got = read(fd, chunk.data(), chunk.size());
-            if(got <= 0) {
+        while(running_) {
+            pollfd pfd{};
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            int poll_rc = 0;
+            do {
+                poll_rc = poll(&pfd, 1, kRgbPreviewReadPollMs);
+            } while(poll_rc < 0 && errno == EINTR && running_);
+            if(!running_) {
                 break;
             }
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + got);
-            consume_jpegs(buffer);
-            if(buffer.size() > 4ull * 1024ull * 1024ull) {
-                buffer.erase(buffer.begin(), buffer.end() - 1024);
+            if(poll_rc < 0 || (pfd.revents & (POLLERR | POLLNVAL)) != 0) {
+                break;
+            }
+            if(poll_rc == 0 || (pfd.revents & (POLLIN | POLLHUP)) == 0) {
+                continue;
+            }
+            while(running_) {
+                const ssize_t got = read(fd, chunk.data(), chunk.size());
+                if(got > 0) {
+                    buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + got);
+                    consume_jpegs(buffer);
+                    if(buffer.size() > 4ull * 1024ull * 1024ull) {
+                        buffer.erase(buffer.begin(), buffer.end() - 1024);
+                    }
+                    continue;
+                }
+                if(got < 0 && errno == EINTR) {
+                    continue;
+                }
+                if(got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    break;
+                }
+                return;
             }
         }
     }
@@ -7398,12 +7445,22 @@ private:
                                          uint32_t &preview_width,
                                          uint32_t &preview_height,
                                          uint64_t &preview_us) {
-        if(has_idr && (!decoder || !decoder->active())) {
-            if(!decoder) {
-                decoder = std::make_unique<RgbPreviewDecoder>();
+        if(decoder && !decoder->active()) {
+            cleanup_rgb_decoder_async(std::move(decoder));
+            preview_width = 0;
+            preview_height = 0;
+            preview_us = 0;
+        }
+        if(has_idr && !decoder) {
+            decoder = std::make_unique<RgbPreviewDecoder>();
+            if(!decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps,
+                               rgb_h264_full_range_for_camera(config_, cam.sender_id, cam.camera_id), logger_)) {
+                cleanup_rgb_decoder_async(std::move(decoder));
+                preview_width = 0;
+                preview_height = 0;
+                preview_us = 0;
+                return false;
             }
-            decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps,
-                           rgb_h264_full_range_for_camera(config_, cam.sender_id, cam.camera_id), logger_);
             auto decoder_prefix = cam.rgb_preview_prefix_h264;
             const auto packet_prefix = h264_non_vcl_prefix(packet.payload);
             if(!packet_prefix.empty() && h264_payload_has_sps_and_pps(packet_prefix)) {
@@ -7411,12 +7468,10 @@ private:
             }
             if(!decoder_prefix.empty()) {
                 if(!decoder->write_packet(decoder_prefix)) {
-                    if(!decoder->has_frame()) {
-                        cleanup_rgb_decoder_async(std::move(decoder));
-                        preview_width = 0;
-                        preview_height = 0;
-                        preview_us = 0;
-                    }
+                    cleanup_rgb_decoder_async(std::move(decoder));
+                    preview_width = 0;
+                    preview_height = 0;
+                    preview_us = 0;
                     return false;
                 }
             }
@@ -7426,12 +7481,10 @@ private:
         }
 
         if(!decoder->write_packet(packet.payload)) {
-            if(!decoder->has_frame()) {
-                cleanup_rgb_decoder_async(std::move(decoder));
-                preview_width = 0;
-                preview_height = 0;
-                preview_us = 0;
-            }
+            cleanup_rgb_decoder_async(std::move(decoder));
+            preview_width = 0;
+            preview_height = 0;
+            preview_us = 0;
             return false;
         }
         preview_width = decoder->preview_width();
