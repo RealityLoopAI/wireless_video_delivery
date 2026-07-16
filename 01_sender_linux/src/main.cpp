@@ -764,6 +764,10 @@ void set_int_property_if_configured(CameraRuntime &camera, Logger &logger, const
     }
 }
 
+int software_rgb_rotation_degrees(const CameraConfig &config) {
+    return config.rotation_degrees.value_or(0) == 180 ? 180 : 0;
+}
+
 void apply_stream_rotation(CameraRuntime &camera, Logger &logger) {
     if(!camera.config.rotation_degrees) {
         return;
@@ -772,12 +776,16 @@ void apply_stream_rotation(CameraRuntime &camera, Logger &logger) {
     struct RotationProperty {
         OBPropertyID id;
         const char *name;
+        int desired_value;
         std::optional<int> previous_value;
     };
 
-    std::vector<RotationProperty> properties{{OB_PROP_COLOR_ROTATE_INT, "color", std::nullopt}};
+    const int configured_rotation = *camera.config.rotation_degrees;
+    const int software_rgb_rotation = software_rgb_rotation_degrees(camera.config);
+    std::vector<RotationProperty> properties{
+        {OB_PROP_COLOR_ROTATE_INT, "color", software_rgb_rotation == 0 ? configured_rotation : 0, std::nullopt}};
     if(camera.config.depth_profile.enabled) {
-        properties.push_back({OB_PROP_DEPTH_ROTATE_INT, "depth", std::nullopt});
+        properties.push_back({OB_PROP_DEPTH_ROTATE_INT, "depth", configured_rotation, std::nullopt});
     }
 
     for(auto &property : properties) {
@@ -792,12 +800,12 @@ void apply_stream_rotation(CameraRuntime &camera, Logger &logger) {
 
     try {
         for(auto &property : properties) {
-            camera.device->setIntProperty(property.id, *camera.config.rotation_degrees);
+            camera.device->setIntProperty(property.id, property.desired_value);
         }
         for(const auto &property : properties) {
             if(camera.device->isPropertySupported(property.id, OB_PERMISSION_READ)) {
                 const int readback = camera.device->getIntProperty(property.id);
-                if(readback != *camera.config.rotation_degrees) {
+                if(readback != property.desired_value) {
                     throw std::runtime_error(std::string(property.name) + " rotation readback=" + std::to_string(readback));
                 }
             }
@@ -818,8 +826,9 @@ void apply_stream_rotation(CameraRuntime &camera, Logger &logger) {
     }
 
     logger.info("stream rotation set camera_id=" + camera.config.camera_id
-                + " degrees=" + std::to_string(*camera.config.rotation_degrees)
-                + " color=true depth=" + bool_text(camera.config.depth_profile.enabled));
+                + " degrees=" + std::to_string(configured_rotation)
+                + " color=" + (software_rgb_rotation == 0 ? "hardware" : "software")
+                + " depth=" + (camera.config.depth_profile.enabled ? "hardware" : "disabled"));
 }
 
 void apply_color_controls(CameraRuntime &camera, Logger &logger) {
@@ -2755,11 +2764,18 @@ bool web_rgb_preview_emit_due(const AppConfig &config, CameraRuntime &camera, st
     return true;
 }
 
-void set_latest_bgr(CameraRuntime &camera, const cv::Mat &bgr, uint64_t frame_id, uint64_t system_timestamp_us) {
+void set_latest_bgr(CameraRuntime &camera, const cv::Mat &bgr, uint64_t frame_id, uint64_t system_timestamp_us,
+                    int rotation_degrees) {
     if(bgr.empty()) {
         return;
     }
-    const auto preview_bgr = bgr.clone();
+    cv::Mat preview_bgr;
+    if(rotation_degrees == 180) {
+        cv::rotate(bgr, preview_bgr, cv::ROTATE_180);
+    }
+    else {
+        preview_bgr = bgr.clone();
+    }
     std::lock_guard<std::mutex> lock(camera.mutex);
     camera.latest_bgr = preview_bgr;
     camera.latest_rgb_frame_id = frame_id;
@@ -2889,6 +2905,15 @@ cv::Mat color_to_preview_bgr(const std::shared_ptr<ob::ColorFrame> &frame) {
         return mjpg_to_bgr(frame, cv::IMREAD_REDUCED_COLOR_2);
     }
     return color_to_bgr(frame);
+}
+
+void apply_software_rgb_rotation(cv::Mat &bgr, const CameraConfig &config) {
+    if(bgr.empty() || software_rgb_rotation_degrees(config) == 0) {
+        return;
+    }
+    cv::Mat rotated;
+    cv::rotate(bgr, rotated, cv::ROTATE_180);
+    bgr = std::move(rotated);
 }
 
 cv::Mat depth_to_color(const std::shared_ptr<ob::DepthFrame> &frame) {
@@ -4994,7 +5019,8 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = mjpg_buffer_to_bgr(frame.data, frame.size, cv::IMREAD_REDUCED_COLOR_2);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
-                    set_latest_bgr(camera, preview_bgr, frame.frame_id, frame.system_timestamp_us);
+                    set_latest_bgr(camera, preview_bgr, frame.frame_id, frame.system_timestamp_us,
+                                   software_rgb_rotation_degrees(camera.config));
                 }
 
                 if(!camera.encoder) {
@@ -5297,25 +5323,31 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = color_to_preview_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
-                    set_latest_bgr(camera, preview_bgr, color->index(), rgb_system_timestamp_us);
+                    set_latest_bgr(camera, preview_bgr, color->index(), rgb_system_timestamp_us,
+                                   software_rgb_rotation_degrees(camera.config));
                 }
                 else if(!color_is_mjpg) {
                     const auto decode_started = std::chrono::steady_clock::now();
                     bgr = color_to_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
                     if(preview_due) {
-                        set_latest_bgr(camera, bgr, color->index(), rgb_system_timestamp_us);
+                        set_latest_bgr(camera, bgr, color->index(), rgb_system_timestamp_us,
+                                       software_rgb_rotation_degrees(camera.config));
                     }
+                    apply_software_rgb_rotation(bgr, camera.config);
                 }
 
                 if(!camera.encoder && !camera.jpeg_dual_encoder && (color_is_mjpg || !bgr.empty())) {
-                    auto input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
+                    auto input_format = color_is_mjpg && software_rgb_rotation_degrees(camera.config) == 0
+                                            ? GstH264InputFormat::Jpeg
+                                            : GstH264InputFormat::Bgr;
                     const auto color_profile = camera_color_profile(camera);
                     if(!color_profile) {
                         set_camera_last_error(camera, "missing rgb stream profile");
                     }
                     else {
-                        if(color_is_mjpg && config.web_rgb_preview.enabled && jpeg_dual_encoder_experiment_enabled()
+                        if(color_is_mjpg && software_rgb_rotation_degrees(camera.config) == 0 && config.web_rgb_preview.enabled
+                           && jpeg_dual_encoder_experiment_enabled()
                            && !camera.jpeg_dual_encoder_disabled) {
                             const auto shape = resolve_web_rgb_preview_shape(config.web_rgb_preview, color->width(), color->height());
                             if(shape.width > 0 && shape.height > 0) {
@@ -5378,7 +5410,9 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                 }
 
                 if(web_preview_due && !camera.web_preview_encoder && !camera.jpeg_dual_encoder && (color_is_mjpg || !bgr.empty())) {
-                    auto input_format = color_is_mjpg ? GstH264InputFormat::Jpeg : GstH264InputFormat::Bgr;
+                    auto input_format = color_is_mjpg && software_rgb_rotation_degrees(camera.config) == 0
+                                            ? GstH264InputFormat::Jpeg
+                                            : GstH264InputFormat::Bgr;
                     const auto color_profile = camera_color_profile(camera);
                     if(color_profile) {
                         const auto shape = resolve_web_rgb_preview_shape(config.web_rgb_preview, color->width(), color->height());
@@ -5482,6 +5516,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                             if(input_format == GstH264InputFormat::Bgr && bgr.empty()) {
                                 const auto decode_started = std::chrono::steady_clock::now();
                                 bgr = color_to_bgr(color);
+                                apply_software_rgb_rotation(bgr, camera.config);
                                 record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
                             }
                             if(input_format == GstH264InputFormat::Bgr && bgr.empty()) {
@@ -5512,6 +5547,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                                     if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
                                         const auto decode_started = std::chrono::steady_clock::now();
                                         bgr = color_to_bgr(color);
+                                        apply_software_rgb_rotation(bgr, camera.config);
                                         record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
                                     }
                                     if(preview_input_format == GstH264InputFormat::Bgr && bgr.empty()) {
