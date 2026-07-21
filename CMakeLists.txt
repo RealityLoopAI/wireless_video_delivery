@@ -60,10 +60,58 @@ endforeach()
 string(SHA256 GWV3_SOURCE_HASH_FULL "${GWV3_SOURCE_HASH_MATERIAL}")
 string(SUBSTRING "${GWV3_SOURCE_HASH_FULL}" 0 16 GWV3_SOURCE_HASH)
 
+function(gwv3_compute_component_hash output_variable)
+    set(component_files ${ARGN})
+    list(REMOVE_DUPLICATES component_files)
+    list(SORT component_files)
+    set(component_material "")
+    foreach(component_file IN LISTS component_files)
+        if(NOT EXISTS "${component_file}")
+            continue()
+        endif()
+        file(SHA256 "${component_file}" component_file_hash)
+        file(RELATIVE_PATH component_relative "${CMAKE_SOURCE_DIR}" "${component_file}")
+        string(APPEND component_material "${component_relative}:${component_file_hash}\n")
+    endforeach()
+    string(SHA256 component_hash_full "${component_material}")
+    string(SUBSTRING "${component_hash_full}" 0 16 component_hash)
+    set(${output_variable} "${component_hash}" PARENT_SCOPE)
+endfunction()
+
+file(GLOB_RECURSE GWV3_COMMON_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/03_common_core/*.cpp"
+    "${CMAKE_SOURCE_DIR}/03_common_core/*.h"
+    "${CMAKE_SOURCE_DIR}/03_common_core/*.hpp"
+)
+file(GLOB_RECURSE GWV3_SENDER_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/*.cpp"
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/*.h"
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/*.hpp"
+)
+file(GLOB_RECURSE GWV3_RECEIVER_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.cpp"
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.h"
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.hpp"
+)
+gwv3_compute_component_hash(GWV3_SENDER_SOURCE_HASH
+    ${GWV3_COMMON_VERSION_SOURCE_FILES}
+    ${GWV3_SENDER_VERSION_SOURCE_FILES}
+    "${CMAKE_SOURCE_DIR}/CMakeLists.txt"
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/CMakeLists.txt"
+)
+gwv3_compute_component_hash(GWV3_RECEIVER_SOURCE_HASH
+    ${GWV3_COMMON_VERSION_SOURCE_FILES}
+    ${GWV3_RECEIVER_VERSION_SOURCE_FILES}
+    "${CMAKE_SOURCE_DIR}/CMakeLists.txt"
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/CMakeLists.txt"
+)
+
 add_compile_definitions(
     GWV3_GIT_COMMIT="${GWV3_GIT_COMMIT}"
     GWV3_GIT_DIRTY=${GWV3_GIT_DIRTY}
     GWV3_SOURCE_HASH="${GWV3_SOURCE_HASH}"
+    GWV3_SENDER_SOURCE_HASH="${GWV3_SENDER_SOURCE_HASH}"
+    GWV3_RECEIVER_SOURCE_HASH="${GWV3_RECEIVER_SOURCE_HASH}"
 )
 
 option(GWV3_BUILD_SENDER "Build ARM sender program" OFF)

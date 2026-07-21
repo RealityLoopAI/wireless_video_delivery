@@ -136,11 +136,13 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 ## 8. 落盘目录
 
-接收端每段录制通常写入：
+接收端每段录制先写入：
 
 ```text
-<nas_root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
+<recording_staging.root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
 ```
+
+本地分片完成后，独立上传器使用相同相对路径原子发布到 `<nas_root>`。下游只能读取带 ready 标记的 NAS 最终目录。
 
 默认 `storage_key` 是：
 
@@ -154,14 +156,16 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 | 文件 | 当前作用 |
 | --- | --- |
-| `rgb.mp4` | RGB 正式视频文件，H.264；录制中为 fragmented MP4，正常收尾后原子替换为普通可拖动 MP4 |
+| `rgb.mp4` | RGB 正式视频文件；本地录制为 fragmented MP4，上传器无损转换为普通可拖动 MP4后发布到 NAS |
 | `depth.mkv` | Depth 正式文件，FFV1 封装 `uint16` 深度帧 |
 | `frames.csv` | 每个媒体包和录制帧的帧号、时间戳、诊断字段和 RGB 视频帧索引 |
 | `meta.json` | 录制段元信息、实际帧率、文件名、帧数和状态 |
 | `calibration.json` | 相机内参、外参、Depth scale 和对齐相关信息 |
 | `ffmpeg.log` | RGB/Depth 封装日志 |
-| `rgb_debug.h264` | RGB MP4 修复旁路，默认成功校验后不长期保留 |
+| `rgb_debug.h264` | RGB 调试/恢复旁路；仅 `write_debug_h264=true` 时写入 |
 | `depth_debug.raw` | Depth 调试旁路，仅配置开启时保留 |
+| `recording_staged.json` | 本地媒体和索引已关闭，等待 uploader 处理 |
+| `recording_ready.json` | NAS 最终目录已完整发布，可供下游使用 |
 
 ## 10. `frames.csv` 的关键字段
 

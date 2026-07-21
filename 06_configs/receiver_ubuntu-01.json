@@ -21,6 +21,15 @@
   "web_bind_ip": "0.0.0.0",
   "web_port": 8080,
   "nas_root": "/home/fz/Desktop/nas",
+  "recording_staging": {
+    "enabled": true,
+    "root": "/home/fz/recording_staging",
+    "defer_player_compatible_finalize": true,
+    "idle_finalize_ms": 5000,
+    "upload_interval_ms": 2000,
+    "upload_bandwidth_limit_mbps": 120,
+    "delete_after_upload": true
+  },
   "segment_seconds": 900,
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",
@@ -35,5 +44,5 @@
   "record_queue_max_mb": 512,
   "record_queue_total_max_mb": 2048,
   "record_finalize_max_pending_segments": 8,
-  "min_free_disk_mb": 2048
+  "min_free_disk_mb": 10240
 }

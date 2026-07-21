@@ -386,6 +386,38 @@ def direct_ffmpeg_children(parent_pid: int) -> list[int]:
     return result
 
 
+def assert_no_deleted_recording_fds(receiver_pid: int, recording_root: Path) -> None:
+    process_ids = {receiver_pid}
+    frontier = [receiver_pid]
+    while frontier:
+        parent = frontier.pop()
+        children_path = Path(f"/proc/{parent}/task/{parent}/children")
+        try:
+            children = [int(value) for value in children_path.read_text(encoding="ascii").split()]
+        except (FileNotFoundError, PermissionError, ValueError):
+            continue
+        for child in children:
+            if child not in process_ids:
+                process_ids.add(child)
+                frontier.append(child)
+    leaked = []
+    root_text = str(recording_root)
+    for process_id in process_ids:
+        fd_root = Path(f"/proc/{process_id}/fd")
+        try:
+            descriptors = list(fd_root.iterdir())
+        except (FileNotFoundError, PermissionError):
+            continue
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+            if target.endswith(" (deleted)") and root_text in target:
+                leaked.append((process_id, descriptor.name, target))
+    assert not leaked, f"receiver/FFmpeg retained deleted recording descriptors: {leaked}"
+
+
 def exercise_preview_decoder_cleanup(ports: dict, receiver_pid: int) -> None:
     sender_id = "preview-cleanup-test"
     camera_ids = ["cam01", "cam02"]
@@ -526,6 +558,101 @@ def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
         assert len(ready_files) >= 2, f"finalized rotated segments missing for {camera_id}"
 
 
+def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None:
+    sender_id = "idle-finalize-test"
+    camera_id = "cam01"
+    status_message(
+        ports["status"],
+        {
+            "protocol_version": "3.0",
+            "message_type": "camera_announce",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+            "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+        },
+    )
+    time.sleep(0.1)
+    start_path = f"/api/record/start?sender_id={sender_id}&camera_id={camera_id}"
+    assert request(ports["admin"], "POST", start_path)[0] == 200
+    fixture = generate_h264_fixture(60)
+    timestamp = int(time.time() * 1_000_000)
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        media.sendall(rgb_packet(sender_id, camera_id, 1, 64, 48, timestamp, fixture))
+        for frame_id in range(45):
+            media.sendall(depth_packet(sender_id, camera_id, frame_id, 64, 48, timestamp + frame_id * 33333))
+
+    deadline = time.monotonic() + 15
+    idle_finalizations = 0
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        camera = next(
+            (
+                item for item in current.get("cameras", [])
+                if item.get("sender_id") == sender_id and item.get("camera_id") == camera_id
+            ),
+            None,
+        )
+        if camera is None:
+            time.sleep(0.05)
+            continue
+        idle_finalizations = int(camera.get("media_idle_finalizations", 0))
+        if idle_finalizations >= 1 and not camera.get("segment_active") and not camera.get("segment_finalizing"):
+            assert camera.get("recording") is True
+            assert camera.get("record_accepting") is True
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("media-idle segment was not finalized independently of incoming packets")
+
+    second_timestamp = timestamp + 3_000_000
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        media.sendall(rgb_packet(sender_id, camera_id, 100, 64, 48, second_timestamp, fixture))
+        for frame_id in range(45):
+            media.sendall(depth_packet(sender_id, camera_id, 100 + frame_id, 64, 48, second_timestamp + frame_id * 33333))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        camera = next(
+            (
+                item for item in current.get("cameras", [])
+                if item.get("sender_id") == sender_id and item.get("camera_id") == camera_id
+            ),
+            None,
+        )
+        if camera is None:
+            time.sleep(0.05)
+            continue
+        if camera.get("segment_active"):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("recording did not resume into a new segment after idle finalization")
+
+    stop_path = f"/api/record/stop?sender_id={sender_id}&camera_id={camera_id}"
+    assert request(ports["admin"], "POST", stop_path, timeout=10)[0] == 200
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        camera = next(
+            (
+                item for item in current.get("cameras", [])
+                if item.get("sender_id") == sender_id and item.get("camera_id") == camera_id
+            ),
+            None,
+        )
+        if camera is None:
+            time.sleep(0.05)
+            continue
+        if not camera.get("segment_active") and not camera.get("segment_finalizing"):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("resumed idle-finalize recording did not stop cleanly")
+    ready_files = list((nas_root / f"{sender_id}_{camera_id}").rglob("recording_ready.json"))
+    assert len(ready_files) >= 2, "idle finalization/reconnect did not create separate finalized sessions"
+
+
 def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -> None:
     rgb_files = list(nas_root.rglob("rgb.mp4"))
     assert rgb_files, "rgb.mp4 was not finalized"
@@ -638,6 +765,7 @@ def run(args) -> None:
             "max_payload_mb": 8,
             "record_queue_max_mb": 16,
             "record_finalize_max_pending_segments": 4,
+            "recording_staging": {"enabled": False, "idle_finalize_ms": 1000},
         }
         config_path = temporary / "receiver.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -763,8 +891,10 @@ def run(args) -> None:
                 else:
                     raise AssertionError("recording did not finalize")
                 assert_recording_output(temporary / "nas")
+                exercise_media_idle_finalize_and_resume(ports, temporary / "nas")
                 exercise_async_segment_rotation(ports, temporary / "nas")
                 assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)
+                assert_no_deleted_recording_fds(receiver.pid, temporary / "nas")
             else:
                 print("recording finalization check skipped: ffmpeg/ffprobe unavailable")
 

@@ -187,3 +187,6 @@ stop_matching_processes "Web 监控" "$ROOT_DIR/09_web_monitor/.venv/bin/python 
 request_receiver_record_stop
 stop_unit_if_active "C++ 接收端" "$RECEIVER_UNIT" "$BUILD_DIR/receiver.pid" || stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1 0
 stop_matching_processes "C++ 接收端" "gemini_receiver .*--config" 0
+stop_unit_if_active "录制上传器" "gwv3-recording-uploader.service" "$BUILD_DIR/recording_uploader.pid" \
+  || stop_pid_file "录制上传器" "$BUILD_DIR/recording_uploader.pid"
+stop_matching_processes "录制上传器" "recording_uploader.py .*--config"

@@ -1017,6 +1017,13 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
 }
 
 struct Config {
+    struct RecordingStagingConfig {
+        bool enabled = false;
+        std::string root;
+        bool defer_player_compatible_finalize = true;
+        int idle_finalize_ms = 5000;
+    };
+
     std::string status_bind_ip = "0.0.0.0";
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
@@ -1032,6 +1039,7 @@ struct Config {
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
+    RecordingStagingConfig recording_staging;
     std::string log_directory = "08_reports/receiver_logs";
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
@@ -1139,6 +1147,20 @@ Config load_config(const std::string &path) {
     cfg.admin_bind_ip = string_value(root, "admin_bind_ip", cfg.admin_bind_ip);
     cfg.admin_port = port_value(root, "admin_port", cfg.admin_port);
     cfg.nas_root = string_value(root, "nas_root", cfg.nas_root);
+    Json::Value recording_staging(Json::objectValue);
+    if(!root["recording_staging"].isNull()) {
+        if(!root["recording_staging"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: recording_staging");
+        }
+        recording_staging = root["recording_staging"];
+    }
+    cfg.recording_staging.enabled = bool_value(recording_staging, "enabled", cfg.recording_staging.enabled);
+    cfg.recording_staging.root = string_value(recording_staging, "root", cfg.recording_staging.root);
+    cfg.recording_staging.defer_player_compatible_finalize =
+        bool_value(recording_staging, "defer_player_compatible_finalize",
+                   cfg.recording_staging.defer_player_compatible_finalize);
+    cfg.recording_staging.idle_finalize_ms =
+        int_value(recording_staging, "idle_finalize_ms", cfg.recording_staging.idle_finalize_ms);
     cfg.log_directory = string_value(root, "log_directory", cfg.log_directory);
     cfg.state_path = string_value(root, "state_path", cfg.state_path);
     cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
@@ -1173,6 +1195,12 @@ Config load_config(const std::string &path) {
     }
     if(cfg.clock_sync.model_timeout_ms <= 0) {
         throw std::runtime_error("clock_sync.model_timeout_ms must be positive");
+    }
+    if(cfg.recording_staging.enabled && cfg.recording_staging.root.empty()) {
+        throw std::runtime_error("recording_staging.root must not be empty when staging is enabled");
+    }
+    if(cfg.recording_staging.idle_finalize_ms < 1000 || cfg.recording_staging.idle_finalize_ms > 300000) {
+        throw std::runtime_error("recording_staging.idle_finalize_ms must be between 1000 and 300000");
     }
     if(cfg.admin_bind_ip != "127.0.0.1") {
         throw std::runtime_error("admin_bind_ip must remain 127.0.0.1; expose only the authenticated Web proxy");
@@ -2944,6 +2972,112 @@ MediaPacket normalized_depth_packet(const MediaPacket &packet) {
     throw std::runtime_error("unsupported depth compression: " + packet.codec_or_compression);
 }
 
+int wait_child(pid_t pid) {
+    int status = 0;
+    while(waitpid(pid, &status, 0) < 0) {
+        if(errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+    return status;
+}
+
+int add_spawn_closefrom(posix_spawn_file_actions_t *actions) {
+#if defined(__GLIBC__)
+    return posix_spawn_file_actions_addclosefrom_np(actions, 3);
+#else
+    const long limit = std::min<long>(sysconf(_SC_OPEN_MAX), 65536);
+    for(int fd = 3; fd < limit; ++fd) {
+        const int rc = posix_spawn_file_actions_addclose(actions, fd);
+        if(rc != 0) {
+            return rc;
+        }
+    }
+    return 0;
+#endif
+}
+
+pid_t spawn_shell_process(const std::string &command, int child_stdin, int child_stdout, int child_stderr, int &error_code) {
+    posix_spawn_file_actions_t actions;
+    error_code = posix_spawn_file_actions_init(&actions);
+    if(error_code != 0) {
+        return -1;
+    }
+    ScopeExit destroy_actions([&actions] { posix_spawn_file_actions_destroy(&actions); });
+    const auto add_dup = [&](int source, int destination) {
+        if(source < 0 || source == destination) {
+            return 0;
+        }
+        return posix_spawn_file_actions_adddup2(&actions, source, destination);
+    };
+    if((error_code = add_dup(child_stdin, STDIN_FILENO)) != 0
+       || (error_code = add_dup(child_stdout, STDOUT_FILENO)) != 0
+       || (error_code = add_dup(child_stderr, STDERR_FILENO)) != 0
+       || (error_code = add_spawn_closefrom(&actions)) != 0) {
+        return -1;
+    }
+    const char *argv[] = {"/bin/sh", "-c", command.c_str(), nullptr};
+    pid_t pid = -1;
+    error_code = posix_spawn(&pid, argv[0], &actions, nullptr, const_cast<char *const *>(argv), environ);
+    return error_code == 0 ? pid : -1;
+}
+
+int run_shell_command(const std::string &command) {
+    int error_code = 0;
+    const pid_t pid = spawn_shell_process(command, -1, -1, -1, error_code);
+    if(pid < 0) {
+        errno = error_code;
+        return -1;
+    }
+    return wait_child(pid);
+}
+
+std::optional<std::string> run_shell_capture(const std::string &command) {
+    int output_pipe[2]{-1, -1};
+    if(pipe2(output_pipe, O_CLOEXEC) != 0) {
+        return std::nullopt;
+    }
+    ScopeExit close_pipe([&] {
+        if(output_pipe[0] >= 0) {
+            close(output_pipe[0]);
+        }
+        if(output_pipe[1] >= 0) {
+            close(output_pipe[1]);
+        }
+    });
+    const int dev_null = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    if(dev_null < 0) {
+        return std::nullopt;
+    }
+    ScopeExit close_dev_null([&] { close(dev_null); });
+    int error_code = 0;
+    const pid_t pid = spawn_shell_process(command, -1, output_pipe[1], dev_null, error_code);
+    if(pid < 0) {
+        return std::nullopt;
+    }
+    close(output_pipe[1]);
+    output_pipe[1] = -1;
+    std::string output;
+    char buffer[512];
+    for(;;) {
+        const ssize_t count = read(output_pipe[0], buffer, sizeof(buffer));
+        if(count > 0) {
+            output.append(buffer, static_cast<size_t>(count));
+            continue;
+        }
+        if(count < 0 && errno == EINTR) {
+            continue;
+        }
+        if(count < 0) {
+            (void)wait_child(pid);
+            return std::nullopt;
+        }
+        break;
+    }
+    return wait_child(pid) == 0 ? std::optional<std::string>(std::move(output)) : std::nullopt;
+}
+
 class FfmpegPipe {
 public:
     FfmpegPipe() = default;
@@ -2956,13 +3090,25 @@ public:
 
     bool open(const std::string &command, Logger &logger) {
         close();
-        command_ = command;
-        // glibc's 'e' mode atomically marks the parent pipe end close-on-exec.
-        // Preview/recording children are spawned concurrently, so setting
-        // FD_CLOEXEC with a later fcntl() would still leave an inheritance race.
-        pipe_ = popen(command.c_str(), "we");
+        int input_pipe[2]{-1, -1};
+        if(pipe2(input_pipe, O_CLOEXEC) != 0) {
+            logger.error("failed to create ffmpeg input pipe: " + std::string(std::strerror(errno)));
+            return false;
+        }
+        int error_code = 0;
+        child_pid_ = spawn_shell_process(command, input_pipe[0], -1, -1, error_code);
+        ::close(input_pipe[0]);
+        if(child_pid_ < 0) {
+            ::close(input_pipe[1]);
+            logger.error("failed to start ffmpeg pipe: " + command + ": " + std::strerror(error_code));
+            return false;
+        }
+        pipe_ = fdopen(input_pipe[1], "w");
         if(!pipe_) {
-            logger.error("failed to start ffmpeg pipe: " + command + ": " + std::strerror(errno));
+            ::close(input_pipe[1]);
+            (void)wait_child(child_pid_);
+            child_pid_ = -1;
+            logger.error("failed to open ffmpeg input stream: " + std::string(std::strerror(errno)));
             return false;
         }
         if(setvbuf(pipe_, nullptr, _IONBF, 0) != 0) {
@@ -2990,12 +3136,16 @@ public:
     }
 
     int close() {
-        if(!pipe_) {
+        if(!pipe_ && child_pid_ < 0) {
             return 0;
         }
-        const int rc = pclose(pipe_);
-        pipe_ = nullptr;
-        return rc;
+        if(pipe_) {
+            fclose(pipe_);
+            pipe_ = nullptr;
+        }
+        const pid_t pid = child_pid_;
+        child_pid_ = -1;
+        return pid >= 0 ? wait_child(pid) : 0;
     }
 
     bool active() const {
@@ -3004,7 +3154,7 @@ public:
 
 private:
     FILE *pipe_ = nullptr;
-    std::string command_;
+    pid_t child_pid_ = -1;
 };
 
 std::string process_status_text(int status) {
@@ -3012,7 +3162,7 @@ std::string process_status_text(int status) {
         return "exit=0";
     }
     if(status == -1) {
-        return std::string("pclose failed: ") + std::strerror(errno);
+        return std::string("waitpid failed: ") + std::strerror(errno);
     }
     if(WIFEXITED(status)) {
         return "exit=" + std::to_string(WEXITSTATUS(status));
@@ -3216,16 +3366,18 @@ public:
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
         file_prefix_ = file_prefix;
         rgb_h264_full_range_ = rgb_h264_full_range_for_camera(cfg, sender_id, camera_id);
+        const std::string &recording_root = cfg.recording_staging.enabled ? cfg.recording_staging.root : cfg.nas_root;
         std::error_code root_ec;
-        std::filesystem::create_directories(cfg.nas_root, root_ec);
+        std::filesystem::create_directories(recording_root, root_ec);
         if(root_ec) {
-            throw std::runtime_error("cannot create NAS root: " + cfg.nas_root + ": " + root_ec.message());
+            throw std::runtime_error("cannot create recording root: " + recording_root + ": " + root_ec.message());
         }
-        const auto space = std::filesystem::space(cfg.nas_root, root_ec);
+        const auto space = std::filesystem::space(recording_root, root_ec);
         if(root_ec || space.available < cfg.min_free_disk_bytes) {
-            throw std::runtime_error("insufficient free space under NAS root: " + cfg.nas_root);
+            throw std::runtime_error("insufficient free space under recording root: " + recording_root);
         }
-        const auto directory_base = std::filesystem::path(cfg.nas_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_);
+        const auto directory_base =
+            std::filesystem::path(recording_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_);
         auto directory = directory_base;
         std::error_code ec;
         for(unsigned suffix = 1; std::filesystem::exists(directory, ec); ++suffix) {
@@ -3240,6 +3392,11 @@ public:
             throw std::runtime_error("cannot create recording directory: " + directory.string() + ": " + ec.message());
         }
         directory_ = directory.string();
+        recording_root_ = std::filesystem::path(recording_root).lexically_normal().string();
+        relative_directory_ = directory.lexically_relative(std::filesystem::path(recording_root)).generic_string();
+        if(relative_directory_.empty() || relative_directory_ == ".." || relative_directory_.rfind("../", 0) == 0) {
+            throw std::runtime_error("recording directory escaped configured root: " + directory_);
+        }
 
         // Publish frames.csv only after media finalization and RGB index merging complete.
         // Consumers must never mistake the live packet journal for the final MP4 frame map.
@@ -3271,10 +3428,12 @@ public:
                "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
                "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us\n";
 
-        rgb_debug_path_ = file_path("rgb_debug.h264");
-        rgb_debug_.open(rgb_debug_path_, std::ios::binary | std::ios::out | std::ios::trunc);
-        if(!rgb_debug_) {
-            logger.warn("failed to open RGB H264 recovery file: " + rgb_debug_path_.string());
+        if(cfg.write_debug_h264) {
+            rgb_debug_path_ = file_path("rgb_debug.h264");
+            rgb_debug_.open(rgb_debug_path_, std::ios::binary | std::ios::out | std::ios::trunc);
+            if(!rgb_debug_) {
+                throw std::runtime_error("cannot open RGB H264 debug file: " + rgb_debug_path_.string());
+            }
         }
         if(cfg.write_debug_depth_raw) {
             depth_debug_.open(file_path("depth_debug.raw"), std::ios::binary | std::ios::out | std::ios::trunc);
@@ -3338,7 +3497,12 @@ public:
         finalize_completed_media(cfg, logger);
         publish_finalized_frames(logger);
         write_meta(cfg, sender_id, camera_id, announce_json, true);
-        write_recording_ready_marker(sender_id, camera_id);
+        if(cfg.recording_staging.enabled && cfg.recording_staging.defer_player_compatible_finalize) {
+            write_recording_staged_marker(sender_id, camera_id);
+        }
+        else {
+            write_recording_ready_marker(sender_id, camera_id);
+        }
         set_segment_mtime_to_start(logger);
         logger.info("recording segment closed: " + directory_);
         if(flush_error) {
@@ -3363,6 +3527,8 @@ public:
         depth_pipe_.close();
         active_ = false;
         directory_.clear();
+        recording_root_.clear();
+        relative_directory_.clear();
         camera_name_.clear();
         storage_key_.clear();
         file_prefix_.clear();
@@ -3428,7 +3594,7 @@ public:
             const auto space = std::filesystem::space(directory_, ec);
             if(ec || space.available < cfg.min_free_disk_bytes) {
                 storage_failed_ = true;
-                throw std::runtime_error("recording stopped because NAS free space is below the configured reserve: " + directory_);
+                throw std::runtime_error("recording stopped because free space is below the configured reserve: " + directory_);
             }
         }
         if(allow_rotate && (stream_profile_changed(packet) || should_rotate(cfg))) {
@@ -3611,7 +3777,7 @@ private:
     }
 
     bool write_rgb_recovery_bytes(const uint8_t *data, size_t size, Logger &logger) {
-        if(!rgb_debug_ || size == 0) {
+        if(!rgb_debug_.is_open() || size == 0) {
             return false;
         }
         rgb_debug_.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
@@ -3861,10 +4027,14 @@ private:
         marker << "  \"schema\": \"gwv3_recording_ready_v1\",\n";
         marker << "  \"ready\": true,\n";
         marker << "  \"finalized_at_us\": " << now_us() << ",\n";
+        marker << "  \"segment_start_us\": " << start_us_ << ",\n";
+        marker << "  \"segment_end_us\": " << end_us_ << ",\n";
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
+        marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
         marker << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
         marker << "  \"meta_file\": \"" << json_escape(prefixed_filename(file_prefix_, "meta.json")) << "\",\n";
+        marker << "  \"ready_file\": \"" << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
         marker << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
         marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
         marker << "  \"rgb_frame_index_mode\": \"frames_csv_rgb_recorded_columns\"\n";
@@ -3877,6 +4047,40 @@ private:
         std::filesystem::rename(temporary_path, marker_path, ec);
         if(ec) {
             throw std::runtime_error("cannot publish recording ready marker: " + ec.message());
+        }
+    }
+
+    void write_recording_staged_marker(const std::string &sender_id, const std::string &camera_id) const {
+        const auto marker_path = file_path("recording_staged.json");
+        const auto temporary_path = file_path("recording_staged.json.tmp");
+        std::ofstream marker(temporary_path, std::ios::out | std::ios::trunc);
+        if(!marker) {
+            throw std::runtime_error("cannot create recording staged marker: " + temporary_path.string());
+        }
+        marker << "{\n";
+        marker << "  \"schema\": \"gwv3_recording_staged_v1\",\n";
+        marker << "  \"staged\": true,\n";
+        marker << "  \"staged_at_us\": " << now_us() << ",\n";
+        marker << "  \"segment_start_us\": " << start_us_ << ",\n";
+        marker << "  \"segment_end_us\": " << end_us_ << ",\n";
+        marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
+        marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
+        marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
+        marker << "  \"recording_root\": \"" << json_escape(recording_root_) << "\",\n";
+        marker << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
+        marker << "  \"meta_file\": \"" << json_escape(prefixed_filename(file_prefix_, "meta.json")) << "\",\n";
+        marker << "  \"ready_file\": \"" << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
+        marker << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
+        marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\"\n";
+        marker << "}\n";
+        marker.close();
+        if(!marker) {
+            throw std::runtime_error("cannot finish recording staged marker: " + temporary_path.string());
+        }
+        std::error_code ec;
+        std::filesystem::rename(temporary_path, marker_path, ec);
+        if(ec) {
+            throw std::runtime_error("cannot publish recording staged marker: " + ec.message());
         }
     }
 
@@ -4134,21 +4338,12 @@ private:
         const std::string cmd = shell_quote(ffprobe_path) +
                                 " -v error -show_entries format=duration -of default=nk=1:nw=1 " + shell_quote(media_path.string()) +
                                 " 2>/dev/null";
-        FILE *pipe = popen(cmd.c_str(), "r");
-        if(!pipe) {
-            return std::nullopt;
-        }
-        std::string output;
-        char buffer[128];
-        while(fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            output += buffer;
-        }
-        const int rc = pclose(pipe);
-        if(rc != 0) {
+        const auto output = run_shell_capture(cmd);
+        if(!output) {
             return std::nullopt;
         }
         try {
-            const double duration = std::stod(trim_copy(output));
+            const double duration = std::stod(trim_copy(*output));
             if(std::isfinite(duration) && duration > 0.0) {
                 return duration;
             }
@@ -4327,7 +4522,7 @@ private:
                                     + " -hide_banner -loglevel warning -y -i " + shell_quote(destination.string())
                                     + " -map 0:v:0 -c:v copy " + shell_quote(temporary.string())
                                     + " 2>>" + shell_quote(log_path.string());
-        const int rc = std::system(command.c_str());
+        const int rc = run_shell_command(command);
         if(rc != 0) {
             append_retime_log(log_path, "rgb player-compatible remux failed: " + process_status_text(rc));
             std::filesystem::remove(temporary, ec);
@@ -4374,7 +4569,7 @@ private:
                                     + " -f h264 -i " + shell_quote(rgb_debug_path_.string())
                                     + " -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags + " -flush_packets 1 "
                                     + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
-        if(std::system(command.c_str()) != 0) {
+        if(run_shell_command(command) != 0) {
             logger.warn("RGB automatic recovery remux failed: " + directory_);
             std::filesystem::remove(temporary, ec);
             return false;
@@ -4431,7 +4626,7 @@ private:
         const std::string command = shell_quote(cfg.ffmpeg_path)
                                     + " -hide_banner -loglevel warning -y -f concat -safe 0 -i " + shell_quote(list_path.string())
                                     + " -c copy " + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
-        const int rc = std::system(command.c_str());
+        const int rc = run_shell_command(command);
         std::filesystem::remove(list_path, ec);
         if(rc != 0 || !replace_with_valid_media(temporary, destination, ffprobe_path, logger)) {
             std::filesystem::remove(temporary, ec);
@@ -4462,15 +4657,20 @@ private:
             return ok;
         };
 
+        const bool defer_player_compatible = cfg.recording_staging.enabled
+                                             && cfg.recording_staging.defer_player_compatible_finalize;
         bool rgb_ok = validate_media(file_path("rgb.mp4"), "rgb");
         if((rgb_pipe_failed_ || !rgb_ok) && rebuild_rgb_from_recovery(cfg, ffprobe_path, logger)) {
             rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_recovered");
         }
-        if(rgb_ok) {
+        if(rgb_ok && !defer_player_compatible) {
             rgb_ok = finalize_rgb_player_compatible(cfg, ffprobe_path, logger);
             if(rgb_ok) {
                 rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_compatible");
             }
+        }
+        else if(rgb_ok && defer_player_compatible) {
+            append_retime_log(log_path, "rgb player-compatible remux deferred to recording uploader");
         }
         if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
             std::error_code ec;
@@ -4495,7 +4695,7 @@ private:
             set_file_mtime_to_start(log_path, start_us_);
         }
         if(!rgb_ok && (file_size_nonzero(file_path("rgb.mp4")) || file_size_nonzero(rgb_debug_path_))) {
-            throw std::runtime_error("RGB recording could not be finalized as a player-compatible MP4: " + directory_);
+            throw std::runtime_error("RGB recording could not be finalized: " + directory_);
         }
     }
 
@@ -4529,6 +4729,13 @@ private:
         meta << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"frames_publish_state\": \"" << (closed ? "finalized" : "recording") << "\",\n";
+        meta << "  \"recording_storage_mode\": \""
+             << (cfg.recording_staging.enabled ? "local_staging" : "direct_nas") << "\",\n";
+        meta << "  \"recording_relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
+        meta << "  \"nas_publish_root\": \"" << json_escape(cfg.nas_root) << "\",\n";
+        meta << "  \"player_compatible_finalize_deferred\": "
+             << (cfg.recording_staging.enabled && cfg.recording_staging.defer_player_compatible_finalize ? "true" : "false")
+             << ",\n";
         meta << "  \"recording_ready_file\": \""
              << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
         meta << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
@@ -4661,6 +4868,8 @@ private:
     uint64_t end_us_ = 0;
     std::chrono::steady_clock::time_point start_steady_{};
     std::string directory_;
+    std::string recording_root_;
+    std::string relative_directory_;
     std::string camera_name_;
     std::string storage_key_;
     std::string file_prefix_;
@@ -4823,6 +5032,7 @@ struct CameraState {
     uint64_t last_status_us = 0;
     std::string status_endpoint;
     uint64_t last_media_us = 0;
+    uint64_t last_media_session_id = 0;
     uint64_t rgb_packets = 0;
     uint64_t depth_packets = 0;
     uint64_t rgb_bytes = 0;
@@ -4852,6 +5062,20 @@ struct CameraState {
     std::vector<uint8_t> depth_preview_ppm;
     double depth_scale = 1.0;
     std::string last_error;
+    std::string sender_build_commit;
+    std::string sender_build_source_hash;
+    bool sender_build_dirty = false;
+    double sender_rgb_input_fps = 0.0;
+    double sender_depth_input_fps = 0.0;
+    double sender_rgb_sent_fps = 0.0;
+    double sender_depth_sent_fps = 0.0;
+    uint64_t sender_rgb_dropped_frames = 0;
+    uint64_t sender_depth_dropped_frames = 0;
+    uint64_t sender_rgb_transport_retry_drops = 0;
+    uint64_t sender_rgb_send_failures = 0;
+    uint64_t sender_depth_send_failures = 0;
+    bool sender_publish_warmup_active = false;
+    uint64_t sender_publish_warmup_drops = 0;
     std::string last_announce_json;
     bool last_announce_live = false;
     uint64_t last_announce_received_us = 0;
@@ -4861,6 +5085,9 @@ struct CameraState {
     bool segment_active = false;
     bool segment_finalizing = false;
     std::string segment_dir;
+    uint64_t segment_start_us = 0;
+    std::atomic<bool> segment_rotation_requested{false};
+    std::atomic<uint64_t> media_idle_finalizations{0};
     std::unique_ptr<SegmentWriter> segment = std::make_unique<SegmentWriter>();
     std::atomic<size_t> segment_finalize_pending{0};
     std::atomic<bool> segment_finalize_active{false};
@@ -4914,6 +5141,7 @@ public:
         std::string sender_id;
         std::string camera_id;
         std::string announce_json;
+        bool resume_recording = false;
     };
 
     struct SegmentFinalizeTask {
@@ -4926,6 +5154,7 @@ public:
         std::string directory;
         uint64_t queued_us = 0;
         bool completes_stop = false;
+        bool resume_recording = false;
     };
 
     struct MediaIngressOwner {
@@ -4973,6 +5202,7 @@ public:
         try {
             start_segment_finalize_worker();
             start_decoder_cleanup_worker();
+            start_recording_maintenance_worker();
             clock_sync_manager_.set_log_callbacks([this](const std::string &message) { logger_.info(message); },
                                                  [this](const std::string &message) { logger_.warn(message); });
             clock_sync_manager_.start();
@@ -5017,6 +5247,10 @@ public:
             return;
         }
         running_ = false;
+        recording_maintenance_cv_.notify_all();
+        if(recording_maintenance_thread_.joinable()) {
+            recording_maintenance_thread_.join();
+        }
         clock_sync_manager_.stop();
         shutdown_client_sockets();
         if(udp_thread_.joinable()) {
@@ -5069,7 +5303,7 @@ public:
             }
             return "{\"running\":true,\"status_stale\":true,\"build_commit\":\"" + std::string(GWV3_GIT_COMMIT)
                    + "\",\"build_dirty\":" + std::string(GWV3_GIT_DIRTY != 0 ? "true" : "false")
-                   + ",\"build_source_hash\":\"" + std::string(GWV3_SOURCE_HASH) + "\",\"cameras\":[]}";
+                   + ",\"build_source_hash\":\"" + std::string(GWV3_RECEIVER_SOURCE_HASH) + "\",\"cameras\":[]}";
         }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
@@ -5095,12 +5329,26 @@ public:
         out << "\"running\":true,";
         out << "\"build_commit\":\"" << json_escape(GWV3_GIT_COMMIT) << "\",";
         out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
-        out << "\"build_source_hash\":\"" << GWV3_SOURCE_HASH << "\",";
+        out << "\"build_source_hash\":\"" << GWV3_RECEIVER_SOURCE_HASH << "\",";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
         out << "\"recording_start_us\":" << recording_all_start_us_ << ',';
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
+        out << "\"recording_staging\":{";
+        out << "\"enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
+        out << "\"root\":\"" << json_escape(config_.recording_staging.root) << "\",";
+        out << "\"defer_player_compatible_finalize\":"
+            << (config_.recording_staging.defer_player_compatible_finalize ? "true" : "false") << ',';
+        out << "\"idle_finalize_ms\":" << config_.recording_staging.idle_finalize_ms << "},";
+        out << "\"recording_staging_enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
+        out << "\"recording_write_root\":\""
+            << json_escape(config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root) << "\",";
+        {
+            std::lock_guard<std::mutex> uploader_lock(uploader_status_mutex_);
+            out << "\"recording_uploader\":"
+                << (uploader_status_json_.empty() ? "{\"available\":false}" : uploader_status_json_) << ',';
+        }
         out << "\"media_port\":" << config_.media_port << ',';
         out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
         out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
@@ -5259,6 +5507,9 @@ public:
             out << "{";
             out << "\"sender_id\":\"" << json_escape(cam.sender_id) << "\",";
             out << "\"camera_id\":\"" << json_escape(cam.camera_id) << "\",";
+            out << "\"sender_build_commit\":\"" << json_escape(cam.sender_build_commit) << "\",";
+            out << "\"sender_build_source_hash\":\"" << json_escape(cam.sender_build_source_hash) << "\",";
+            out << "\"sender_build_dirty\":" << (cam.sender_build_dirty ? "true" : "false") << ',';
             out << "\"camera_key\":\"" << json_escape(cam.key) << "\",";
             out << "\"camera_name\":\"" << json_escape(cam.camera_name) << "\",";
             out << "\"storage_key\":\"" << json_escape(cam.storage_key()) << "\",";
@@ -5273,11 +5524,26 @@ public:
             out << "\"segment_active\":" << (cam.segment_active ? "true" : "false") << ',';
             out << "\"segment_finalizing\":" << (cam.segment_finalizing ? "true" : "false") << ',';
             out << "\"segment_dir\":\"" << json_escape(cam.segment_dir) << "\",";
+            out << "\"segment_start_us\":" << cam.segment_start_us << ',';
             out << "\"segment_finalize_pending\":" << segment_finalize_pending << ',';
             out << "\"segment_finalize_active\":" << (segment_finalize_active ? "true" : "false") << ',';
             out << "\"segment_finalize_completed\":" << cam.segment_finalize_completed.load() << ',';
             out << "\"segment_finalize_failures\":" << cam.segment_finalize_failures.load() << ',';
             out << "\"segment_finalize_last_duration_ms\":" << cam.segment_finalize_last_duration_ms.load() << ',';
+            out << "\"segment_rotation_requested\":" << (cam.segment_rotation_requested.load() ? "true" : "false") << ',';
+            out << "\"media_idle_finalizations\":" << cam.media_idle_finalizations.load() << ',';
+            out << "\"last_media_session_id\":" << cam.last_media_session_id << ',';
+            out << "\"sender_rgb_input_fps\":" << cam.sender_rgb_input_fps << ',';
+            out << "\"sender_depth_input_fps\":" << cam.sender_depth_input_fps << ',';
+            out << "\"sender_rgb_sent_fps\":" << cam.sender_rgb_sent_fps << ',';
+            out << "\"sender_depth_sent_fps\":" << cam.sender_depth_sent_fps << ',';
+            out << "\"sender_rgb_dropped_frames\":" << cam.sender_rgb_dropped_frames << ',';
+            out << "\"sender_depth_dropped_frames\":" << cam.sender_depth_dropped_frames << ',';
+            out << "\"sender_rgb_transport_retry_drops\":" << cam.sender_rgb_transport_retry_drops << ',';
+            out << "\"sender_rgb_send_failures\":" << cam.sender_rgb_send_failures << ',';
+            out << "\"sender_depth_send_failures\":" << cam.sender_depth_send_failures << ',';
+            out << "\"sender_publish_warmup_active\":" << (cam.sender_publish_warmup_active ? "true" : "false") << ',';
+            out << "\"sender_publish_warmup_drops\":" << cam.sender_publish_warmup_drops << ',';
             out << "\"record_queue_packets\":" << record_queue_packets << ',';
             out << "\"record_queue_bytes\":" << record_queue_bytes << ',';
             out << "\"record_queue_peak_packets\":" << record_queue_peak_packets << ',';
@@ -5358,7 +5624,7 @@ public:
         out << "{";
         out << "\"build_commit\":\"" << json_escape(GWV3_GIT_COMMIT) << "\",";
         out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
-        out << "\"build_source_hash\":\"" << GWV3_SOURCE_HASH << "\",";
+        out << "\"build_source_hash\":\"" << GWV3_RECEIVER_SOURCE_HASH << "\",";
         out << "\"status_bind_ip\":\"" << json_escape(config_.status_bind_ip) << "\",";
         out << "\"status_port\":" << config_.status_port << ',';
         out << "\"media_bind_ip\":\"" << json_escape(config_.media_bind_ip) << "\",";
@@ -5484,7 +5750,8 @@ public:
             return false;
         }
         const bool profile_changed = cam->segment->stream_profile_changed(packet);
-        const bool timed_rotation = allow_timed_rotation && cam->segment->should_rotate(config_);
+        const bool timed_rotation = allow_timed_rotation
+                                    && (cam->segment_rotation_requested.load() || cam->segment->should_rotate(config_));
         if(!profile_changed && !timed_rotation) {
             return false;
         }
@@ -5522,6 +5789,7 @@ public:
         const std::string previous_directory = previous_segment->directory();
         previous_segment->mark_end_us(now_us());
         cam->segment = std::move(next_segment);
+        cam->segment_rotation_requested.store(false);
 
         SegmentFinalizeTask task;
         task.cam = cam;
@@ -5581,6 +5849,7 @@ public:
         try {
             bool segment_active = false;
             std::string segment_dir;
+            uint64_t segment_start_us = 0;
             {
                 std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
                 rotate_record_segment_async(cam, job, *record_packet, allow_segment_rotate);
@@ -5588,11 +5857,13 @@ public:
                                            job.file_prefix, job.announce_json, logger_, false);
                 segment_active = cam->segment->active();
                 segment_dir = cam->segment->directory();
+                segment_start_us = cam->segment->start_us();
             }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 cam->segment_active = segment_active;
                 cam->segment_dir = std::move(segment_dir);
+                cam->segment_start_us = segment_start_us;
             }
         }
         catch(const std::exception &e) {
@@ -5899,6 +6170,9 @@ public:
                 task.cam->last_error = "recording_finalize_failed: " + task.directory;
             }
             set_record_finalizing(task.cam, false);
+            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
+                set_record_accepting(task.cam, true);
+            }
         }
         else if(task.cam && !success) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -5995,6 +6269,92 @@ public:
         segment_finalize_worker_running_ = false;
     }
 
+    void refresh_recording_uploader_status() {
+        if(!config_.recording_staging.enabled) {
+            return;
+        }
+        const auto status_path = std::filesystem::path(config_.recording_staging.root) / ".gwv3_uploader_status.json";
+        std::ifstream input(status_path);
+        std::string status;
+        if(input) {
+            const std::string raw((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+            Json::Value root;
+            if(parse_json_object_strict(raw, root)) {
+                Json::StreamWriterBuilder builder;
+                builder["indentation"] = "";
+                status = Json::writeString(builder, root);
+            }
+        }
+        if(status.empty()) {
+            status = "{\"available\":false,\"last_error\":\"uploader status unavailable\"}";
+        }
+        std::lock_guard<std::mutex> lock(uploader_status_mutex_);
+        uploader_status_json_ = std::move(status);
+    }
+
+    void recording_maintenance_loop() {
+        logger_.info("recording maintenance worker started idle_finalize_ms="
+                     + std::to_string(config_.recording_staging.idle_finalize_ms));
+        auto next_uploader_status_refresh = std::chrono::steady_clock::time_point::min();
+        while(running_) {
+            const uint64_t current_us = now_us();
+            std::vector<std::shared_ptr<CameraState>> camera_snapshot;
+            std::vector<SegmentCloseTask> idle_close_tasks;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                refresh_camera_liveness_locked(current_us);
+                camera_snapshot.reserve(cameras_.size());
+                for(auto &item : cameras_) {
+                    auto &cam = item.second;
+                    camera_snapshot.push_back(cam);
+                    const uint64_t idle_limit_us = static_cast<uint64_t>(config_.recording_staging.idle_finalize_ms) * 1000ull;
+                    const bool media_idle = cam->segment_active && cam->last_media_us > 0
+                                            && current_us > cam->last_media_us
+                                            && current_us - cam->last_media_us >= idle_limit_us;
+                    if(media_idle && !cam->segment_finalizing) {
+                        const bool resume_recording = recording_all_ || cam->recording_requested;
+                        cam->segment_finalizing = true;
+                        cam->segment_rotation_requested.store(false);
+                        cam->media_idle_finalizations.fetch_add(1);
+                        set_record_accepting(cam, false);
+                        set_record_finalizing(cam, true);
+                        idle_close_tasks.push_back({cam, cam->sender_id, cam->camera_id,
+                                                    cam->last_announce_live ? cam->last_announce_json : "",
+                                                    resume_recording});
+                    }
+                }
+            }
+
+            for(const auto &cam : camera_snapshot) {
+                if(!cam) {
+                    continue;
+                }
+                std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+                if(cam->segment && cam->segment->should_rotate(config_)) {
+                    cam->segment_rotation_requested.store(true);
+                }
+            }
+            if(!idle_close_tasks.empty()) {
+                logger_.warn("recording media idle timeout; finalizing segments count="
+                             + std::to_string(idle_close_tasks.size()));
+                close_segments_async(std::move(idle_close_tasks), "recording media idle timeout");
+            }
+
+            const auto steady_now = std::chrono::steady_clock::now();
+            if(steady_now >= next_uploader_status_refresh) {
+                refresh_recording_uploader_status();
+                next_uploader_status_refresh = steady_now + std::chrono::seconds(1);
+            }
+            std::unique_lock<std::mutex> wait_lock(recording_maintenance_mutex_);
+            recording_maintenance_cv_.wait_for(wait_lock, std::chrono::milliseconds(250), [this] { return !running_; });
+        }
+        logger_.info("recording maintenance worker stopped");
+    }
+
+    void start_recording_maintenance_worker() {
+        recording_maintenance_thread_ = std::thread([this] { recording_maintenance_loop(); });
+    }
+
     void wait_record_queue_idle(const std::shared_ptr<CameraState> &cam, const std::string &reason) {
         if(!cam) {
             return;
@@ -6051,6 +6411,9 @@ public:
             task.cam->segment_finalizing = false;
             task.cam->last_error = "recording_finalize_failed: finalizer is unavailable";
             set_record_finalizing(task.cam, false);
+            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
+                set_record_accepting(task.cam, true);
+            }
             return;
         }
         bool slot_reserved = true;
@@ -6065,6 +6428,7 @@ public:
                     detached->mark_end_us(now_us());
                     directory = detached->directory();
                     task.cam->segment = std::move(replacement);
+                    task.cam->segment_rotation_requested.store(false);
                 }
             }
             if(!detached) {
@@ -6074,13 +6438,18 @@ public:
                 task.cam->segment_active = false;
                 task.cam->segment_finalizing = false;
                 task.cam->segment_dir.clear();
+                task.cam->segment_start_us = 0;
                 set_record_finalizing(task.cam, false);
+                if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
+                    set_record_accepting(task.cam, true);
+                }
                 return;
             }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 task.cam->segment_active = false;
                 task.cam->segment_dir.clear();
+                task.cam->segment_start_us = 0;
             }
 
             SegmentFinalizeTask finalize_task;
@@ -6092,6 +6461,7 @@ public:
             finalize_task.reason = reason;
             finalize_task.directory = directory;
             finalize_task.completes_stop = true;
+            finalize_task.resume_recording = task.resume_recording;
             if(!enqueue_reserved_segment_finalize(std::move(finalize_task))) {
                 slot_reserved = false;
                 throw std::runtime_error("cannot enqueue segment finalization: " + directory);
@@ -6109,6 +6479,9 @@ public:
             task.cam->segment_finalizing = false;
             task.cam->last_error = std::string("recording_finalize_failed: ") + e.what();
             set_record_finalizing(task.cam, false);
+            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
+                set_record_accepting(task.cam, true);
+            }
         }
     }
 
@@ -7377,6 +7750,32 @@ private:
             const auto received_us = now_us();
             cam.last_status_us = received_us;
             cam.status_endpoint = peer_endpoint;
+            cam.sender_build_commit = json_string_value(root, "build_commit", cam.sender_build_commit);
+            cam.sender_build_source_hash = json_string_value(root, "build_source_hash", cam.sender_build_source_hash);
+            if(root["build_dirty"].isBool()) {
+                cam.sender_build_dirty = root["build_dirty"].asBool();
+            }
+            if(type == "heartbeat") {
+                cam.sender_rgb_input_fps = json_double_value(root, "rgb_measured_fps").value_or(cam.sender_rgb_input_fps);
+                cam.sender_depth_input_fps = json_double_value(root, "depth_measured_fps").value_or(cam.sender_depth_input_fps);
+                cam.sender_rgb_sent_fps = json_double_value(root, "rgb_sent_fps").value_or(cam.sender_rgb_sent_fps);
+                cam.sender_depth_sent_fps = json_double_value(root, "depth_sent_fps").value_or(cam.sender_depth_sent_fps);
+                cam.sender_rgb_dropped_frames =
+                    json_uint64_value(root, "rgb_dropped_frames").value_or(cam.sender_rgb_dropped_frames);
+                cam.sender_depth_dropped_frames =
+                    json_uint64_value(root, "depth_dropped_frames").value_or(cam.sender_depth_dropped_frames);
+                cam.sender_rgb_transport_retry_drops =
+                    json_uint64_value(root, "rgb_transport_retry_drops").value_or(cam.sender_rgb_transport_retry_drops);
+                cam.sender_rgb_send_failures =
+                    json_uint64_value(root, "rgb_send_failures_total").value_or(cam.sender_rgb_send_failures);
+                cam.sender_depth_send_failures =
+                    json_uint64_value(root, "depth_send_failures_total").value_or(cam.sender_depth_send_failures);
+                if(root["publish_warmup_active"].isBool()) {
+                    cam.sender_publish_warmup_active = root["publish_warmup_active"].asBool();
+                }
+                cam.sender_publish_warmup_drops =
+                    json_uint64_value(root, "publish_warmup_dropped_framesets").value_or(cam.sender_publish_warmup_drops);
+            }
             if(type == "heartbeat" || type == "camera_announce" || type == "camera_offline") {
                 should_log_status = cam.last_status_log_us == 0 ||
                                     received_us >= cam.last_status_log_us + kRoutineStatusLogMinIntervalUs;
@@ -7451,7 +7850,10 @@ private:
             preview_height = 0;
             preview_us = 0;
         }
-        if(has_idr && !decoder) {
+        if(!decoder) {
+            if(!has_idr) {
+                return false;
+            }
             decoder = std::make_unique<RgbPreviewDecoder>();
             if(!decoder->start(config_, decoder_key, packet.width, packet.height, target_width, preview_fps,
                                rgb_h264_full_range_for_camera(config_, cam.sender_id, cam.camera_id), logger_)) {
@@ -7475,9 +7877,6 @@ private:
                     return false;
                 }
             }
-        }
-        else if(!decoder || !decoder->active()) {
-            return false;
         }
 
         if(!decoder->write_packet(packet.payload)) {
@@ -7600,6 +7999,9 @@ private:
         const bool rgb_has_idr = rgb_stream_packet &&
                                  (((packet.flags & key_frame) != 0u) || h264_payload_has_nal_type(packet.payload, 5));
         const bool rgb_has_vcl = rgb_stream_packet && h264_payload_has_vcl_nal(packet.payload);
+        if(!claim_media_ingress(packet, media_session_id, media_fd, peer_endpoint)) {
+            return;
+        }
 
         std::shared_ptr<CameraState> cam;
         bool build_depth_preview = false;
@@ -7636,6 +8038,7 @@ private:
                 return;
             }
             cam->last_media_us = packet_receive_us;
+            cam->last_media_session_id = media_session_id;
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
@@ -7713,10 +8116,6 @@ private:
                 record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             }
         }
-        if(!claim_media_ingress(packet, media_session_id, media_fd, peer_endpoint)) {
-            return;
-        }
-
         std::shared_ptr<MediaPacket> packet_owner;
         MediaPacket *processing_packet = &packet;
         if(should_record) {
@@ -8465,6 +8864,7 @@ private:
     std::thread preview_udp_thread_;
     std::thread tcp_thread_;
     std::thread admin_thread_;
+    std::thread recording_maintenance_thread_;
     std::thread segment_finalize_worker_;
     std::mutex mutex_;
     std::mutex segment_close_futures_mutex_;
@@ -8475,8 +8875,11 @@ private:
     std::mutex client_threads_mutex_;
     std::mutex decoder_cleanup_mutex_;
     std::mutex status_cache_mutex_;
+    std::mutex recording_maintenance_mutex_;
+    std::mutex uploader_status_mutex_;
     std::condition_variable decoder_cleanup_cv_;
     std::condition_variable segment_finalize_cv_;
+    std::condition_variable recording_maintenance_cv_;
     bool decoder_cleanup_running_ = false;
     bool segment_finalize_worker_running_ = false;
     bool segment_finalize_worker_stop_ = false;
@@ -8500,6 +8903,7 @@ private:
     std::deque<std::unique_ptr<RgbPreviewDecoder>> decoder_cleanup_queue_;
     std::set<int> client_fds_;
     std::string status_cache_;
+    std::string uploader_status_json_;
     std::unordered_map<std::string, PreviewUdpAssembly> preview_udp_assemblies_;
     std::unordered_map<std::string, MediaIngressOwner> media_ingress_owners_;
     std::unordered_map<std::string, std::string> sender_source_ips_;

@@ -6,6 +6,7 @@ BUILD_DIR="$ROOT_DIR/12_build"
 CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
+UPLOADER_UNIT="gwv3-recording-uploader.service"
 
 read_config_field() {
   python3 - "$CONFIG" "$1" "$2" <<'PY'
@@ -50,6 +51,11 @@ show_pid() {
 
 show_pid "C++ 接收端" "$BUILD_DIR/receiver.pid" "$RECEIVER_UNIT"
 show_pid "Web 监控" "$BUILD_DIR/web_monitor.pid" "$WEB_UNIT"
+if systemd_user_available && systemctl --user is-active --quiet "$UPLOADER_UNIT" 2>/dev/null; then
+  echo "录制上传器运行中，PID=$(unit_main_pid "$UPLOADER_UNIT")，systemd=$UPLOADER_UNIT"
+else
+  echo "录制上传器未运行"
+fi
 
 ADMIN_PORT="$ADMIN_PORT" python3 - <<'PY'
 import json

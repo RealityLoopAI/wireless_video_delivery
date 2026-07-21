@@ -7,12 +7,14 @@ BUILD_DIR="$ROOT_DIR/12_build"
 BIN="$BUILD_DIR/bin/gemini_receiver"
 RECEIVER_PID="$BUILD_DIR/receiver.pid"
 WEB_PID="$BUILD_DIR/web_monitor.pid"
+UPLOADER_PID="$BUILD_DIR/recording_uploader.pid"
 RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
 WEB_DIR="$ROOT_DIR/09_web_monitor"
 VENV="$WEB_DIR/.venv"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
+UPLOADER_UNIT="gwv3-recording-uploader.service"
 MAX_LOG_BYTES=$((256 * 1024 * 1024))
 
 fail() {
@@ -175,6 +177,26 @@ else
     fi
   else
     start_legacy_background "C++ 接收端" "$RECEIVER_PID" "$ROOT_DIR" "$BIN" --config "$CONFIG" >>"$RECEIVER_STDOUT" 2>&1
+  fi
+fi
+
+if systemd_user_available && unit_active "$UPLOADER_UNIT"; then
+  write_unit_pid "$UPLOADER_UNIT" "$UPLOADER_PID" || true
+  echo "录制上传器已经运行，PID=$(cat "$UPLOADER_PID" 2>/dev/null || echo unknown)"
+elif [[ -f "$UPLOADER_PID" ]] && kill -0 "$(cat "$UPLOADER_PID")" 2>/dev/null; then
+  echo "录制上传器已经运行，PID=$(cat "$UPLOADER_PID")"
+else
+  if systemd_user_available; then
+    if unit_installed "$UPLOADER_UNIT"; then
+      start_installed_unit "录制上传器" "$UPLOADER_UNIT" "$UPLOADER_PID"
+    else
+      start_systemd_unit "录制上传器" "$UPLOADER_UNIT" "$UPLOADER_PID" "$ROOT_DIR" \
+        "exec /usr/bin/python3 $(shell_quote "$ROOT_DIR/05_tools/recording_uploader.py") --config $(shell_quote "$CONFIG") >>$(shell_quote "$ROOT_DIR/08_reports/receiver_logs/recording_uploader.log") 2>&1"
+    fi
+  else
+    start_legacy_background "录制上传器" "$UPLOADER_PID" "$ROOT_DIR" /usr/bin/python3 \
+      "$ROOT_DIR/05_tools/recording_uploader.py" --config "$CONFIG" \
+      >>"$ROOT_DIR/08_reports/receiver_logs/recording_uploader.log" 2>&1
   fi
 fi
 

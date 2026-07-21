@@ -10,10 +10,12 @@ VENV="$WEB_DIR/.venv"
 UNIT_DIR="$HOME/.config/systemd/user"
 RECEIVER_UNIT="$UNIT_DIR/gwv3-gemini-receiver.service"
 WEB_UNIT="$UNIT_DIR/gwv3-web-monitor.service"
+UPLOADER_UNIT="$UNIT_DIR/gwv3-recording-uploader.service"
 LOG_ROTATE_SERVICE="$UNIT_DIR/gwv3-receiver-log-rotate.service"
 LOG_ROTATE_TIMER="$UNIT_DIR/gwv3-receiver-log-rotate.timer"
 RECEIVER_PID="$BUILD_DIR/receiver.pid"
 WEB_PID="$BUILD_DIR/web_monitor.pid"
+UPLOADER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/recording_uploader.log"
 
 fail() {
   echo "接收端自启动安装失败：$1" >&2
@@ -164,7 +166,8 @@ fi
 systemctl --user stop gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 request_receiver_record_stop
 systemctl --user stop gwv3-gemini-receiver.service >/dev/null 2>&1 || true
-systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+systemctl --user stop gwv3-recording-uploader.service >/dev/null 2>&1 || true
+systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 stop_matching_processes "Web 监控" "$VENV/bin/python -m uvicorn server:app"
 stop_matching_processes "C++ 接收端" "gemini_receiver .*--config" 0
 rm -f "$RECEIVER_PID" "$WEB_PID"
@@ -189,6 +192,34 @@ MemoryMax=4G
 ManagedOOMPreference=avoid
 StandardOutput=append:$RECEIVER_STDOUT
 StandardError=append:$RECEIVER_STDOUT
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat > "$UPLOADER_UNIT" <<EOF
+[Unit]
+Description=Gemini Recording Staging Finalizer and NAS Uploader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT_DIR
+ExecStart=/usr/bin/python3 $ROOT_DIR/05_tools/recording_uploader.py --config $CONFIG
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUWeight=20
+IOWeight=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryHigh=256M
+MemoryMax=512M
+KillMode=mixed
+TimeoutStopSec=120s
+StandardOutput=append:$UPLOADER_STDOUT
+StandardError=append:$UPLOADER_STDOUT
 
 [Install]
 WantedBy=default.target
@@ -243,8 +274,9 @@ WantedBy=timers.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable gwv3-gemini-receiver.service gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null
+systemctl --user enable gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null
 systemctl --user restart gwv3-gemini-receiver.service
+systemctl --user restart gwv3-recording-uploader.service
 systemctl --user restart gwv3-web-monitor.service
 systemctl --user start gwv3-receiver-log-rotate.timer
 

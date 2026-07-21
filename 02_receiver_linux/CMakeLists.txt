@@ -48,4 +48,19 @@ if(BUILD_TESTING)
         NAME sync_input_guard_unit
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_sync_input_guard.py
     )
+    add_test(
+        NAME recording_uploader_fault_injection
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_uploader.py
+                --python ${Python3_EXECUTABLE}
+                --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
+    )
+    set_tests_properties(recording_uploader_fault_injection PROPERTIES TIMEOUT 90)
+    add_test(
+        NAME receiver_staging_pipeline_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_staging_pipeline.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+                --python ${Python3_EXECUTABLE}
+                --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
+    )
+    set_tests_properties(receiver_staging_pipeline_integration PROPERTIES TIMEOUT 90)
 endif()

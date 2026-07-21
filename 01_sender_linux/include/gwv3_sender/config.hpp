@@ -53,6 +53,7 @@ struct CameraConfig {
     std::string video_device;
     int device_index = 0;
     bool validate_rgb_mjpeg = false;
+    int publish_warmup_ms = -1;
     std::string frame_aggregate_mode = "disable";
     std::optional<int> rotation_degrees;
     VideoProfileConfig rgb_profile;

@@ -285,6 +285,10 @@ struct CameraRuntime {
     uint64_t depth_frames = 0;
     bool rgb_waiting_for_keyframe_after_transport_loss = false;
     uint64_t rgb_keyframe_guard_drops = 0;
+    uint64_t rgb_transport_retry_drops = 0;
+    uint64_t rgb_send_failures_total = 0;
+    uint64_t rgb_preview_send_failures_total = 0;
+    uint64_t depth_send_failures_total = 0;
     uint64_t force_rgb_keyframe_requests = 0;
     uint64_t force_rgb_keyframe_applied = 0;
     uint64_t force_rgb_keyframe_observed = 0;
@@ -322,6 +326,11 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point web_rgb_preview_suppressed_until = std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point gemini305_manual_exposure_reapply_at = std::chrono::steady_clock::time_point::min();
     bool gemini305_manual_exposure_reapply_pending = false;
+    bool publish_warmup_active = false;
+    bool publish_warmup_exposure_verified = true;
+    uint64_t publish_warmup_dropped_framesets = 0;
+    std::chrono::steady_clock::time_point publish_not_before = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point publish_warmup_deadline = std::chrono::steady_clock::time_point::min();
     std::string last_media_warning;
     cv::Mat latest_bgr;
     cv::Mat latest_depth_color;
@@ -342,6 +351,7 @@ struct MediaPacketJob {
     std::shared_ptr<const void> payload_owner;
     const uint8_t *external_payload = nullptr;
     size_t external_payload_size = 0;
+    bool rgb_keyframe = false;
 
     MediaPacketView view() const {
         const uint8_t *payload_data = owned_payload.empty() ? external_payload : owned_payload.data();
@@ -1312,7 +1322,7 @@ Json::Value base_message(const AppConfig &config, const std::string &type) {
     msg["sender_id"] = config.sender_id;
     msg["build_commit"] = GWV3_GIT_COMMIT;
     msg["build_dirty"] = GWV3_GIT_DIRTY != 0;
-    msg["build_source_hash"] = GWV3_SOURCE_HASH;
+    msg["build_source_hash"] = GWV3_SENDER_SOURCE_HASH;
     msg["orbbec_sdk_version"] = std::to_string(ob_get_major_version()) + "." + std::to_string(ob_get_minor_version()) + "."
                                    + std::to_string(ob_get_patch_version());
     msg["orbbec_sdk_version_number"] = ob_get_version();
@@ -2632,14 +2642,17 @@ void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType
         if(stream_type == StreamType::rgb) {
             camera.perf.rgb_send_ms += send_ms;
             camera.perf.rgb_send_failures++;
+            camera.rgb_send_failures_total++;
         }
         else if(stream_type == StreamType::rgb_preview) {
             camera.perf.rgb_preview_send_ms += send_ms;
             camera.perf.rgb_preview_send_failures++;
+            camera.rgb_preview_send_failures_total++;
         }
         else if(stream_type == StreamType::depth_raw) {
             camera.perf.depth_send_ms += send_ms;
             camera.perf.depth_send_failures++;
+            camera.depth_send_failures_total++;
         }
         camera.last_error = message;
         if(frame_now >= camera.next_media_warning || message != camera.last_media_warning) {
@@ -3625,11 +3638,17 @@ Json::Value camera_heartbeat(const AppConfig &config,
     msg["rgb_encoding"] = camera.config.rgb_encoding.codec;
     msg["depth_compression"] = camera.config.depth_transport.compression;
     msg["rgb_dropped_frames"] = Json::UInt64(camera.rgb_dropped);
+    msg["rgb_transport_retry_drops"] = Json::UInt64(camera.rgb_transport_retry_drops);
+    msg["rgb_send_failures_total"] = Json::UInt64(camera.rgb_send_failures_total);
+    msg["rgb_preview_send_failures_total"] = Json::UInt64(camera.rgb_preview_send_failures_total);
+    msg["depth_send_failures_total"] = Json::UInt64(camera.depth_send_failures_total);
     msg["rgb_corrupt_jpeg_frames"] = Json::UInt64(camera.rgb_corrupt_jpeg);
     msg["depth_dropped_frames"] = Json::UInt64(camera.depth_dropped);
     msg["hardware_encoder"] = camera.hardware_encoder;
     msg["rgb_measured_fps"] = camera.live.rgb_input_fps;
     msg["depth_measured_fps"] = camera.live.depth_input_fps;
+    msg["rgb_sent_fps"] = camera.live.rgb_sent_fps;
+    msg["depth_sent_fps"] = camera.live.depth_sent_fps;
     msg["rgb_mbps"] = camera.live.rgb_mbps;
     msg["rgb_preview_mbps"] = camera.live.rgb_preview_mbps;
     msg["rgb_preview_fps"] = camera.live.rgb_preview_sent_fps;
@@ -3641,6 +3660,8 @@ Json::Value camera_heartbeat(const AppConfig &config,
     msg["rgb_gain"] = Json::Int64(camera.live.color_gain);
     msg["rgb_metadata_actual_fps"] = Json::Int64(camera.live.color_actual_fps);
     msg["rgb_exposure_priority"] = Json::Int64(camera.live.color_exposure_priority);
+    msg["publish_warmup_active"] = camera.publish_warmup_active;
+    msg["publish_warmup_dropped_framesets"] = Json::UInt64(camera.publish_warmup_dropped_framesets);
     msg["last_error"] = camera.last_error;
     return msg;
 }
@@ -4159,10 +4180,21 @@ std::string lower_copy(std::string value) {
     return value;
 }
 
+bool camera_model_is_gemini305(const std::string &device_model) {
+    return lower_copy(device_model).find("gemini 305") != std::string::npos;
+}
+
+int camera_publish_warmup_ms(const CameraConfig &config, const std::string &device_model) {
+    if(config.publish_warmup_ms >= 0) {
+        return config.publish_warmup_ms;
+    }
+    return camera_model_is_gemini305(device_model) ? 3000 : 0;
+}
+
 bool gemini305_manual_exposure_requested(const CameraConfig &config, const std::string &device_model) {
     const auto &controls = config.color_controls;
     return controls.auto_exposure && !*controls.auto_exposure
-           && lower_copy(device_model).find("gemini 305") != std::string::npos;
+           && camera_model_is_gemini305(device_model);
 }
 
 bool ensure_gemini305_manual_exposure(const CameraConfig &config, const std::string &device_model,
@@ -4443,7 +4475,8 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     }
 
     apply_color_controls(control_runtime, logger);
-    ensure_gemini305_manual_exposure(runtime.config, device_model, device_serial, logger);
+    const bool gemini305_manual_exposure = gemini305_manual_exposure_requested(runtime.config, device_model);
+    (void)ensure_gemini305_manual_exposure(runtime.config, device_model, device_serial, logger);
 
     const auto color_width = color_profile->width();
     const auto color_height = color_profile->height();
@@ -4454,6 +4487,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const auto depth_fps = depth_profile ? depth_profile->fps() : 0;
     const auto depth_format = depth_profile ? ob_format_name(depth_profile->format()) : "disabled";
     const auto now = std::chrono::steady_clock::now();
+    const int publish_warmup_ms = camera_publish_warmup_ms(runtime.config, device_model);
     {
         std::lock_guard<std::mutex> lock(runtime.mutex);
         runtime.device = std::move(device);
@@ -4487,11 +4521,19 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
         runtime.next_capture_stall_reconnect = now;
-        runtime.gemini305_manual_exposure_reapply_pending =
-            gemini305_manual_exposure_requested(runtime.config, device_model);
+        runtime.gemini305_manual_exposure_reapply_pending = gemini305_manual_exposure;
         runtime.gemini305_manual_exposure_reapply_at = runtime.gemini305_manual_exposure_reapply_pending
                                                           ? now + std::chrono::seconds(2)
                                                           : std::chrono::steady_clock::time_point::min();
+        runtime.publish_warmup_active = publish_warmup_ms > 0;
+        runtime.publish_warmup_exposure_verified = !gemini305_manual_exposure;
+        runtime.publish_warmup_dropped_framesets = 0;
+        runtime.publish_not_before = runtime.publish_warmup_active
+                                         ? now + std::chrono::milliseconds(publish_warmup_ms)
+                                         : std::chrono::steady_clock::time_point::min();
+        runtime.publish_warmup_deadline = runtime.publish_warmup_active
+                                             ? runtime.publish_not_before + std::chrono::seconds(5)
+                                             : std::chrono::steady_clock::time_point::min();
         runtime.capture_stall_samples = 0;
         runtime.last_media_warning.clear();
         runtime.rgb_sent_timing_seen = false;
@@ -4515,7 +4557,9 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         << " device_uid=" << device_uid
         << " paired_rgb_serial=" << paired_rgb_serial_for_depth_uid(device_uid)
         << " connection=" << device_connection_type
-        << " aggregate_mode=" << frame_aggregate_mode_name(aggregate_mode);
+        << " aggregate_mode=" << frame_aggregate_mode_name(aggregate_mode)
+        << " publish_warmup_ms=" << publish_warmup_ms
+        << " exposure_verification=" << (gemini305_manual_exposure ? "required" : "not_required");
     logger.info(oss.str());
 }
 
@@ -4551,6 +4595,7 @@ MediaPacketJob make_owned_media_job(CameraRuntime &camera, StreamType stream_typ
     job.stream_type = stream_type;
     job.header = build_media_header(meta);
     job.owned_payload = std::move(payload);
+    job.rgb_keyframe = stream_type == StreamType::rgb && (meta.flags & key_frame) != 0u;
     return job;
 }
 
@@ -4563,6 +4608,7 @@ MediaPacketJob make_external_media_job(CameraRuntime &camera, StreamType stream_
     job.external_payload = static_cast<const uint8_t *>(payload);
     job.external_payload_size = payload_size;
     job.payload_owner = std::move(payload_owner);
+    job.rgb_keyframe = stream_type == StreamType::rgb && (meta.flags & key_frame) != 0u;
     return job;
 }
 
@@ -4719,6 +4765,12 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             continue;
         }
 
+        if(job->stream_type == StreamType::rgb
+           && decide_rgb_keyframe_send(*job->camera, job->rgb_keyframe, std::chrono::steady_clock::now(), logger)
+                  == RgbKeyframeDecision::drop) {
+            continue;
+        }
+
         const auto send_started = std::chrono::steady_clock::now();
         bool sent = false;
         std::string error;
@@ -4745,8 +4797,13 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             record_media_send_failure(*job->camera, logger, job->stream_type, send_ms, send_ended, error);
             if(job->stream_type == StreamType::rgb) {
                 arm_rgb_keyframe_guard(*job->camera, logger, error);
+                request_rgb_keyframe(*job->camera, logger, "media_transport_recovery");
+                std::lock_guard<std::mutex> lock(job->camera->mutex);
+                job->camera->rgb_dropped++;
+                job->camera->rgb_transport_retry_drops++;
             }
-            if(job->stream_type != StreamType::rgb_preview && (!drain_deadline || std::chrono::steady_clock::now() < *drain_deadline)) {
+            if(job->stream_type == StreamType::depth_raw
+               && (!drain_deadline || std::chrono::steady_clock::now() < *drain_deadline)) {
                 retry_job = std::move(*job);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -5270,13 +5327,67 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                 reapply_device_serial = camera.device_serial;
             }
         }
-        if(reapply_gemini305_manual_exposure
-           && !ensure_gemini305_manual_exposure(camera.config, reapply_device_model, reapply_device_serial, logger, true)) {
+        if(reapply_gemini305_manual_exposure) {
+            const bool verified =
+                ensure_gemini305_manual_exposure(camera.config, reapply_device_model, reapply_device_serial, logger, true);
             std::lock_guard<std::mutex> lock(camera.mutex);
-            camera.gemini305_manual_exposure_reapply_pending = true;
-            camera.gemini305_manual_exposure_reapply_at = frame_now + std::chrono::seconds(1);
+            camera.publish_warmup_exposure_verified = verified;
+            camera.gemini305_manual_exposure_reapply_pending = !verified;
+            camera.gemini305_manual_exposure_reapply_at = verified ? std::chrono::steady_clock::time_point::min()
+                                                                   : frame_now + std::chrono::seconds(1);
         }
         depth_output_camera = depth ? depth_target_camera(config, camera) : nullptr;
+        bool warmup_drop = false;
+        bool warmup_completed = false;
+        bool warmup_forced = false;
+        uint64_t warmup_dropped = 0;
+        {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            if(camera.publish_warmup_active) {
+                const bool ready = frame_now >= camera.publish_not_before
+                                   && camera.publish_warmup_exposure_verified
+                                   && !camera.gemini305_manual_exposure_reapply_pending;
+                warmup_forced = !ready && frame_now >= camera.publish_warmup_deadline;
+                if(ready || warmup_forced) {
+                    camera.publish_warmup_active = false;
+                    warmup_completed = true;
+                    warmup_dropped = camera.publish_warmup_dropped_framesets;
+                }
+                else {
+                    camera.publish_warmup_dropped_framesets++;
+                    warmup_dropped = camera.publish_warmup_dropped_framesets;
+                    warmup_drop = true;
+                }
+            }
+        }
+        if(warmup_drop) {
+            if(color) {
+                record_rgb_input(camera, color);
+                update_color_metadata(camera, color);
+            }
+            if(depth) {
+                record_depth_input(camera, depth);
+                set_depth_scale_if_empty(camera, depth->getValueScale());
+                if(depth_output_camera) {
+                    set_depth_scale_if_empty(*depth_output_camera, depth->getValueScale());
+                }
+            }
+            continue;
+        }
+        if(warmup_completed) {
+            request_rgb_keyframe(camera, logger, "capture_warmup_complete");
+            const std::string message = "capture publish warmup completed dropped_framesets=" + std::to_string(warmup_dropped)
+                                        + " forced=" + (warmup_forced ? "true" : "false");
+            if(warmup_forced) {
+                logger.warn(message + " camera_id=" + camera.config.camera_id);
+            }
+            else {
+                logger.info(message + " camera_id=" + camera.config.camera_id);
+            }
+            send_status_locked(transport, logger, transport_mutex,
+                               event_message(config, warmup_forced ? "warning" : "info", "capture_warmup_complete", message,
+                                             camera.config.camera_id));
+        }
         uint64_t frameset_pair_id = 0;
         if(color && depth && depth_output_camera == &camera) {
             std::lock_guard<std::mutex> lock(camera.mutex);
