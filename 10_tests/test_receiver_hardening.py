@@ -644,7 +644,11 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
         if camera is None:
             time.sleep(0.05)
             continue
-        if not camera.get("segment_active") and not camera.get("segment_finalizing"):
+        if (
+            not camera.get("segment_active")
+            and not camera.get("segment_finalizing")
+            and int(camera.get("segment_finalize_pending", 0)) == 0
+        ):
             break
         time.sleep(0.1)
     else:
@@ -707,22 +711,42 @@ def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -
         "pair_id_valid",
         "rgb_recorded",
         "rgb_video_frame_index",
+        "recording_session_id",
+        "recording_window_start_global_us",
+        "recording_window_end_global_us",
+        "recording_window_valid",
     ):
         assert field in header, f"missing CSV field {field}"
     assert not list(nas_root.rglob("*frames.csv.inprogress")), "live frames.csv staging file was not removed"
     assert not list(nas_root.rglob("*frames.csv.finalizing")), "finalizing frames.csv was not published"
     ready_files = list(nas_root.rglob("*recording_ready.json"))
     assert ready_files, "recording ready marker missing"
+    session_starts = {}
     for ready_file in ready_files:
-        assert json.loads(ready_file.read_text(encoding="utf-8")).get("ready") is True
+        ready = json.loads(ready_file.read_text(encoding="utf-8"))
+        assert ready.get("ready") is True
+        session_id = int(ready.get("recording_session_id", 0))
+        window_start = int(ready.get("recording_window_start_global_us", 0))
+        assert session_id > 0
+        assert window_start > 0
+        assert session_starts.setdefault(session_id, window_start) == window_start
 
     for frames_file in nas_root.rglob("*frames.csv"):
         last_global_timestamp = None
+        meta = json.loads(next(frames_file.parent.glob("*meta.json")).read_text(encoding="utf-8"))
+        session_id = int(meta["recording_session_id"])
+        window_start = int(meta["recording_window_start_global_us"])
+        window_end = int(meta["recording_window_end_global_us"])
         with frames_file.open("r", newline="", encoding="utf-8-sig") as handle:
             for row in csv.DictReader(handle):
+                assert int(row["recording_session_id"]) == session_id
+                assert int(row["recording_window_start_global_us"]) == window_start
+                assert int(row["recording_window_end_global_us"]) == window_end
+                global_timestamp = int(row["global_timestamp_us"])
+                expected_valid = global_timestamp >= window_start and (window_end == 0 or global_timestamp <= window_end)
+                assert (row["recording_window_valid"] == "1") is expected_valid
                 if row.get("stream_type") != "rgb" or row.get("rgb_recorded") != "1":
                     continue
-                global_timestamp = int(row["global_timestamp_us"])
                 if last_global_timestamp is not None:
                     assert global_timestamp > last_global_timestamp, (
                         f"non-monotonic recorded RGB timestamp in {frames_file}: "
@@ -862,7 +886,11 @@ def run(args) -> None:
                 time.sleep(0.05)
 
             if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-                assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+                start_response = json.loads(request(ports["admin"], "POST", "/api/record/start-all")[2])
+                assert start_response.get("ok") is True
+                first_session_id = int(start_response["recording_session_id"])
+                assert first_session_id > 0
+                assert int(start_response["recording_start_us"]) >= int(time.time() * 1_000_000) + 500_000
                 start_timestamp = int(time.time() * 1_000_000)
                 h264_fixture = generate_h264_fixture()
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
@@ -881,11 +909,65 @@ def run(args) -> None:
                     published_file = Path(str(staging_file).removesuffix(".inprogress"))
                     assert not published_file.exists(), "frames.csv became visible before recording finalization"
                 assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=20)[0] == 200
-                deadline = time.monotonic() + 20
+
+                restart_requested_at = time.monotonic()
+                restart_response = json.loads(request(ports["admin"], "POST", "/api/record/start-all", timeout=2)[2])
+                assert time.monotonic() - restart_requested_at < 1.0, "restart request blocked on old segment finalization"
+                assert restart_response.get("ok") is True
+
+                deadline = time.monotonic() + 5
+                second_session_id = 0
+                second_start_us = 0
+                observed_background_finalize = False
+                while time.monotonic() < deadline:
+                    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+                    observed_background_finalize |= int(current.get("record_finalize_outstanding_segments", 0)) > 0
+                    if not current.get("recording_start_pending"):
+                        second_session_id = int(current.get("recording_session_id", 0))
+                        second_start_us = int(current.get("recording_start_us", 0))
+                        break
+                    time.sleep(0.02)
+                else:
+                    raise AssertionError("queued restart did not activate after writer detach")
+                assert second_session_id > 0 and second_session_id != first_session_id
+
+                second_timestamp = second_start_us + 100_000
+                with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+                    media.sendall(rgb_packet("test-sender", "cam01", 10_000, 64, 48, second_timestamp, h264_fixture))
+                    for frame_id in range(70):
+                        media.sendall(
+                            depth_packet(
+                                "test-sender", "cam01", 10_000 + frame_id, 64, 48,
+                                second_timestamp + frame_id * 33333,
+                            )
+                        )
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+                    observed_background_finalize |= int(current.get("record_finalize_outstanding_segments", 0)) > 0
+                    test_camera = next(
+                        (
+                            camera for camera in current.get("cameras", [])
+                            if camera.get("sender_id") == "test-sender" and camera.get("camera_id") == "cam01"
+                        ),
+                        {},
+                    )
+                    if test_camera.get("segment_active"):
+                        break
+                    time.sleep(0.02)
+                else:
+                    raise AssertionError("new recording did not start while old segment finalized in background")
+                assert observed_background_finalize, "test did not overlap a new session with old background finalization"
+
+                assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=2)[0] == 200
+                deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
                     cameras = current.get("cameras", [])
-                    if all(not camera.get("segment_active") and not camera.get("segment_finalizing") for camera in cameras):
+                    if (
+                        int(current.get("record_finalize_outstanding_segments", 0)) == 0
+                        and all(not camera.get("segment_active") and not camera.get("segment_finalizing") for camera in cameras)
+                    ):
                         break
                     time.sleep(0.1)
                 else:

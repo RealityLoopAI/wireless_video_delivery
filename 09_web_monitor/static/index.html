@@ -598,8 +598,8 @@
     }[ch]));
     const displayName = (c) => c?.camera_name || c?.storage_key || c?.camera_key || '未知相机';
     const isLive = (c) => c && c.live !== false && c.online;
-    const isFinalizing = (c) => Boolean(c?.segment_finalizing);
-    const cameraStateText = (c) => isFinalizing(c) ? 'FINAL' : (c.recording ? 'REC' : (isLive(c) ? 'LIVE' : 'OFF'));
+    const isFinalizing = (c) => Boolean(c?.segment_finalizing || c?.record_finalizing || Number(c?.segment_finalize_pending || 0) > 0);
+    const cameraStateText = (c) => c?.recording_start_pending ? 'WAIT' : (c.recording ? 'REC' : (isFinalizing(c) ? 'FINAL' : (isLive(c) ? 'LIVE' : 'OFF')));
     const cameraDotClass = (c) => (c.recording || isFinalizing(c)) ? 'recording' : (isLive(c) ? 'ok' : '');
 
     async function post(url) {

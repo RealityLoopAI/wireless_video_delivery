@@ -1044,6 +1044,7 @@ struct Config {
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
     int segment_seconds = 300;
+    int recording_start_lead_ms = 1000;
     int depth_fps = 30;
     bool write_debug_h264 = false;
     bool write_debug_depth_raw = false;
@@ -1165,6 +1166,7 @@ Config load_config(const std::string &path) {
     cfg.state_path = string_value(root, "state_path", cfg.state_path);
     cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
     cfg.segment_seconds = int_value(root, "segment_seconds", cfg.segment_seconds);
+    cfg.recording_start_lead_ms = int_value(root, "recording_start_lead_ms", cfg.recording_start_lead_ms);
     cfg.depth_fps = int_value(root, "depth_fps", cfg.depth_fps);
     cfg.write_debug_h264 = bool_value(root, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = bool_value(root, "write_debug_depth_raw", cfg.write_debug_depth_raw);
@@ -1189,6 +1191,9 @@ Config load_config(const std::string &path) {
 
     if(cfg.segment_seconds <= 0) {
         throw std::runtime_error("segment_seconds must be positive");
+    }
+    if(cfg.recording_start_lead_ms < 0 || cfg.recording_start_lead_ms > 10000) {
+        throw std::runtime_error("recording_start_lead_ms must be between 0 and 10000");
     }
     if(cfg.depth_fps <= 0) {
         throw std::runtime_error("depth_fps must be positive");
@@ -3196,6 +3201,12 @@ size_t record_packet_queue_bytes(const MediaPacket &packet) {
     return sizeof(MediaPacket) + packet.sender_id.size() + packet.camera_id.size() + packet.codec_or_compression.size() + packet.payload.size();
 }
 
+struct RecordingWindow {
+    uint64_t session_id = 0;
+    uint64_t start_global_us = 0;
+    uint64_t end_global_us = 0;
+};
+
 struct RecordJob {
     std::shared_ptr<const MediaPacket> packet;
     std::string sender_id;
@@ -3204,6 +3215,7 @@ struct RecordJob {
     std::string storage_key;
     std::string file_prefix;
     std::string announce_json;
+    RecordingWindow recording_window;
     uint64_t record_generation = 0;
     uint64_t media_session_id = 0;
     std::string media_ingress_key;
@@ -3355,12 +3367,20 @@ public:
         }
     }
 
+    void mark_recording_window_end_global_us(uint64_t end_global_us) {
+        if(recording_window_.end_global_us == 0) {
+            recording_window_.end_global_us = end_global_us;
+        }
+    }
+
     void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &camera_name,
-               const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json, Logger &logger) {
+               const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json,
+               const RecordingWindow &recording_window, Logger &logger) {
         close(cfg, sender_id, camera_id, announce_json, logger);
         ScopeExit rollback_guard([this] { reset_after_close(); });
         start_us_ = now_us();
         end_us_ = 0;
+        recording_window_ = recording_window;
         start_steady_ = std::chrono::steady_clock::now();
         camera_name_ = camera_name;
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
@@ -3560,6 +3580,7 @@ public:
         csv_rows_since_flush_ = 0;
         storage_check_packets_ = 0;
         storage_failed_ = false;
+        recording_window_ = {};
     }
 
     bool should_rotate(const Config &cfg) const {
@@ -3581,9 +3602,10 @@ public:
 
     void write_packet(const Config &cfg, const MediaPacket &packet, const std::string &sender_id, const std::string &camera_id,
                       const std::string &camera_name, const std::string &storage_key, const std::string &file_prefix,
-                      const std::string &announce_json, Logger &logger, bool allow_rotate = true) {
+                      const std::string &announce_json, const RecordingWindow &recording_window, Logger &logger,
+                      bool allow_rotate = true) {
         if(!active_) {
-            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, recording_window, logger);
         }
         if(storage_failed_) {
             throw std::runtime_error("recording storage previously failed: " + directory_);
@@ -3602,7 +3624,7 @@ public:
                 logger.warn("media profile changed; rotating segment camera=" + camera_key(sender_id, camera_id));
             }
             close(cfg, sender_id, camera_id, announce_json, logger);
-            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, recording_window, logger);
         }
 
         const uint64_t packet_local_us = now_us();
@@ -3937,7 +3959,26 @@ private:
         }
         const auto header = split_csv_line(header_line);
         const auto index = csv_header_index(header);
-        merged << header_line << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size\n";
+        merged << header_line
+               << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size,recording_session_id,"
+                  "recording_window_start_global_us,recording_window_end_global_us,recording_window_valid\n";
+
+        const auto append_recording_window = [this, &index](std::ostream &out, const std::vector<std::string> &row) {
+            bool valid = recording_window_.start_global_us == 0;
+            const auto global_text = csv_value(row, index, "global_timestamp_us");
+            if(!global_text.empty()) {
+                try {
+                    const uint64_t global_us = std::stoull(global_text);
+                    valid = (recording_window_.start_global_us == 0 || global_us >= recording_window_.start_global_us)
+                            && (recording_window_.end_global_us == 0 || global_us <= recording_window_.end_global_us);
+                }
+                catch(const std::exception &) {
+                    valid = false;
+                }
+            }
+            out << ',' << recording_window_.session_id << ',' << recording_window_.start_global_us << ','
+                << recording_window_.end_global_us << ',' << (valid ? 1 : 0);
+        };
 
         std::string line;
         std::set<std::string> merged_rgb_keys;
@@ -3958,14 +3999,18 @@ private:
                 }
                 const auto found = duplicate_frame_key ? recorded_by_key.end() : recorded_by_key.find(key);
                 if(found != recorded_by_key.end()) {
-                    merged << line << ",1," << found->second.first << ',' << found->second.second << '\n';
+                    merged << line << ",1," << found->second.first << ',' << found->second.second;
+                    append_recording_window(merged, row);
+                    merged << '\n';
                 }
                 else {
                     dropped_unrecorded_rgb_rows++;
                 }
             }
             else {
-                merged << line << ",,,\n";
+                merged << line << ",,,";
+                append_recording_window(merged, row);
+                merged << '\n';
             }
         }
         if(duplicate_frame_rows > 0) {
@@ -4029,6 +4074,9 @@ private:
         marker << "  \"finalized_at_us\": " << now_us() << ",\n";
         marker << "  \"segment_start_us\": " << start_us_ << ",\n";
         marker << "  \"segment_end_us\": " << end_us_ << ",\n";
+        marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
+        marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
+        marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -4063,6 +4111,9 @@ private:
         marker << "  \"staged_at_us\": " << now_us() << ",\n";
         marker << "  \"segment_start_us\": " << start_us_ << ",\n";
         marker << "  \"segment_end_us\": " << end_us_ << ",\n";
+        marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
+        marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
+        marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -4727,6 +4778,11 @@ private:
         meta << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
         meta << "  \"segment_start_us\": " << start_us_ << ",\n";
         meta << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
+        meta << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
+        meta << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
+        meta << "  \"recording_window_end_global_us\": "
+             << (closed ? recording_window_.end_global_us : 0) << ",\n";
+        meta << "  \"recording_window_mode\": \"global_timestamp_us\",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"frames_publish_state\": \"" << (closed ? "finalized" : "recording") << "\",\n";
         meta << "  \"recording_storage_mode\": \""
@@ -4802,6 +4858,10 @@ private:
         out << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
         out << "  \"segment_start_us\": " << start_us_ << ",\n";
         out << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
+        out << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
+        out << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
+        out << "  \"recording_window_end_global_us\": "
+            << (closed ? recording_window_.end_global_us : 0) << ",\n";
         out << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         if(announce_timestamp_us) {
             out << "  \"announce_timestamp_us\": " << *announce_timestamp_us << ",\n";
@@ -4866,6 +4926,7 @@ private:
     bool active_ = false;
     uint64_t start_us_ = 0;
     uint64_t end_us_ = 0;
+    RecordingWindow recording_window_;
     std::chrono::steady_clock::time_point start_steady_{};
     std::string directory_;
     std::string recording_root_;
@@ -5026,9 +5087,11 @@ struct CameraState {
     std::string camera_file_prefix;
     std::mutex preview_mutex;
     uint64_t recording_start_us = 0;
+    RecordingWindow recording_window;
     std::string recording_file_prefix;
     bool online = true;
     bool recording_requested = false;
+    bool recording_start_pending = false;
     uint64_t last_status_us = 0;
     std::string status_endpoint;
     uint64_t last_media_us = 0;
@@ -5141,7 +5204,7 @@ public:
         std::string sender_id;
         std::string camera_id;
         std::string announce_json;
-        bool resume_recording = false;
+        uint64_t recording_end_global_us = 0;
     };
 
     struct SegmentFinalizeTask {
@@ -5153,8 +5216,6 @@ public:
         std::string reason;
         std::string directory;
         uint64_t queued_us = 0;
-        bool completes_stop = false;
-        bool resume_recording = false;
     };
 
     struct MediaIngressOwner {
@@ -5167,6 +5228,12 @@ public:
         std::string sender_id;
         std::string camera_id;
         std::string endpoint;
+    };
+
+    struct RecordingActivation {
+        std::vector<SenderControlTarget> keyframe_targets;
+        uint64_t request_us = 0;
+        bool activated = false;
     };
 
     struct PreviewUdpAssembly {
@@ -5273,15 +5340,22 @@ public:
         wait_segment_close_futures();
         std::vector<SegmentCloseTask> close_tasks;
         std::vector<std::shared_ptr<CameraState>> camera_snapshot;
+        const uint64_t shutdown_end_global_us = now_us();
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            recording_all_ = false;
+            recording_all_start_pending_ = false;
             for(auto &item : cameras_) {
                 std::lock_guard<std::mutex> preview_lock(item.second->preview_mutex);
                 cleanup_rgb_decoder_async(std::move(item.second->rgb_decoder));
                 cleanup_rgb_decoder_async(std::move(item.second->main_rgb_decoder));
+                item.second->recording_requested = false;
+                item.second->recording_start_pending = false;
+                set_record_accepting(item.second, false);
                 camera_snapshot.push_back(item.second);
                 close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
-                                       item.second->last_announce_live ? item.second->last_announce_json : ""});
+                                       item.second->last_announce_live ? item.second->last_announce_json : "",
+                                       shutdown_end_global_us});
             }
         }
         stop_record_workers_sync(camera_snapshot);
@@ -5331,6 +5405,8 @@ public:
         out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
         out << "\"build_source_hash\":\"" << GWV3_RECEIVER_SOURCE_HASH << "\",";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
+        out << "\"recording_start_pending\":" << (recording_all_start_pending_ ? "true" : "false") << ',';
+        out << "\"recording_session_id\":" << recording_all_session_id_ << ',';
         out << "\"recording_start_us\":" << recording_all_start_us_ << ',';
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
@@ -5519,7 +5595,11 @@ public:
             out << "\"media_live\":" << (media_live ? "true" : "false") << ',';
             out << "\"live\":" << (live ? "true" : "false") << ',';
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
+            out << "\"recording_start_pending\":" << (cam.recording_start_pending ? "true" : "false") << ',';
+            out << "\"recording_session_id\":" << cam.recording_window.session_id << ',';
             out << "\"recording_start_us\":" << cam.recording_start_us << ',';
+            out << "\"recording_window_start_global_us\":" << cam.recording_window.start_global_us << ',';
+            out << "\"recording_window_end_global_us\":" << cam.recording_window.end_global_us << ',';
             out << "\"file_prefix\":\"" << json_escape(cam.recording_file_prefix) << "\",";
             out << "\"segment_active\":" << (cam.segment_active ? "true" : "false") << ',';
             out << "\"segment_finalizing\":" << (cam.segment_finalizing ? "true" : "false") << ',';
@@ -5657,6 +5737,7 @@ public:
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"segment_seconds\":" << config_.segment_seconds << ',';
+        out << "\"recording_start_lead_ms\":" << config_.recording_start_lead_ms << ',';
         out << "\"max_payload_mb\":" << (config_.max_payload_bytes / (1024ull * 1024ull)) << ',';
         out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
         out << ",\"record_queue_total_max_mb\":" << (config_.record_queue_total_max_bytes / (1024ull * 1024ull));
@@ -5670,6 +5751,98 @@ public:
             return recording_all_file_prefix_;
         }
         return cam.camera_file_prefix;
+    }
+
+    uint64_t next_recording_session_id_locked() {
+        const uint64_t current_us = now_us();
+        last_recording_session_id_ = std::max(current_us, last_recording_session_id_ + 1);
+        return last_recording_session_id_;
+    }
+
+    static bool record_detach_in_progress(const std::shared_ptr<CameraState> &cam) {
+        if(!cam) {
+            return false;
+        }
+        std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+        return cam->record_finalizing;
+    }
+
+    RecordingActivation activate_pending_recordings_locked() {
+        RecordingActivation activation;
+        const uint64_t lead_us = static_cast<uint64_t>(config_.recording_start_lead_ms) * 1000ull;
+
+        if(recording_all_) {
+            const bool detach_pending = std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
+                return item.second->recording_requested && record_detach_in_progress(item.second);
+            });
+            if(detach_pending) {
+                recording_all_start_pending_ = true;
+                for(auto &item : cameras_) {
+                    if(item.second->recording_requested) {
+                        item.second->recording_start_pending = true;
+                    }
+                }
+                return activation;
+            }
+
+            if(recording_all_start_us_ == 0) {
+                recording_all_start_us_ = now_us() + lead_us;
+                recording_all_session_id_ = next_recording_session_id_locked();
+            }
+            recording_all_start_pending_ = false;
+            activation.request_us = recording_all_start_us_;
+            for(auto &item : cameras_) {
+                auto &cam = *item.second;
+                if(!cam.recording_requested) {
+                    continue;
+                }
+                bool accepting = false;
+                {
+                    std::lock_guard<std::mutex> record_lock(cam.record_mutex);
+                    accepting = cam.record_accepting;
+                }
+                const bool newly_activated = !accepting || cam.recording_start_pending || cam.recording_start_us == 0;
+                cam.recording_start_us = recording_all_start_us_;
+                cam.recording_window = {recording_all_session_id_, recording_all_start_us_, 0};
+                cam.recording_start_pending = false;
+                if(cam.recording_file_prefix.empty()) {
+                    cam.recording_file_prefix = effective_file_prefix_locked(cam);
+                }
+                set_record_accepting(item.second, true);
+                if(newly_activated && cam.online && !cam.status_endpoint.empty()) {
+                    activation.keyframe_targets.push_back({cam.sender_id, cam.camera_id, cam.status_endpoint});
+                }
+            }
+            activation.activated = true;
+            return activation;
+        }
+
+        for(auto &item : cameras_) {
+            auto &cam = *item.second;
+            if(!cam.recording_requested || record_detach_in_progress(item.second)) {
+                continue;
+            }
+            bool accepting = false;
+            {
+                std::lock_guard<std::mutex> record_lock(cam.record_mutex);
+                accepting = cam.record_accepting;
+            }
+            if(accepting) {
+                continue;
+            }
+            if(cam.recording_start_us == 0 || cam.recording_window.session_id == 0) {
+                cam.recording_start_us = now_us() + lead_us;
+                cam.recording_window = {next_recording_session_id_locked(), cam.recording_start_us, 0};
+            }
+            cam.recording_start_pending = false;
+            set_record_accepting(item.second, true);
+            if(cam.online && !cam.status_endpoint.empty()) {
+                activation.keyframe_targets.push_back({cam.sender_id, cam.camera_id, cam.status_endpoint});
+            }
+            activation.request_us = cam.recording_start_us;
+            activation.activated = true;
+        }
+        return activation;
     }
 
     void send_force_rgb_keyframe_controls(const std::vector<SenderControlTarget> &targets,
@@ -5778,7 +5951,7 @@ public:
         auto next_segment = std::make_unique<SegmentWriter>();
         try {
             next_segment->start(config_, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
-                                job.file_prefix, job.announce_json, logger_);
+                                job.file_prefix, job.announce_json, job.recording_window, logger_);
         }
         catch(...) {
             release_segment_finalize_slot();
@@ -5854,7 +6027,7 @@ public:
                 std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
                 rotate_record_segment_async(cam, job, *record_packet, allow_segment_rotate);
                 cam->segment->write_packet(config_, *record_packet, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
-                                           job.file_prefix, job.announce_json, logger_, false);
+                                           job.file_prefix, job.announce_json, job.recording_window, logger_, false);
                 segment_active = cam->segment->active();
                 segment_dir = cam->segment->directory();
                 segment_start_us = cam->segment->start_us();
@@ -6163,18 +6336,7 @@ public:
             segment_finalize_failures_total_.fetch_add(1);
         }
 
-        if(task.cam && task.completes_stop) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            task.cam->segment_finalizing = false;
-            if(!success) {
-                task.cam->last_error = "recording_finalize_failed: " + task.directory;
-            }
-            set_record_finalizing(task.cam, false);
-            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
-                set_record_accepting(task.cam, true);
-            }
-        }
-        else if(task.cam && !success) {
+        if(task.cam && !success) {
             std::lock_guard<std::mutex> lock(mutex_);
             task.cam->last_error = "recording_finalize_failed: " + task.directory;
         }
@@ -6312,15 +6474,13 @@ public:
                                             && current_us > cam->last_media_us
                                             && current_us - cam->last_media_us >= idle_limit_us;
                     if(media_idle && !cam->segment_finalizing) {
-                        const bool resume_recording = recording_all_ || cam->recording_requested;
                         cam->segment_finalizing = true;
                         cam->segment_rotation_requested.store(false);
                         cam->media_idle_finalizations.fetch_add(1);
                         set_record_accepting(cam, false);
                         set_record_finalizing(cam, true);
                         idle_close_tasks.push_back({cam, cam->sender_id, cam->camera_id,
-                                                    cam->last_announce_live ? cam->last_announce_json : "",
-                                                    resume_recording});
+                                                    cam->last_announce_live ? cam->last_announce_json : "", 0});
                     }
                 }
             }
@@ -6406,51 +6566,57 @@ public:
             return;
         }
         wait_record_queue_idle(task.cam, reason);
-        if(!reserve_segment_finalize_slot(true)) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            task.cam->segment_finalizing = false;
-            task.cam->last_error = "recording_finalize_failed: finalizer is unavailable";
-            set_record_finalizing(task.cam, false);
-            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
-                set_record_accepting(task.cam, true);
+        std::unique_ptr<SegmentWriter> replacement;
+        std::unique_ptr<SegmentWriter> detached;
+        std::string directory;
+        bool finalize_slot_reserved = false;
+        ScopeExit release_finalize_slot([this, &finalize_slot_reserved] {
+            if(finalize_slot_reserved) {
+                release_segment_finalize_slot();
             }
-            return;
-        }
-        bool slot_reserved = true;
+        });
         try {
-            auto replacement = std::make_unique<SegmentWriter>();
-            std::unique_ptr<SegmentWriter> detached;
-            std::string directory;
+            replacement = std::make_unique<SegmentWriter>();
             {
                 std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
                 if(task.cam->segment && task.cam->segment->active()) {
                     detached = std::move(task.cam->segment);
                     detached->mark_end_us(now_us());
+                    if(task.recording_end_global_us > 0) {
+                        detached->mark_recording_window_end_global_us(task.recording_end_global_us);
+                    }
                     directory = detached->directory();
                     task.cam->segment = std::move(replacement);
                     task.cam->segment_rotation_requested.store(false);
                 }
             }
-            if(!detached) {
-                release_segment_finalize_slot();
-                slot_reserved = false;
+            RecordingActivation activation;
+            {
                 std::lock_guard<std::mutex> lock(mutex_);
                 task.cam->segment_active = false;
                 task.cam->segment_finalizing = false;
                 task.cam->segment_dir.clear();
                 task.cam->segment_start_us = 0;
                 set_record_finalizing(task.cam, false);
-                if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
-                    set_record_accepting(task.cam, true);
-                }
+                activation = activate_pending_recordings_locked();
+            }
+            if(!activation.keyframe_targets.empty()) {
+                send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_restart_after_detach",
+                                                 activation.request_us);
+            }
+            if(!detached) {
                 return;
             }
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                task.cam->segment_active = false;
-                task.cam->segment_dir.clear();
-                task.cam->segment_start_us = 0;
+
+            // Detaching is the only phase that blocks a new recording session. The
+            // potentially slow container finalization below owns the old writer.
+            if(!reserve_segment_finalize_slot(true)) {
+                logger_.warn("segment finalizer unavailable; closing detached segment in close worker camera="
+                             + task.cam->key + " directory=" + directory);
+                detached->close(config_, task.sender_id, task.camera_id, task.announce_json, logger_);
+                return;
             }
+            finalize_slot_reserved = true;
 
             SegmentFinalizeTask finalize_task;
             finalize_task.cam = task.cam;
@@ -6460,27 +6626,28 @@ public:
             finalize_task.announce_json = task.announce_json;
             finalize_task.reason = reason;
             finalize_task.directory = directory;
-            finalize_task.completes_stop = true;
-            finalize_task.resume_recording = task.resume_recording;
             if(!enqueue_reserved_segment_finalize(std::move(finalize_task))) {
-                slot_reserved = false;
+                // enqueue_reserved_segment_finalize releases the reservation on failure.
+                finalize_slot_reserved = false;
                 throw std::runtime_error("cannot enqueue segment finalization: " + directory);
             }
-            slot_reserved = false;
+            finalize_slot_reserved = false;
             logger_.info("recording segment queued for finalization camera=" + task.cam->key
                          + " directory=" + directory + " reason=" + reason);
         }
         catch(const std::exception &e) {
-            if(slot_reserved) {
-                release_segment_finalize_slot();
-            }
             logger_.warn("recording segment finalize failed camera=" + task.cam->key + ": " + e.what());
-            std::lock_guard<std::mutex> lock(mutex_);
-            task.cam->segment_finalizing = false;
-            task.cam->last_error = std::string("recording_finalize_failed: ") + e.what();
-            set_record_finalizing(task.cam, false);
-            if(task.resume_recording && (recording_all_ || task.cam->recording_requested)) {
-                set_record_accepting(task.cam, true);
+            RecordingActivation activation;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                task.cam->segment_finalizing = false;
+                task.cam->last_error = std::string("recording_finalize_failed: ") + e.what();
+                set_record_finalizing(task.cam, false);
+                activation = activate_pending_recordings_locked();
+            }
+            if(!activation.keyframe_targets.empty()) {
+                send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_restart_after_detach_error",
+                                                 activation.request_us);
             }
         }
     }
@@ -6569,49 +6736,55 @@ public:
                 return json_error(*error);
             }
         }
-        uint64_t request_us = 0;
+        RecordingActivation activation;
         uint64_t response_start_us = 0;
+        uint64_t response_session_id = 0;
+        bool response_pending = false;
         bool response_has_override = false;
-        bool control_needed = false;
-        std::vector<SenderControlTarget> control_targets;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             refresh_camera_liveness_locked(now_us());
-            const bool any_finalizing = std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
-                return item.second->segment_finalizing || item.second->record_finalizing;
-            });
-            if(any_finalizing) {
-                return json_error("recording segments are still finalizing; retry after finalizing=false");
-            }
             const bool already_recording = recording_all_;
+            const bool individual_recording_active = !already_recording
+                                                     && std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
+                                                            return item.second->recording_requested;
+                                                        });
+            if(individual_recording_active) {
+                return json_error("individual camera recording is active; stop it before start-all");
+            }
             if(!already_recording) {
-                recording_all_start_us_ = now_us();
+                recording_all_start_us_ = 0;
+                recording_all_session_id_ = 0;
+                recording_all_start_pending_ = true;
                 recording_all_has_file_prefix_override_ = file_prefix_override.has_value();
                 recording_all_file_prefix_ = file_prefix_override.value_or("");
-                request_us = recording_all_start_us_;
-                control_needed = true;
             }
             recording_all_ = true;
             for(auto &item : cameras_) {
-                if(!item.second->recording_requested && !item.second->segment_active) {
-                    item.second->recording_start_us = recording_all_start_us_;
+                if(!already_recording && !item.second->recording_requested && !item.second->segment_active) {
+                    item.second->recording_start_us = 0;
+                    item.second->recording_window = {};
                     item.second->recording_file_prefix = effective_file_prefix_locked(*item.second);
+                    item.second->recording_start_pending = true;
                 }
                 item.second->recording_requested = true;
-                set_record_accepting(item.second, true);
-                if(control_needed && item.second->online && !item.second->status_endpoint.empty()) {
-                    control_targets.push_back({item.second->sender_id, item.second->camera_id, item.second->status_endpoint});
-                }
             }
+            activation = activate_pending_recordings_locked();
             response_start_us = recording_all_start_us_;
+            response_session_id = recording_all_session_id_;
+            response_pending = recording_all_start_pending_;
             response_has_override = recording_all_has_file_prefix_override_;
-            logger_.info("recording start-all requested");
+            logger_.info(std::string("recording start-all requested pending=") + (response_pending ? "true" : "false")
+                         + " session_id=" + std::to_string(response_session_id)
+                         + " start_global_us=" + std::to_string(response_start_us));
         }
-        if(control_needed) {
-            send_force_rgb_keyframe_controls(control_targets, "record_start_all", request_us);
+        if(!activation.keyframe_targets.empty()) {
+            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start_all", activation.request_us);
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << response_start_us
+            << ",\"recording_session_id\":" << response_session_id
+            << ",\"start_pending\":" << (response_pending ? "true" : "false")
             << ",\"file_prefix_scope\":\"" << (response_has_override ? "override_all" : "per_camera") << "\"}";
         return out.str();
     }
@@ -6619,10 +6792,13 @@ public:
     std::string stop_all() {
         std::vector<SegmentCloseTask> close_tasks;
         uint64_t recording_start_us = 0;
+        uint64_t recording_session_id = 0;
+        const uint64_t recording_end_global_us = now_us();
         bool finalizing = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             recording_start_us = recording_all_start_us_;
+            recording_session_id = recording_all_session_id_;
             if(recording_start_us == 0) {
                 for(const auto &item : cameras_) {
                     if(item.second->recording_start_us > 0 &&
@@ -6632,6 +6808,8 @@ public:
                 }
             }
             recording_all_ = false;
+            recording_all_start_pending_ = false;
+            recording_all_session_id_ = 0;
             recording_all_start_us_ = 0;
             recording_all_has_file_prefix_override_ = false;
             recording_all_file_prefix_.clear();
@@ -6639,6 +6817,8 @@ public:
                 const bool already_finalizing = item.second->segment_finalizing || item.second->record_finalizing;
                 const bool needs_close = item.second->recording_requested || item.second->segment_active;
                 item.second->recording_requested = false;
+                item.second->recording_start_pending = false;
+                item.second->recording_window.end_global_us = recording_end_global_us;
                 item.second->recording_start_us = 0;
                 item.second->recording_file_prefix.clear();
                 set_record_accepting(item.second, false);
@@ -6650,7 +6830,8 @@ public:
                     set_record_finalizing(item.second, true);
                     finalizing = true;
                     close_tasks.push_back({item.second, item.second->sender_id, item.second->camera_id,
-                                           item.second->last_announce_live ? item.second->last_announce_json : ""});
+                                           item.second->last_announce_live ? item.second->last_announce_json : "",
+                                           recording_end_global_us});
                 }
             }
             refresh_camera_liveness_locked(now_us());
@@ -6661,6 +6842,8 @@ public:
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_all\":false,\"recording_start_us\":" << recording_start_us
+            << ",\"recording_session_id\":" << recording_session_id
+            << ",\"recording_end_global_us\":" << recording_end_global_us
             << ",\"finalizing\":" << (finalizing ? "true" : "false")
             << ",\"finalized\":" << (finalizing ? "false" : "true") << "}";
         return out.str();
@@ -6676,39 +6859,42 @@ public:
             }
         }
         uint64_t response_start_us = 0;
+        uint64_t response_session_id = 0;
+        bool response_pending = false;
         std::string response_file_prefix;
-        std::vector<SenderControlTarget> control_targets;
+        RecordingActivation activation;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto cam_ptr = ensure_camera_ptr_locked(sender_id, camera_id);
             auto &cam = *cam_ptr;
-            if(cam.segment_finalizing || cam.record_finalizing) {
-                return json_error("recording segment is still finalizing; retry after finalizing=false");
-            }
-            const bool was_recording = recording_all_ || cam.recording_requested || cam.segment_active;
             if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
-                cam.recording_start_us = now_us();
+                cam.recording_start_us = 0;
+                cam.recording_window = {};
                 cam.recording_file_prefix = file_prefix_override.value_or(cam.camera_file_prefix);
+                cam.recording_start_pending = true;
             }
             else if(cam.recording_start_us == 0) {
-                cam.recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                cam.recording_start_us = recording_all_ ? recording_all_start_us_ : 0;
                 cam.recording_file_prefix = recording_all_ ? effective_file_prefix_locked(cam) : file_prefix_override.value_or(cam.camera_file_prefix);
+                cam.recording_start_pending = true;
             }
             cam.recording_requested = true;
-            set_record_accepting(cam_ptr, true);
+            activation = activate_pending_recordings_locked();
             response_start_us = cam.recording_start_us;
+            response_session_id = cam.recording_window.session_id;
+            response_pending = cam.recording_start_pending;
             response_file_prefix = cam.recording_file_prefix;
-            if(!was_recording && cam.online && !cam.status_endpoint.empty()) {
-                control_targets.push_back({cam.sender_id, cam.camera_id, cam.status_endpoint});
-            }
-            logger_.info("recording start requested: " + cam.key);
+            logger_.info("recording start requested: " + cam.key + " pending=" + (response_pending ? "true" : "false")
+                         + " session_id=" + std::to_string(response_session_id)
+                         + " start_global_us=" + std::to_string(response_start_us));
         }
-        if(!control_targets.empty()) {
-            send_force_rgb_keyframe_controls(control_targets, "record_start", response_start_us);
+        if(!activation.keyframe_targets.empty()) {
+            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start", activation.request_us);
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_start_us\":" << response_start_us << ",\"file_prefix\":\""
-            << json_escape(response_file_prefix) << "\"}";
+            << json_escape(response_file_prefix) << "\",\"recording_session_id\":" << response_session_id
+            << ",\"start_pending\":" << (response_pending ? "true" : "false") << "}";
         return out.str();
     }
 
@@ -6719,7 +6905,10 @@ public:
         std::shared_ptr<CameraState> cam;
         std::string announce_json;
         uint64_t recording_start_us = 0;
+        uint64_t recording_session_id = 0;
+        const uint64_t recording_end_global_us = now_us();
         bool finalizing = false;
+        bool schedule_close = false;
         const auto key = camera_key(sender_id, camera_id);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -6733,29 +6922,34 @@ public:
             cam = it->second;
             announce_json = cam->last_announce_live ? cam->last_announce_json : "";
             recording_start_us = cam->recording_start_us;
-            if(cam->segment_finalizing || cam->record_finalizing) {
-                return "{\"ok\":true,\"finalizing\":true,\"finalized\":false}";
-            }
-            finalizing = cam->recording_requested || cam->segment_active;
+            recording_session_id = cam->recording_window.session_id;
+            const bool already_finalizing = cam->segment_finalizing || cam->record_finalizing;
+            const bool needs_close = cam->recording_requested || cam->segment_active;
+            finalizing = already_finalizing || needs_close;
+            schedule_close = needs_close && !already_finalizing;
             cam->recording_requested = false;
-            if(finalizing) {
+            cam->recording_start_pending = false;
+            cam->recording_window.end_global_us = recording_end_global_us;
+            if(schedule_close) {
                 cam->segment_finalizing = true;
             }
             cam->recording_start_us = 0;
             cam->recording_file_prefix.clear();
             set_record_accepting(cam, false);
-            if(finalizing) {
+            if(schedule_close) {
                 set_record_finalizing(cam, true);
             }
         }
         logger_.info("recording stop requested: " + key);
         std::vector<SegmentCloseTask> close_tasks;
-        close_tasks.push_back({cam, cam->sender_id, cam->camera_id, announce_json});
-        if(finalizing) {
+        if(schedule_close) {
+            close_tasks.push_back({cam, cam->sender_id, cam->camera_id, announce_json, recording_end_global_us});
             close_segments_async(std::move(close_tasks), "recording stop: " + key);
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_start_us\":" << recording_start_us
+            << ",\"recording_session_id\":" << recording_session_id
+            << ",\"recording_end_global_us\":" << recording_end_global_us
             << ",\"finalizing\":" << (finalizing ? "true" : "false")
             << ",\"finalized\":" << (finalizing ? "false" : "true") << "}";
         return out.str();
@@ -7672,9 +7866,11 @@ private:
             state->recording_requested = recording_all_;
             if(recording_all_) {
                 state->recording_start_us = recording_all_start_us_;
+                state->recording_window = {recording_all_session_id_, recording_all_start_us_, 0};
                 state->recording_file_prefix = effective_file_prefix_locked(*state);
-                state->record_accepting = true;
-                state->record_generation = 1;
+                state->recording_start_pending = recording_all_start_pending_ || recording_all_start_us_ == 0;
+                state->record_accepting = !state->recording_start_pending;
+                state->record_generation = state->record_accepting ? 1 : 0;
             }
             it = cameras_.emplace(key, std::move(state)).first;
             logger_.info("camera discovered: " + key);
@@ -8023,6 +8219,7 @@ private:
         std::string record_storage_key;
         std::string record_file_prefix;
         std::string record_announce_json;
+        RecordingWindow record_window;
         uint64_t record_generation = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -8106,6 +8303,9 @@ private:
             if(should_record) {
                 if(cam->recording_start_us == 0) {
                     cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
+                    if(cam->recording_window.session_id == 0) {
+                        cam->recording_window = {next_recording_session_id_locked(), cam->recording_start_us, 0};
+                    }
                     cam->recording_file_prefix = effective_file_prefix_locked(*cam);
                 }
                 record_sender_id = cam->sender_id;
@@ -8114,6 +8314,7 @@ private:
                 record_storage_key = cam->storage_key();
                 record_file_prefix = cam->recording_file_prefix;
                 record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
+                record_window = cam->recording_window;
             }
         }
         std::shared_ptr<MediaPacket> packet_owner;
@@ -8130,6 +8331,7 @@ private:
             job.storage_key = std::move(record_storage_key);
             job.file_prefix = std::move(record_file_prefix);
             job.announce_json = std::move(record_announce_json);
+            job.recording_window = record_window;
             job.record_generation = record_generation;
             job.media_session_id = media_session_id;
             job.media_ingress_key = media_ingress_key(*processing_packet);
@@ -8888,7 +9090,10 @@ private:
     uint64_t runtime_state_save_revision_ = 0;
     std::string main_preview_key_;
     bool recording_all_ = false;
+    bool recording_all_start_pending_ = false;
+    uint64_t recording_all_session_id_ = 0;
     uint64_t recording_all_start_us_ = 0;
+    uint64_t last_recording_session_id_ = 0;
     bool recording_all_has_file_prefix_override_ = false;
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;

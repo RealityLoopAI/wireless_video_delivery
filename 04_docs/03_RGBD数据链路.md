@@ -188,11 +188,15 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 | `rgb_recorded` | 该 RGB 包是否进入 `rgb.mp4` |
 | `rgb_video_frame_index` | 该 RGB 包在 `rgb.mp4` 中对应的视频帧序号 |
 | `rgb_recorded_payload_size` | 写入视频索引的 RGB payload 大小 |
+| `recording_session_id` | 本次录制会话 ID；多路 `start-all` 必须相同 |
+| `recording_window_start_global_us` | receiver 统一指定的数据集有效起点 |
+| `recording_window_end_global_us` | receiver 统一指定的显式停止边界 |
+| `recording_window_valid` | 该行是否在录制有效窗口内 |
 
 下游读取 RGB 视频时，推荐筛选：
 
 ```text
-stream_type == "rgb" && rgb_recorded == 1
+stream_type == "rgb" && rgb_recorded == 1 && recording_window_valid == 1
 ```
 
 然后用 `rgb_video_frame_index` 对齐 `rgb.mp4` 解码帧。
@@ -202,7 +206,7 @@ stream_type == "rgb" && rgb_recorded == 1
 下游如果要做多相机 RGB 对齐：
 
 1. 先读取每路 `frames.csv`。
-2. 筛选已录制 RGB 行。
+2. 筛选 `rgb_recorded=1 && recording_window_valid=1` 的 RGB 行，排除为 H.264 可解码而保留的预滚帧。
 3. 优先使用 `global_timestamp_us`；如果 `clock_sync_valid=0`，再回退到 `frame_system_timestamp_us`。
 4. 用 `rgb_video_frame_index` 映射回 `rgb.mp4` 解码帧。
 5. 计算相机之间的最近邻时间差。
@@ -211,7 +215,7 @@ stream_type == "rgb" && rgb_recorded == 1
 下游如果要做 RGB/Depth 配对：
 
 1. RGB 使用 `rgb_recorded=1` 的行。
-2. Depth 使用 `stream_type=depth_raw` 的行。
+2. Depth 使用 `stream_type=depth_raw && recording_window_valid=1` 的行。
 3. 优先按 `global_timestamp_us` 做最近邻；如果 `clock_sync_valid=0`，再回退到 `frame_system_timestamp_us`。
 4. 输出 pair 时保留 `rgb_frame_id`、`depth_frame_id`、`rgb_timestamp_us`、`depth_timestamp_us` 和时间差。
 
@@ -222,3 +226,4 @@ stream_type == "rgb" && rgb_recorded == 1
 3. 严格内容同步需要时间同步服务、CLOCK_SYNC、稳定采集链路和离线内容标定共同保证。
 4. 如果发送端系统时间未同步或 CLOCK_SYNC 模型失效，跨设备时间戳意义会下降。
 5. 历史文档里的独立 `rgb_recorded_frames.csv` 不再是当前正式格式，当前以 `frames.csv` 为准。
+6. MP4 为了从 IDR 正常解码可以包含统一起点前的预滚；跨相机数据集起点以 `recording_window_start_global_us` 和 `recording_window_valid` 为准，不以文件第 0 帧为准。

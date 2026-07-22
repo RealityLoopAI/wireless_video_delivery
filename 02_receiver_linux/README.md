@@ -9,11 +9,12 @@
 5. 录制时先写 receiver 本地 staging；独立 uploader 校验后原子发布到 NAS，默认 `/home/fz/Desktop/nas`。
 6. RGB 调用 `ffmpeg` 按实测到达帧率封装为 fragmented `rgb.mp4`；`rgb_debug.h264` 只有 `write_debug_h264=true` 时才写入。
 7. Depth 调用 `ffmpeg` 按实测到达帧率封装为 `depth.mkv + FFV1`；`depth_debug.raw` 仅在配置开启时保留。
-8. 录制期间写 `frames.csv.inprogress`；本地媒体和 RGB 索引完成后发布 `recording_staged.json`。uploader 在本地无损生成普通 MP4，再把完整目录复制到 NAS 并最后发布 `recording_ready.json`。下游用 `clock_sync_valid/global_timestamp_us` 做多 sender 对齐，用 `rgb_recorded=1` 与 `rgb_video_frame_index` 对齐 `rgb.mp4`。
+8. `start-all` 为所有相机分配同一 `recording_session_id` 和未来全局起点，并提前 1 秒收集 H.264 可解码预滚。下游只使用 `recording_window_valid=1` 的行，不把 MP4 第 0 帧当作跨相机统一起点。
 9. `meta.json` 记录编码、分辨率、请求帧率、实际帧率、帧数和 `rgb_record_fps` / `depth_record_fps`。
 10. Web/REST 可持久化设置相机自命名和单路文件名前缀；录制停止返回整次录制任务的 `recording_start_us`。
 11. `preview_enabled=false` 可关闭接收端 RGB/Depth 预览解码与伪彩生成；`preview_enabled=true` 时预览也按客户端请求触发，未打开网页或未访问预览接口时不主动解码/生成伪彩。多设备录制压力较高时建议关闭预览，仅保留采集、传输和落盘。
-12. `gwv3-recording-uploader.service` 与 receiver 分离运行；NAS 临时不可用时保留本地 backlog，上传恢复不阻塞媒体线程。
+12. 停止录制时先分离旧 writer；MP4/CSV 收尾和 NAS 发布在后台继续。收尾期间可以立即再次点击开始，分离未完成时请求会以 `start_pending=true` 排队并自动启动。
+13. `gwv3-recording-uploader.service` 与 receiver 分离运行；NAS 临时不可用时保留本地 backlog，上传恢复不阻塞媒体线程。
 
 构建：
 

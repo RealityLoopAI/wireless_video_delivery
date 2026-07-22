@@ -31,6 +31,7 @@
     "delete_after_upload": true
   },
   "segment_seconds": 900,
+  "recording_start_lead_ms": 1000,
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",
   "log_directory": "08_reports/receiver_logs",
