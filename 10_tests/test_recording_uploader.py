@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -30,6 +31,31 @@ def atoms(path: Path) -> set[bytes]:
             offset += atom_size
     assert offset == size
     return result
+
+
+def remove_closing_mfra(path: Path) -> None:
+    size = path.stat().st_size
+    offset = 0
+    with path.open("r+b") as handle:
+        while offset + 8 <= size:
+            handle.seek(offset)
+            header = handle.read(8)
+            assert len(header) == 8
+            atom_size = int.from_bytes(header[:4], "big")
+            atom_type = header[4:8]
+            header_size = 8
+            if atom_size == 1:
+                atom_size = int.from_bytes(handle.read(8), "big")
+                header_size = 16
+            elif atom_size == 0:
+                atom_size = size - offset
+            assert header_size <= atom_size <= size - offset
+            if atom_type == b"mfra":
+                assert offset + atom_size == size
+                handle.truncate(offset)
+                return
+            offset += atom_size
+    raise AssertionError("fixture has no closing mfra atom")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -76,6 +102,22 @@ def run(args: argparse.Namespace) -> None:
         assert b"moof" in atoms(rgb_path)
         assert b"mfra" in atoms(rgb_path)
         assert b"sidx" not in atoms(rgb_path)
+        invalid_segment = temporary / "invalid_mfra"
+        invalid_segment.mkdir()
+        invalid_rgb = invalid_segment / "rgb.mp4"
+        shutil.copy2(rgb_path, invalid_rgb)
+        remove_closing_mfra(invalid_rgb)
+        assert b"mfra" not in atoms(invalid_rgb)
+        spec = importlib.util.spec_from_file_location("recording_uploader_under_test", args.uploader)
+        assert spec is not None and spec.loader is not None
+        uploader_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(uploader_module)
+        try:
+            uploader_module.finalize_rgb(invalid_segment, invalid_rgb.name, ffmpeg)
+        except RuntimeError as error:
+            assert "no closing mfra atom" in str(error)
+        else:
+            raise AssertionError("fragmented MP4 without mfra was accepted")
         (segment / f"{prefix}frames.csv").write_text("local_time_us,stream_type\n1,rgb\n", encoding="ascii")
         (segment / f"{prefix}meta.json").write_text(
             json.dumps({"closed": True, "recording_ready_file": f"{prefix}recording_ready.json"}), encoding="ascii"

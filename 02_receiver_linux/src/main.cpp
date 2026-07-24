@@ -3501,6 +3501,7 @@ public:
         if(!active_) {
             return;
         }
+        const auto close_started = std::chrono::steady_clock::now();
         ScopeExit reset_guard([this] { reset_after_close(); });
         std::exception_ptr flush_error;
         try {
@@ -3518,7 +3519,6 @@ public:
             rgb_recorded_frames_csv_.flush();
             rgb_recorded_frames_csv_.close();
         }
-        merge_rgb_recorded_frames_into_frames(logger);
         if(rgb_debug_) {
             rgb_debug_.close();
         }
@@ -3527,6 +3527,7 @@ public:
         }
         const int rgb_rc = rgb_pipe_.close();
         const int depth_rc = depth_pipe_.close();
+        const auto pipes_closed = std::chrono::steady_clock::now();
         mark_end_us(now_us());
         if(rgb_rc != 0) {
             rgb_pipe_failed_ = true;
@@ -3536,7 +3537,10 @@ public:
             depth_pipe_failed_ = true;
             logger.warn("depth ffmpeg exited with non-zero status (" + process_status_text(depth_rc) + ") for segment: " + directory_);
         }
+        merge_rgb_recorded_frames_into_frames(logger);
+        const auto frames_merged = std::chrono::steady_clock::now();
         finalize_completed_media(cfg, logger);
+        const auto media_validated = std::chrono::steady_clock::now();
         publish_finalized_frames(logger);
         write_meta(cfg, sender_id, camera_id, announce_json, true);
         if(cfg.recording_staging.enabled && cfg.recording_staging.defer_player_compatible_finalize) {
@@ -3546,6 +3550,16 @@ public:
             write_recording_ready_marker(sender_id, camera_id);
         }
         set_segment_mtime_to_start(logger);
+        const auto close_finished = std::chrono::steady_clock::now();
+        const auto elapsed_ms = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        logger.info("recording segment close timing directory=" + directory_
+                    + " pipe_close_ms=" + std::to_string(elapsed_ms(close_started, pipes_closed))
+                    + " frames_merge_ms=" + std::to_string(elapsed_ms(pipes_closed, frames_merged))
+                    + " media_validation_ms=" + std::to_string(elapsed_ms(frames_merged, media_validated))
+                    + " publish_ms=" + std::to_string(elapsed_ms(media_validated, close_finished))
+                    + " total_ms=" + std::to_string(elapsed_ms(close_started, close_finished)));
         logger.info("recording segment closed: " + directory_);
         if(flush_error) {
             std::rethrow_exception(flush_error);
@@ -4519,8 +4533,11 @@ private:
             if(!atoms || !atoms->moov) {
                 return false;
             }
-            if(atoms->moof && !atoms->mfra) {
-                return false;
+            if(atoms->moof) {
+                // A normally closed fragmented MP4 has mfra at the end. Avoid
+                // ffprobe here: without global_sidx it scans the entire file,
+                // serializing multi-camera finalization for minutes.
+                return atoms->mfra;
             }
         }
         return probe_media_duration_seconds(ffprobe_path, media_path).has_value();

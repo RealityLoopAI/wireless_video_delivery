@@ -185,6 +185,7 @@ def finalize_rgb(
     segment: Path,
     rgb_name: str,
     ffmpeg_path: str,
+    expected_duration: float | None = None,
     heartbeat: Callable[[], None] | None = None,
 ) -> None:
     rgb_path = segment / rgb_name
@@ -193,11 +194,12 @@ def finalize_rgb(
     atoms = mp4_atoms(rgb_path)
     if not atoms or b"moov" not in atoms:
         raise RuntimeError(f"RGB MP4 has no valid moov atom: {rgb_path}")
-    source_duration = media_duration(rgb_path, ffmpeg_path)
-    if source_duration is None:
-        raise RuntimeError(f"RGB MP4 is not readable: {rgb_path}")
     if b"moof" not in atoms:
+        if media_duration(rgb_path, ffmpeg_path) is None:
+            raise RuntimeError(f"RGB MP4 is not readable: {rgb_path}")
         return
+    if b"mfra" not in atoms:
+        raise RuntimeError(f"RGB fragmented MP4 has no closing mfra atom: {rgb_path}")
 
     temporary = segment / ("." + rgb_name + ".seekable.tmp.mp4")
     temporary.unlink(missing_ok=True)
@@ -217,7 +219,7 @@ def finalize_rgb(
             str(temporary),
         ],
         segment / "ffmpeg.log",
-        timeout=max(300.0, source_duration * 0.5),
+        timeout=max(300.0, (expected_duration or 0.0) * 0.5),
         heartbeat=heartbeat,
     )
     if result.returncode != 0:
@@ -225,13 +227,14 @@ def finalize_rgb(
         raise RuntimeError(f"RGB player-compatible remux failed with exit={result.returncode}: {rgb_path}")
     output_atoms = mp4_atoms(temporary)
     output_duration = media_duration(temporary, ffmpeg_path)
-    tolerance = max(0.25, source_duration * 0.001)
+    duration_valid = output_duration is not None
+    if duration_valid and expected_duration is not None and expected_duration > 0:
+        duration_valid = abs(output_duration - expected_duration) <= max(5.0, expected_duration * 0.05)
     if (
         not output_atoms
         or b"moov" not in output_atoms
         or b"moof" in output_atoms
-        or output_duration is None
-        or abs(output_duration - source_duration) > tolerance
+        or not duration_valid
     ):
         temporary.unlink(missing_ok=True)
         raise RuntimeError(f"RGB remux validation failed: {rgb_path}")
@@ -254,7 +257,14 @@ def finalize_staged_segment(
     if not (segment / frames_name).is_file():
         raise RuntimeError(f"final frames CSV missing: {segment / frames_name}")
 
-    finalize_rgb(segment, rgb_name, ffmpeg_path, heartbeat)
+    segment_start_us = int(staged.get("segment_start_us") or 0)
+    segment_end_us = int(staged.get("segment_end_us") or 0)
+    expected_duration = (
+        (segment_end_us - segment_start_us) / 1_000_000.0
+        if segment_start_us > 0 and segment_end_us > segment_start_us
+        else None
+    )
+    finalize_rgb(segment, rgb_name, ffmpeg_path, expected_duration, heartbeat)
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
     if not rgb_exists and not depth_exists:
