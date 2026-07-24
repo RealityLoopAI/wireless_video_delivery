@@ -293,7 +293,7 @@ def exercise_clock_sync(clock_port: int, status_port: int, admin_port: int) -> N
     raise AssertionError("clock sync model stayed valid after reports and probes stopped")
 
 
-def exercise_camera_error_state(status_port: int, admin_port: int) -> None:
+def exercise_camera_error_state(status_port: int, media_port: int, admin_port: int) -> None:
     sender_id = "test-sender"
     camera_id = "cam01"
 
@@ -341,6 +341,36 @@ def exercise_camera_error_state(status_port: int, admin_port: int) -> None:
         },
     )
     wait_for("", True)
+    with socket.create_connection(("127.0.0.1", media_port), timeout=3) as media:
+        timestamp = int(time.time() * 1_000_000)
+        media.sendall(depth_packet(sender_id, camera_id, 1, 64, 48, timestamp, pair_id=1))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            current = json.loads(request(admin_port, "GET", "/api/status")[2])
+            camera = next(
+                (
+                    item for item in current.get("cameras", [])
+                    if item.get("sender_id") == sender_id and item.get("camera_id") == camera_id
+                ),
+                {},
+            )
+            if 0 <= int(camera.get("media_age_ms", -1)) < 1000:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("test media packet did not reach receiver")
+        status_message(
+            status_port,
+            {
+                "protocol_version": "3.0",
+                "message_type": "heartbeat",
+                "sender_id": sender_id,
+                "camera_id": camera_id,
+                "online": True,
+                "last_error": "media TCP connect failed: Connection refused",
+            },
+        )
+        wait_for("", True)
     status_message(
         status_port,
         {
@@ -999,7 +1029,7 @@ def run(args) -> None:
             assert receiver.poll() is None, "receiver crashed on malformed status JSON"
             assert all(camera.get("sender_id") != "../escape" for camera in admin_status.get("cameras", []))
             exercise_clock_sync(ports["clock"], ports["status"], ports["admin"])
-            exercise_camera_error_state(ports["status"], ports["admin"])
+            exercise_camera_error_state(ports["status"], ports["media"], ports["admin"])
 
             send_incomplete_udp_assemblies(ports["media_udp"])
             time.sleep(0.1)

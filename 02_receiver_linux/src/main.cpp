@@ -276,6 +276,11 @@ bool camera_announce_expects_rgb(const std::string &announce_json) {
     return !rgb_profile["enabled"].isBool() || rgb_profile["enabled"].asBool();
 }
 
+bool is_recovered_media_transport_error(const std::string &error) {
+    return error.rfind("media TCP ", 0) == 0 || error.rfind("media transport ", 0) == 0
+           || error == "unknown media transport error";
+}
+
 std::string json_string_value(const Json::Value &root, const char *key, const std::string &fallback = {}) {
     const auto &value = root[key];
     return value.isString() ? value.asString() : fallback;
@@ -8064,10 +8069,15 @@ private:
                 cam.sender_publish_warmup_drops =
                     json_uint64_value(root, "publish_warmup_dropped_framesets").value_or(cam.sender_publish_warmup_drops);
                 const auto sender_error = json_string_value(root, "last_error");
-                if(!sender_error.empty()) {
+                const bool preserve_recording_error = cam.last_error.rfind("recording_", 0) == 0;
+                const bool media_live = is_recent_us(received_us, cam.last_media_us, kCameraOnlineTimeoutUs);
+                const bool recovered_transport_error =
+                    heartbeat_online && media_live && is_recovered_media_transport_error(sender_error);
+                if(!sender_error.empty() && !recovered_transport_error && !preserve_recording_error) {
                     cam.last_error = sender_error;
                 }
-                else if(heartbeat_online && cam.last_error.rfind("recording_", 0) != 0) {
+                else if(heartbeat_online && !preserve_recording_error
+                        && (sender_error.empty() || recovered_transport_error)) {
                     cam.last_error.clear();
                 }
             }
