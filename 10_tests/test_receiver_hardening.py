@@ -234,29 +234,137 @@ def exercise_clock_sync(clock_port: int, status_port: int, admin_port: int) -> N
         probe.sendto((json.dumps(message) + "\n").encode(), ("127.0.0.1", clock_port))
         response = json.loads(probe.recv(4096))
         t4 = int(time.time() * 1_000_000)
-    offset = ((int(response["t2_receiver_recv_us"]) - t1) + (int(response["t3_receiver_send_us"]) - t4)) // 2
-    delay = (t4 - t1) - (int(response["t3_receiver_send_us"]) - int(response["t2_receiver_recv_us"]))
+        offset = ((int(response["t2_receiver_recv_us"]) - t1) + (int(response["t3_receiver_send_us"]) - t4)) // 2
+        delay = (t4 - t1) - (int(response["t3_receiver_send_us"]) - int(response["t2_receiver_recv_us"]))
+        status_message(
+            status_port,
+            {
+                "protocol_version": "3.0",
+                "message_type": "clock_sync_report",
+                "sender_id": "test-sender",
+                "clock_sync_valid": True,
+                "clock_offset_us": offset,
+                "clock_delay_us": max(0, delay),
+                "clock_drift_ppm": 0.5,
+                "clock_last_sync_us": t4,
+            },
+        )
+        deadline = time.monotonic() + 2
+        model = {}
+        while time.monotonic() < deadline:
+            current = json.loads(request(admin_port, "GET", "/api/status")[2])
+            models = [item for item in current.get("clock_sync", []) if item.get("sender_id") == "test-sender"]
+            model = models[0] if models else {}
+            if model.get("clock_sync_valid"):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("clock sync model was not accepted")
+
+        # A delayed status/heartbeat report must not invalidate a model while
+        # the independent clock probe exchange is still alive.
+        keepalive_deadline = time.monotonic() + 0.8
+        sequence = 2
+        while time.monotonic() < keepalive_deadline:
+            probe_message = {
+                "protocol_version": "3.0",
+                "message_type": "clock_sync_probe",
+                "sender_id": "test-sender",
+                "sequence": sequence,
+                "t1_sender_send_us": int(time.time() * 1_000_000),
+            }
+            probe.sendto((json.dumps(probe_message) + "\n").encode(), ("127.0.0.1", clock_port))
+            probe.recv(4096)
+            sequence += 1
+            time.sleep(0.1)
+        current = json.loads(request(admin_port, "GET", "/api/status")[2])
+        model = next(item for item in current["clock_sync"] if item.get("sender_id") == "test-sender")
+        assert model["clock_sync_valid"] is True
+        assert model["clock_report_stale"] is True
+        assert int(model["clock_probe_count"]) >= 2
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        current = json.loads(request(admin_port, "GET", "/api/status")[2])
+        model = next(item for item in current["clock_sync"] if item.get("sender_id") == "test-sender")
+        if not model["clock_sync_valid"]:
+            return
+        time.sleep(0.05)
+    raise AssertionError("clock sync model stayed valid after reports and probes stopped")
+
+
+def exercise_camera_error_state(status_port: int, admin_port: int) -> None:
+    sender_id = "test-sender"
+    camera_id = "cam01"
+
+    def wait_for(expected_error: str, expected_online: bool) -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            current = json.loads(request(admin_port, "GET", "/api/status")[2])
+            camera = next(
+                (
+                    item for item in current.get("cameras", [])
+                    if item.get("sender_id") == sender_id and item.get("camera_id") == camera_id
+                ),
+                {},
+            )
+            if camera.get("last_error") == expected_error and camera.get("online") is expected_online:
+                return
+            time.sleep(0.05)
+        raise AssertionError(
+            f"camera error state did not converge error={expected_error!r} online={expected_online}"
+        )
+
     status_message(
         status_port,
         {
             "protocol_version": "3.0",
-            "message_type": "clock_sync_report",
-            "sender_id": "test-sender",
-            "clock_sync_valid": True,
-            "clock_offset_us": offset,
-            "clock_delay_us": max(0, delay),
-            "clock_drift_ppm": 0.5,
-            "clock_last_sync_us": t4,
+            "message_type": "event",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "level": "warning",
+            "event_code": "camera_unavailable",
+            "message": "temporary disconnect",
         },
     )
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        current = json.loads(request(admin_port, "GET", "/api/status")[2])
-        models = [model for model in current.get("clock_sync", []) if model.get("sender_id") == "test-sender"]
-        if models and models[0].get("clock_sync_valid"):
-            return
-        time.sleep(0.05)
-    raise AssertionError("clock sync model was not accepted")
+    wait_for("camera_unavailable: temporary disconnect", False)
+    status_message(
+        status_port,
+        {
+            "protocol_version": "3.0",
+            "message_type": "event",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "level": "info",
+            "event_code": "camera_reconnected",
+            "message": "capture resumed",
+        },
+    )
+    wait_for("", True)
+    status_message(
+        status_port,
+        {
+            "protocol_version": "3.0",
+            "message_type": "heartbeat",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "online": True,
+            "last_error": "sender transport warning",
+        },
+    )
+    wait_for("sender transport warning", True)
+    status_message(
+        status_port,
+        {
+            "protocol_version": "3.0",
+            "message_type": "heartbeat",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "online": True,
+            "last_error": "",
+        },
+    )
+    wait_for("", True)
 
 
 def send_incomplete_udp_assemblies(port: int, count: int = 300) -> None:
@@ -538,6 +646,47 @@ def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
     assert max_finalize_active == 1, "more than one heavyweight segment finalizer ran concurrently"
     assert max_record_queue_peak < 4 * 1024 * 1024, f"record queue grew during background finalization: {max_record_queue_peak}"
 
+    # Wait until media-idle handling has detached each active segment, then
+    # resume with depth only. A receiver that starts a fresh RGBD segment from
+    # those packets creates an unusable depth-only tail.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        rotation_cameras = [
+            camera for camera in current.get("cameras", []) if camera.get("sender_id") == sender_id
+        ]
+        if (
+            len(rotation_cameras) == len(camera_ids)
+            and all(
+                int(camera.get("media_idle_finalizations", 0)) >= 1
+                and not camera.get("segment_active")
+                for camera in rotation_cameras
+            )
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("rotation test cameras did not enter the idle-detached state")
+
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        timestamp = first_timestamp + frame_id * 33333
+        for camera_id in camera_ids:
+            media.sendall(depth_packet(sender_id, camera_id, frame_id, 64, 48, timestamp, pair_id=frame_id & 0xFF))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        rotation_cameras = [
+            camera for camera in current.get("cameras", []) if camera.get("sender_id") == sender_id
+        ]
+        if (
+            len(rotation_cameras) == len(camera_ids)
+            and all(int(camera.get("segment_prestart_depth_drops", 0)) >= 1 for camera in rotation_cameras)
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("depth-only resume packets were not held behind an RGB segment start")
+
     assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
     finalization_deadline = time.monotonic() + 30
     while time.monotonic() < finalization_deadline:
@@ -556,6 +705,9 @@ def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
         camera_root = nas_root / f"{sender_id}_{camera_id}"
         ready_files = list(camera_root.rglob("recording_ready.json"))
         assert len(ready_files) >= 2, f"finalized rotated segments missing for {camera_id}"
+        for ready_file in ready_files:
+            rgb_files = list(ready_file.parent.glob("*rgb.mp4"))
+            assert rgb_files and rgb_files[0].stat().st_size > 0, f"depth-only rotated tail created for {camera_id}"
 
 
 def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None:
@@ -777,7 +929,7 @@ def run(args) -> None:
             "media_udp_bind_ip": "127.0.0.1",
             "media_udp_port": ports["media_udp"],
             "preview_udp_enabled": False,
-            "clock_sync": {"enabled": True, "bind_ip": "127.0.0.1", "port": ports["clock"], "model_timeout_ms": 10000},
+            "clock_sync": {"enabled": True, "bind_ip": "127.0.0.1", "port": ports["clock"], "model_timeout_ms": 400},
             "admin_bind_ip": "127.0.0.1",
             "admin_port": ports["admin"],
             "nas_root": str(temporary / "nas"),
@@ -847,6 +999,7 @@ def run(args) -> None:
             assert receiver.poll() is None, "receiver crashed on malformed status JSON"
             assert all(camera.get("sender_id") != "../escape" for camera in admin_status.get("cameras", []))
             exercise_clock_sync(ports["clock"], ports["status"], ports["admin"])
+            exercise_camera_error_state(ports["status"], ports["admin"])
 
             send_incomplete_udp_assemblies(ports["media_udp"])
             time.sleep(0.1)
@@ -972,7 +1125,7 @@ def run(args) -> None:
                     time.sleep(0.1)
                 else:
                     raise AssertionError("recording did not finalize")
-                assert_recording_output(temporary / "nas")
+                assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)
                 exercise_media_idle_finalize_and_resume(ports, temporary / "nas")
                 exercise_async_segment_rotation(ports, temporary / "nas")
                 assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)

@@ -64,7 +64,7 @@ def run(args: argparse.Namespace) -> None:
                 "-preset",
                 "ultrafast",
                 "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof+global_sidx",
+                "+frag_keyframe+empty_moov+default_base_moof",
                 str(rgb_path),
             ],
             stdout=subprocess.PIPE,
@@ -74,6 +74,8 @@ def run(args: argparse.Namespace) -> None:
         )
         assert generated.returncode == 0, generated.stderr.decode(errors="replace")
         assert b"moof" in atoms(rgb_path)
+        assert b"mfra" in atoms(rgb_path)
+        assert b"sidx" not in atoms(rgb_path)
         (segment / f"{prefix}frames.csv").write_text("local_time_us,stream_type\n1,rgb\n", encoding="ascii")
         (segment / f"{prefix}meta.json").write_text(
             json.dumps({"closed": True, "recording_ready_file": f"{prefix}recording_ready.json"}), encoding="ascii"
@@ -132,14 +134,25 @@ def run(args: argparse.Namespace) -> None:
             stderr=subprocess.PIPE,
         )
         deadline = time.monotonic() + 10
+        active_status = {}
         while time.monotonic() < deadline:
-            if list(nas_root.rglob(".gwv3-uploading-*")):
+            status_path = staging_root / ".gwv3_uploader_status.json"
+            if status_path.is_file():
+                active_status = json.loads(status_path.read_text(encoding="utf-8"))
+            if (
+                list(nas_root.rglob(".gwv3-uploading-*"))
+                and active_status.get("active_phase") == "uploading"
+                and int(active_status.get("active_bytes_total", 0)) > 0
+            ):
                 break
             assert interrupted.poll() is None, "uploader exited before interruption point"
             time.sleep(0.02)
         else:
             interrupted.kill()
             raise AssertionError("uploader did not enter the NAS copy phase")
+        assert active_status["active_segment"] == str(segment)
+        assert 0 <= float(active_status["active_progress_percent"]) <= 100
+        assert int(active_status["active_elapsed_ms"]) >= 0
         interrupted.terminate()
         interrupted.wait(timeout=5)
         assert segment.exists(), "interrupted upload removed the local segment"

@@ -26,6 +26,8 @@
 namespace gwv3 {
 namespace {
 
+constexpr uint64_t kProbeSuccessLogIntervalUs = 30ull * 1000ull * 1000ull;
+
 uint64_t now_us() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
@@ -326,9 +328,18 @@ void ClockSyncManager::handle_datagram(int fd, const char *data, size_t size, co
     const uint64_t sequence = root["sequence"].asUInt64();
     const uint64_t t1 = root["t1_sender_send_us"].asUInt64();
 
+    bool log_response = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         probe_source_ips_[sender_id] = peer.sin_addr.s_addr;
+        auto &model = clock_models_[sender_id];
+        model.last_probe_receiver_us = t2;
+        ++model.probe_count;
+        auto &last_log_us = last_probe_log_us_[sender_id];
+        if(last_log_us == 0 || t2 >= last_log_us + kProbeSuccessLogIntervalUs) {
+            last_log_us = t2;
+            log_response = true;
+        }
     }
 
     const uint64_t t3 = now_us();
@@ -346,14 +357,20 @@ void ClockSyncManager::handle_datagram(int fd, const char *data, size_t size, co
         log_warn("clock_sync response send failed sender_id=" + sender_id + ": " + std::strerror(errno));
         return;
     }
-    log_info("clock_sync response sent sender_id=" + sender_id + " sequence=" + std::to_string(sequence));
+    if(log_response) {
+        log_info("clock_sync response sent sender_id=" + sender_id + " sequence=" + std::to_string(sequence));
+    }
 }
 
 ClockModel ClockSyncManager::apply_timeout_locked(const ClockModel &model, uint64_t now) const {
     ClockModel out = model;
     const uint64_t timeout_us = static_cast<uint64_t>(config_.model_timeout_ms) * 1000ull;
-    if(out.valid && out.last_update_receiver_us > 0 && out.last_update_receiver_us < now
-       && now - out.last_update_receiver_us > timeout_us) {
+    const bool report_fresh = out.last_update_receiver_us > 0
+                              && (out.last_update_receiver_us >= now || now - out.last_update_receiver_us <= timeout_us);
+    const bool probe_fresh = out.last_probe_receiver_us > 0
+                             && (out.last_probe_receiver_us >= now || now - out.last_probe_receiver_us <= timeout_us);
+    out.report_stale = !report_fresh;
+    if(out.valid && !report_fresh && !probe_fresh) {
         out.valid = false;
     }
     return out;

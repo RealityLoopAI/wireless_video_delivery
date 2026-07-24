@@ -100,7 +100,10 @@ def run(args: argparse.Namespace) -> None:
                 },
             )
             time.sleep(0.1)
-            assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+            start_status, _, start_body = request(ports["admin"], "POST", "/api/record/start-all")
+            assert start_status == 200
+            recording_start_us = int(json.loads(start_body)["recording_start_us"])
+            time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
             fixture = generate_h264_fixture(90)
             timestamp = int(time.time() * 1_000_000)
             with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:

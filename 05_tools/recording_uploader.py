@@ -13,7 +13,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 STOP_REQUESTED = False
@@ -76,18 +76,41 @@ def marker_filename(value: Any, fallback: str, field: str) -> str:
     return name
 
 
-def run_checked(command: list[str], log_path: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
+def run_checked(
+    command: list[str],
+    log_path: Path,
+    timeout: float,
+    heartbeat: Callable[[], None] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab", buffering=0) as log:
-        return subprocess.run(
+        process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             close_fds=True,
-            timeout=timeout,
-            check=False,
         )
+        deadline = time.monotonic() + timeout
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                return subprocess.CompletedProcess(command, returncode)
+            if STOP_REQUESTED:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise InterruptedError("recording finalization interrupted")
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                raise subprocess.TimeoutExpired(command, timeout)
+            if heartbeat is not None:
+                heartbeat()
+            time.sleep(0.25)
 
 
 def ffprobe_path(ffmpeg_path: str) -> str:
@@ -158,7 +181,12 @@ def mp4_atoms(path: Path) -> set[bytes] | None:
         return None
 
 
-def finalize_rgb(segment: Path, rgb_name: str, ffmpeg_path: str) -> None:
+def finalize_rgb(
+    segment: Path,
+    rgb_name: str,
+    ffmpeg_path: str,
+    heartbeat: Callable[[], None] | None = None,
+) -> None:
     rgb_path = segment / rgb_name
     if not rgb_path.is_file() or rgb_path.stat().st_size == 0:
         return
@@ -190,6 +218,7 @@ def finalize_rgb(segment: Path, rgb_name: str, ffmpeg_path: str) -> None:
         ],
         segment / "ffmpeg.log",
         timeout=max(300.0, source_duration * 0.5),
+        heartbeat=heartbeat,
     )
     if result.returncode != 0:
         temporary.unlink(missing_ok=True)
@@ -217,6 +246,7 @@ def finalize_staged_segment(
     staged: dict[str, Any],
     staged_path: Path,
     ffmpeg_path: str,
+    heartbeat: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     frames_name = marker_filename(staged.get("frames_file"), "frames.csv", "frames_file")
     rgb_name = marker_filename(staged.get("rgb_file"), "rgb.mp4", "rgb_file")
@@ -224,7 +254,7 @@ def finalize_staged_segment(
     if not (segment / frames_name).is_file():
         raise RuntimeError(f"final frames CSV missing: {segment / frames_name}")
 
-    finalize_rgb(segment, rgb_name, ffmpeg_path)
+    finalize_rgb(segment, rgb_name, ffmpeg_path, heartbeat)
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
     if not rgb_exists and not depth_exists:
@@ -279,9 +309,17 @@ def iter_copy_files(source: Path) -> Iterable[tuple[Path, Path]]:
             yield root_path / name, relative_root / name
 
 
-def copy_file_limited(source: Path, destination: Path, bandwidth_mbps: float) -> None:
+def copy_file_limited(
+    source: Path,
+    destination: Path,
+    bandwidth_mbps: float,
+    progress: Callable[[int, int], None] | None = None,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
+    total = source.stat().st_size
+    if progress is not None:
+        progress(0, total)
     started = time.monotonic()
     chunk_size = 4 * 1024 * 1024
     with source.open("rb") as input_handle, destination.open("wb") as output_handle:
@@ -291,6 +329,8 @@ def copy_file_limited(source: Path, destination: Path, bandwidth_mbps: float) ->
                 break
             output_handle.write(chunk)
             copied += len(chunk)
+            if progress is not None:
+                progress(copied, total)
             if bandwidth_mbps > 0:
                 while True:
                     if STOP_REQUESTED:
@@ -299,10 +339,14 @@ def copy_file_limited(source: Path, destination: Path, bandwidth_mbps: float) ->
                     delay = expected - (time.monotonic() - started)
                     if delay <= 0:
                         break
+                    if progress is not None:
+                        progress(copied, total)
                     time.sleep(min(delay, 0.25))
         output_handle.flush()
         os.fsync(output_handle.fileno())
     shutil.copystat(source, destination, follow_symlinks=False)
+    if progress is not None:
+        progress(total, total)
 
 
 def manifest(root: Path) -> dict[str, int]:
@@ -365,10 +409,14 @@ def publish_segment(
     ready: dict[str, Any],
     ready_name: str,
     bandwidth_mbps: float,
+    progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     destination, already_published = destination_for(source, staging_root, nas_root, ready, ready_name)
     if already_published:
         (destination / ".gwv3_publish_incomplete.json").unlink(missing_ok=True)
+        if progress is not None:
+            total = sum(manifest(source).values())
+            progress(total, total)
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_prefix = f".gwv3-uploading-{destination.name}-"
@@ -385,10 +433,25 @@ def publish_segment(
         ready_size = copy_manifest.pop(ready_name, None)
         if ready_size is None:
             raise RuntimeError(f"recording ready marker missing before NAS publication: {source}")
+        total_bytes = sum(source_manifest.values())
+        copied_before_file = 0
+        if progress is not None:
+            progress(0, total_bytes)
         ordered_files = sorted(copy_manifest)
         for relative_text in ordered_files:
             relative = Path(relative_text)
-            copy_file_limited(source / relative, temporary / relative, bandwidth_mbps)
+            file_size = copy_manifest[relative_text]
+            copy_file_limited(
+                source / relative,
+                temporary / relative,
+                bandwidth_mbps,
+                (
+                    lambda copied, _total, base=copied_before_file: progress(base + copied, total_bytes)
+                    if progress is not None
+                    else None
+                ),
+            )
+            copied_before_file += file_size
         for root, directories, _files in os.walk(temporary, topdown=False):
             for directory in directories:
                 fsync_directory(Path(root) / directory)
@@ -408,7 +471,16 @@ def publish_segment(
         os.replace(temporary, destination)
         fsync_directory(destination.parent)
         ready_temporary = destination / (ready_name + ".tmp")
-        copy_file_limited(source / ready_name, ready_temporary, 0)
+        copy_file_limited(
+            source / ready_name,
+            ready_temporary,
+            0,
+            (
+                lambda copied, _total: progress(copied_before_file + copied, total_bytes)
+                if progress is not None
+                else None
+            ),
+        )
         os.replace(ready_temporary, destination / ready_name)
         fsync_directory(destination)
         if manifest(destination) != source_manifest:
@@ -417,6 +489,8 @@ def publish_segment(
             raise RuntimeError(f"published NAS segment verification failed: {destination}")
         (destination / ".gwv3_publish_incomplete.json").unlink(missing_ok=True)
         fsync_directory(destination)
+        if progress is not None:
+            progress(total_bytes, total_bytes)
         return destination
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -501,6 +575,11 @@ class Uploader:
         self.last_error = ""
         self.last_success_us = 0
         self.active_segment = ""
+        self.active_phase = ""
+        self.active_bytes_done = 0
+        self.active_bytes_total = 0
+        self.active_started_us = 0
+        self.next_active_status_at = 0.0
         self.running = False
 
         if not self.enabled:
@@ -525,6 +604,17 @@ class Uploader:
                 "pending_bytes": pending_bytes,
                 "oldest_pending_age_ms": oldest_us // 1000,
                 "active_segment": self.active_segment,
+                "active_phase": self.active_phase,
+                "active_bytes_done": self.active_bytes_done,
+                "active_bytes_total": self.active_bytes_total,
+                "active_progress_percent": (
+                    round(self.active_bytes_done * 100.0 / self.active_bytes_total, 2)
+                    if self.active_bytes_total > 0
+                    else 0.0
+                ),
+                "active_elapsed_ms": (
+                    max(0, now_us() - self.active_started_us) // 1000 if self.active_started_us > 0 else 0
+                ),
                 "completed_segments": self.completed,
                 "failed_attempts": self.failures,
                 "last_success_us": self.last_success_us,
@@ -532,11 +622,35 @@ class Uploader:
             },
         )
 
+    def update_active_status(
+        self,
+        phase: str | None = None,
+        bytes_done: int | None = None,
+        bytes_total: int | None = None,
+        force: bool = False,
+    ) -> None:
+        if phase is not None:
+            self.active_phase = phase
+        if bytes_done is not None:
+            self.active_bytes_done = max(0, bytes_done)
+        if bytes_total is not None:
+            self.active_bytes_total = max(0, bytes_total)
+        current = time.monotonic()
+        if not force and current < self.next_active_status_at:
+            return
+        self.next_active_status_at = current + 1.0
+        self.write_status(discover_segments(self.staging_root))
+
     def process_one(self, segment: Path) -> bool:
         descriptor = acquire_segment_lock(segment)
         if descriptor is None:
             return False
         self.active_segment = str(segment)
+        self.active_started_us = now_us()
+        self.active_bytes_done = 0
+        self.active_bytes_total = 0
+        self.next_active_status_at = 0.0
+        self.update_active_status(phase="finalizing", force=True)
         try:
             staged_markers = sorted(segment.glob("*recording_staged.json"))
             ready_markers = sorted(segment.glob("*recording_ready.json"))
@@ -544,7 +658,13 @@ class Uploader:
                 raise RuntimeError(f"ambiguous recording marker set: {segment}")
             if staged_markers:
                 staged_path = staged_markers[0]
-                ready, ready_path = finalize_staged_segment(segment, load_json(staged_path), staged_path, self.ffmpeg_path)
+                ready, ready_path = finalize_staged_segment(
+                    segment,
+                    load_json(staged_path),
+                    staged_path,
+                    self.ffmpeg_path,
+                    heartbeat=self.update_active_status,
+                )
             else:
                 if not ready_markers:
                     raise RuntimeError(f"recording marker disappeared: {segment}")
@@ -552,6 +672,7 @@ class Uploader:
                 ready = load_json(ready_path)
                 if ready.get("ready") is not True:
                     raise RuntimeError(f"invalid ready marker: {segment}")
+            self.update_active_status(phase="uploading", bytes_done=0, bytes_total=0, force=True)
             destination = publish_segment(
                 segment,
                 self.staging_root,
@@ -559,6 +680,9 @@ class Uploader:
                 ready,
                 ready_path.name,
                 self.bandwidth_mbps,
+                progress=lambda done, total: self.update_active_status(
+                    phase="uploading", bytes_done=done, bytes_total=total
+                ),
             )
             self.completed += 1
             self.last_success_us = now_us()
@@ -582,6 +706,11 @@ class Uploader:
         finally:
             release_segment_lock(segment, descriptor)
             self.active_segment = ""
+            self.active_phase = ""
+            self.active_bytes_done = 0
+            self.active_bytes_total = 0
+            self.active_started_us = 0
+            self.update_active_status(force=True)
 
     def run_once(self) -> bool:
         segments = discover_segments(self.staging_root)

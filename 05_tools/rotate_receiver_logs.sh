@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$ROOT_DIR/08_reports/receiver_logs"
+LOG_DIR="${GWV3_LOG_DIR:-$ROOT_DIR/08_reports/receiver_logs}"
 ARCHIVE_DIR="$LOG_DIR/archive"
 MAX_LOG_BYTES="${GWV3_MAX_LOG_BYTES:-268435456}"
 MAX_ARCHIVE_DAYS="${GWV3_MAX_ARCHIVE_DAYS:-30}"
@@ -21,13 +21,16 @@ rotate_one() {
   local stamp archived
   stamp="$(date +%Y%m%d_%H%M%S)"
   archived="$ARCHIVE_DIR/$(basename "$path").$stamp"
-  mv "$path" "$archived"
-  : > "$path"
+  # Services keep stdout log descriptors open. Copy-and-truncate preserves the
+  # inode they are writing to; renaming would leave new logs in the archive.
+  cp --reflink=auto --preserve=timestamps "$path" "$archived"
+  truncate -s 0 "$path"
   gzip -f "$archived" 2>/dev/null || true
 }
 
 rotate_one "$LOG_DIR/receiver.log"
 rotate_one "$LOG_DIR/receiver_stdout.log"
 rotate_one "$LOG_DIR/web_stdout.log"
+rotate_one "$LOG_DIR/recording_uploader.log"
 
 find "$ARCHIVE_DIR" -type f -mtime +"$MAX_ARCHIVE_DAYS" -delete 2>/dev/null || true

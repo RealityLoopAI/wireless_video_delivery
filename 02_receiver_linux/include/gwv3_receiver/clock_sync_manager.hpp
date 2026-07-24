@@ -30,12 +30,15 @@ struct ClockSample {
 
 struct ClockModel {
     bool valid = false;
+    bool report_stale = false;
     int64_t offset_us = 0;
     int64_t delay_us = 0;
     double drift_ppm = 0.0;
     uint64_t last_sync_us = 0;
     size_t sample_count = 0;
     uint64_t last_update_receiver_us = 0;
+    uint64_t last_probe_receiver_us = 0;
+    uint64_t probe_count = 0;
 };
 
 class ClockSyncManager {
@@ -78,6 +81,7 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, ClockModel> clock_models_;
     std::unordered_map<std::string, uint32_t> probe_source_ips_;
+    std::unordered_map<std::string, uint64_t> last_probe_log_us_;
 
     mutable std::mutex log_mutex_;
     std::function<void(const std::string &)> info_log_;

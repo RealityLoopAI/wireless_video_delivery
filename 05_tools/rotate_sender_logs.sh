@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$ROOT_DIR/08_reports/sender_logs"
+LOG_DIR="${GWV3_LOG_DIR:-$ROOT_DIR/08_reports/sender_logs}"
 ARCHIVE_DIR="$LOG_DIR/archive"
 MAX_LOG_BYTES="${GWV3_MAX_LOG_BYTES:-268435456}"
 MAX_ARCHIVE_DAYS="${GWV3_MAX_ARCHIVE_DAYS:-30}"
@@ -21,8 +21,8 @@ rotate_one() {
   local stamp archived
   stamp="$(date +%Y%m%d_%H%M%S)"
   archived="$ARCHIVE_DIR/$(basename "$path").$stamp"
-  mv "$path" "$archived"
-  : > "$path"
+  cp --reflink=auto --preserve=timestamps "$path" "$archived"
+  truncate -s 0 "$path"
   gzip -f "$archived" 2>/dev/null || true
 }
 

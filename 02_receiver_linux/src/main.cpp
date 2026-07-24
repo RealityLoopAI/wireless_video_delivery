@@ -113,7 +113,8 @@ constexpr size_t kMaxCodecNameBytes = 32;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
-constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof+global_sidx";
+constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
+constexpr uint64_t kSegmentRotationKeyframeRetryUs = 1ull * 1000ull * 1000ull;
 constexpr const char *kH264FullRangeMetadataBsf =
     "h264_metadata=video_full_range_flag=1:matrix_coefficients=6";
 
@@ -261,6 +262,18 @@ bool parse_json_object_strict(const std::string &json, Json::Value &root) {
     std::string errors;
     const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
     return reader->parse(json.data(), json.data() + json.size(), &root, &errors) && root.isObject();
+}
+
+bool camera_announce_expects_rgb(const std::string &announce_json) {
+    if(announce_json.empty()) {
+        return true;
+    }
+    Json::Value root;
+    if(!parse_json_object_strict(announce_json, root) || !root["rgb_profile"].isObject()) {
+        return true;
+    }
+    const auto &rgb_profile = root["rgb_profile"];
+    return !rgb_profile["enabled"].isBool() || rgb_profile["enabled"].asBool();
 }
 
 std::string json_string_value(const Json::Value &root, const char *key, const std::string &fallback = {}) {
@@ -843,6 +856,10 @@ std::optional<size_t> h264_first_vcl_start_offset(const std::vector<uint8_t> &pa
 
 bool h264_payload_has_sps_and_pps(const std::vector<uint8_t> &payload) {
     return h264_payload_has_nal_type(payload, 7) && h264_payload_has_nal_type(payload, 8);
+}
+
+bool h264_payload_can_start_segment(const std::vector<uint8_t> &payload) {
+    return h264_decodable_start_offset(payload).has_value();
 }
 
 std::vector<uint8_t> h264_non_vcl_prefix(const std::vector<uint8_t> &payload) {
@@ -4497,7 +4514,7 @@ private:
             if(!atoms || !atoms->moov) {
                 return false;
             }
-            if(atoms->moof && (!atoms->sidx || !atoms->mfra)) {
+            if(atoms->moof && !atoms->mfra) {
                 return false;
             }
         }
@@ -5150,6 +5167,10 @@ struct CameraState {
     std::string segment_dir;
     uint64_t segment_start_us = 0;
     std::atomic<bool> segment_rotation_requested{false};
+    std::atomic<uint64_t> segment_rotation_keyframe_requested_us{0};
+    std::atomic<uint64_t> segment_rotation_keyframe_requests{0};
+    std::atomic<uint64_t> segment_prestart_depth_drops{0};
+    std::atomic<uint64_t> segment_prestart_rgb_drops{0};
     std::atomic<uint64_t> media_idle_finalizations{0};
     std::unique_ptr<SegmentWriter> segment = std::make_unique<SegmentWriter>();
     std::atomic<size_t> segment_finalize_pending{0};
@@ -5462,11 +5483,14 @@ public:
             out << "{";
             out << "\"sender_id\":\"" << json_escape(clock_models[i].first) << "\",";
             out << "\"clock_sync_valid\":" << (model.valid ? "true" : "false") << ',';
+            out << "\"clock_report_stale\":" << (model.report_stale ? "true" : "false") << ',';
             out << "\"clock_offset_us\":" << model.offset_us << ',';
             out << "\"clock_delay_us\":" << model.delay_us << ',';
             out << "\"clock_drift_ppm\":" << model.drift_ppm << ',';
             out << "\"clock_last_sync_us\":" << model.last_sync_us << ',';
             out << "\"clock_last_update_receiver_us\":" << model.last_update_receiver_us << ',';
+            out << "\"clock_last_probe_receiver_us\":" << model.last_probe_receiver_us << ',';
+            out << "\"clock_probe_count\":" << model.probe_count << ',';
             out << "\"clock_samples\":" << model.sample_count;
             out << "}";
         }
@@ -5611,6 +5635,10 @@ public:
             out << "\"segment_finalize_failures\":" << cam.segment_finalize_failures.load() << ',';
             out << "\"segment_finalize_last_duration_ms\":" << cam.segment_finalize_last_duration_ms.load() << ',';
             out << "\"segment_rotation_requested\":" << (cam.segment_rotation_requested.load() ? "true" : "false") << ',';
+            out << "\"segment_rotation_keyframe_requested_us\":" << cam.segment_rotation_keyframe_requested_us.load() << ',';
+            out << "\"segment_rotation_keyframe_requests\":" << cam.segment_rotation_keyframe_requests.load() << ',';
+            out << "\"segment_prestart_depth_drops\":" << cam.segment_prestart_depth_drops.load() << ',';
+            out << "\"segment_prestart_rgb_drops\":" << cam.segment_prestart_rgb_drops.load() << ',';
             out << "\"media_idle_finalizations\":" << cam.media_idle_finalizations.load() << ',';
             out << "\"last_media_session_id\":" << cam.last_media_session_id << ',';
             out << "\"sender_rgb_input_fps\":" << cam.sender_rgb_input_fps << ',';
@@ -5646,10 +5674,12 @@ public:
             out << "\"status_age_ms\":" << age_ms_or_negative(now, cam.last_status_us) << ',';
             out << "\"media_age_ms\":" << age_ms_or_negative(now, cam.last_media_us) << ',';
             out << "\"clock_sync_valid\":" << (clock_model.valid ? "true" : "false") << ',';
+            out << "\"clock_report_stale\":" << (clock_model.report_stale ? "true" : "false") << ',';
             out << "\"clock_offset_us\":" << clock_model.offset_us << ',';
             out << "\"clock_delay_us\":" << clock_model.delay_us << ',';
             out << "\"clock_drift_ppm\":" << clock_model.drift_ppm << ',';
             out << "\"clock_last_sync_us\":" << clock_model.last_sync_us << ',';
+            out << "\"clock_last_probe_receiver_us\":" << clock_model.last_probe_receiver_us << ',';
             out << "\"rgb_packets\":" << cam.rgb_packets << ',';
             out << "\"depth_packets\":" << cam.depth_packets << ',';
             out << "\"rgb_bytes\":" << cam.rgb_bytes << ',';
@@ -5928,6 +5958,10 @@ public:
         if(!profile_changed && !timed_rotation) {
             return false;
         }
+        if(timed_rotation && !profile_changed
+           && (packet.stream_type != StreamType::rgb || !h264_payload_can_start_segment(packet.payload))) {
+            return false;
+        }
 
         if(!reserve_segment_finalize_slot(profile_changed)) {
             bool should_log = false;
@@ -5963,6 +5997,7 @@ public:
         previous_segment->mark_end_us(now_us());
         cam->segment = std::move(next_segment);
         cam->segment_rotation_requested.store(false);
+        cam->segment_rotation_keyframe_requested_us.store(0);
 
         SegmentFinalizeTask task;
         task.cam = cam;
@@ -6011,6 +6046,31 @@ public:
                 }
                 return;
             }
+        }
+
+        bool dropped_before_segment_start = false;
+        uint64_t prestart_drops = 0;
+        {
+            std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+            if(cam->segment && !cam->segment->active() && camera_announce_expects_rgb(job.announce_json)) {
+                if(queued_packet.stream_type == StreamType::depth_raw) {
+                    prestart_drops = cam->segment_prestart_depth_drops.fetch_add(1) + 1;
+                    dropped_before_segment_start = true;
+                }
+                else if(queued_packet.stream_type == StreamType::rgb
+                        && !h264_payload_can_start_segment(queued_packet.payload)) {
+                    prestart_drops = cam->segment_prestart_rgb_drops.fetch_add(1) + 1;
+                    dropped_before_segment_start = true;
+                }
+            }
+        }
+        if(dropped_before_segment_start) {
+            if(prestart_drops == 1) {
+                logger_.info("recording waiting for decodable RGB segment start camera=" + cam->key
+                             + " stream=" + std::string(stream_type_name(queued_packet.stream_type))
+                             + "; unpaired prestart packets are ignored");
+            }
+            return;
         }
 
         bool allow_segment_rotate = true;
@@ -6462,6 +6522,7 @@ public:
             const uint64_t current_us = now_us();
             std::vector<std::shared_ptr<CameraState>> camera_snapshot;
             std::vector<SegmentCloseTask> idle_close_tasks;
+            std::vector<std::shared_ptr<CameraState>> rotation_keyframe_cameras;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 refresh_camera_liveness_locked(current_us);
@@ -6476,6 +6537,7 @@ public:
                     if(media_idle && !cam->segment_finalizing) {
                         cam->segment_finalizing = true;
                         cam->segment_rotation_requested.store(false);
+                        cam->segment_rotation_keyframe_requested_us.store(0);
                         cam->media_idle_finalizations.fetch_add(1);
                         set_record_accepting(cam, false);
                         set_record_finalizing(cam, true);
@@ -6489,9 +6551,36 @@ public:
                 if(!cam) {
                     continue;
                 }
-                std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
-                if(cam->segment && cam->segment->should_rotate(config_)) {
-                    cam->segment_rotation_requested.store(true);
+                bool request_keyframe = false;
+                {
+                    std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+                    if(cam->segment && cam->segment->should_rotate(config_)) {
+                        cam->segment_rotation_requested.store(true);
+                        const uint64_t previous_request_us = cam->segment_rotation_keyframe_requested_us.load();
+                        if(previous_request_us == 0 || current_us >= previous_request_us + kSegmentRotationKeyframeRetryUs) {
+                            cam->segment_rotation_keyframe_requested_us.store(current_us);
+                            cam->segment_rotation_keyframe_requests.fetch_add(1);
+                            request_keyframe = true;
+                        }
+                    }
+                }
+                if(request_keyframe) {
+                    rotation_keyframe_cameras.push_back(cam);
+                }
+            }
+            if(!rotation_keyframe_cameras.empty()) {
+                std::vector<SenderControlTarget> targets;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    targets.reserve(rotation_keyframe_cameras.size());
+                    for(const auto &cam : rotation_keyframe_cameras) {
+                        if(cam && cam->recording_requested && cam->online && !cam->status_endpoint.empty()) {
+                            targets.push_back({cam->sender_id, cam->camera_id, cam->status_endpoint});
+                        }
+                    }
+                }
+                if(!targets.empty()) {
+                    send_force_rgb_keyframe_controls(targets, "segment_rotation", current_us);
                 }
             }
             if(!idle_close_tasks.empty()) {
@@ -6588,6 +6677,7 @@ public:
                     directory = detached->directory();
                     task.cam->segment = std::move(replacement);
                     task.cam->segment_rotation_requested.store(false);
+                    task.cam->segment_rotation_keyframe_requested_us.store(0);
                 }
             }
             RecordingActivation activation;
@@ -7941,7 +8031,9 @@ private:
                 return;
             }
             const auto code = type == "event" ? json_string_value(root, "event_code", "event") : "";
-            const bool marks_online = type == "camera_announce" || code == "camera_connected" || code == "camera_reconnected";
+            const bool heartbeat_online = type == "heartbeat" && root["online"].isBool() && root["online"].asBool();
+            const bool marks_online = type == "camera_announce" || heartbeat_online || code == "camera_connected"
+                                      || code == "camera_reconnected";
             auto &cam = *ensure_camera_ptr_locked(sender_id, camera_id, marks_online);
             const auto received_us = now_us();
             cam.last_status_us = received_us;
@@ -7971,6 +8063,13 @@ private:
                 }
                 cam.sender_publish_warmup_drops =
                     json_uint64_value(root, "publish_warmup_dropped_framesets").value_or(cam.sender_publish_warmup_drops);
+                const auto sender_error = json_string_value(root, "last_error");
+                if(!sender_error.empty()) {
+                    cam.last_error = sender_error;
+                }
+                else if(heartbeat_online && cam.last_error.rfind("recording_", 0) != 0) {
+                    cam.last_error.clear();
+                }
             }
             if(type == "heartbeat" || type == "camera_announce" || type == "camera_offline") {
                 should_log_status = cam.last_status_log_us == 0 ||
@@ -7983,6 +8082,9 @@ private:
                 cam.last_announce_json = json;
                 cam.last_announce_live = true;
                 cam.last_announce_received_us = received_us;
+                if(cam.last_error.rfind("recording_", 0) != 0) {
+                    cam.last_error.clear();
+                }
                 cam.depth_scale = depth_scale_from_announce_or_camera(cam.last_announce_json, sender_id, camera_id);
                 const bool should_save_announce =
                     (runtime_state_.camera_announces.find(key) == runtime_state_.camera_announces.end() ||
@@ -8005,7 +8107,15 @@ private:
             }
             else if(type == "event") {
                 const auto message = json_string_value(root, "message");
-                cam.last_error = code + (message.empty() ? "" : ": " + message);
+                const auto level = json_string_value(root, "level", "warning");
+                if(level != "info") {
+                    cam.last_error = code + (message.empty() ? "" : ": " + message);
+                }
+                else if((code == "camera_connected" || code == "camera_reconnected"
+                         || code == "capture_warmup_complete")
+                        && cam.last_error.rfind("recording_", 0) != 0) {
+                    cam.last_error.clear();
+                }
                 if(code == "camera_unavailable" || code == "camera_disconnected") {
                     cam.online = false;
                     cam.last_announce_live = false;
