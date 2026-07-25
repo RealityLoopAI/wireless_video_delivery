@@ -113,7 +113,8 @@ constexpr size_t kMaxCodecNameBytes = 32;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
-constexpr const char *kRgbMp4RecordMuxFlags = "+frag_keyframe+empty_moov+default_base_moof";
+constexpr const char *kRgbMp4RecordMuxFlags = "+empty_moov+default_base_moof";
+constexpr uint64_t kRgbMp4FragmentDurationUs = 1'000'000ull;
 constexpr uint64_t kSegmentRotationKeyframeRetryUs = 1ull * 1000ull * 1000ull;
 constexpr const char *kH264FullRangeMetadataBsf =
     "h264_metadata=video_full_range_flag=1:matrix_coefficients=6";
@@ -3407,6 +3408,14 @@ public:
         camera_name_ = camera_name;
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
         file_prefix_ = file_prefix;
+        const int announced_rgb_fps = json_int_in_object(announce_json, "rgb_profile", "fps").value_or(0);
+        const int announced_depth_fps = json_int_in_object(announce_json, "depth_profile", "fps").value_or(0);
+        rgb_nominal_fps_ = announced_rgb_fps >= kMinRecordFps && announced_rgb_fps <= kMaxRecordFps
+                               ? static_cast<double>(announced_rgb_fps)
+                               : 0.0;
+        depth_nominal_fps_ = announced_depth_fps >= kMinRecordFps && announced_depth_fps <= kMaxRecordFps
+                                 ? static_cast<double>(announced_depth_fps)
+                                 : 0.0;
         rgb_h264_full_range_ = rgb_h264_full_range_for_camera(cfg, sender_id, camera_id);
         const std::string &recording_root = cfg.recording_staging.enabled ? cfg.recording_staging.root : cfg.nas_root;
         std::error_code root_ec;
@@ -3606,6 +3615,8 @@ public:
         depth_fps_probe_.reset();
         rgb_record_fps_ = 0.0;
         depth_record_fps_ = 0.0;
+        rgb_nominal_fps_ = 0.0;
+        depth_nominal_fps_ = 0.0;
         rgb_stats_.reset();
         rgb_recorded_stats_.reset();
         depth_stats_.reset();
@@ -4229,6 +4240,7 @@ private:
         const std::string rgb_cmd = shell_quote(cfg.ffmpeg_path) +
                                     " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps) +
                                     " -f h264 -i pipe:0 -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags +
+                                    " -frag_duration " + std::to_string(kRgbMp4FragmentDurationUs) +
                                     " -flush_packets 1 " + rgb_mp4 +
                                     " 2>>" + ffmpeg_log;
         if(!rgb_pipe_.open(rgb_cmd, logger)) {
@@ -4352,7 +4364,7 @@ private:
         if(rgb_pipe_.active() || rgb_pending_.empty() || !rgb_pending_has_decodable_start_) {
             return;
         }
-        rgb_record_fps_ = rgb_fps_probe_.estimate(30.0);
+        rgb_record_fps_ = rgb_nominal_fps_ > 0.0 ? rgb_nominal_fps_ : rgb_fps_probe_.estimate(30.0);
         ensure_rgb_pipe(cfg, rgb_record_fps_, logger);
         if(rgb_pipe_failed_) {
             if(write_rgb_recovery_bytes(rgb_pending_.data(), rgb_pending_.size(), logger)) {
@@ -4379,7 +4391,9 @@ private:
         if(depth_pipe_.active() || depth_pending_.empty()) {
             return;
         }
-        depth_record_fps_ = depth_fps_probe_.estimate(static_cast<double>(cfg.depth_fps));
+        depth_record_fps_ = depth_nominal_fps_ > 0.0
+                                ? depth_nominal_fps_
+                                : depth_fps_probe_.estimate(static_cast<double>(cfg.depth_fps));
         ensure_depth_pipe(cfg, depth_width_, depth_height_, depth_record_fps_, logger);
         if(depth_pipe_.active()) {
             logger.info("depth record fps estimated: " + format_fps(depth_record_fps_));
@@ -4403,6 +4417,10 @@ private:
             return 0.0;
         }
         return static_cast<double>(stats.last_local_us - stats.first_local_us) / 1'000'000.0;
+    }
+
+    static double container_duration_seconds(uint64_t frames, double fps) {
+        return frames > 0 && fps > 0.0 ? static_cast<double>(frames) / fps : 0.0;
     }
 
     static double media_retime_scale(double record_fps, const StreamRecordStats &stats) {
@@ -4524,20 +4542,150 @@ private:
         return atoms;
     }
 
-    static bool media_file_readable(const std::string &ffprobe_path, const std::filesystem::path &media_path) {
+    static bool fragmented_mp4_has_mfra_footer(std::ifstream &input, uint64_t file_size) {
+        constexpr uint64_t kMfroAtomSize = 16;
+        if(file_size < kMfroAtomSize
+           || file_size > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            return false;
+        }
+
+        unsigned char footer[kMfroAtomSize]{};
+        input.seekg(static_cast<std::streamoff>(file_size - kMfroAtomSize), std::ios::beg);
+        input.read(reinterpret_cast<char *>(footer), sizeof(footer));
+        if(input.gcount() != static_cast<std::streamsize>(sizeof(footer))
+           || read_be_u32(footer) != kMfroAtomSize
+           || std::memcmp(footer + 4, "mfro", 4) != 0) {
+            return false;
+        }
+
+        const uint64_t mfra_size = read_be_u32(footer + 12);
+        if(mfra_size < 8 + kMfroAtomSize || mfra_size > file_size) {
+            return false;
+        }
+        const uint64_t mfra_offset = file_size - mfra_size;
+        unsigned char header[16]{};
+        input.seekg(static_cast<std::streamoff>(mfra_offset), std::ios::beg);
+        input.read(reinterpret_cast<char *>(header), 8);
+        if(input.gcount() != 8 || std::memcmp(header + 4, "mfra", 4) != 0) {
+            return false;
+        }
+        uint64_t header_size = 8;
+        uint64_t atom_size = read_be_u32(header);
+        if(atom_size == 1) {
+            input.read(reinterpret_cast<char *>(header + 8), 8);
+            if(input.gcount() != 8) {
+                return false;
+            }
+            atom_size = read_be_u64(header + 8);
+            header_size = 16;
+        }
+        return atom_size >= header_size && atom_size == mfra_size;
+    }
+
+    static bool fragmented_mp4_staging_sealed(const std::filesystem::path &path) {
+        std::error_code ec;
+        const auto file_size_value = std::filesystem::file_size(path, ec);
+        if(ec || file_size_value < 8 || file_size_value > std::numeric_limits<uint64_t>::max()) {
+            return false;
+        }
+        const uint64_t file_size = static_cast<uint64_t>(file_size_value);
+        std::ifstream input(path, std::ios::binary);
+        if(!input) {
+            return false;
+        }
+
+        bool saw_moov = false;
+        bool saw_moof = false;
+        uint64_t offset = 0;
+        constexpr size_t kMaxHeaderAtoms = 16;
+        for(size_t i = 0; i < kMaxHeaderAtoms && offset + 8 <= file_size; ++i) {
+            unsigned char header[16]{};
+            input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+            input.read(reinterpret_cast<char *>(header), 8);
+            if(input.gcount() != 8) {
+                return false;
+            }
+
+            uint64_t atom_size = read_be_u32(header);
+            uint64_t header_size = 8;
+            if(atom_size == 1) {
+                input.read(reinterpret_cast<char *>(header + 8), 8);
+                if(input.gcount() != 8) {
+                    return false;
+                }
+                atom_size = read_be_u64(header + 8);
+                header_size = 16;
+            }
+            else if(atom_size == 0) {
+                atom_size = file_size - offset;
+            }
+            if(atom_size < header_size || atom_size > file_size - offset) {
+                return false;
+            }
+
+            const std::string atom_type(reinterpret_cast<const char *>(header + 4), 4);
+            saw_moov = saw_moov || atom_type == "moov";
+            saw_moof = saw_moof || atom_type == "moof";
+            if(saw_moov && saw_moof) {
+                break;
+            }
+            offset += atom_size;
+        }
+
+        // Receiver staging MP4 files are fragmented. A normal close writes an
+        // mfro footer whose size points back to the final mfra atom. Checking
+        // that envelope is constant-time; the uploader performs the full scan.
+        return saw_moov && saw_moof && fragmented_mp4_has_mfra_footer(input, file_size);
+    }
+
+    static bool has_matroska_ebml_header(const std::filesystem::path &path) {
+        std::ifstream input(path, std::ios::binary);
+        unsigned char header[4]{};
+        input.read(reinterpret_cast<char *>(header), sizeof(header));
+        return input.gcount() == static_cast<std::streamsize>(sizeof(header))
+               && header[0] == 0x1a && header[1] == 0x45 && header[2] == 0xdf && header[3] == 0xa3;
+    }
+
+    static bool media_file_structurally_complete(const std::filesystem::path &media_path) {
         if(!file_size_nonzero(media_path)) {
+            return false;
+        }
+        const auto extension = media_path.extension().string();
+        if(extension == ".mp4") {
+            const auto atoms = inspect_mp4_top_level_atoms(media_path);
+            return atoms && atoms->moov && (!atoms->moof || atoms->mfra);
+        }
+        if(extension == ".mkv") {
+            return has_matroska_ebml_header(media_path);
+        }
+        return true;
+    }
+
+    static bool media_file_staging_sealed(const std::filesystem::path &media_path) {
+        if(!file_size_nonzero(media_path)) {
+            return false;
+        }
+        const auto extension = media_path.extension().string();
+        if(extension == ".mp4") {
+            return fragmented_mp4_staging_sealed(media_path);
+        }
+        if(extension == ".mkv") {
+            return has_matroska_ebml_header(media_path);
+        }
+        return true;
+    }
+
+    static bool media_file_readable(const std::string &ffprobe_path, const std::filesystem::path &media_path) {
+        if(!media_file_structurally_complete(media_path)) {
             return false;
         }
         if(media_path.extension().string() == ".mp4") {
             const auto atoms = inspect_mp4_top_level_atoms(media_path);
-            if(!atoms || !atoms->moov) {
-                return false;
-            }
-            if(atoms->moof) {
+            if(atoms && atoms->moof) {
                 // A normally closed fragmented MP4 has mfra at the end. Avoid
                 // ffprobe here: without global_sidx it scans the entire file,
                 // serializing multi-camera finalization for minutes.
-                return atoms->mfra;
+                return true;
             }
         }
         return probe_media_duration_seconds(ffprobe_path, media_path).has_value();
@@ -4657,7 +4805,8 @@ private:
         const std::string command = shell_quote(cfg.ffmpeg_path)
                                     + " -hide_banner -loglevel warning -y -fflags +genpts -r " + format_fps(fps)
                                     + " -f h264 -i " + shell_quote(rgb_debug_path_.string())
-                                    + " -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags + " -flush_packets 1 "
+                                    + " -c:v copy" + metadata_bsf + " -movflags " + kRgbMp4RecordMuxFlags
+                                    + " -frag_duration " + std::to_string(kRgbMp4FragmentDurationUs) + " -flush_packets 1 "
                                     + shell_quote(temporary.string()) + " 2>>" + shell_quote(file_path("ffmpeg.log").string());
         if(run_shell_command(command) != 0) {
             logger.warn("RGB automatic recovery remux failed: " + directory_);
@@ -4672,10 +4821,14 @@ private:
         return true;
     }
 
-    bool finalize_depth_parts(const Config &cfg, const std::string &ffprobe_path, Logger &logger) const {
+    bool finalize_depth_parts(const Config &cfg, const std::string &ffprobe_path,
+                              bool defer_full_validation, Logger &logger) const {
         std::vector<std::filesystem::path> parts;
         for(const auto &path : depth_part_paths_) {
-            if(file_size_nonzero(path) && media_file_readable(ffprobe_path, path)) {
+            const bool valid = defer_full_validation
+                                   ? media_file_staging_sealed(path)
+                                   : media_file_readable(ffprobe_path, path);
+            if(valid) {
                 parts.push_back(path);
             }
             else if(file_size_nonzero(path)) {
@@ -4734,6 +4887,8 @@ private:
         const auto ffprobe_path = ffprobe_path_from_ffmpeg(cfg.ffmpeg_path);
         const auto log_path = file_path("ffmpeg.log");
         bool checked_any_media = false;
+        const bool defer_full_validation = cfg.recording_staging.enabled
+                                           && cfg.recording_staging.defer_player_compatible_finalize;
 
         const auto validate_media = [&](const std::filesystem::path &path, const std::string &stream_name) -> bool {
             if(!file_size_nonzero(path)) {
@@ -4741,25 +4896,28 @@ private:
                 return false;
             }
             checked_any_media = true;
-            const bool ok = media_file_readable(ffprobe_path, path);
-            append_retime_log(log_path, stream_name + (ok ? " final validation ok" : " final validation failed"));
+            const bool ok = defer_full_validation
+                                ? media_file_staging_sealed(path)
+                                : media_file_readable(ffprobe_path, path);
+            append_retime_log(
+                log_path,
+                stream_name + (ok ? " final validation ok" : " final validation failed")
+                    + (defer_full_validation ? " (full probe deferred)" : ""));
             set_file_mtime_to_start(path, start_us_);
             return ok;
         };
 
-        const bool defer_player_compatible = cfg.recording_staging.enabled
-                                             && cfg.recording_staging.defer_player_compatible_finalize;
         bool rgb_ok = validate_media(file_path("rgb.mp4"), "rgb");
         if((rgb_pipe_failed_ || !rgb_ok) && rebuild_rgb_from_recovery(cfg, ffprobe_path, logger)) {
             rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_recovered");
         }
-        if(rgb_ok && !defer_player_compatible) {
+        if(rgb_ok && !defer_full_validation) {
             rgb_ok = finalize_rgb_player_compatible(cfg, ffprobe_path, logger);
             if(rgb_ok) {
                 rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_compatible");
             }
         }
-        else if(rgb_ok && defer_player_compatible) {
+        else if(rgb_ok && defer_full_validation) {
             append_retime_log(log_path, "rgb player-compatible remux deferred to recording uploader");
         }
         if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
@@ -4778,7 +4936,7 @@ private:
             append_retime_log(log_path, "rgb recovery h264 kept for offline repair");
         }
 
-        finalize_depth_parts(cfg, ffprobe_path, logger);
+        finalize_depth_parts(cfg, ffprobe_path, defer_full_validation, logger);
         validate_media(file_path("depth.mkv"), "depth");
         if(checked_any_media) {
             append_retime_log(log_path, "recording media finalization completed");
@@ -4860,10 +5018,14 @@ private:
         meta << "  \"rgb_record_fps\": " << format_fps(rgb_record_fps_) << ",\n";
         meta << "  \"rgb_playback_fps\": " << format_fps(rgb_output_stats.actual_fps()) << ",\n";
         meta << "  \"rgb_target_duration_sec\": " << format_fps(media_duration_seconds(rgb_output_stats)) << ",\n";
+        meta << "  \"rgb_container_expected_duration_sec\": "
+             << format_fps(container_duration_seconds(rgb_output_stats.frames, rgb_record_fps_)) << ",\n";
         meta << "  \"rgb_retime_scale\": " << format_fps(media_retime_scale(rgb_record_fps_, rgb_output_stats)) << ",\n";
         meta << "  \"depth_record_fps\": " << format_fps(depth_record_fps_) << ",\n";
         meta << "  \"depth_playback_fps\": " << format_fps(depth_stats_.actual_fps()) << ",\n";
         meta << "  \"depth_target_duration_sec\": " << format_fps(media_duration_seconds(depth_stats_)) << ",\n";
+        meta << "  \"depth_container_expected_duration_sec\": "
+             << format_fps(container_duration_seconds(depth_stats_.frames, depth_record_fps_)) << ",\n";
         meta << "  \"depth_retime_scale\": " << format_fps(media_retime_scale(depth_record_fps_, depth_stats_)) << ",\n";
         meta << "  \"write_debug_h264\": " << (cfg.write_debug_h264 ? "true" : "false") << ",\n";
         meta << "  \"write_debug_depth_raw\": " << (cfg.write_debug_depth_raw ? "true" : "false") << ",\n";
@@ -5001,6 +5163,8 @@ private:
     FpsProbe depth_fps_probe_;
     double rgb_record_fps_ = 0.0;
     double depth_record_fps_ = 0.0;
+    double rgb_nominal_fps_ = 0.0;
+    double depth_nominal_fps_ = 0.0;
     StreamRecordStats rgb_stats_;
     StreamRecordStats rgb_recorded_stats_;
     StreamRecordStats depth_stats_;

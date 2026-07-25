@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -13,10 +14,29 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from typing import Any, Callable, Iterable
+import urllib.request
 
 
 STOP_REQUESTED = False
+TRANSIENT_NAS_ERRNOS = frozenset(
+    value
+    for value in (
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ECONNABORTED,
+        errno.ECONNRESET,
+        errno.EFAULT,
+        errno.EHOSTUNREACH,
+        errno.EIO,
+        errno.ENETRESET,
+        errno.ENETUNREACH,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+    )
+    if value is not None
+)
 TRANSIENT_NAMES = {
     ".gwv3_uploader.lock",
     ".gwv3_publish_incomplete.json",
@@ -34,6 +54,82 @@ def request_stop(_signum: int, _frame: object) -> None:
 
 def now_us() -> int:
     return time.time_ns() // 1000
+
+
+def receiver_pause_phase(
+    status: dict[str, Any],
+    current_us: int,
+    segment_seconds: int,
+    quiet_before_segment_finalize_ms: int,
+) -> str:
+    if int(status.get("record_finalize_outstanding_segments") or 0) > 0:
+        return "receiver_finalize_wait"
+    quiet_us = max(0, quiet_before_segment_finalize_ms) * 1000
+    segment_us = max(0, segment_seconds) * 1_000_000
+    if quiet_us == 0 or segment_us == 0:
+        return ""
+    for camera in status.get("cameras") or []:
+        if not isinstance(camera, dict):
+            continue
+        if not camera.get("recording") or not camera.get("segment_active"):
+            continue
+        segment_start_us = int(camera.get("segment_start_us") or 0)
+        if segment_start_us <= 0:
+            continue
+        if camera.get("segment_rotation_requested") or segment_start_us + segment_us <= current_us + quiet_us:
+            return "receiver_segment_boundary_wait"
+    return ""
+
+
+def transient_nas_errno(error: BaseException) -> int | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno in TRANSIENT_NAS_ERRNOS:
+            return current.errno
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def run_with_transient_nas_retries(
+    operation: Callable[[], Any],
+    on_retry: Callable[[int, int, BaseException, float], None] | None = None,
+    max_attempts: int = 3,
+    initial_delay_seconds: float = 1.0,
+) -> Any:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as error:
+            if transient_nas_errno(error) is None or attempt >= attempts:
+                raise
+            delay = max(0.0, initial_delay_seconds) * (2 ** (attempt - 1))
+            if on_retry is not None:
+                on_retry(attempt, attempts, error, delay)
+            deadline = time.monotonic() + delay
+            while time.monotonic() < deadline:
+                if STOP_REQUESTED:
+                    raise InterruptedError("recording upload interrupted during retry wait") from error
+                time.sleep(min(0.25, deadline - time.monotonic()))
+    raise AssertionError("unreachable retry loop")
+
+
+def wait_while_paused(
+    pause: Callable[[], bool] | None,
+    heartbeat: Callable[[], None] | None = None,
+) -> float:
+    if pause is None or not pause():
+        return 0.0
+    started = time.monotonic()
+    while pause():
+        if STOP_REQUESTED:
+            raise InterruptedError("recording upload interrupted while waiting for receiver I/O")
+        if heartbeat is not None:
+            heartbeat()
+        time.sleep(0.25)
+    return time.monotonic() - started
 
 
 def atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
@@ -81,6 +177,7 @@ def run_checked(
     log_path: Path,
     timeout: float,
     heartbeat: Callable[[], None] | None = None,
+    pause: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab", buffering=0) as log:
@@ -92,11 +189,16 @@ def run_checked(
             close_fds=True,
         )
         deadline = time.monotonic() + timeout
+        paused = False
+        pause_started = 0.0
         while True:
             returncode = process.poll()
             if returncode is not None:
                 return subprocess.CompletedProcess(command, returncode)
             if STOP_REQUESTED:
+                if paused:
+                    process.send_signal(signal.SIGCONT)
+                    paused = False
                 process.terminate()
                 try:
                     process.wait(timeout=5)
@@ -104,7 +206,16 @@ def run_checked(
                     process.kill()
                     process.wait()
                 raise InterruptedError("recording finalization interrupted")
-            if time.monotonic() >= deadline:
+            should_pause = pause is not None and pause()
+            if should_pause and not paused:
+                process.send_signal(signal.SIGSTOP)
+                paused = True
+                pause_started = time.monotonic()
+            elif not should_pause and paused:
+                process.send_signal(signal.SIGCONT)
+                paused = False
+                deadline += time.monotonic() - pause_started
+            if not paused and time.monotonic() >= deadline:
                 process.kill()
                 process.wait()
                 raise subprocess.TimeoutExpired(command, timeout)
@@ -122,24 +233,63 @@ def ffprobe_path(ffmpeg_path: str) -> str:
     return "ffprobe"
 
 
-def media_duration(path: Path, ffmpeg_path: str) -> float | None:
-    result = subprocess.run(
-        [
-            ffprobe_path(ffmpeg_path),
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=nk=1:nw=1",
-            str(path),
-        ],
+def media_duration(
+    path: Path,
+    ffmpeg_path: str,
+    pause: Callable[[], bool] | None = None,
+) -> float | None:
+    command = [
+        ffprobe_path(ffmpeg_path),
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nk=1:nw=1",
+        str(path),
+    ]
+    process = subprocess.Popen(
+        command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         close_fds=True,
-        timeout=60,
-        check=False,
+    )
+    deadline = time.monotonic() + 60
+    paused = False
+    pause_started = 0.0
+    while process.poll() is None:
+        if STOP_REQUESTED:
+            if paused:
+                process.send_signal(signal.SIGCONT)
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise InterruptedError("recording media validation interrupted")
+        should_pause = pause is not None and pause()
+        if should_pause and not paused:
+            process.send_signal(signal.SIGSTOP)
+            paused = True
+            pause_started = time.monotonic()
+        elif not should_pause and paused:
+            process.send_signal(signal.SIGCONT)
+            paused = False
+            deadline += time.monotonic() - pause_started
+        if not paused and time.monotonic() >= deadline:
+            process.kill()
+            process.wait()
+            raise subprocess.TimeoutExpired(command, 60)
+        time.sleep(0.25)
+    stdout, _stderr = process.communicate()
+    result = subprocess.CompletedProcess(
+        [
+            *command,
+        ],
+        process.returncode,
+        stdout=stdout,
     )
     if result.returncode != 0:
         return None
@@ -148,6 +298,34 @@ def media_duration(path: Path, ffmpeg_path: str) -> float | None:
     except (UnicodeDecodeError, ValueError):
         return None
     return duration if duration > 0 else None
+
+
+def fragmented_mp4_has_mfra_footer(handle: Any, file_size: int) -> bool:
+    if file_size < 24:
+        return False
+    handle.seek(file_size - 16)
+    footer = handle.read(16)
+    if (
+        len(footer) != 16
+        or int.from_bytes(footer[:4], "big") != 16
+        or footer[4:8] != b"mfro"
+    ):
+        return False
+    mfra_size = int.from_bytes(footer[12:16], "big")
+    if mfra_size < 24 or mfra_size > file_size:
+        return False
+    handle.seek(file_size - mfra_size)
+    header = handle.read(16)
+    if len(header) < 8 or header[4:8] != b"mfra":
+        return False
+    atom_size = int.from_bytes(header[:4], "big")
+    header_size = 8
+    if atom_size == 1:
+        if len(header) != 16:
+            return False
+        atom_size = int.from_bytes(header[8:16], "big")
+        header_size = 16
+    return atom_size >= header_size and atom_size == mfra_size
 
 
 def mp4_atoms(path: Path) -> set[bytes] | None:
@@ -176,6 +354,10 @@ def mp4_atoms(path: Path) -> set[bytes] | None:
                     return None
                 atoms.add(atom_type)
                 offset += atom_size
+                if atom_type == b"moof":
+                    if fragmented_mp4_has_mfra_footer(handle, file_size):
+                        atoms.add(b"mfra")
+                    return atoms
         return atoms if offset == file_size else None
     except OSError:
         return None
@@ -187,6 +369,7 @@ def finalize_rgb(
     ffmpeg_path: str,
     expected_duration: float | None = None,
     heartbeat: Callable[[], None] | None = None,
+    pause: Callable[[], bool] | None = None,
 ) -> None:
     rgb_path = segment / rgb_name
     if not rgb_path.is_file() or rgb_path.stat().st_size == 0:
@@ -195,8 +378,15 @@ def finalize_rgb(
     if not atoms or b"moov" not in atoms:
         raise RuntimeError(f"RGB MP4 has no valid moov atom: {rgb_path}")
     if b"moof" not in atoms:
-        if media_duration(rgb_path, ffmpeg_path) is None:
+        source_duration = media_duration(rgb_path, ffmpeg_path, pause)
+        if source_duration is None:
             raise RuntimeError(f"RGB MP4 is not readable: {rgb_path}")
+        if (
+            expected_duration is not None
+            and expected_duration > 0
+            and abs(source_duration - expected_duration) > max(1.0, expected_duration * 0.005)
+        ):
+            raise RuntimeError(f"RGB MP4 duration does not match recorded frame timing: {rgb_path}")
         return
     if b"mfra" not in atoms:
         raise RuntimeError(f"RGB fragmented MP4 has no closing mfra atom: {rgb_path}")
@@ -221,15 +411,17 @@ def finalize_rgb(
         segment / "ffmpeg.log",
         timeout=max(300.0, (expected_duration or 0.0) * 0.5),
         heartbeat=heartbeat,
+        pause=pause,
     )
     if result.returncode != 0:
         temporary.unlink(missing_ok=True)
         raise RuntimeError(f"RGB player-compatible remux failed with exit={result.returncode}: {rgb_path}")
+    wait_while_paused(pause, heartbeat)
     output_atoms = mp4_atoms(temporary)
-    output_duration = media_duration(temporary, ffmpeg_path)
+    output_duration = media_duration(temporary, ffmpeg_path, pause)
     duration_valid = output_duration is not None
     if duration_valid and expected_duration is not None and expected_duration > 0:
-        duration_valid = abs(output_duration - expected_duration) <= max(5.0, expected_duration * 0.05)
+        duration_valid = abs(output_duration - expected_duration) <= max(1.0, expected_duration * 0.005)
     if (
         not output_atoms
         or b"moov" not in output_atoms
@@ -238,6 +430,7 @@ def finalize_rgb(
     ):
         temporary.unlink(missing_ok=True)
         raise RuntimeError(f"RGB remux validation failed: {rgb_path}")
+    wait_while_paused(pause, heartbeat)
     with temporary.open("rb") as handle:
         os.fsync(handle.fileno())
     os.replace(temporary, rgb_path)
@@ -250,29 +443,37 @@ def finalize_staged_segment(
     staged_path: Path,
     ffmpeg_path: str,
     heartbeat: Callable[[], None] | None = None,
+    pause: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     frames_name = marker_filename(staged.get("frames_file"), "frames.csv", "frames_file")
     rgb_name = marker_filename(staged.get("rgb_file"), "rgb.mp4", "rgb_file")
     depth_name = marker_filename(staged.get("depth_file"), "depth.mkv", "depth_file")
+    meta_name = marker_filename(staged.get("meta_file"), "meta.json", "meta_file")
     if not (segment / frames_name).is_file():
         raise RuntimeError(f"final frames CSV missing: {segment / frames_name}")
 
-    segment_start_us = int(staged.get("segment_start_us") or 0)
-    segment_end_us = int(staged.get("segment_end_us") or 0)
-    expected_duration = (
-        (segment_end_us - segment_start_us) / 1_000_000.0
-        if segment_start_us > 0 and segment_end_us > segment_start_us
-        else None
-    )
-    finalize_rgb(segment, rgb_name, ffmpeg_path, expected_duration, heartbeat)
+    expected_rgb_duration: float | None = None
+    try:
+        meta = load_json(segment / meta_name)
+        value = float(meta.get("rgb_container_expected_duration_sec") or 0)
+        if value <= 0:
+            frames = int(meta.get("rgb_frames") or 0)
+            fps = float(meta.get("rgb_record_fps") or 0)
+            value = frames / fps if frames > 0 and fps > 0 else 0
+        if value <= 0:
+            value = float(meta.get("rgb_target_duration_sec") or 0)
+        if value > 0:
+            expected_rgb_duration = value
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    finalize_rgb(segment, rgb_name, ffmpeg_path, expected_rgb_duration, heartbeat, pause)
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
     if not rgb_exists and not depth_exists:
         raise RuntimeError(f"no finalized media file found under {segment}")
-    if depth_exists and media_duration(segment / depth_name, ffmpeg_path) is None:
+    if depth_exists and media_duration(segment / depth_name, ffmpeg_path, pause) is None:
         raise RuntimeError(f"depth recording is not readable: {segment / depth_name}")
 
-    meta_name = marker_filename(staged.get("meta_file"), "meta.json", "meta_file")
     ready_name = str(staged.get("ready_file") or "")
     if not ready_name:
         try:
@@ -324,6 +525,7 @@ def copy_file_limited(
     destination: Path,
     bandwidth_mbps: float,
     progress: Callable[[int, int], None] | None = None,
+    pause: Callable[[], bool] | None = None,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -331,9 +533,18 @@ def copy_file_limited(
     if progress is not None:
         progress(0, total)
     started = time.monotonic()
+
+    def wait_for_receiver_io() -> None:
+        nonlocal started
+        started += wait_while_paused(
+            pause,
+            (lambda: progress(copied, total)) if progress is not None else None,
+        )
+
     chunk_size = 4 * 1024 * 1024
     with source.open("rb") as input_handle, destination.open("wb") as output_handle:
         while True:
+            wait_for_receiver_io()
             chunk = input_handle.read(chunk_size)
             if not chunk:
                 break
@@ -343,6 +554,7 @@ def copy_file_limited(
                 progress(copied, total)
             if bandwidth_mbps > 0:
                 while True:
+                    wait_for_receiver_io()
                     if STOP_REQUESTED:
                         raise InterruptedError("recording upload interrupted")
                     expected = copied * 8.0 / (bandwidth_mbps * 1_000_000.0)
@@ -352,9 +564,20 @@ def copy_file_limited(
                     if progress is not None:
                         progress(copied, total)
                     time.sleep(min(delay, 0.25))
+        wait_for_receiver_io()
         output_handle.flush()
         os.fsync(output_handle.fileno())
-    shutil.copystat(source, destination, follow_symlinks=False)
+    try:
+        shutil.copystat(source, destination, follow_symlinks=False)
+    except OSError as error:
+        # CIFS mounts may reject chmod/utime metadata updates even after the
+        # file contents have been written and fsynced successfully.
+        print(
+            f"recording upload metadata preservation skipped source={source} "
+            f"destination={destination} error={error}",
+            file=sys.stderr,
+            flush=True,
+        )
     if progress is not None:
         progress(total, total)
 
@@ -420,6 +643,7 @@ def publish_segment(
     ready_name: str,
     bandwidth_mbps: float,
     progress: Callable[[int, int], None] | None = None,
+    pause: Callable[[], bool] | None = None,
 ) -> Path:
     destination, already_published = destination_for(source, staging_root, nas_root, ready, ready_name)
     if already_published:
@@ -460,6 +684,7 @@ def publish_segment(
                     if progress is not None
                     else None
                 ),
+                pause,
             )
             copied_before_file += file_size
         for root, directories, _files in os.walk(temporary, topdown=False):
@@ -490,6 +715,7 @@ def publish_segment(
                 if progress is not None
                 else None
             ),
+            pause,
         )
         os.replace(ready_temporary, destination / ready_name)
         fsync_directory(destination)
@@ -579,6 +805,12 @@ class Uploader:
         self.interval = max(0.25, int(staging.get("upload_interval_ms", 2000)) / 1000.0)
         self.bandwidth_mbps = max(0.0, float(staging.get("upload_bandwidth_limit_mbps", 0)))
         self.delete_after_upload = bool(staging.get("delete_after_upload", True))
+        self.pause_during_receiver_finalize = bool(staging.get("pause_during_receiver_finalize", True))
+        self.quiet_before_segment_finalize_ms = max(
+            0, int(staging.get("quiet_before_segment_finalize_ms", 60000))
+        )
+        self.segment_seconds = max(0, int(config.get("segment_seconds", 300)))
+        self.receiver_admin_url = f"http://127.0.0.1:{int(config.get('admin_port', 18080))}/api/status"
         self.status_path = self.staging_root / ".gwv3_uploader_status.json"
         self.completed = 0
         self.failures = 0
@@ -590,6 +822,8 @@ class Uploader:
         self.active_bytes_total = 0
         self.active_started_us = 0
         self.next_active_status_at = 0.0
+        self.next_receiver_status_at = 0.0
+        self.receiver_pause_phase = ""
         self.running = False
 
         if not self.enabled:
@@ -640,7 +874,10 @@ class Uploader:
         force: bool = False,
     ) -> None:
         if phase is not None:
-            self.active_phase = phase
+            # Progress callbacks continue to publish byte counters while an
+            # operation is paused. They must not make a paused transfer look
+            # active by replacing the receiver-I/O wait phase.
+            self.active_phase = self.receiver_pause_phase or phase
         if bytes_done is not None:
             self.active_bytes_done = max(0, bytes_done)
         if bytes_total is not None:
@@ -650,6 +887,41 @@ class Uploader:
             return
         self.next_active_status_at = current + 1.0
         self.write_status(discover_segments(self.staging_root))
+
+    def should_pause_for_receiver_io(self, resume_phase: str) -> bool:
+        if not self.pause_during_receiver_finalize:
+            return False
+        current = time.monotonic()
+        if current >= self.next_receiver_status_at:
+            self.next_receiver_status_at = current + 1.0
+            try:
+                with urllib.request.urlopen(self.receiver_admin_url, timeout=0.5) as response:
+                    status = json.load(response)
+                if not isinstance(status, dict):
+                    raise ValueError("receiver status must be a JSON object")
+                self.receiver_pause_phase = receiver_pause_phase(
+                    status,
+                    now_us(),
+                    self.segment_seconds,
+                    self.quiet_before_segment_finalize_ms,
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                # Fail closed while a receiver-I/O pause is already active.
+                # A transient Admin timeout must not resume a large remux or
+                # upload immediately before a segment boundary.
+                pass
+        if self.receiver_pause_phase:
+            self.update_active_status(phase=self.receiver_pause_phase)
+            return True
+        if self.active_phase in {"receiver_finalize_wait", "receiver_segment_boundary_wait"}:
+            self.update_active_status(phase=resume_phase, force=True)
+        return False
+
+    def wait_for_receiver_io(self, resume_phase: str) -> None:
+        while self.should_pause_for_receiver_io(resume_phase):
+            if STOP_REQUESTED:
+                raise InterruptedError("recording upload interrupted while waiting for receiver I/O")
+            time.sleep(0.25)
 
     def process_one(self, segment: Path) -> bool:
         descriptor = acquire_segment_lock(segment)
@@ -668,12 +940,14 @@ class Uploader:
                 raise RuntimeError(f"ambiguous recording marker set: {segment}")
             if staged_markers:
                 staged_path = staged_markers[0]
+                self.wait_for_receiver_io("finalizing")
                 ready, ready_path = finalize_staged_segment(
                     segment,
                     load_json(staged_path),
                     staged_path,
                     self.ffmpeg_path,
                     heartbeat=self.update_active_status,
+                    pause=lambda: self.should_pause_for_receiver_io("finalizing"),
                 )
             else:
                 if not ready_markers:
@@ -682,16 +956,34 @@ class Uploader:
                 ready = load_json(ready_path)
                 if ready.get("ready") is not True:
                     raise RuntimeError(f"invalid ready marker: {segment}")
-            self.update_active_status(phase="uploading", bytes_done=0, bytes_total=0, force=True)
-            destination = publish_segment(
-                segment,
-                self.staging_root,
-                self.nas_root,
-                ready,
-                ready_path.name,
-                self.bandwidth_mbps,
-                progress=lambda done, total: self.update_active_status(
-                    phase="uploading", bytes_done=done, bytes_total=total
+            def publish_once() -> Path:
+                self.wait_for_receiver_io("uploading")
+                self.update_active_status(phase="uploading", bytes_done=0, bytes_total=0, force=True)
+                return publish_segment(
+                    segment,
+                    self.staging_root,
+                    self.nas_root,
+                    ready,
+                    ready_path.name,
+                    self.bandwidth_mbps,
+                    progress=lambda done, total: self.update_active_status(
+                        phase="uploading", bytes_done=done, bytes_total=total
+                    ),
+                    pause=lambda: self.should_pause_for_receiver_io("uploading"),
+                )
+
+            destination = run_with_transient_nas_retries(
+                publish_once,
+                on_retry=lambda attempt, attempts, error, delay: (
+                    self.update_active_status(
+                        phase="upload_retry_wait", bytes_done=0, bytes_total=0, force=True
+                    ),
+                    print(
+                        f"recording upload transient NAS error source={segment} "
+                        f"attempt={attempt}/{attempts} retry_delay_s={delay:g} error={error}",
+                        file=sys.stderr,
+                        flush=True,
+                    ),
                 ),
             )
             self.completed += 1
@@ -708,10 +1000,14 @@ class Uploader:
             descriptor = None
             print(f"recording upload completed source={segment} destination={destination}", flush=True)
             return True
+        except InterruptedError as error:
+            print(f"recording upload interrupted source={segment} error={error}", file=sys.stderr, flush=True)
+            return False
         except Exception as error:
             self.failures += 1
             self.last_error = f"{type(error).__name__}: {error}"
             print(f"recording upload failed source={segment} error={self.last_error}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
             return False
         finally:
             release_segment_lock(segment, descriptor)

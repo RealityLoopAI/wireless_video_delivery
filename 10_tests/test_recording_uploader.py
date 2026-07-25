@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import importlib.util
 import json
 from pathlib import Path
@@ -112,6 +113,154 @@ def run(args: argparse.Namespace) -> None:
         assert spec is not None and spec.loader is not None
         uploader_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(uploader_module)
+        pause_now_us = 1_800_000_000_000_000
+        active_camera = {
+            "recording": True,
+            "segment_active": True,
+            "segment_start_us": pause_now_us - 840_000_000,
+        }
+        assert (
+            uploader_module.receiver_pause_phase(
+                {"record_finalize_outstanding_segments": 1, "cameras": []},
+                pause_now_us,
+                900,
+                60000,
+            )
+            == "receiver_finalize_wait"
+        )
+        assert (
+            uploader_module.receiver_pause_phase(
+                {"record_finalize_outstanding_segments": 0, "cameras": [active_camera]},
+                pause_now_us,
+                900,
+                60000,
+            )
+            == "receiver_segment_boundary_wait"
+        )
+        active_camera["segment_start_us"] = pause_now_us - 800_000_000
+        assert (
+            uploader_module.receiver_pause_phase(
+                {"record_finalize_outstanding_segments": 0, "cameras": [active_camera]},
+                pause_now_us,
+                900,
+                60000,
+            )
+            == ""
+        )
+        phase_guard = object.__new__(uploader_module.Uploader)
+        phase_guard.receiver_pause_phase = "receiver_segment_boundary_wait"
+        phase_guard.active_phase = "receiver_segment_boundary_wait"
+        phase_guard.active_bytes_done = 0
+        phase_guard.active_bytes_total = 0
+        phase_guard.next_active_status_at = float("inf")
+        phase_guard.update_active_status(
+            phase="uploading",
+            bytes_done=4096,
+            bytes_total=8192,
+        )
+        assert phase_guard.active_phase == "receiver_segment_boundary_wait"
+        assert phase_guard.active_bytes_done == 4096
+        assert phase_guard.active_bytes_total == 8192
+        pause_guard = object.__new__(uploader_module.Uploader)
+        pause_guard.pause_during_receiver_finalize = True
+        pause_guard.next_receiver_status_at = 0.0
+        pause_guard.receiver_admin_url = "http://127.0.0.1:1/api/status"
+        pause_guard.segment_seconds = 900
+        pause_guard.quiet_before_segment_finalize_ms = 60000
+        pause_guard.receiver_pause_phase = "receiver_segment_boundary_wait"
+        pause_guard.active_phase = "receiver_segment_boundary_wait"
+        pause_status_updates: list[dict[str, object]] = []
+        pause_guard.update_active_status = lambda **values: pause_status_updates.append(values)
+        original_urlopen = uploader_module.urllib.request.urlopen
+
+        def failing_receiver_status(*_args: object, **_kwargs: object) -> None:
+            raise OSError(errno.ETIMEDOUT, "simulated receiver Admin timeout")
+
+        uploader_module.urllib.request.urlopen = failing_receiver_status
+        try:
+            assert pause_guard.should_pause_for_receiver_io("uploading") is True
+        finally:
+            uploader_module.urllib.request.urlopen = original_urlopen
+        assert pause_guard.receiver_pause_phase == "receiver_segment_boundary_wait"
+        assert pause_status_updates[-1]["phase"] == "receiver_segment_boundary_wait"
+        retry_attempts = 0
+
+        def transient_operation() -> str:
+            nonlocal retry_attempts
+            retry_attempts += 1
+            if retry_attempts < 3:
+                raise OSError(errno.EFAULT, "simulated transient CIFS failure")
+            return "recovered"
+
+        assert (
+            uploader_module.run_with_transient_nas_retries(
+                transient_operation, max_attempts=3, initial_delay_seconds=0
+            )
+            == "recovered"
+        )
+        assert retry_attempts == 3
+        permanent_attempts = 0
+
+        def permanent_operation() -> None:
+            nonlocal permanent_attempts
+            permanent_attempts += 1
+            raise OSError(errno.EACCES, "simulated permanent permission failure")
+
+        try:
+            uploader_module.run_with_transient_nas_retries(
+                permanent_operation, max_attempts=3, initial_delay_seconds=0
+            )
+        except OSError as error:
+            assert error.errno == errno.EACCES
+        else:
+            raise AssertionError("permanent NAS error was retried or ignored")
+        assert permanent_attempts == 1
+        metadata_source = temporary / "metadata_source.bin"
+        metadata_destination = temporary / "metadata_destination.bin"
+        metadata_source.write_bytes(b"metadata-copy-test")
+        original_copystat = uploader_module.shutil.copystat
+        pause_checks = 0
+
+        def failing_copystat(*_args: object, **_kwargs: object) -> None:
+            raise OSError(errno.EFAULT, "simulated CIFS metadata failure")
+
+        def temporary_pause() -> bool:
+            nonlocal pause_checks
+            pause_checks += 1
+            return pause_checks <= 2
+
+        uploader_module.shutil.copystat = failing_copystat
+        try:
+            uploader_module.copy_file_limited(
+                metadata_source, metadata_destination, 0, pause=temporary_pause
+            )
+        finally:
+            uploader_module.shutil.copystat = original_copystat
+        assert metadata_destination.read_bytes() == metadata_source.read_bytes()
+        assert pause_checks >= 3
+        process_pause_checks = 0
+
+        def process_pause() -> bool:
+            nonlocal process_pause_checks
+            process_pause_checks += 1
+            return process_pause_checks <= 2
+
+        paused_process = uploader_module.run_checked(
+            [args.python, "-c", "import time; time.sleep(0.2)"],
+            temporary / "paused_process.log",
+            timeout=5,
+            pause=process_pause,
+        )
+        assert paused_process.returncode == 0 and process_pause_checks >= 3
+        probe_pause_checks = 0
+
+        def probe_pause() -> bool:
+            nonlocal probe_pause_checks
+            probe_pause_checks += 1
+            return probe_pause_checks <= 2
+
+        assert uploader_module.media_duration(rgb_path, ffmpeg, pause=probe_pause) is not None
+        assert probe_pause_checks >= 3
         try:
             uploader_module.finalize_rgb(invalid_segment, invalid_rgb.name, ffmpeg)
         except RuntimeError as error:
@@ -120,13 +269,25 @@ def run(args: argparse.Namespace) -> None:
             raise AssertionError("fragmented MP4 without mfra was accepted")
         (segment / f"{prefix}frames.csv").write_text("local_time_us,stream_type\n1,rgb\n", encoding="ascii")
         (segment / f"{prefix}meta.json").write_text(
-            json.dumps({"closed": True, "recording_ready_file": f"{prefix}recording_ready.json"}), encoding="ascii"
+            json.dumps(
+                {
+                    "closed": True,
+                    "recording_ready_file": f"{prefix}recording_ready.json",
+                    "rgb_target_duration_sec": 3600.0,
+                    "rgb_container_expected_duration_sec": 3.0,
+                    "rgb_frames": 90,
+                    "rgb_record_fps": 30.0,
+                }
+            ),
+            encoding="ascii",
         )
         staged = {
             "schema": "gwv3_recording_staged_v1",
             "staged": True,
             "segment_start_us": 1784625600000000,
-            "segment_end_us": 1784625603000000,
+            # The recorder may remain administratively active after media input
+            # stops. That wall-clock span must not be used to validate MP4 media.
+            "segment_end_us": 1784629200000000,
             "sender_id": "sender-a",
             "camera_id": "cam01",
             "relative_path": "camera-a/2026-07-21/120000",
@@ -146,10 +307,45 @@ def run(args: argparse.Namespace) -> None:
                 "root": str(staging_root),
                 "upload_interval_ms": 250,
                 "delete_after_upload": True,
+                "pause_during_receiver_finalize": False,
             },
         }
         config_path = temporary / "receiver.json"
         config_path.write_text(json.dumps(config), encoding="ascii")
+
+        interrupt_staging = temporary / "interrupt-staging"
+        interrupt_nas = temporary / "interrupt-nas"
+        interrupt_segment = interrupt_staging / "camera" / "2026-07-24" / "120000"
+        interrupt_segment.mkdir(parents=True)
+        interrupt_nas.mkdir()
+        (interrupt_segment / "recording_staged.json").write_text("{}", encoding="ascii")
+        interrupt_config_path = temporary / "interrupt-receiver.json"
+        interrupt_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(interrupt_nas),
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(interrupt_staging),
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        interrupt_uploader = uploader_module.Uploader(interrupt_config_path)
+        original_finalize = uploader_module.finalize_staged_segment
+
+        def interrupt_finalize(*_args: object, **_kwargs: object) -> None:
+            raise InterruptedError("simulated service stop")
+
+        uploader_module.finalize_staged_segment = interrupt_finalize
+        try:
+            assert interrupt_uploader.process_one(interrupt_segment) is False
+        finally:
+            uploader_module.finalize_staged_segment = original_finalize
+        assert interrupt_uploader.failures == 0
+        assert interrupt_uploader.last_error == ""
 
         # A regular file at nas_root simulates an unavailable/broken mount.
         nas_root.write_text("offline", encoding="ascii")

@@ -151,7 +151,9 @@ def create_ffmpeg_test_wrappers(root: Path) -> Path:
     ffprobe_wrapper = wrapper_dir / "ffprobe"
     ffprobe_wrapper.write_text(
         "#!/usr/bin/env python3\n"
-        "import os, sys\n"
+        "import os, sys, time\n"
+        "if any(arg.endswith('.mkv') for arg in sys.argv[1:]):\n"
+        "    time.sleep(float(os.environ.get('GWV3_TEST_FFPROBE_MKV_DELAY_SEC', '0')))\n"
         f"os.execv({real_ffprobe!r}, [{real_ffprobe!r}, *sys.argv[1:]])\n",
         encoding="ascii",
     )
@@ -901,6 +903,17 @@ def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -
         assert field in header, f"missing CSV field {field}"
     assert not list(nas_root.rglob("*frames.csv.inprogress")), "live frames.csv staging file was not removed"
     assert not list(nas_root.rglob("*frames.csv.finalizing")), "finalizing frames.csv was not published"
+    meta_files = list(nas_root.rglob("*meta.json"))
+    assert meta_files, "recording meta.json missing"
+    for meta_file in meta_files:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        rgb_frames = int(meta.get("rgb_frames", 0))
+        if not meta.get("closed") or rgb_frames <= 0:
+            continue
+        rgb_record_fps = float(meta.get("rgb_record_fps", 0))
+        assert abs(rgb_record_fps - 30.0) < 0.001, "RGB container FPS did not use the announced profile"
+        expected_duration = float(meta.get("rgb_container_expected_duration_sec", 0))
+        assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
     ready_files = list(nas_root.rglob("*recording_ready.json"))
     assert ready_files, "recording ready marker missing"
     session_starts = {}
@@ -1064,9 +1077,14 @@ def run(args) -> None:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
-                if all(not camera.get("segment_finalizing") for camera in current.get("cameras", [])):
+                if (
+                    int(current.get("record_finalize_outstanding_segments") or 0) == 0
+                    and all(not camera.get("segment_finalizing") for camera in current.get("cameras", []))
+                ):
                     break
                 time.sleep(0.05)
+            else:
+                raise AssertionError("initial recording finalization did not drain before restart test")
 
             if shutil.which("ffmpeg") and shutil.which("ffprobe"):
                 start_response = json.loads(request(ports["admin"], "POST", "/api/record/start-all")[2])

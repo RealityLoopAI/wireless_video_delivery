@@ -11,6 +11,7 @@ import time
 
 from test_receiver_hardening import (
     assert_recording_output,
+    create_ffmpeg_test_wrappers,
     depth_packet,
     free_port,
     generate_h264_fixture,
@@ -30,6 +31,7 @@ def run(args: argparse.Namespace) -> None:
 
     with tempfile.TemporaryDirectory(prefix="gwv3_receiver_staging_test_") as temporary_text:
         temporary = Path(temporary_text)
+        ffmpeg_wrapper = create_ffmpeg_test_wrappers(temporary)
         staging_root = temporary / "staging"
         nas_root = temporary / "nas"
         ports = {
@@ -63,7 +65,7 @@ def run(args: argparse.Namespace) -> None:
             },
             "log_directory": str(temporary / "logs"),
             "state_path": str(temporary / "state.json"),
-            "ffmpeg_path": ffmpeg,
+            "ffmpeg_path": str(ffmpeg_wrapper),
             "segment_seconds": 30,
             "depth_fps": 30,
             "max_payload_mb": 8,
@@ -76,13 +78,17 @@ def run(args: argparse.Namespace) -> None:
         config_path.write_text(json.dumps(config), encoding="utf-8")
         receiver_log = (temporary / "receiver.log").open("wb")
         uploader_log = (temporary / "uploader.log").open("wb")
+        process_environment = os.environ.copy()
+        process_environment["GWV3_TEST_FFPROBE_MKV_DELAY_SEC"] = "4"
         receiver = subprocess.Popen(
             [args.receiver, "--config", str(config_path)],
+            env=process_environment,
             stdout=receiver_log,
             stderr=subprocess.STDOUT,
         )
         uploader = subprocess.Popen(
             [args.python, args.uploader, "--config", str(config_path)],
+            env=process_environment,
             stdout=uploader_log,
             stderr=subprocess.STDOUT,
         )
@@ -104,13 +110,55 @@ def run(args: argparse.Namespace) -> None:
             assert start_status == 200
             recording_start_us = int(json.loads(start_body)["recording_start_us"])
             time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
-            fixture = generate_h264_fixture(90)
+            fixture = generate_h264_fixture(1)
             timestamp = int(time.time() * 1_000_000)
             with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-                media.sendall(rgb_packet("staging-test", "cam01", 1, 64, 48, timestamp, fixture))
-                for frame_id in range(75):
+                for frame_id in range(90):
+                    media.sendall(
+                        rgb_packet(
+                            "staging-test",
+                            "cam01",
+                            frame_id,
+                            64,
+                            48,
+                            timestamp + frame_id * 33333,
+                            fixture,
+                        )
+                    )
+                for frame_id in range(90):
                     media.sendall(depth_packet("staging-test", "cam01", frame_id, 64, 48, timestamp + frame_id * 33333))
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+                    camera = next(
+                        (
+                            item
+                            for item in current.get("cameras", [])
+                            if item.get("sender_id") == "staging-test" and item.get("camera_id") == "cam01"
+                        ),
+                        None,
+                    )
+                    if (
+                        camera is not None
+                        and camera.get("segment_active")
+                        and int(camera.get("record_queue_packets") or 0) == 0
+                        and int(camera.get("record_active_writes") or 0) == 0
+                    ):
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("receiver did not drain the staged test media before stop")
+            finalize_started = time.monotonic()
             assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+                if int(current.get("record_finalize_outstanding_segments") or 0) == 0:
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("receiver staging finalization blocked on deferred ffprobe")
+            assert time.monotonic() - finalize_started < 3
 
             deadline = time.monotonic() + 30
             ready_files = []
@@ -126,7 +174,9 @@ def run(args: argparse.Namespace) -> None:
 
             assert_recording_output(nas_root, minimum_rgb_duration=2.0)
             assert not list(staging_root.rglob("recording_staged.json")), "published staged marker was not drained"
-            deadline = time.monotonic() + 3
+            # The receiver refreshes the uploader status file asynchronously.
+            # Allow several refresh periods under CI/storage load.
+            deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
                 if status["recording_uploader"].get("pending_segments") == 0:

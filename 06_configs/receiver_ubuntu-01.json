@@ -27,7 +27,9 @@
     "defer_player_compatible_finalize": true,
     "idle_finalize_ms": 5000,
     "upload_interval_ms": 2000,
-    "upload_bandwidth_limit_mbps": 120,
+    "upload_bandwidth_limit_mbps": 240,
+    "pause_during_receiver_finalize": true,
+    "quiet_before_segment_finalize_ms": 180000,
     "delete_after_upload": true
   },
   "segment_seconds": 900,
