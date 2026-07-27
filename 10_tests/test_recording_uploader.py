@@ -7,7 +7,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from types import SimpleNamespace
 
 
 def atoms(path: Path) -> set[bytes]:
@@ -175,6 +177,8 @@ def run(args: argparse.Namespace) -> None:
         phase_guard.active_bytes_done = 0
         phase_guard.active_bytes_total = 0
         phase_guard.next_active_status_at = float("inf")
+        phase_guard.status_write_interval = 1.0
+        phase_guard.status_lock = threading.RLock()
         phase_guard.update_active_status(
             phase="uploading",
             bytes_done=4096,
@@ -193,6 +197,7 @@ def run(args: argparse.Namespace) -> None:
         pause_guard.pause_record_queue_oldest_age_ms = 500
         pause_guard.receiver_pause_phase = "receiver_segment_boundary_wait"
         pause_guard.active_phase = "receiver_segment_boundary_wait"
+        pause_guard.receiver_status_lock = threading.Lock()
         pause_status_updates: list[dict[str, object]] = []
         pause_guard.update_active_status = lambda **values: pause_status_updates.append(values)
         original_urlopen = uploader_module.urllib.request.urlopen
@@ -444,13 +449,17 @@ def run(args: argparse.Namespace) -> None:
         assert probe.returncode == 0 and float(probe.stdout) > 2.0, probe.stderr
         status = json.loads((staging_root / ".gwv3_uploader_status.json").read_text(encoding="utf-8"))
         assert status["schema"] == "gwv3_recording_uploader_status_v2"
-        assert status["pipeline_mode"] == "nas_first_fmp4_finalize"
+        assert status["pipeline_mode"] == "nas_first_local_cache_finalize"
         assert status["pending_segments"] == 0
         assert status["local_pending_segments"] == 0
+        assert status["local_finalize_cache_segments"] == 0
         assert status["nas_finalize_pending_segments"] == 0
         assert status["publish_recovery_journals"] == 0
         assert status["captured_segments"] == 1
         assert status["completed_segments"] == 1
+        assert status["local_remuxes"] == 1
+        assert status["nas_fallback_remuxes"] == 0
+        assert status["last_remux_source"] == "local"
         assert not list((nas_root / ".gwv3_capture_queue").rglob("*recording_capture_ready.json"))
         assert not list((nas_root / ".gwv3_capture_queue").rglob("*recording_ready.json"))
 
@@ -490,7 +499,8 @@ def run(args: argparse.Namespace) -> None:
             assert recovery_uploader.run_once() is True
         finally:
             uploader_module.finalize_captured_segment = original_finalize_capture
-        assert not recovery_segment.exists(), "durable NAS capture did not release local staging"
+        assert recovery_segment.exists(), "local remux cache was released before NAS finalization"
+        assert list(recovery_segment.glob("*recording_capture_cached.json"))
         recovery_captures = uploader_module.discover_capture_segments(
             recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
         )
@@ -500,15 +510,28 @@ def run(args: argparse.Namespace) -> None:
         assert recovery_uploader.failures == 1
 
         original_final_publish = uploader_module.publish_finalized_capture
+        observed_local_sources: list[Path | None] = []
+        observed_remux_sources: list[str] = []
+        original_finalize_capture = uploader_module.finalize_captured_segment
+
+        def observe_local_finalize(*finalize_args: object, **finalize_kwargs: object):
+            observed_local_sources.append(finalize_kwargs.get("local_segment"))
+            result = original_finalize_capture(*finalize_args, **finalize_kwargs)
+            observed_remux_sources.append(result[2])
+            return result
 
         def interrupt_final_publish(*_args: object, **_kwargs: object) -> None:
             raise InterruptedError("simulated stop after NAS remux")
 
+        uploader_module.finalize_captured_segment = observe_local_finalize
         uploader_module.publish_finalized_capture = interrupt_final_publish
         try:
             assert recovery_uploader.process_capture_one(recovery_captures[0]) is False
         finally:
+            uploader_module.finalize_captured_segment = original_finalize_capture
             uploader_module.publish_finalized_capture = original_final_publish
+        assert observed_local_sources == [recovery_segment]
+        assert observed_remux_sources == ["local"]
         assert list(recovery_captures[0].glob("*recording_nas_finalized.json"))
         assert not list(recovery_captures[0].glob("*recording_ready.json"))
         assert not (recovery_captures[0] / ".gwv3_uploader.lock").exists()
@@ -554,6 +577,118 @@ def run(args: argparse.Namespace) -> None:
         assert not uploader_module.discover_publish_journals(
             recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
         )
+        assert not recovery_segment.exists(), "published local remux cache was not released"
+
+        parallel_staging = temporary / "parallel-staging"
+        parallel_nas = temporary / "parallel-nas"
+        parallel_nas.mkdir()
+        for index in range(2):
+            parallel_segment = (
+                parallel_staging
+                / f"camera-parallel-{index}"
+                / "2026-07-24"
+                / "140000"
+            )
+            shutil.copytree(interrupt_segment, parallel_segment)
+            marker_path = next(parallel_segment.glob("*recording_staged.json"))
+            marker = json.loads(marker_path.read_text(encoding="ascii"))
+            marker["sender_id"] = f"sender-parallel-{index}"
+            marker["camera_id"] = f"cam{index + 1:02d}"
+            marker["segment_start_us"] = 1784892000000000 + index
+            marker["relative_path"] = (
+                f"camera-parallel-{index}/2026-07-24/140000"
+            )
+            marker_path.write_text(json.dumps(marker), encoding="ascii")
+        parallel_config_path = temporary / "parallel-receiver.json"
+        parallel_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(parallel_nas),
+                    "ffmpeg_path": ffmpeg,
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(parallel_staging),
+                        "delete_after_upload": True,
+                        "retain_local_capture_for_finalize": True,
+                        "finalize_workers": 2,
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        parallel_uploader = uploader_module.Uploader(parallel_config_path)
+        assert parallel_uploader.run_once() is True
+        assert parallel_uploader.local_remuxes == 2
+        assert parallel_uploader.nas_fallback_remuxes == 0
+        assert not uploader_module.discover_local_capture_caches(parallel_staging)
+        assert not uploader_module.discover_capture_segments(
+            parallel_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
+        )
+        for index in range(2):
+            parallel_destination = (
+                parallel_nas
+                / f"camera-parallel-{index}"
+                / "2026-07-24"
+                / "140000"
+            )
+            assert b"moof" not in atoms(
+                parallel_destination / f"{prefix}rgb.mp4"
+            )
+
+        fallback_staging = temporary / "fallback-staging"
+        fallback_nas = temporary / "fallback-nas"
+        fallback_segment = (
+            fallback_staging / "camera-fallback" / "2026-07-24" / "150000"
+        )
+        shutil.copytree(interrupt_segment, fallback_segment)
+        fallback_marker_path = next(fallback_segment.glob("*recording_staged.json"))
+        fallback_marker = json.loads(
+            fallback_marker_path.read_text(encoding="ascii")
+        )
+        fallback_marker["relative_path"] = (
+            "camera-fallback/2026-07-24/150000"
+        )
+        fallback_marker_path.write_text(
+            json.dumps(fallback_marker),
+            encoding="ascii",
+        )
+        fallback_nas.mkdir()
+        fallback_config_path = temporary / "fallback-receiver.json"
+        fallback_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(fallback_nas),
+                    "ffmpeg_path": ffmpeg,
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(fallback_staging),
+                        "delete_after_upload": True,
+                        "retain_local_capture_for_finalize": True,
+                        "local_cache_high_watermark_percent": 75,
+                        "local_cache_low_watermark_percent": 70,
+                        "finalize_workers": 2,
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        fallback_uploader = uploader_module.Uploader(fallback_config_path)
+        original_disk_usage = uploader_module.shutil.disk_usage
+        uploader_module.shutil.disk_usage = lambda _path: SimpleNamespace(
+            total=100,
+            used=80,
+            free=20,
+        )
+        try:
+            assert fallback_uploader.run_once() is True
+        finally:
+            uploader_module.shutil.disk_usage = original_disk_usage
+        assert fallback_uploader.local_remuxes == 0
+        assert fallback_uploader.nas_fallback_remuxes == 1
+        assert fallback_uploader.local_cache_pressure_releases == 1
+        assert not fallback_segment.exists()
 
         unsafe_segment = staging_root / "camera-unsafe" / "2026-07-21" / "120100"
         unsafe_segment.mkdir(parents=True)

@@ -9,8 +9,8 @@
 本次目标是优先保证持续录制：
 
 1. receiver 实时录制和 TCP media 主链路不改。
-2. closed capture 尽快可靠写入 NAS，随后释放本地空间。
-3. 普通 MP4 后处理继续后台串行执行。
+2. closed capture 尽快可靠写入 NAS，本地副本随后只作为可回收的重封装缓存。
+3. 普通 MP4 后处理继续后台执行，优先从本地读取并限制为两个 worker。
 4. 任何中断都不能提前发布 ready，也不能删除唯一副本。
 
 ## 2. 新数据路径
@@ -23,13 +23,15 @@ receiver local staging
   -> 文件 fsync + 清单校验
   -> recording_capture_ready.json
   -> 原子进入稳定 capture 目录
-  -> 删除本地副本
-  -> NAS capture 上无损 remux 普通 MP4
+  -> 本地写 recording_capture_cached.json
+  -> 优先从本地 fMP4 读取、向 NAS 无损 remux 普通 MP4
+  -> 本地缓存缺失时回退读取 NAS capture
   -> recording_nas_finalized.json
   -> 写发布日志和 pending ready
   -> 移动到最终相对路径
   -> 清理内部标记
   -> 原子生成 recording_ready.json
+  -> 删除本地重封装缓存
 ```
 
 正式 `recording_ready.json` 绝不会出现在隐藏 capture queue。下游递归扫描 NAS 时也不会把 capture 或 remux 中间态当成完成数据。
@@ -71,18 +73,21 @@ NAS/.gwv3_capture_queue/<capture> -> NAS/<camera>/<date>/<time>
 uploader 状态升级为 `gwv3_recording_uploader_status_v2`：
 
 ```text
-pipeline_mode=nas_first_fmp4_finalize
+pipeline_mode=nas_first_local_cache_finalize
 local_pending_segments/bytes
+local_finalize_cache_segments/bytes
 nas_finalize_pending_segments/bytes
 publish_recovery_journals
 captured_segments
 last_capture_success_us
+last_remux_source
+local_remuxes/nas_fallback_remuxes
 pending_segments/bytes
 ```
 
 语义：
 
-1. `local_pending_segments=0`：本地 closed 分片已被 NAS capture 安全接管。
+1. `local_pending_segments=0`：本地 closed 分片已被 NAS capture 安全接管；`local_finalize_cache_segments` 只是可删除缓存。
 2. 总 `pending_segments=0`：普通 MP4、最终目录和正式 ready 全部完成。
 
 生产配置：
@@ -140,7 +145,52 @@ pause_record_queue_oldest_age_ms=500
 6. 五路 RGB 实际解码帧数分别为 389、389、390、388、387，均与 CSV 索引一致。
 7. 五路在线发送约 29.9 至 30.9 fps，receiver 录制队列为 0、写错误为 0。
 
-## 8. 当前结论与边界
+## 8. NAS 回读消除优化
+
+初版双阶段路径在 NAS capture 完成后立即删除本地副本，随后 receiver 上的 ffmpeg 以 CIFS 文件为输入和输出。对一段 `RGB=46.2 MiB、Depth=10.9 MiB` 的录制，NAS 网络流量约为：
+
+```text
+首次 capture 写入：57.1 MiB
+RGB 重封装读回：46.2 MiB
+普通 MP4 写回：46.2 MiB
+合计：149.5 MiB
+```
+
+优化后：
+
+1. capture 完成后在本地写 `recording_capture_cached.json`，保留 closed fMP4。
+2. 所有相机 capture 优先完成，随后最多两个 worker 从本地读取 RGB，普通 MP4 直接写入 NAS。
+3. 最终 ready 发布后才删除本地缓存。
+4. staging 使用率达到 75% 时，清理已安全 capture 的旧缓存，降至 70% 后停止。
+5. 本地缓存缺失、损坏或被水位清理时自动回退 NAS 源，不影响恢复。
+6. 活跃进度写入限频为 2 秒；目录大小和 pending 清单只在处理阶段边界刷新，不再随进度反复扫描 CIFS。
+
+对应流量降为 `57.1 + 46.2 = 103.3 MiB`，比初版减少约 31%；如果 NAS 自身未来执行 remux，网络流量还能进一步降到一次 capture 写入。
+
+### 五路生产短测
+
+测试前五路在线、receiver 未录制、uploader backlog 为 0。录制约 51 秒，总媒体数据约 446 MB：
+
+1. `stop-all` HTTP 响应 0.47 ms。
+2. 五路 capture 最后一段在停止后约 26.8 秒完成。
+3. 五路普通 MP4 和正式 ready 在停止后约 33.4 秒全部完成。
+4. `local_remuxes=5`、`nas_fallback_remuxes=0`、`failed_attempts=0`。
+5. 两个 worker 的单路 remux 约 0.997 至 1.651 秒，最终目录发布约 0.046 至 0.365 秒。
+6. 五路 RGB 均为普通 `ftyp/free/mdat/moov` MP4，无 `moof`，可正常读取和 seek。
+7. RGB 分辨率为四路 `1920x1080`、一路 `1280x800`，实际帧数 1527 至 1538，约 30 FPS。
+8. 五路 Depth MKV、CSV 和 ready 标记均可读取；最终 backlog、本地缓存和发布 journal 均为 0。
+
+对比初版四路约 30 秒、216.2 MiB 的测试，普通 MP4全部 ready 约需 74 秒；本次数据量和路数更多，但最终 ready 缩短到约 33.4 秒。
+
+自动测试新增覆盖：
+
+1. 本地缓存输入确实传入 remux。
+2. 两路本地源并行完成并发布。
+3. 禁用或丢失本地缓存时 NAS 源回退成功。
+4. ready 发布与本地缓存清理之间的短窗口允许异步收敛。
+5. 上传中断、remux 失败、目录移动中断和 journal 恢复语义保持不变。
+
+## 9. 当前结论与边界
 
 短测已证明新路径能把“停止后可继续录制”“数据已安全到 NAS”和“普通 MP4 已交付”拆开，并能在 CIFS 上正确恢复发布。它显著缩短本地 staging 占用时间，普通 MP4 后处理不再阻止下一次录制。
 
@@ -157,4 +207,6 @@ pause_record_queue_oldest_age_ms=500
 ```text
 05_tools/recording_uploader.py.pre_nas_first_20260727
 06_configs/receiver_ubuntu-01.json.pre_nas_first_20260727
+05_tools/recording_uploader.py.pre_local_cache_20260727
+06_configs/receiver_ubuntu-01.json.pre_local_cache_20260727
 ```

@@ -142,7 +142,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 <recording_staging.root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
 ```
 
-本地分片完成后，独立上传器先复制到 `<nas_root>/.gwv3_capture_queue/`。NAS 已持久化 capture 后可删除本地副本，再在后台无损重封装普通 MP4，并使用相同相对路径发布最终目录。下游只能读取带正式 ready 标记的 NAS 最终目录，不能扫描隐藏 capture queue。
+本地分片完成后，独立上传器先复制到 `<nas_root>/.gwv3_capture_queue/`。NAS 已持久化 capture 后，本地 fMP4 作为可回收的重封装缓存暂时保留；后台优先从本地读取 fMP4，并把普通 MP4 直接写入 NAS，避免通过 CIFS 把 RGB 从 NAS 完整读回。最终目录发布成功后删除本地缓存；本地缓存缺失或达到磁盘高水位时自动回退为 NAS capture 源。下游只能读取带正式 ready 标记的 NAS 最终目录，不能扫描隐藏 capture queue。
 
 默认 `storage_key` 是：
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import errno
 import fcntl
 import hashlib
@@ -14,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from typing import Any, Callable, Iterable
@@ -45,6 +47,8 @@ TRANSIENT_NAMES = {
     "recording_staged.json.tmp",
     "recording_capture_ready.json",
     "recording_capture_ready.json.tmp",
+    "recording_capture_cached.json",
+    "recording_capture_cached.json.tmp",
     "recording_nas_finalized.json",
     "recording_nas_finalized.json.tmp",
     "recording_ready.json.tmp",
@@ -56,6 +60,8 @@ TRANSIENT_SUFFIXES = (
     "recording_staged.json.tmp",
     "recording_capture_ready.json",
     "recording_capture_ready.json.tmp",
+    "recording_capture_cached.json",
+    "recording_capture_cached.json.tmp",
     "recording_nas_finalized.json",
     "recording_nas_finalized.json.tmp",
     "recording_ready.json",
@@ -402,10 +408,11 @@ def finalize_rgb(
     expected_duration: float | None = None,
     heartbeat: Callable[[], None] | None = None,
     pause: Callable[[], bool] | None = None,
-) -> None:
+    source_rgb_path: Path | None = None,
+) -> str:
     rgb_path = segment / rgb_name
     if not rgb_path.is_file() or rgb_path.stat().st_size == 0:
-        return
+        return "missing"
     atoms = mp4_atoms(rgb_path)
     if not atoms or b"moov" not in atoms:
         raise RuntimeError(f"RGB MP4 has no valid moov atom: {rgb_path}")
@@ -419,9 +426,27 @@ def finalize_rgb(
             and abs(source_duration - expected_duration) > max(1.0, expected_duration * 0.005)
         ):
             raise RuntimeError(f"RGB MP4 duration does not match recorded frame timing: {rgb_path}")
-        return
+        return "already_seekable"
     if b"mfra" not in atoms:
         raise RuntimeError(f"RGB fragmented MP4 has no closing mfra atom: {rgb_path}")
+
+    remux_source = rgb_path
+    source_kind = "nas"
+    if source_rgb_path is not None and source_rgb_path != rgb_path:
+        try:
+            source_atoms = mp4_atoms(source_rgb_path)
+            source_valid = (
+                source_rgb_path.is_file()
+                and source_rgb_path.stat().st_size == rgb_path.stat().st_size
+                and source_atoms is not None
+                and b"moov" in source_atoms
+                and (b"moof" not in source_atoms or b"mfra" in source_atoms)
+            )
+        except OSError:
+            source_valid = False
+        if source_valid:
+            remux_source = source_rgb_path
+            source_kind = "local"
 
     temporary = segment / ("." + rgb_name + ".seekable.tmp.mp4")
     temporary.unlink(missing_ok=True)
@@ -433,7 +458,7 @@ def finalize_rgb(
             "warning",
             "-y",
             "-i",
-            str(rgb_path),
+            str(remux_source),
             "-map",
             "0:v:0",
             "-c:v",
@@ -467,6 +492,7 @@ def finalize_rgb(
         os.fsync(handle.fileno())
     os.replace(temporary, rgb_path)
     fsync_directory(segment)
+    return source_kind
 
 
 def finalize_staged_segment(
@@ -546,6 +572,13 @@ def capture_marker_name(ready_name: str) -> str:
     if ready_name.endswith(suffix):
         return ready_name[: -len(suffix)] + "recording_capture_ready.json"
     return "recording_capture_ready.json"
+
+
+def local_cache_marker_name(ready_name: str) -> str:
+    suffix = "recording_ready.json"
+    if ready_name.endswith(suffix):
+        return ready_name[: -len(suffix)] + "recording_capture_cached.json"
+    return "recording_capture_cached.json"
 
 
 def nas_finalized_marker_name(ready_name: str) -> str:
@@ -701,7 +734,8 @@ def finalize_captured_segment(
     ffmpeg_path: str,
     heartbeat: Callable[[], None] | None = None,
     pause: Callable[[], bool] | None = None,
-) -> tuple[dict[str, Any], Path]:
+    local_segment: Path | None = None,
+) -> tuple[dict[str, Any], Path, str]:
     frames_name = marker_filename(capture.get("frames_file"), "frames.csv", "frames_file")
     rgb_name = marker_filename(capture.get("rgb_file"), "rgb.mp4", "rgb_file")
     depth_name = marker_filename(capture.get("depth_file"), "depth.mkv", "depth_file")
@@ -710,13 +744,14 @@ def finalize_captured_segment(
     if not (segment / frames_name).is_file():
         raise RuntimeError(f"final frames CSV missing from NAS capture: {segment / frames_name}")
 
-    finalize_rgb(
+    remux_source = finalize_rgb(
         segment,
         rgb_name,
         ffmpeg_path,
         expected_rgb_duration(segment, meta_name),
         heartbeat,
         pause,
+        (local_segment / rgb_name) if local_segment is not None else None,
     )
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
@@ -742,7 +777,7 @@ def finalize_captured_segment(
             "ready_marker": ready,
         },
     )
-    return ready, finalized_path
+    return ready, finalized_path, remux_source
 
 
 def is_transient_recording_name(name: str) -> bool:
@@ -932,6 +967,60 @@ def publish_capture_segment(
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
+
+
+def write_local_capture_cache_marker(
+    local_segment: Path,
+    capture_segment: Path,
+    capture: dict[str, Any],
+) -> Path:
+    ready_name = marker_filename(capture.get("ready_file"), "recording_ready.json", "ready_file")
+    marker_path = local_segment / local_cache_marker_name(ready_name)
+    atomic_json_write(
+        marker_path,
+        {
+            "schema": "gwv3_recording_local_capture_cache_v1",
+            "cached": True,
+            "cached_at_us": now_us(),
+            "capture_directory": capture_segment.name,
+            "capture_key": capture_queue_key(capture),
+            "segment_start_us": int(capture.get("segment_start_us") or 0),
+            "sender_id": str(capture.get("sender_id") or ""),
+            "camera_id": str(capture.get("camera_id") or ""),
+            "relative_path": str(capture.get("relative_path") or ""),
+            "ready_file": ready_name,
+            "rgb_file": marker_filename(capture.get("rgb_file"), "rgb.mp4", "rgb_file"),
+        },
+    )
+    return marker_path
+
+
+def local_capture_cache_for(
+    capture: dict[str, Any],
+    staging_root: Path,
+    capture_segment: Path | None = None,
+) -> Path | None:
+    try:
+        relative = safe_relative_path(capture.get("relative_path"), Path("capture"))
+        local_segment = staging_root / relative
+        ready_name = marker_filename(capture.get("ready_file"), "recording_ready.json", "ready_file")
+        marker_path = local_segment / local_cache_marker_name(ready_name)
+        marker = load_json(marker_path)
+        if (
+            marker.get("schema") != "gwv3_recording_local_capture_cache_v1"
+            or marker.get("cached") is not True
+            or ready_identity(marker) != ready_identity(capture)
+            or str(marker.get("relative_path") or "") != relative.as_posix()
+            or str(marker.get("capture_key") or "") != capture_queue_key(capture)
+        ):
+            return None
+        if capture_segment is not None and str(marker.get("capture_directory") or "") != capture_segment.name:
+            return None
+        rgb_name = marker_filename(capture.get("rgb_file"), "rgb.mp4", "rgb_file")
+        rgb_path = local_segment / rgb_name
+        return local_segment if rgb_path.is_file() and rgb_path.stat().st_size > 0 else None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def final_destination_for(
@@ -1230,9 +1319,23 @@ def discover_local_segments(staging_root: Path) -> list[Path]:
         for marker in staging_root.rglob(marker_pattern):
             if marker.parent == staging_root or ".gwv3-uploading-" in marker.as_posix():
                 continue
-            if (marker.parent / "recording_uploaded.json").is_file():
+            if (
+                (marker.parent / "recording_uploaded.json").is_file()
+                or list(marker.parent.glob("*recording_capture_cached.json"))
+            ):
                 continue
             candidates[str(marker.parent)] = marker.parent
+    return sorted(candidates.values(), key=lambda path: path.stat().st_mtime)
+
+
+def discover_local_capture_caches(staging_root: Path) -> list[Path]:
+    candidates: dict[str, Path] = {}
+    if not staging_root.exists():
+        return []
+    for marker in staging_root.rglob("*recording_capture_cached.json"):
+        if marker.parent == staging_root or ".gwv3-uploading-" in marker.as_posix():
+            continue
+        candidates[str(marker.parent)] = marker.parent
     return sorted(candidates.values(), key=lambda path: path.stat().st_mtime)
 
 
@@ -1252,6 +1355,43 @@ def discover_capture_segments(capture_queue_root: Path) -> list[Path]:
         return sorted(candidates, key=lambda path: path.stat().st_mtime)
     except OSError:
         return []
+
+
+def load_captured_segment_state(
+    segment: Path,
+) -> tuple[dict[str, Any], dict[str, Any] | None, Path | None]:
+    capture_markers = sorted(segment.glob("*recording_capture_ready.json"))
+    finalized_markers = sorted(segment.glob("*recording_nas_finalized.json"))
+    if len(capture_markers) > 1 or len(finalized_markers) > 1:
+        raise RuntimeError(f"ambiguous NAS capture marker set: {segment}")
+    if capture_markers:
+        capture = load_json(capture_markers[0])
+        if capture.get("capture_ready") is not True:
+            raise RuntimeError(f"invalid NAS capture marker: {capture_markers[0]}")
+    elif finalized_markers:
+        finalized = load_json(finalized_markers[0])
+        ready_value = finalized.get("ready_marker")
+        if not isinstance(ready_value, dict):
+            raise RuntimeError(
+                f"NAS-finalized marker has no ready payload: {finalized_markers[0]}"
+            )
+        capture = dict(ready_value)
+        capture["capture_file"] = str(finalized.get("capture_file") or "")
+    else:
+        raise RuntimeError(f"NAS capture marker disappeared: {segment}")
+
+    if not finalized_markers:
+        return capture, None, None
+    finalized_path = finalized_markers[0]
+    finalized = load_json(finalized_path)
+    ready = finalized.get("ready_marker")
+    if finalized.get("nas_finalized") is not True or not isinstance(ready, dict):
+        raise RuntimeError(f"invalid NAS-finalized marker: {finalized_path}")
+    if ready.get("ready") is not True:
+        raise RuntimeError(f"invalid ready payload in NAS capture: {finalized_path}")
+    if ready_identity(ready) != ready_identity(capture):
+        raise RuntimeError(f"NAS capture/finalized marker identity mismatch: {segment}")
+    return capture, ready, finalized_path
 
 
 def discover_segments(staging_root: Path) -> list[Path]:
@@ -1313,6 +1453,25 @@ class Uploader:
         self.interval = max(0.25, int(staging.get("upload_interval_ms", 2000)) / 1000.0)
         self.bandwidth_mbps = max(0.0, float(staging.get("upload_bandwidth_limit_mbps", 0)))
         self.delete_after_upload = bool(staging.get("delete_after_upload", True))
+        self.retain_local_capture_for_finalize = bool(
+            staging.get("retain_local_capture_for_finalize", True)
+        )
+        self.local_cache_high_watermark_percent = min(
+            100.0,
+            max(0.0, float(staging.get("local_cache_high_watermark_percent", 75))),
+        )
+        self.local_cache_low_watermark_percent = min(
+            self.local_cache_high_watermark_percent,
+            max(0.0, float(staging.get("local_cache_low_watermark_percent", 70))),
+        )
+        self.finalize_workers = min(
+            4,
+            max(1, int(staging.get("finalize_workers", 2))),
+        )
+        self.status_write_interval = max(
+            0.25,
+            int(staging.get("status_write_interval_ms", 2000)) / 1000.0,
+        )
         self.pause_during_receiver_finalize = bool(staging.get("pause_during_receiver_finalize", True))
         self.quiet_before_segment_finalize_ms = max(
             0, int(staging.get("quiet_before_segment_finalize_ms", 60000))
@@ -1341,6 +1500,16 @@ class Uploader:
         self.next_receiver_status_at = 0.0
         self.receiver_pause_phase = ""
         self.running = False
+        self.local_remuxes = 0
+        self.nas_fallback_remuxes = 0
+        self.local_cache_pressure_releases = 0
+        self.last_capture_duration_ms = 0
+        self.last_finalize_duration_ms = 0
+        self.last_publish_duration_ms = 0
+        self.last_remux_source = ""
+        self.status_lock = threading.RLock()
+        self.receiver_status_lock = threading.Lock()
+        self.cached_pending_status: dict[str, int] | None = None
 
         if not self.enabled:
             return
@@ -1350,56 +1519,103 @@ class Uploader:
             raise ValueError("recording staging root must differ from nas_root")
         self.staging_root.mkdir(parents=True, exist_ok=True)
 
-    def write_status(self) -> None:
-        local_segments = discover_local_segments(self.staging_root)
-        capture_segments = discover_capture_segments(self.capture_queue_root)
-        publish_journals = discover_publish_journals(self.capture_queue_root)
-        publish_recovery_count = publish_recovery_pending_count(
-            publish_journals,
-            self.capture_queue_root,
-        )
-        local_count, local_bytes, local_oldest_us = pending_metrics(local_segments)
-        capture_count, capture_bytes, capture_oldest_us = pending_metrics(capture_segments)
-        atomic_json_write(
-            self.status_path,
-            {
-                "schema": "gwv3_recording_uploader_status_v2",
-                "running": self.running and not STOP_REQUESTED,
-                "updated_us": now_us(),
-                "pipeline_mode": "nas_first_fmp4_finalize",
-                "staging_root": str(self.staging_root),
-                "nas_root": str(self.nas_root),
-                "capture_queue_root": str(self.capture_queue_root),
-                "local_pending_segments": local_count,
-                "local_pending_bytes": local_bytes,
-                "local_oldest_pending_age_ms": local_oldest_us // 1000,
-                "nas_finalize_pending_segments": capture_count + publish_recovery_count,
-                "nas_finalize_pending_bytes": capture_bytes,
-                "nas_finalize_oldest_pending_age_ms": capture_oldest_us // 1000,
-                "publish_recovery_journals": len(publish_journals),
-                "pending_segments": local_count + capture_count + publish_recovery_count,
-                "pending_bytes": local_bytes + capture_bytes,
-                "oldest_pending_age_ms": max(local_oldest_us, capture_oldest_us) // 1000,
-                "active_segment": self.active_segment,
-                "active_phase": self.active_phase,
-                "active_bytes_done": self.active_bytes_done,
-                "active_bytes_total": self.active_bytes_total,
-                "active_progress_percent": (
-                    round(self.active_bytes_done * 100.0 / self.active_bytes_total, 2)
-                    if self.active_bytes_total > 0
-                    else 0.0
-                ),
-                "active_elapsed_ms": (
-                    max(0, now_us() - self.active_started_us) // 1000 if self.active_started_us > 0 else 0
-                ),
-                "captured_segments": self.captured,
-                "completed_segments": self.completed,
-                "failed_attempts": self.failures,
-                "last_capture_success_us": self.last_capture_success_us,
-                "last_success_us": self.last_success_us,
-                "last_error": self.last_error,
-            },
-        )
+    def write_status(self, refresh_metrics: bool = False) -> None:
+        with self.status_lock:
+            if refresh_metrics or self.cached_pending_status is None:
+                local_segments = discover_local_segments(self.staging_root)
+                local_cache_segments = discover_local_capture_caches(self.staging_root)
+                capture_segments = discover_capture_segments(self.capture_queue_root)
+                publish_journals = discover_publish_journals(self.capture_queue_root)
+                publish_recovery_count = publish_recovery_pending_count(
+                    publish_journals,
+                    self.capture_queue_root,
+                )
+                local_count, local_bytes, local_oldest_us = pending_metrics(local_segments)
+                cache_count, cache_bytes, cache_oldest_us = pending_metrics(local_cache_segments)
+                capture_count, capture_bytes, capture_oldest_us = pending_metrics(capture_segments)
+                self.cached_pending_status = {
+                    "local_count": local_count,
+                    "local_bytes": local_bytes,
+                    "local_oldest_us": local_oldest_us,
+                    "cache_count": cache_count,
+                    "cache_bytes": cache_bytes,
+                    "cache_oldest_us": cache_oldest_us,
+                    "capture_count": capture_count,
+                    "capture_bytes": capture_bytes,
+                    "capture_oldest_us": capture_oldest_us,
+                    "publish_journal_count": len(publish_journals),
+                    "publish_recovery_count": publish_recovery_count,
+                }
+            metrics = self.cached_pending_status
+            assert metrics is not None
+            atomic_json_write(
+                self.status_path,
+                {
+                    "schema": "gwv3_recording_uploader_status_v2",
+                    "running": self.running and not STOP_REQUESTED,
+                    "updated_us": now_us(),
+                    "pipeline_mode": "nas_first_local_cache_finalize",
+                    "staging_root": str(self.staging_root),
+                    "nas_root": str(self.nas_root),
+                    "capture_queue_root": str(self.capture_queue_root),
+                    "local_pending_segments": metrics["local_count"],
+                    "local_pending_bytes": metrics["local_bytes"],
+                    "local_oldest_pending_age_ms": metrics["local_oldest_us"] // 1000,
+                    "local_finalize_cache_segments": metrics["cache_count"],
+                    "local_finalize_cache_bytes": metrics["cache_bytes"],
+                    "local_finalize_cache_oldest_age_ms": metrics["cache_oldest_us"] // 1000,
+                    "nas_finalize_pending_segments": (
+                        metrics["capture_count"] + metrics["publish_recovery_count"]
+                    ),
+                    "nas_finalize_pending_bytes": metrics["capture_bytes"],
+                    "nas_finalize_oldest_pending_age_ms": (
+                        metrics["capture_oldest_us"] // 1000
+                    ),
+                    "publish_recovery_journals": metrics["publish_journal_count"],
+                    "pending_segments": (
+                        metrics["local_count"]
+                        + metrics["capture_count"]
+                        + metrics["publish_recovery_count"]
+                    ),
+                    "pending_bytes": metrics["local_bytes"] + metrics["capture_bytes"],
+                    "oldest_pending_age_ms": max(
+                        metrics["local_oldest_us"],
+                        metrics["capture_oldest_us"],
+                    )
+                    // 1000,
+                    "active_segment": self.active_segment,
+                    "active_phase": self.active_phase,
+                    "active_bytes_done": self.active_bytes_done,
+                    "active_bytes_total": self.active_bytes_total,
+                    "active_progress_percent": (
+                        round(
+                            self.active_bytes_done * 100.0 / self.active_bytes_total,
+                            2,
+                        )
+                        if self.active_bytes_total > 0
+                        else 0.0
+                    ),
+                    "active_elapsed_ms": (
+                        max(0, now_us() - self.active_started_us) // 1000
+                        if self.active_started_us > 0
+                        else 0
+                    ),
+                    "captured_segments": self.captured,
+                    "completed_segments": self.completed,
+                    "failed_attempts": self.failures,
+                    "last_capture_success_us": self.last_capture_success_us,
+                    "last_success_us": self.last_success_us,
+                    "local_remuxes": self.local_remuxes,
+                    "nas_fallback_remuxes": self.nas_fallback_remuxes,
+                    "local_cache_pressure_releases": self.local_cache_pressure_releases,
+                    "last_capture_duration_ms": self.last_capture_duration_ms,
+                    "last_finalize_duration_ms": self.last_finalize_duration_ms,
+                    "last_publish_duration_ms": self.last_publish_duration_ms,
+                    "last_remux_source": self.last_remux_source,
+                    "finalize_workers": self.finalize_workers,
+                    "last_error": self.last_error,
+                },
+            )
 
     def update_active_status(
         self,
@@ -1408,47 +1624,50 @@ class Uploader:
         bytes_total: int | None = None,
         force: bool = False,
     ) -> None:
-        if phase is not None:
-            # Progress callbacks continue to publish byte counters while an
-            # operation is paused. They must not make a paused transfer look
-            # active by replacing the receiver-I/O wait phase.
-            self.active_phase = self.receiver_pause_phase or phase
-        if bytes_done is not None:
-            self.active_bytes_done = max(0, bytes_done)
-        if bytes_total is not None:
-            self.active_bytes_total = max(0, bytes_total)
-        current = time.monotonic()
-        if not force and current < self.next_active_status_at:
-            return
-        self.next_active_status_at = current + 1.0
-        self.write_status()
+        with self.status_lock:
+            if phase is not None:
+                # Progress callbacks continue to publish byte counters while an
+                # operation is paused. They must not make a paused transfer look
+                # active by replacing the receiver-I/O wait phase.
+                self.active_phase = self.receiver_pause_phase or phase
+            if bytes_done is not None:
+                self.active_bytes_done = max(0, bytes_done)
+            if bytes_total is not None:
+                self.active_bytes_total = max(0, bytes_total)
+            current = time.monotonic()
+            if not force and current < self.next_active_status_at:
+                return
+            self.next_active_status_at = current + self.status_write_interval
+            self.write_status()
 
     def should_pause_for_receiver_io(self, resume_phase: str) -> bool:
         if not self.pause_during_receiver_finalize:
             return False
-        current = time.monotonic()
-        if current >= self.next_receiver_status_at:
-            self.next_receiver_status_at = current + 1.0
-            try:
-                with urllib.request.urlopen(self.receiver_admin_url, timeout=0.5) as response:
-                    status = json.load(response)
-                if not isinstance(status, dict):
-                    raise ValueError("receiver status must be a JSON object")
-                self.receiver_pause_phase = receiver_pause_phase(
-                    status,
-                    now_us(),
-                    self.segment_seconds,
-                    self.quiet_before_segment_finalize_ms,
-                    self.pause_record_queue_bytes,
-                    self.pause_record_queue_oldest_age_ms,
-                )
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                # Fail closed while a receiver-I/O pause is already active.
-                # A transient Admin timeout must not resume a large remux or
-                # upload immediately before a segment boundary.
-                pass
-        if self.receiver_pause_phase:
-            self.update_active_status(phase=self.receiver_pause_phase)
+        with self.receiver_status_lock:
+            current = time.monotonic()
+            if current >= self.next_receiver_status_at:
+                self.next_receiver_status_at = current + 1.0
+                try:
+                    with urllib.request.urlopen(self.receiver_admin_url, timeout=0.5) as response:
+                        status = json.load(response)
+                    if not isinstance(status, dict):
+                        raise ValueError("receiver status must be a JSON object")
+                    self.receiver_pause_phase = receiver_pause_phase(
+                        status,
+                        now_us(),
+                        self.segment_seconds,
+                        self.quiet_before_segment_finalize_ms,
+                        self.pause_record_queue_bytes,
+                        self.pause_record_queue_oldest_age_ms,
+                    )
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    # Fail closed while a receiver-I/O pause is already active.
+                    # A transient Admin timeout must not resume a large remux or
+                    # upload immediately before a segment boundary.
+                    pass
+            pause_phase = self.receiver_pause_phase
+        if pause_phase:
+            self.update_active_status(phase=pause_phase)
             return True
         if self.active_phase in {
             "receiver_finalize_wait",
@@ -1464,7 +1683,198 @@ class Uploader:
                 raise InterruptedError("recording upload interrupted while waiting for receiver I/O")
             time.sleep(0.25)
 
+    def local_cache_marker(self, segment: Path) -> tuple[Path, dict[str, Any]] | None:
+        markers = sorted(segment.glob("*recording_capture_cached.json"))
+        if len(markers) != 1:
+            return None
+        try:
+            marker = load_json(markers[0])
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            marker.get("schema") != "gwv3_recording_local_capture_cache_v1"
+            or marker.get("cached") is not True
+        ):
+            return None
+        return markers[0], marker
+
+    def final_destination_for_local_cache(self, marker: dict[str, Any]) -> Path | None:
+        try:
+            relative = safe_relative_path(marker.get("relative_path"), Path("capture"))
+            ready_name = marker_filename(
+                marker.get("ready_file"),
+                "recording_ready.json",
+                "ready_file",
+            )
+            base = self.nas_root / relative
+            candidates = [base]
+            try:
+                candidates.extend(
+                    sorted(base.parent.glob(base.name + "_recovered_*"))
+                )
+            except OSError:
+                pass
+            for destination in candidates:
+                ready_path = destination / ready_name
+                if not ready_path.is_file():
+                    continue
+                ready = load_json(ready_path)
+                if (
+                    ready.get("ready") is True
+                    and ready_identity(ready) == ready_identity(marker)
+                ):
+                    return destination
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return None
+
+    def local_cache_has_durable_nas_copy(self, marker: dict[str, Any]) -> bool:
+        if self.final_destination_for_local_cache(marker) is not None:
+            return True
+        try:
+            capture_directory = marker_filename(
+                marker.get("capture_directory"),
+                "capture",
+                "capture_directory",
+            )
+            capture_segment = self.capture_queue_root / capture_directory
+            capture_markers = sorted(
+                capture_segment.glob("*recording_capture_ready.json")
+            )
+            if len(capture_markers) != 1:
+                return False
+            capture = load_json(capture_markers[0])
+            return (
+                capture.get("capture_ready") is True
+                and ready_identity(capture) == ready_identity(marker)
+                and str(marker.get("capture_key") or "") == capture_queue_key(capture)
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+    def release_local_cache(
+        self,
+        segment: Path,
+        marker_path: Path,
+        marker: dict[str, Any],
+        destination: Path | None,
+        reason: str,
+    ) -> bool:
+        if not self.local_cache_has_durable_nas_copy(marker):
+            return False
+        try:
+            if self.delete_after_upload:
+                shutil.rmtree(segment)
+                fsync_directory(segment.parent)
+            else:
+                atomic_json_write(
+                    segment / "recording_uploaded.json",
+                    {
+                        "schema": "gwv3_recording_uploaded_v1",
+                        "destination": str(destination or ""),
+                        "uploaded_at_us": now_us(),
+                    },
+                )
+                marker_path.unlink(missing_ok=True)
+                fsync_directory(segment)
+            print(
+                f"recording local capture cache released source={segment} "
+                f"destination={destination or ''} reason={reason}",
+                flush=True,
+            )
+            return True
+        except OSError as error:
+            print(
+                f"recording local capture cache release deferred source={segment} "
+                f"reason={reason} error={error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
+    def reconcile_local_capture_caches(self) -> bool:
+        progress = False
+        for segment in discover_local_capture_caches(self.staging_root):
+            cached = self.local_cache_marker(segment)
+            if cached is None:
+                for marker_path in segment.glob("*recording_capture_cached.json"):
+                    marker_path.unlink(missing_ok=True)
+                fsync_directory(segment)
+                print(
+                    f"recording invalid local capture cache requeued source={segment}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                progress = True
+                continue
+            marker_path, marker = cached
+            destination = self.final_destination_for_local_cache(marker)
+            if destination is not None:
+                progress = (
+                    self.release_local_cache(
+                        segment,
+                        marker_path,
+                        marker,
+                        destination,
+                        "final_published",
+                    )
+                    or progress
+                )
+                continue
+            if not self.local_cache_has_durable_nas_copy(marker):
+                marker_path.unlink(missing_ok=True)
+                fsync_directory(segment)
+                print(
+                    f"recording local capture cache requeued source={segment} "
+                    "reason=nas_capture_missing",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                progress = True
+        return progress
+
+    def enforce_local_cache_watermark(self) -> bool:
+        if (
+            not self.delete_after_upload
+            or self.local_cache_high_watermark_percent <= 0
+        ):
+            return False
+        try:
+            usage = shutil.disk_usage(self.staging_root)
+        except OSError:
+            return False
+        used_percent = usage.used * 100.0 / usage.total if usage.total > 0 else 0.0
+        if used_percent < self.local_cache_high_watermark_percent:
+            return False
+        progress = False
+        for segment in discover_local_capture_caches(self.staging_root):
+            cached = self.local_cache_marker(segment)
+            if cached is None:
+                continue
+            marker_path, marker = cached
+            if not self.local_cache_has_durable_nas_copy(marker):
+                continue
+            destination = self.final_destination_for_local_cache(marker)
+            if self.release_local_cache(
+                segment,
+                marker_path,
+                marker,
+                destination,
+                "disk_high_watermark",
+            ):
+                self.local_cache_pressure_releases += 1
+                progress = True
+            try:
+                usage = shutil.disk_usage(self.staging_root)
+            except OSError:
+                break
+            used_percent = usage.used * 100.0 / usage.total if usage.total > 0 else 0.0
+            if used_percent <= self.local_cache_low_watermark_percent:
+                break
+        return progress
+
     def process_local_one(self, segment: Path) -> bool:
+        operation_started = time.monotonic()
         lock_path = local_segment_lock_path(segment)
         descriptor = acquire_file_lock(lock_path)
         if descriptor is None:
@@ -1516,7 +1926,9 @@ class Uploader:
                 self.captured += 1
             self.last_capture_success_us = now_us()
             self.last_error = ""
-            if self.delete_after_upload:
+            if self.retain_local_capture_for_finalize:
+                write_local_capture_cache_marker(segment, destination, capture)
+            elif self.delete_after_upload:
                 shutil.rmtree(segment)
             else:
                 atomic_json_write(
@@ -1529,7 +1941,16 @@ class Uploader:
                 )
             release_file_lock(lock_path, descriptor)
             descriptor = None
-            print(f"recording capture completed source={segment} destination={destination}", flush=True)
+            self.last_capture_duration_ms = round(
+                (time.monotonic() - operation_started) * 1000
+            )
+            print(
+                f"recording capture completed source={segment} destination={destination} "
+                f"duration_ms={self.last_capture_duration_ms} "
+                f"local_cache_retained={str(self.retain_local_capture_for_finalize).lower()}",
+                flush=True,
+            )
+            self.enforce_local_cache_watermark()
             return True
         except InterruptedError as error:
             print(f"recording capture interrupted source={segment} error={error}", file=sys.stderr, flush=True)
@@ -1549,7 +1970,235 @@ class Uploader:
             self.active_started_us = 0
             self.update_active_status(force=True)
 
+    def finalize_local_capture_worker(self, segment: Path) -> dict[str, Any]:
+        operation_started = time.monotonic()
+        lock_path = capture_segment_lock_path(segment)
+        descriptor = acquire_file_lock(lock_path)
+        if descriptor is None:
+            return {"segment": segment, "deferred": True}
+        try:
+            capture, ready, finalized_path = load_captured_segment_state(segment)
+            if ready is not None or finalized_path is not None:
+                release_file_lock(lock_path, descriptor)
+                return {"segment": segment, "deferred": True}
+            local_segment = local_capture_cache_for(
+                capture,
+                self.staging_root,
+                segment,
+            )
+            if local_segment is None:
+                release_file_lock(lock_path, descriptor)
+                return {"segment": segment, "deferred": True}
+            self.wait_for_receiver_io("finalizing_local_cache_batch")
+            finalize_started = time.monotonic()
+            ready, finalized_path, remux_source = finalize_captured_segment(
+                segment,
+                capture,
+                self.ffmpeg_path,
+                heartbeat=self.update_active_status,
+                pause=lambda: self.should_pause_for_receiver_io(
+                    "finalizing_local_cache_batch"
+                ),
+                local_segment=local_segment,
+            )
+            return {
+                "segment": segment,
+                "lock_path": lock_path,
+                "descriptor": descriptor,
+                "capture": capture,
+                "ready": ready,
+                "finalized_path": finalized_path,
+                "local_segment": local_segment,
+                "remux_source": remux_source,
+                "finalize_duration_ms": round(
+                    (time.monotonic() - finalize_started) * 1000
+                ),
+                "operation_started": operation_started,
+                "deferred": False,
+            }
+        except Exception:
+            release_file_lock(lock_path, descriptor)
+            raise
+
+    def publish_parallel_capture_result(self, result: dict[str, Any]) -> bool:
+        segment = result["segment"]
+        lock_path = result["lock_path"]
+        descriptor = result["descriptor"]
+        capture = result["capture"]
+        ready = result["ready"]
+        finalized_path = result["finalized_path"]
+        local_segment = result["local_segment"]
+        remux_source = str(result["remux_source"])
+        finalize_duration_ms = int(result["finalize_duration_ms"])
+        operation_started = float(result["operation_started"])
+        self.active_segment = str(segment)
+        self.active_started_us = now_us()
+        self.active_bytes_done = 0
+        self.active_bytes_total = 0
+        self.update_active_status(phase="publishing_final", force=True)
+        try:
+            def publish_once() -> Path:
+                self.wait_for_receiver_io("publishing_final")
+                return publish_finalized_capture(
+                    segment,
+                    self.nas_root,
+                    capture,
+                    ready,
+                    finalized_path,
+                )
+
+            publish_started = time.monotonic()
+            destination = run_with_transient_nas_retries(
+                publish_once,
+                on_retry=lambda attempt, attempts, error, delay: (
+                    self.update_active_status(
+                        phase="final_publish_retry_wait",
+                        force=True,
+                    ),
+                    print(
+                        f"recording final publish transient NAS error source={segment} "
+                        f"attempt={attempt}/{attempts} retry_delay_s={delay:g} error={error}",
+                        file=sys.stderr,
+                        flush=True,
+                    ),
+                ),
+            )
+            publish_duration_ms = round(
+                (time.monotonic() - publish_started) * 1000
+            )
+            self.completed += 1
+            self.last_success_us = now_us()
+            self.last_error = ""
+            self.last_finalize_duration_ms = finalize_duration_ms
+            self.last_publish_duration_ms = publish_duration_ms
+            self.last_remux_source = remux_source
+            if remux_source == "local":
+                self.local_remuxes += 1
+            elif remux_source == "nas":
+                self.nas_fallback_remuxes += 1
+            cached = self.local_cache_marker(local_segment)
+            if cached is not None:
+                self.release_local_cache(
+                    local_segment,
+                    cached[0],
+                    cached[1],
+                    destination,
+                    "final_published",
+                )
+            print(
+                f"recording final publish completed source={segment} destination={destination} "
+                f"remux_source={remux_source} finalize_ms={finalize_duration_ms} "
+                f"publish_ms={publish_duration_ms} "
+                f"total_ms={round((time.monotonic() - operation_started) * 1000)} "
+                "parallel=true",
+                flush=True,
+            )
+            return True
+        except InterruptedError as error:
+            print(
+                f"recording NAS final publication interrupted source={segment} error={error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        except Exception as error:
+            self.failures += 1
+            self.last_error = f"{type(error).__name__}: {error}"
+            print(
+                f"recording NAS final publication failed source={segment} "
+                f"error={self.last_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+            return False
+        finally:
+            release_file_lock(lock_path, descriptor)
+
+    def process_capture_batch(self, segments: list[Path]) -> bool:
+        local_candidates: list[Path] = []
+        sequential: list[Path] = []
+        for segment in segments:
+            try:
+                capture, ready, finalized_path = load_captured_segment_state(segment)
+                if (
+                    ready is None
+                    and finalized_path is None
+                    and local_capture_cache_for(
+                        capture,
+                        self.staging_root,
+                        segment,
+                    )
+                    is not None
+                ):
+                    local_candidates.append(segment)
+                else:
+                    sequential.append(segment)
+            except Exception:
+                sequential.append(segment)
+
+        if len(local_candidates) < 2 or self.finalize_workers <= 1:
+            sequential = segments
+            local_candidates = []
+
+        progress = False
+        if local_candidates:
+            self.active_segment = f"{len(local_candidates)} local capture caches"
+            self.active_started_us = now_us()
+            self.active_bytes_done = 0
+            self.active_bytes_total = 0
+            self.update_active_status(
+                phase="finalizing_local_cache_batch",
+                force=True,
+            )
+            futures: dict[Future[dict[str, Any]], Path] = {}
+            with ThreadPoolExecutor(
+                max_workers=min(self.finalize_workers, len(local_candidates)),
+                thread_name_prefix="gwv3-remux",
+            ) as executor:
+                for segment in local_candidates:
+                    futures[executor.submit(self.finalize_local_capture_worker, segment)] = segment
+                for future in as_completed(futures):
+                    segment = futures[future]
+                    try:
+                        result = future.result()
+                    except InterruptedError as error:
+                        print(
+                            f"recording parallel NAS finalization interrupted "
+                            f"source={segment} error={error}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        continue
+                    except Exception as error:
+                        self.failures += 1
+                        self.last_error = f"{type(error).__name__}: {error}"
+                        print(
+                            f"recording parallel NAS finalization failed source={segment} "
+                            f"error={self.last_error}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        traceback.print_exc(file=sys.stderr)
+                        continue
+                    if result.get("deferred"):
+                        sequential.append(segment)
+                    elif self.publish_parallel_capture_result(result):
+                        progress = True
+            self.active_segment = ""
+            self.active_phase = ""
+            self.active_started_us = 0
+            self.update_active_status(force=True)
+
+        for segment in sequential:
+            if STOP_REQUESTED:
+                break
+            if self.process_capture_one(segment):
+                progress = True
+        return progress
+
     def process_capture_one(self, segment: Path) -> bool:
+        operation_started = time.monotonic()
         lock_path = capture_segment_lock_path(segment)
         descriptor = acquire_file_lock(lock_path)
         if descriptor is None:
@@ -1561,48 +2210,31 @@ class Uploader:
         self.next_active_status_at = 0.0
         self.update_active_status(phase="finalizing_on_nas", force=True)
         try:
-            capture_markers = sorted(segment.glob("*recording_capture_ready.json"))
-            finalized_markers = sorted(segment.glob("*recording_nas_finalized.json"))
-            if len(capture_markers) > 1 or len(finalized_markers) > 1:
-                raise RuntimeError(f"ambiguous NAS capture marker set: {segment}")
-            if capture_markers:
-                capture = load_json(capture_markers[0])
-                if capture.get("capture_ready") is not True:
-                    raise RuntimeError(f"invalid NAS capture marker: {capture_markers[0]}")
-            elif finalized_markers:
-                finalized = load_json(finalized_markers[0])
-                ready_value = finalized.get("ready_marker")
-                if not isinstance(ready_value, dict):
-                    raise RuntimeError(
-                        f"NAS-finalized marker has no ready payload: {finalized_markers[0]}"
-                    )
-                capture = dict(ready_value)
-                capture["capture_file"] = str(finalized.get("capture_file") or "")
-            else:
-                raise RuntimeError(f"NAS capture marker disappeared: {segment}")
+            capture, ready, finalized_path = load_captured_segment_state(segment)
 
-            if finalized_markers:
-                finalized_path = finalized_markers[0]
-                finalized = load_json(finalized_path)
-                ready = finalized.get("ready_marker")
-                if finalized.get("nas_finalized") is not True or not isinstance(ready, dict):
-                    raise RuntimeError(f"invalid NAS-finalized marker: {finalized_path}")
-                if ready.get("ready") is not True:
-                    raise RuntimeError(f"invalid ready payload in NAS capture: {finalized_path}")
-                if ready_identity(ready) != ready_identity(capture):
-                    raise RuntimeError(
-                        f"NAS capture/finalized marker identity mismatch: {segment}"
-                    )
-            else:
+            local_segment = local_capture_cache_for(
+                capture,
+                self.staging_root,
+                segment,
+            )
+            remux_source = "already_finalized"
+            finalize_duration_ms = 0
+            if ready is None or finalized_path is None:
                 self.wait_for_receiver_io("finalizing_on_nas")
                 self.update_active_status(phase="finalizing_on_nas", force=True)
-                ready, finalized_path = finalize_captured_segment(
+                finalize_started = time.monotonic()
+                ready, finalized_path, remux_source = finalize_captured_segment(
                     segment,
                     capture,
                     self.ffmpeg_path,
                     heartbeat=self.update_active_status,
                     pause=lambda: self.should_pause_for_receiver_io("finalizing_on_nas"),
+                    local_segment=local_segment,
                 )
+                finalize_duration_ms = round(
+                    (time.monotonic() - finalize_started) * 1000
+                )
+            assert ready is not None and finalized_path is not None
 
             def publish_once() -> Path:
                 self.wait_for_receiver_io("publishing_final")
@@ -1615,6 +2247,7 @@ class Uploader:
                     finalized_path,
                 )
 
+            publish_started = time.monotonic()
             destination = run_with_transient_nas_retries(
                 publish_once,
                 on_retry=lambda attempt, attempts, error, delay: (
@@ -1627,12 +2260,38 @@ class Uploader:
                     ),
                 ),
             )
+            publish_duration_ms = round(
+                (time.monotonic() - publish_started) * 1000
+            )
             self.completed += 1
             self.last_success_us = now_us()
             self.last_error = ""
+            self.last_finalize_duration_ms = finalize_duration_ms
+            self.last_publish_duration_ms = publish_duration_ms
+            self.last_remux_source = remux_source
+            if remux_source == "local":
+                self.local_remuxes += 1
+            elif remux_source == "nas":
+                self.nas_fallback_remuxes += 1
+            if local_segment is not None:
+                cached = self.local_cache_marker(local_segment)
+                if cached is not None:
+                    self.release_local_cache(
+                        local_segment,
+                        cached[0],
+                        cached[1],
+                        destination,
+                        "final_published",
+                    )
             release_file_lock(lock_path, descriptor)
             descriptor = None
-            print(f"recording final publish completed source={segment} destination={destination}", flush=True)
+            print(
+                f"recording final publish completed source={segment} destination={destination} "
+                f"remux_source={remux_source} finalize_ms={finalize_duration_ms} "
+                f"publish_ms={publish_duration_ms} "
+                f"total_ms={round((time.monotonic() - operation_started) * 1000)}",
+                flush=True,
+            )
             return True
         except InterruptedError as error:
             print(f"recording NAS finalization interrupted source={segment} error={error}", file=sys.stderr, flush=True)
@@ -1725,20 +2384,22 @@ class Uploader:
 
     def run_once(self) -> bool:
         progress = self.recover_pending_publications()
+        progress = self.reconcile_local_capture_caches() or progress
         local_segments = discover_local_segments(self.staging_root)
-        self.write_status()
+        self.write_status(refresh_metrics=True)
         for segment in local_segments:
             if STOP_REQUESTED:
                 break
             if self.process_local_one(segment):
                 progress = True
             self.write_status()
-        for segment in discover_capture_segments(self.capture_queue_root):
-            if STOP_REQUESTED:
-                break
-            if self.process_capture_one(segment):
-                progress = True
-            self.write_status()
+        progress = self.enforce_local_cache_watermark() or progress
+        self.write_status(refresh_metrics=True)
+        capture_segments = discover_capture_segments(self.capture_queue_root)
+        if self.process_capture_batch(capture_segments):
+            progress = True
+        progress = self.reconcile_local_capture_caches() or progress
+        self.write_status(refresh_metrics=True)
         return progress
 
     def run(self, once: bool) -> int:
@@ -1754,7 +2415,7 @@ class Uploader:
                 remaining_local = discover_local_segments(self.staging_root)
                 remaining_capture = discover_capture_segments(self.capture_queue_root)
                 remaining_journals = discover_publish_journals(self.capture_queue_root)
-                self.write_status()
+                self.write_status(refresh_metrics=True)
             return 0 if not remaining_local and not remaining_capture and not remaining_journals else 2
         self.running = True
         try:
@@ -1765,7 +2426,7 @@ class Uploader:
                     time.sleep(min(0.25, deadline - time.monotonic()))
         finally:
             self.running = False
-            self.write_status()
+            self.write_status(refresh_metrics=True)
         return 0
 
 

@@ -173,7 +173,15 @@ def run(args: argparse.Namespace) -> None:
                 raise AssertionError("staged recording was not finalized and published to NAS")
 
             assert_recording_output(nas_root, minimum_rgb_duration=2.0)
-            assert not list(staging_root.rglob("recording_staged.json")), "published staged marker was not drained"
+            # The NAS ready marker is published before the uploader releases
+            # its optional local remux cache. Allow that small cleanup window.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if not list(staging_root.rglob("recording_staged.json")):
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("published local remux cache was not released")
             # The receiver refreshes the uploader status file asynchronously.
             # Allow several refresh periods under CI/storage load.
             deadline = time.monotonic() + 10
