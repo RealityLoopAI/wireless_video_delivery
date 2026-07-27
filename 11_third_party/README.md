@@ -39,6 +39,20 @@ OrbbecViewer_v1.10.27_202509260133_linux_x64_release.zip
 3. `OrbbecViewer` 是调试工具，不是项目运行时必须依赖；现场排查相机枚举、分辨率、帧率、固件状态时可以带上。
 4. Gitee 页面中 `C++` 可能被显示成空格，最终以实际下载文件名为准。
 
+Gemini 305 需要单独验证。2026-07-27 在 LubanCat-3IO / RK3576 上确认：
+
+1. 相机 USB ID 为 `2bc5:0840`，工作在 USB 3.2。
+2. SDK `1.10.27` 无法枚举该相机，root 和普通用户结果一致。
+3. SDK `2.8.6` 可以正确枚举并稳定采集 RGB/Depth。
+4. 该设备使用的 ARM64 SDK 目录为：
+
+```text
+11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/
+```
+
+SDK 实体仍由 `.gitignore` 排除。部署时必须从受控的 SDK 包或已验证设备同步，
+不能只复制发送端二进制而遗漏其运行时 SDK。
+
 ## 3. 本地参考 SDK 规则
 
 如果现场机器上已有旧版 Linux x64 SDK，只能用于：
