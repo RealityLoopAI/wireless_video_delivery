@@ -28,8 +28,11 @@
     "idle_finalize_ms": 5000,
     "upload_interval_ms": 2000,
     "upload_bandwidth_limit_mbps": 240,
+    "nas_capture_queue_directory": ".gwv3_capture_queue",
     "pause_during_receiver_finalize": true,
-    "quiet_before_segment_finalize_ms": 180000,
+    "quiet_before_segment_finalize_ms": 10000,
+    "pause_record_queue_bytes": 8388608,
+    "pause_record_queue_oldest_age_ms": 500,
     "delete_after_upload": true
   },
   "segment_seconds": 900,

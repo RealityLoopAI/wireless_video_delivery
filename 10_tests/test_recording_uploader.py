@@ -147,6 +147,28 @@ def run(args: argparse.Namespace) -> None:
             )
             == ""
         )
+        assert (
+            uploader_module.receiver_pause_phase(
+                {"record_queue_total_bytes": 8 * 1024 * 1024, "cameras": []},
+                pause_now_us,
+                900,
+                10000,
+                8 * 1024 * 1024,
+                500,
+            )
+            == "receiver_record_pressure_wait"
+        )
+        assert (
+            uploader_module.receiver_pause_phase(
+                {"record_queue_total_bytes": 0, "cameras": [{"record_queue_oldest_age_ms": 500}]},
+                pause_now_us,
+                900,
+                10000,
+                8 * 1024 * 1024,
+                500,
+            )
+            == "receiver_record_pressure_wait"
+        )
         phase_guard = object.__new__(uploader_module.Uploader)
         phase_guard.receiver_pause_phase = "receiver_segment_boundary_wait"
         phase_guard.active_phase = "receiver_segment_boundary_wait"
@@ -167,6 +189,8 @@ def run(args: argparse.Namespace) -> None:
         pause_guard.receiver_admin_url = "http://127.0.0.1:1/api/status"
         pause_guard.segment_seconds = 900
         pause_guard.quiet_before_segment_finalize_ms = 60000
+        pause_guard.pause_record_queue_bytes = 8 * 1024 * 1024
+        pause_guard.pause_record_queue_oldest_age_ms = 500
         pause_guard.receiver_pause_phase = "receiver_segment_boundary_wait"
         pause_guard.active_phase = "receiver_segment_boundary_wait"
         pause_status_updates: list[dict[str, object]] = []
@@ -316,9 +340,8 @@ def run(args: argparse.Namespace) -> None:
         interrupt_staging = temporary / "interrupt-staging"
         interrupt_nas = temporary / "interrupt-nas"
         interrupt_segment = interrupt_staging / "camera" / "2026-07-24" / "120000"
-        interrupt_segment.mkdir(parents=True)
+        shutil.copytree(segment, interrupt_segment)
         interrupt_nas.mkdir()
-        (interrupt_segment / "recording_staged.json").write_text("{}", encoding="ascii")
         interrupt_config_path = temporary / "interrupt-receiver.json"
         interrupt_config_path.write_text(
             json.dumps(
@@ -334,16 +357,16 @@ def run(args: argparse.Namespace) -> None:
             encoding="ascii",
         )
         interrupt_uploader = uploader_module.Uploader(interrupt_config_path)
-        original_finalize = uploader_module.finalize_staged_segment
+        original_publish_capture = uploader_module.publish_capture_segment
 
-        def interrupt_finalize(*_args: object, **_kwargs: object) -> None:
+        def interrupt_capture(*_args: object, **_kwargs: object) -> None:
             raise InterruptedError("simulated service stop")
 
-        uploader_module.finalize_staged_segment = interrupt_finalize
+        uploader_module.publish_capture_segment = interrupt_capture
         try:
             assert interrupt_uploader.process_one(interrupt_segment) is False
         finally:
-            uploader_module.finalize_staged_segment = original_finalize
+            uploader_module.publish_capture_segment = original_publish_capture
         assert interrupt_uploader.failures == 0
         assert interrupt_uploader.last_error == ""
 
@@ -358,8 +381,9 @@ def run(args: argparse.Namespace) -> None:
         )
         assert first.returncode == 2, (first.stdout, first.stderr)
         assert segment.exists(), "failed upload removed the only local recording"
-        assert (segment / f"{prefix}recording_ready.json").is_file(), "local finalization did not survive NAS failure"
-        assert b"moof" not in atoms(rgb_path), "local staged MP4 was not converted to a conventional MP4"
+        assert (segment / f"{prefix}recording_staged.json").is_file()
+        assert not (segment / f"{prefix}recording_ready.json").exists()
+        assert b"moof" in atoms(rgb_path), "NAS-first capture unexpectedly rewrote the local fMP4"
 
         nas_root.unlink()
         nas_root.mkdir()
@@ -379,7 +403,7 @@ def run(args: argparse.Namespace) -> None:
                 active_status = json.loads(status_path.read_text(encoding="utf-8"))
             if (
                 list(nas_root.rglob(".gwv3-uploading-*"))
-                and active_status.get("active_phase") == "uploading"
+                and active_status.get("active_phase") == "capturing_to_nas"
                 and int(active_status.get("active_bytes_total", 0)) > 0
             ):
                 break
@@ -419,8 +443,117 @@ def run(args: argparse.Namespace) -> None:
         )
         assert probe.returncode == 0 and float(probe.stdout) > 2.0, probe.stderr
         status = json.loads((staging_root / ".gwv3_uploader_status.json").read_text(encoding="utf-8"))
+        assert status["schema"] == "gwv3_recording_uploader_status_v2"
+        assert status["pipeline_mode"] == "nas_first_fmp4_finalize"
         assert status["pending_segments"] == 0
+        assert status["local_pending_segments"] == 0
+        assert status["nas_finalize_pending_segments"] == 0
+        assert status["publish_recovery_journals"] == 0
+        assert status["captured_segments"] == 1
         assert status["completed_segments"] == 1
+        assert not list((nas_root / ".gwv3_capture_queue").rglob("*recording_capture_ready.json"))
+        assert not list((nas_root / ".gwv3_capture_queue").rglob("*recording_ready.json"))
+
+        recovery_staging = temporary / "recovery-staging"
+        recovery_nas = temporary / "recovery-nas"
+        recovery_segment = recovery_staging / "camera-recovery" / "2026-07-24" / "130000"
+        shutil.copytree(interrupt_segment, recovery_segment)
+        recovery_marker_path = next(recovery_segment.glob("*recording_staged.json"))
+        recovery_marker = json.loads(recovery_marker_path.read_text(encoding="ascii"))
+        recovery_marker["relative_path"] = "camera-recovery/2026-07-24/130000"
+        recovery_marker_path.write_text(json.dumps(recovery_marker), encoding="ascii")
+        recovery_nas.mkdir()
+        recovery_config_path = temporary / "recovery-receiver.json"
+        recovery_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(recovery_nas),
+                    "ffmpeg_path": ffmpeg,
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(recovery_staging),
+                        "delete_after_upload": True,
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        recovery_uploader = uploader_module.Uploader(recovery_config_path)
+        original_finalize_capture = uploader_module.finalize_captured_segment
+
+        def fail_nas_finalize(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("simulated NAS-side remux failure")
+
+        uploader_module.finalize_captured_segment = fail_nas_finalize
+        try:
+            assert recovery_uploader.run_once() is True
+        finally:
+            uploader_module.finalize_captured_segment = original_finalize_capture
+        assert not recovery_segment.exists(), "durable NAS capture did not release local staging"
+        recovery_captures = uploader_module.discover_capture_segments(
+            recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
+        )
+        assert len(recovery_captures) == 1
+        captured_rgb = recovery_captures[0] / f"{prefix}rgb.mp4"
+        assert b"moof" in atoms(captured_rgb), "failed NAS finalize destroyed the captured fMP4"
+        assert recovery_uploader.failures == 1
+
+        original_final_publish = uploader_module.publish_finalized_capture
+
+        def interrupt_final_publish(*_args: object, **_kwargs: object) -> None:
+            raise InterruptedError("simulated stop after NAS remux")
+
+        uploader_module.publish_finalized_capture = interrupt_final_publish
+        try:
+            assert recovery_uploader.process_capture_one(recovery_captures[0]) is False
+        finally:
+            uploader_module.publish_finalized_capture = original_final_publish
+        assert list(recovery_captures[0].glob("*recording_nas_finalized.json"))
+        assert not list(recovery_captures[0].glob("*recording_ready.json"))
+        assert not (recovery_captures[0] / ".gwv3_uploader.lock").exists()
+        assert not list(
+            (recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY).glob(".gwv3-lock-*")
+        )
+        assert b"moof" not in atoms(captured_rgb), "NAS remux did not finish before final publish interruption"
+
+        recovered_destination = recovery_nas / "camera-recovery" / "2026-07-24" / "130000"
+        original_recover_publish = uploader_module.recover_publish_journal
+
+        def interrupt_after_directory_move(*_args: object, **_kwargs: object) -> None:
+            raise InterruptedError("simulated stop after final directory move")
+
+        uploader_module.recover_publish_journal = interrupt_after_directory_move
+        try:
+            assert recovery_uploader.process_capture_one(recovery_captures[0]) is False
+        finally:
+            uploader_module.recover_publish_journal = original_recover_publish
+        assert not recovery_captures[0].exists()
+        assert recovered_destination.is_dir()
+        assert not (recovered_destination / f"{prefix}recording_ready.json").exists()
+        assert (recovered_destination / f"{prefix}recording_ready.json.pending").is_file()
+        assert not list(
+            (recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY).glob(".gwv3-lock-*")
+        )
+        assert list(
+            (recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY).glob(
+                uploader_module.PUBLISH_JOURNAL_PREFIX
+                + "*"
+                + uploader_module.PUBLISH_JOURNAL_SUFFIX
+            )
+        )
+
+        assert recovery_uploader.run_once() is True
+        assert (recovered_destination / f"{prefix}recording_ready.json").is_file()
+        assert b"moof" not in atoms(recovered_destination / f"{prefix}rgb.mp4")
+        assert not (recovered_destination / f"{prefix}recording_ready.json.pending").exists()
+        assert not (recovered_destination / ".gwv3_publish_incomplete.json").exists()
+        assert not uploader_module.discover_capture_segments(
+            recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
+        )
+        assert not uploader_module.discover_publish_journals(
+            recovery_nas / uploader_module.CAPTURE_QUEUE_DIRECTORY
+        )
 
         unsafe_segment = staging_root / "camera-unsafe" / "2026-07-21" / "120100"
         unsafe_segment.mkdir(parents=True)

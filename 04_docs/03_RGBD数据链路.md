@@ -142,7 +142,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 <recording_staging.root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
 ```
 
-本地分片完成后，独立上传器使用相同相对路径原子发布到 `<nas_root>`。下游只能读取带 ready 标记的 NAS 最终目录。
+本地分片完成后，独立上传器先复制到 `<nas_root>/.gwv3_capture_queue/`。NAS 已持久化 capture 后可删除本地副本，再在后台无损重封装普通 MP4，并使用相同相对路径发布最终目录。下游只能读取带正式 ready 标记的 NAS 最终目录，不能扫描隐藏 capture queue。
 
 默认 `storage_key` 是：
 
@@ -156,7 +156,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 | 文件 | 当前作用 |
 | --- | --- |
-| `rgb.mp4` | RGB 正式视频文件；本地录制为 fragmented MP4，上传器无损转换为普通可拖动 MP4后发布到 NAS |
+| `rgb.mp4` | RGB 正式视频文件；本地与 NAS capture 阶段为 fragmented MP4，后台无损转换为普通可拖动 MP4 后发布 |
 | `depth.mkv` | Depth 正式文件，FFV1 封装 `uint16` 深度帧 |
 | `frames.csv` | 每个媒体包和录制帧的帧号、时间戳、诊断字段和 RGB 视频帧索引 |
 | `meta.json` | 录制段元信息、实际帧率、文件名、帧数和状态 |
@@ -166,6 +166,8 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 | `depth_debug.raw` | Depth 调试旁路，仅配置开启时保留 |
 | `recording_staged.json` | 本地媒体和索引已关闭，等待 uploader 处理 |
 | `recording_ready.json` | NAS 最终目录已完整发布，可供下游使用 |
+
+NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。只有最终目录中的 `recording_ready.json` 表示普通 MP4 已可交付。
 
 ## 10. `frames.csv` 的关键字段
 
