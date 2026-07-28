@@ -63,4 +63,16 @@ if(BUILD_TESTING)
                 --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
     )
     set_tests_properties(receiver_staging_pipeline_integration PROPERTIES TIMEOUT 90)
+    add_test(
+        NAME photo_uploader_fault_injection
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_photo_uploader.py
+                --uploader ${CMAKE_SOURCE_DIR}/05_tools/photo_uploader.py
+    )
+    set_tests_properties(photo_uploader_fault_injection PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME voice_photo_pipeline_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_photo_pipeline.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+    )
+    set_tests_properties(voice_photo_pipeline_integration PROPERTIES TIMEOUT 30)
 endif()

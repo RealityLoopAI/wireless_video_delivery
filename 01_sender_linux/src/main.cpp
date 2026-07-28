@@ -86,6 +86,11 @@ constexpr uint64_t kRgbPtsMatchToleranceUs = 2000;
 constexpr uint64_t kRgbEncoderOutputLagResetUs = 500000;
 constexpr auto kWebRgbPreviewSuppressAfterEncoderLag = std::chrono::seconds(10);
 constexpr auto kGracefulQueueDrainTimeout = std::chrono::seconds(10);
+constexpr size_t kRgbSnapshotQueueMaxItems = 64;
+constexpr size_t kRgbSnapshotQueueMaxBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kRgbSnapshotMaxPendingPerCamera = 16;
+constexpr auto kRgbSnapshotRetryInterval = std::chrono::seconds(1);
+constexpr auto kRgbSnapshotRequestTimeout = std::chrono::seconds(30);
 
 const char *stream_type_name(StreamType stream_type) {
     switch(stream_type) {
@@ -95,6 +100,8 @@ const char *stream_type_name(StreamType stream_type) {
         return "rgb_preview";
     case StreamType::depth_raw:
         return "depth";
+    case StreamType::rgb_snapshot:
+        return "rgb_snapshot";
     }
     return "unknown";
 }
@@ -250,7 +257,21 @@ struct RgbEncodeTiming {
     uint64_t packet_queued_timestamp_us = 0;
 };
 
+struct RgbSnapshotRequest {
+    std::string request_id;
+    std::string camera_id;
+    std::string result_path;
+    std::string trigger;
+    uint64_t requested_at_unix_us = 0;
+};
+
+struct PendingRgbSnapshot {
+    RgbSnapshotRequest request;
+    std::chrono::steady_clock::time_point queued_at;
+};
+
 class V4L2MjpegCapture;
+class ReliableSnapshotQueue;
 
 struct CameraRuntime {
     mutable std::mutex mutex;
@@ -338,6 +359,9 @@ struct CameraRuntime {
     uint64_t latest_rgb_system_timestamp_us = 0;
     std::deque<RgbPreviewFrame> rgb_preview_queue;
     std::deque<RgbEncodeTiming> rgb_encode_timings;
+    std::deque<RgbSnapshotRequest> rgb_snapshot_requests;
+    std::map<std::string, PendingRgbSnapshot> pending_rgb_snapshots;
+    ReliableSnapshotQueue *rgb_snapshot_queue = nullptr;
     CameraRuntime *depth_remap_target = nullptr;
     CameraPerfStats perf;
     CameraLiveStats live;
@@ -360,6 +384,115 @@ struct MediaPacketJob {
     }
 
     size_t total_size() const { return header.size() + (owned_payload.empty() ? external_payload_size : owned_payload.size()); }
+};
+
+struct ReliableSnapshotJob {
+    MediaPacketJob media;
+    std::string request_id;
+    std::chrono::steady_clock::time_point first_queued_at = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_attempt_at = std::chrono::steady_clock::now();
+    uint32_t attempts = 0;
+};
+
+class ReliableSnapshotQueue {
+public:
+    bool publish(ReliableSnapshotJob job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(stopping_ || jobs_.size() >= kRgbSnapshotQueueMaxItems) {
+            return false;
+        }
+        const size_t job_bytes = job.media.total_size();
+        if(job_bytes == 0 || job_bytes > kRgbSnapshotQueueMaxBytes || bytes_ > kRgbSnapshotQueueMaxBytes - job_bytes) {
+            return false;
+        }
+        cancelled_.erase(job.request_id);
+        bytes_ += job_bytes;
+        jobs_.push_back(std::move(job));
+        cv_.notify_one();
+        return true;
+    }
+
+    std::optional<ReliableSnapshotJob> wait_pop(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for(;;) {
+            discard_cancelled_locked();
+            if(stopping_) {
+                return std::nullopt;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            auto ready = std::find_if(jobs_.begin(), jobs_.end(), [&](const auto &job) {
+                return job.next_attempt_at <= now;
+            });
+            if(ready != jobs_.end()) {
+                auto job = std::move(*ready);
+                bytes_ -= std::min(bytes_, job.media.total_size());
+                jobs_.erase(ready);
+                return job;
+            }
+            auto wake_at = deadline;
+            for(const auto &job : jobs_) {
+                wake_at = std::min(wake_at, job.next_attempt_at);
+            }
+            if(cv_.wait_until(lock, wake_at) == std::cv_status::timeout
+               && std::chrono::steady_clock::now() >= deadline) {
+                return std::nullopt;
+            }
+        }
+    }
+
+    bool requeue(ReliableSnapshotJob job, std::chrono::steady_clock::time_point next_attempt_at) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(stopping_ || cancelled_.count(job.request_id) != 0) {
+            cancelled_.erase(job.request_id);
+            return false;
+        }
+        const size_t job_bytes = job.media.total_size();
+        if(jobs_.size() >= kRgbSnapshotQueueMaxItems || job_bytes > kRgbSnapshotQueueMaxBytes
+           || bytes_ > kRgbSnapshotQueueMaxBytes - job_bytes) {
+            return false;
+        }
+        job.next_attempt_at = next_attempt_at;
+        bytes_ += job_bytes;
+        jobs_.push_back(std::move(job));
+        cv_.notify_one();
+        return true;
+    }
+
+    void cancel(const std::string &request_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_.insert(request_id);
+        discard_cancelled_locked();
+        cv_.notify_all();
+    }
+
+    void stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+        jobs_.clear();
+        bytes_ = 0;
+        cv_.notify_all();
+    }
+
+private:
+    void discard_cancelled_locked() {
+        for(auto it = jobs_.begin(); it != jobs_.end();) {
+            if(cancelled_.count(it->request_id) == 0) {
+                ++it;
+                continue;
+            }
+            bytes_ -= std::min(bytes_, it->media.total_size());
+            cancelled_.erase(it->request_id);
+            it = jobs_.erase(it);
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<ReliableSnapshotJob> jobs_;
+    std::set<std::string> cancelled_;
+    size_t bytes_ = 0;
+    bool stopping_ = false;
 };
 
 class LatestMediaQueue {
@@ -673,6 +806,20 @@ bool json_bool_or(const Json::Value &value, const char *key, bool fallback) {
 
 int json_int_or(const Json::Value &value, const char *key, int fallback) {
     return value.isMember(key) && value[key].isInt() ? value[key].asInt() : fallback;
+}
+
+uint64_t json_uint64_or(const Json::Value &value, const char *key, uint64_t fallback) {
+    if(!value.isMember(key)) {
+        return fallback;
+    }
+    const auto &item = value[key];
+    if(item.isUInt64()) {
+        return item.asUInt64();
+    }
+    if(item.isInt64() && item.asInt64() >= 0) {
+        return static_cast<uint64_t>(item.asInt64());
+    }
+    return fallback;
 }
 
 double elapsed_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point ended) {
@@ -3998,6 +4145,262 @@ void draw_rgb_preview_overlay(cv::Mat &panel, const std::string &label, const Rg
     put_text_with_outline(panel, delta_line.str(), cv::Point(12, 80), 0.52, delta_color);
 }
 
+std::filesystem::path default_rgb_snapshot_request_dir() {
+    const char *value = std::getenv("GEMINI_RGB_SNAPSHOT_REQUEST_DIR");
+    return value && *value ? std::filesystem::path(value) : std::filesystem::path("/tmp/gemini_rgb_snapshot_requests");
+}
+
+std::filesystem::path default_rgb_snapshot_result_dir() {
+    const char *value = std::getenv("GEMINI_RGB_SNAPSHOT_RESULT_DIR");
+    return value && *value ? std::filesystem::path(value) : std::filesystem::path("/tmp/gemini_rgb_snapshot_results");
+}
+
+bool is_safe_rgb_snapshot_request_id(const std::string &value) {
+    return !value.empty() && value.size() <= 96
+           && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                  return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+              });
+}
+
+std::filesystem::path safe_rgb_snapshot_result_path(const std::string &request_id, const std::string &requested_path) {
+    const auto result_dir = default_rgb_snapshot_result_dir().lexically_normal();
+    const auto fallback = result_dir / (request_id + ".json");
+    if(requested_path.empty()) {
+        return fallback;
+    }
+    const auto candidate = std::filesystem::path(requested_path).lexically_normal();
+    if(candidate.filename() != request_id + ".json" || candidate.parent_path() != result_dir) {
+        return fallback;
+    }
+    return candidate;
+}
+
+void write_rgb_snapshot_result(const AppConfig &config,
+                               const std::string &camera_id,
+                               const RgbSnapshotRequest &request,
+                               bool ok,
+                               const std::string &status,
+                               const std::string &image_path,
+                               const std::string &error,
+                               Logger &logger) {
+    if(request.result_path.empty()) {
+        return;
+    }
+
+    Json::Value root(Json::objectValue);
+    root["message_type"] = "rgb_snapshot_result";
+    root["request_id"] = request.request_id;
+    root["sender_id"] = config.sender_id;
+    root["camera_id"] = camera_id;
+    root["ok"] = ok;
+    root["status"] = status;
+    root["image_path"] = image_path;
+    root["error"] = error;
+    root["trigger"] = request.trigger;
+    root["requested_at_unix_us"] = Json::UInt64(request.requested_at_unix_us);
+    root["completed_at_unix_us"] = Json::UInt64(now_us());
+
+    const std::filesystem::path result_path = request.result_path;
+    std::error_code ec;
+    std::filesystem::create_directories(result_path.parent_path(), ec);
+    if(ec) {
+        logger.warn("rgb snapshot result directory create failed path=" + result_path.parent_path().string()
+                    + " error=" + ec.message());
+        return;
+    }
+
+    const auto temporary = result_path.string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::out | std::ios::trunc);
+        if(!output) {
+            logger.warn("rgb snapshot result write failed path=" + temporary);
+            return;
+        }
+        output << json_to_string(root) << '\n';
+        output.flush();
+        if(!output) {
+            logger.warn("rgb snapshot result flush failed path=" + temporary);
+            return;
+        }
+    }
+    std::filesystem::rename(temporary, result_path, ec);
+    if(ec) {
+        logger.warn("rgb snapshot result rename failed path=" + result_path.string() + " error=" + ec.message());
+        std::filesystem::remove(temporary, ec);
+    }
+}
+
+void remove_file_quietly(const std::filesystem::path &path) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+CameraRuntime *choose_rgb_snapshot_camera(const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                                          const std::string &camera_id) {
+    if(!camera_id.empty() && camera_id != "*") {
+        for(const auto &camera : cameras) {
+            if(camera && camera->config.camera_id == camera_id) {
+                return camera.get();
+            }
+        }
+        return nullptr;
+    }
+    for(const auto &camera : cameras) {
+        if(camera && camera->config.camera_id == "cam01") {
+            return camera.get();
+        }
+    }
+    return cameras.empty() ? nullptr : cameras.front().get();
+}
+
+void process_rgb_snapshot_request_file(const AppConfig &config,
+                                       const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                                       Logger &logger,
+                                       const std::filesystem::path &path) {
+    const auto root = parse_json_object(read_text_file(path));
+    if(!root) {
+        logger.warn("rgb snapshot request ignored invalid_json path=" + path.string());
+        remove_file_quietly(path);
+        return;
+    }
+    const std::string message_type = json_string_or(*root, "message_type");
+    if(!message_type.empty() && message_type != "rgb_snapshot_request" && message_type != "snapshot_request") {
+        logger.warn("rgb snapshot request ignored unknown_type path=" + path.string() + " message_type=" + message_type);
+        remove_file_quietly(path);
+        return;
+    }
+    const std::string target_sender = json_string_or(*root, "sender_id");
+    if(!target_sender.empty() && target_sender != "*" && target_sender != config.sender_id) {
+        remove_file_quietly(path);
+        return;
+    }
+
+    RgbSnapshotRequest request;
+    request.request_id = json_string_or(*root, "request_id", path.stem().string());
+    request.camera_id = json_string_or(*root, "camera_id", "cam01");
+    request.trigger = json_string_or(*root, "trigger", "local_request");
+    request.requested_at_unix_us = json_uint64_or(*root, "requested_at_unix_us", now_us());
+    if(!is_safe_rgb_snapshot_request_id(request.request_id)) {
+        logger.warn("rgb snapshot request ignored invalid request_id path=" + path.string());
+        remove_file_quietly(path);
+        return;
+    }
+    request.result_path =
+        safe_rgb_snapshot_result_path(request.request_id, json_string_or(*root, "result_path")).string();
+
+    CameraRuntime *camera = choose_rgb_snapshot_camera(cameras, request.camera_id);
+    if(camera == nullptr) {
+        logger.warn("rgb snapshot request matched no camera request_id=" + request.request_id
+                    + " camera_id=" + request.camera_id);
+        write_rgb_snapshot_result(config, request.camera_id, request, false, "error", "",
+                                  "snapshot request matched no camera", logger);
+        remove_file_quietly(path);
+        return;
+    }
+
+    bool queued = false;
+    std::string queue_error;
+    {
+        std::lock_guard<std::mutex> lock(camera->mutex);
+        const bool duplicate = camera->pending_rgb_snapshots.count(request.request_id) != 0
+                               || std::any_of(camera->rgb_snapshot_requests.begin(), camera->rgb_snapshot_requests.end(),
+                                              [&](const auto &item) { return item.request_id == request.request_id; });
+        if(duplicate) {
+            remove_file_quietly(path);
+            return;
+        }
+        else if(camera->rgb_snapshot_requests.size() + camera->pending_rgb_snapshots.size()
+                >= kRgbSnapshotMaxPendingPerCamera) {
+            queue_error = "snapshot request queue is full";
+        }
+        else {
+            request.camera_id = camera->config.camera_id;
+            camera->rgb_snapshot_requests.push_back(request);
+            queued = true;
+        }
+    }
+    if(queued) {
+        logger.info("rgb snapshot request queued request_id=" + request.request_id
+                    + " camera_id=" + camera->config.camera_id);
+    }
+    else {
+        logger.warn("rgb snapshot request rejected request_id=" + request.request_id + " error=" + queue_error);
+        write_rgb_snapshot_result(config, camera->config.camera_id, request, false, "error", "", queue_error, logger);
+    }
+    remove_file_quietly(path);
+}
+
+void poll_rgb_snapshot_requests(const AppConfig &config,
+                                const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                                Logger &logger,
+                                std::chrono::steady_clock::time_point now,
+                                std::chrono::steady_clock::time_point &next_poll) {
+    if(now < next_poll) {
+        return;
+    }
+    next_poll = now + std::chrono::milliseconds(100);
+
+    const auto request_dir = default_rgb_snapshot_request_dir();
+    std::error_code ec;
+    std::filesystem::create_directories(request_dir, ec);
+    if(ec) {
+        logger.warn("rgb snapshot request directory unavailable path=" + request_dir.string() + " error=" + ec.message());
+        return;
+    }
+    std::filesystem::directory_iterator it(request_dir, ec);
+    if(ec) {
+        logger.warn("rgb snapshot request directory scan failed path=" + request_dir.string() + " error=" + ec.message());
+        return;
+    }
+    size_t processed = 0;
+    for(const std::filesystem::directory_iterator end; it != end && processed < 16; it.increment(ec)) {
+        if(ec) {
+            logger.warn("rgb snapshot request directory iteration failed path=" + request_dir.string()
+                        + " error=" + ec.message());
+            return;
+        }
+        if(!it->is_regular_file(ec) || it->path().extension() != ".json") {
+            continue;
+        }
+        process_rgb_snapshot_request_file(config, cameras, logger, it->path());
+        ++processed;
+    }
+}
+
+void expire_rgb_snapshot_requests(const AppConfig &config,
+                                  const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
+                                  Logger &logger,
+                                  std::chrono::steady_clock::time_point now) {
+    for(const auto &camera : cameras) {
+        if(!camera) {
+            continue;
+        }
+        std::vector<RgbSnapshotRequest> expired;
+        ReliableSnapshotQueue *queue = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(camera->mutex);
+            queue = camera->rgb_snapshot_queue;
+            for(auto it = camera->pending_rgb_snapshots.begin(); it != camera->pending_rgb_snapshots.end();) {
+                if(now - it->second.queued_at < kRgbSnapshotRequestTimeout) {
+                    ++it;
+                    continue;
+                }
+                expired.push_back(it->second.request);
+                it = camera->pending_rgb_snapshots.erase(it);
+            }
+        }
+        for(const auto &request : expired) {
+            if(queue) {
+                queue->cancel(request.request_id);
+            }
+            logger.warn("rgb snapshot request timed out request_id=" + request.request_id
+                        + " camera_id=" + camera->config.camera_id);
+            write_rgb_snapshot_result(config, camera->config.camera_id, request, false, "timeout", "",
+                                      "receiver capture acknowledgement timeout", logger);
+        }
+    }
+}
+
 CameraRuntime *find_camera_by_id(const std::vector<std::unique_ptr<CameraRuntime>> &cameras, const std::string &camera_id) {
     for(const auto &camera : cameras) {
         if(camera && camera->config.camera_id == camera_id) {
@@ -4054,6 +4457,44 @@ void handle_receiver_control_message(const AppConfig &config,
     const std::string target_camera = json_string_or(*root, "camera_id");
     const std::string reason = json_string_or(*root, "reason");
     if(!target_sender.empty() && target_sender != "*" && target_sender != config.sender_id) {
+        return;
+    }
+
+    if(control == "rgb_snapshot_result") {
+        const std::string request_id = json_string_or(*root, "request_id");
+        if(!is_safe_rgb_snapshot_request_id(request_id)) {
+            return;
+        }
+        const bool ok = json_bool_or(*root, "ok", false);
+        const std::string status = json_string_or(*root, "status", ok ? "captured" : "error");
+        const std::string image_path = json_string_or(*root, "image_path");
+        const std::string error = json_string_or(*root, "error");
+        for(const auto &camera : cameras) {
+            if(!camera || (!target_camera.empty() && target_camera != "*" && camera->config.camera_id != target_camera)) {
+                continue;
+            }
+            std::optional<RgbSnapshotRequest> request;
+            ReliableSnapshotQueue *queue = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(camera->mutex);
+                const auto pending = camera->pending_rgb_snapshots.find(request_id);
+                if(pending == camera->pending_rgb_snapshots.end()) {
+                    continue;
+                }
+                request = pending->second.request;
+                camera->pending_rgb_snapshots.erase(pending);
+                queue = camera->rgb_snapshot_queue;
+            }
+            if(queue) {
+                queue->cancel(request_id);
+            }
+            logger.info("rgb snapshot result received request_id=" + request_id
+                        + " camera_id=" + camera->config.camera_id
+                        + " status=" + status
+                        + " ok=" + (ok ? "true" : "false"));
+            write_rgb_snapshot_result(config, camera->config.camera_id, *request, ok, status, image_path, error, logger);
+            return;
+        }
         return;
     }
 
@@ -4612,6 +5053,106 @@ MediaPacketJob make_external_media_job(CameraRuntime &camera, StreamType stream_
     return job;
 }
 
+std::optional<RgbSnapshotRequest> take_next_rgb_snapshot_request(CameraRuntime &camera) {
+    std::lock_guard<std::mutex> lock(camera.mutex);
+    if(camera.rgb_snapshot_requests.empty()) {
+        return std::nullopt;
+    }
+    RgbSnapshotRequest request = std::move(camera.rgb_snapshot_requests.front());
+    camera.rgb_snapshot_requests.pop_front();
+    return request;
+}
+
+void reject_next_rgb_snapshot_request(const AppConfig &config, CameraRuntime &camera, const std::string &error, Logger &logger) {
+    auto request = take_next_rgb_snapshot_request(camera);
+    if(!request) {
+        return;
+    }
+    logger.warn("rgb snapshot request failed request_id=" + request->request_id
+                + " camera_id=" + camera.config.camera_id + " error=" + error);
+    write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
+}
+
+void publish_rgb_snapshot_frame(const AppConfig &config,
+                                CameraRuntime &camera,
+                                const uint8_t *jpeg_data,
+                                size_t jpeg_size,
+                                const RgbEncodeTiming &timing,
+                                Logger &logger) {
+    auto request = take_next_rgb_snapshot_request(camera);
+    if(!request) {
+        return;
+    }
+    if(jpeg_data == nullptr || jpeg_size < 4 || !mjpg_has_complete_jpeg_data(jpeg_data, jpeg_size)) {
+        const std::string error = "captured RGB frame is not a complete MJPEG image";
+        logger.warn("rgb snapshot request failed request_id=" + request->request_id
+                    + " camera_id=" + camera.config.camera_id + " error=" + error);
+        write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
+        return;
+    }
+
+    ReliableSnapshotQueue *queue = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        queue = camera.rgb_snapshot_queue;
+        if(queue) {
+            camera.pending_rgb_snapshots.emplace(
+                request->request_id, PendingRgbSnapshot{*request, std::chrono::steady_clock::now()});
+        }
+    }
+    if(queue == nullptr) {
+        write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "",
+                                  "snapshot media transport is unavailable", logger);
+        return;
+    }
+
+    MediaFrameMeta meta;
+    meta.stream_type = StreamType::rgb_snapshot;
+    meta.flags = has_system_timestamp | has_rgb_diagnostics | has_pipeline_diagnostics;
+    meta.sender_id = config.sender_id;
+    meta.camera_id = camera.config.camera_id;
+    meta.codec_or_compression = std::string(kRgbSnapshotCodecPrefix) + request->request_id;
+    meta.frame_id = timing.frame_id;
+    meta.timestamp_us = timing.device_timestamp_us;
+    meta.system_timestamp_us = timing.system_timestamp_us;
+    meta.pair_id = timing.pair_id;
+    meta.width = timing.width;
+    meta.height = timing.height;
+    meta.pixel_format = PixelFormat::encoded_video;
+    meta.payload_size = jpeg_size;
+    meta.uncompressed_size = jpeg_size;
+    meta.rgb_exposure_us = timing.diagnostics.exposure_us;
+    meta.rgb_gain = timing.diagnostics.gain;
+    meta.rgb_auto_exposure = timing.diagnostics.auto_exposure;
+    meta.rgb_actual_fps = timing.diagnostics.actual_fps;
+    meta.sender_capture_host_timestamp_us = timing.capture_host_timestamp_us;
+    meta.sender_timing_bound_timestamp_us = timing.timing_bound_timestamp_us;
+    meta.sender_packet_queued_timestamp_us = now_us();
+
+    std::vector<uint8_t> jpeg(jpeg_data, jpeg_data + jpeg_size);
+    ReliableSnapshotJob job;
+    job.media = make_owned_media_job(camera, StreamType::rgb_snapshot, meta, std::move(jpeg));
+    job.request_id = request->request_id;
+    job.first_queued_at = std::chrono::steady_clock::now();
+    job.next_attempt_at = job.first_queued_at;
+    if(!queue->publish(std::move(job))) {
+        {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            camera.pending_rgb_snapshots.erase(request->request_id);
+        }
+        const std::string error = "snapshot reliable media queue is full";
+        logger.warn("rgb snapshot request failed request_id=" + request->request_id
+                    + " camera_id=" + camera.config.camera_id + " error=" + error);
+        write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
+        return;
+    }
+    logger.info("rgb snapshot frame queued request_id=" + request->request_id
+                + " camera_id=" + camera.config.camera_id
+                + " frame_id=" + std::to_string(timing.frame_id)
+                + " system_timestamp_us=" + std::to_string(timing.system_timestamp_us)
+                + " jpeg_bytes=" + std::to_string(jpeg_size));
+}
+
 bool publish_media_job(LatestMediaQueue &media_queue, size_t slot_index, CameraRuntime &camera, StreamType stream_type,
                        MediaPacketJob &&job, Logger &logger, bool reject_if_occupied = false, bool packet_is_keyframe = false) {
     const auto result = media_queue.publish(slot_index, std::move(job), reject_if_occupied);
@@ -4807,6 +5348,83 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
                 retry_job = std::move(*job);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
+        }
+    }
+}
+
+void fail_pending_rgb_snapshot(const AppConfig &config,
+                               CameraRuntime &camera,
+                               const std::string &request_id,
+                               const std::string &error,
+                               Logger &logger) {
+    std::optional<RgbSnapshotRequest> request;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        const auto pending = camera.pending_rgb_snapshots.find(request_id);
+        if(pending == camera.pending_rgb_snapshots.end()) {
+            return;
+        }
+        request = pending->second.request;
+        camera.pending_rgb_snapshots.erase(pending);
+    }
+    logger.warn("rgb snapshot transport failed request_id=" + request_id
+                + " camera_id=" + camera.config.camera_id + " error=" + error);
+    write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
+}
+
+template <typename Sender>
+void rgb_snapshot_sender_loop(const AppConfig &config,
+                              ReliableSnapshotQueue &queue,
+                              Sender &transport,
+                              Logger &logger,
+                              std::atomic<bool> &running) {
+    while(running.load() && g_running.load()) {
+        auto job = queue.wait_pop(std::chrono::milliseconds(100));
+        if(!job) {
+            continue;
+        }
+        if(!job->media.camera) {
+            continue;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if(now - job->first_queued_at >= kRgbSnapshotRequestTimeout) {
+            fail_pending_rgb_snapshot(config, *job->media.camera, job->request_id,
+                                      "receiver capture acknowledgement timeout", logger);
+            continue;
+        }
+
+        bool sent = false;
+        std::string error;
+        try {
+            sent = transport.send_media(job->media.view());
+            if(!sent) {
+                error = transport.last_error();
+            }
+        }
+        catch(const std::exception &e) {
+            error = e.what();
+        }
+        catch(...) {
+            error = "unknown snapshot media transport exception";
+        }
+        ++job->attempts;
+        if(sent && job->attempts == 1) {
+            logger.info("rgb snapshot media sent request_id=" + job->request_id
+                        + " camera_id=" + job->media.camera->config.camera_id
+                        + " bytes=" + std::to_string(job->media.total_size()));
+        }
+        else if(!sent && (job->attempts <= 3 || job->attempts % 10 == 0)) {
+            logger.warn("rgb snapshot media retry request_id=" + job->request_id
+                        + " camera_id=" + job->media.camera->config.camera_id
+                        + " attempt=" + std::to_string(job->attempts)
+                        + " error=" + (error.empty() ? "send failed" : error));
+        }
+
+        CameraRuntime *camera = job->media.camera;
+        const std::string request_id = job->request_id;
+        if(!queue.requeue(std::move(*job), std::chrono::steady_clock::now() + kRgbSnapshotRetryInterval)
+           && running.load() && g_running.load()) {
+            fail_pending_rgb_snapshot(config, *camera, request_id, "snapshot retry queue unavailable", logger);
         }
     }
 }
@@ -5072,6 +5690,7 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
 
             cv::Mat bgr;
             if(rgb_usable) {
+                publish_rgb_snapshot_frame(config, camera, frame.data, frame.size, rgb_capture_timing, logger);
                 if(preview_due) {
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = mjpg_buffer_to_bgr(frame.data, frame.size, cv::IMREAD_REDUCED_COLOR_2);
@@ -5430,6 +6049,14 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             }
 
             if(rgb_usable) {
+                if(color_is_mjpg) {
+                    publish_rgb_snapshot_frame(config, camera, static_cast<const uint8_t *>(color->data()), color->dataSize(),
+                                               rgb_capture_timing, logger);
+                }
+                else {
+                    reject_next_rgb_snapshot_request(config, camera,
+                                                     "configured RGB profile does not provide original MJPEG frames", logger);
+                }
                 if(color_is_mjpg && preview_due) {
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = color_to_preview_bgr(color);
@@ -6043,6 +6670,7 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
                           std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> &rgb_media_paths,
                           std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> &depth_media_paths,
                           LatestMediaQueue &preview_media_queue, LatestDepthCompressionQueue &depth_compression_queue,
+                          ReliableSnapshotQueue &rgb_snapshot_queue,
                           MakeMediaSender &make_media_sender, StatusSender &transport, Logger &logger,
                           std::mutex &transport_mutex, std::chrono::milliseconds preview_interval,
                           int &next_hotplug_camera_number, std::vector<HotplugRetryCooldown> &retry_cooldowns,
@@ -6088,6 +6716,7 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
         runtime->config = make_hotplug_camera_config(config, identity, camera_id);
         runtime->hotplug_dynamic = true;
         runtime->reconnect_enabled = false;
+        runtime->rgb_snapshot_queue = &rgb_snapshot_queue;
 
         try {
             start_camera_runtime(*runtime, logger);
@@ -6194,6 +6823,25 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     }
     auto cameras = start_cameras(config, logger);
     configure_depth_remap_targets(config, cameras, logger);
+    ReliableSnapshotQueue rgb_snapshot_queue;
+    for(auto &camera : cameras) {
+        camera->rgb_snapshot_queue = &rgb_snapshot_queue;
+    }
+    auto rgb_snapshot_transport = make_media_sender();
+    std::atomic<bool> rgb_snapshot_sender_running{true};
+    std::thread rgb_snapshot_sender_thread([&] {
+        try {
+            rgb_snapshot_sender_loop(config, rgb_snapshot_queue, *rgb_snapshot_transport, logger,
+                                     rgb_snapshot_sender_running);
+        }
+        catch(const std::exception &e) {
+            logger.warn(std::string("rgb snapshot sender stopped unexpectedly: ") + e.what());
+        }
+        catch(...) {
+            logger.warn("rgb snapshot sender stopped unexpectedly: unknown exception");
+        }
+    });
+    ThreadJoinGuard rgb_snapshot_sender_thread_guard(rgb_snapshot_sender_thread);
     std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> rgb_media_paths;
     std::vector<std::unique_ptr<MediaSenderPath<MediaSender>>> depth_media_paths;
     rgb_media_paths.reserve(cameras.size());
@@ -6304,6 +6952,8 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     auto next_preview = std::chrono::steady_clock::now();
     auto next_hotplug_scan = std::chrono::steady_clock::now() + kHotplugScanInterval;
     auto next_hotplug_limit_event = std::chrono::steady_clock::now();
+    auto next_rgb_snapshot_poll = std::chrono::steady_clock::now();
+    auto next_rgb_snapshot_expiry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     int next_hotplug_camera_number = initial_hotplug_camera_number(config);
     std::vector<HotplugRetryCooldown> hotplug_retry_cooldowns;
     if(!config.hotplug.enabled) {
@@ -6314,6 +6964,11 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
         const auto now = std::chrono::steady_clock::now();
         process_receiver_controls(status_transport, config, cameras, logger, status_transport_mutex);
+        poll_rgb_snapshot_requests(config, cameras, logger, now, next_rgb_snapshot_poll);
+        if(now >= next_rgb_snapshot_expiry) {
+            expire_rgb_snapshot_requests(config, cameras, logger, now);
+            next_rgb_snapshot_expiry = now + std::chrono::seconds(1);
+        }
         if(now >= next_heartbeat) {
             for(auto &camera : cameras) {
                 send_status_locked(status_transport, logger, status_transport_mutex,
@@ -6366,7 +7021,7 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         }
         if(config.hotplug.enabled && now >= next_hotplug_scan) {
             scan_hotplug_cameras(config, cameras, camera_threads, rgb_media_paths, depth_media_paths, preview_media_queue,
-                                 depth_compression_queue, make_media_sender, status_transport, logger, status_transport_mutex,
+                                 depth_compression_queue, rgb_snapshot_queue, make_media_sender, status_transport, logger, status_transport_mutex,
                                  preview_interval, next_hotplug_camera_number, hotplug_retry_cooldowns, next_hotplug_limit_event);
             next_hotplug_scan = now + kHotplugScanInterval;
         }
@@ -6396,6 +7051,8 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         path->running = false;
         path->queue.stop();
     }
+    rgb_snapshot_sender_running = false;
+    rgb_snapshot_queue.stop();
     preview_media_queue.stop();
     for(auto &path : rgb_media_paths) {
         if(path->thread.joinable()) {
@@ -6409,6 +7066,9 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
     }
     if(preview_media_thread.joinable()) {
         preview_media_thread.join();
+    }
+    if(rgb_snapshot_sender_thread.joinable()) {
+        rgb_snapshot_sender_thread.join();
     }
 
     for(auto &camera : cameras) {

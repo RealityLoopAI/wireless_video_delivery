@@ -1,0 +1,16 @@
+[Unit]
+Description=Xiaohuan voice wake listener
+After=sound.target pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/orangepi/Desktop/new_experiment_2026-07-02
+ExecStart=/home/orangepi/Desktop/new_experiment_2026-07-02/run_wake_service.sh
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target

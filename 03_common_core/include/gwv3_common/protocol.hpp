@@ -21,7 +21,10 @@ enum class StreamType : uint8_t {
     rgb = 1,
     depth_raw = 2,
     rgb_preview = 3,
+    rgb_snapshot = 4,
 };
+
+constexpr const char *kRgbSnapshotCodecPrefix = "mjpeg;request_id=";
 
 enum class PixelFormat : uint16_t {
     encoded_video = 1,

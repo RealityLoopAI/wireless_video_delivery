@@ -1,0 +1,9 @@
+models/*
+!models/README.md
+.venv/
+__pycache__/
+*.pyc
+wake_runtime.log*
+debug_*
+mic_card*.wav
+speaker_test_*.wav

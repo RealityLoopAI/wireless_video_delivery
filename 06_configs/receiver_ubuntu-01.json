@@ -40,6 +40,14 @@
     "pause_record_queue_oldest_age_ms": 500,
     "delete_after_upload": true
   },
+  "photo_capture": {
+    "enabled": true,
+    "staging_root": "/home/fz/recording_staging/.gwv3_photo_queue",
+    "nas_subdirectory": "voice_photos",
+    "max_jpeg_mb": 8,
+    "queue_max_items": 128,
+    "upload_interval_ms": 250
+  },
   "segment_seconds": 900,
   "recording_start_lead_ms": 1000,
   "depth_fps": 30,

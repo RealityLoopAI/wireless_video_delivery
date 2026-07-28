@@ -45,6 +45,7 @@ flowchart LR
 5. 接收端接收媒体数据和状态心跳，提供录制控制和网页预览。
 6. 录制数据写入接收端挂载的 NAS 目录。
 7. Web Monitor 用于看在线状态、实时预览、开始/停止录制和设置显示名称。
+8. d12 语音服务可按需抓取相机原始 MJPEG；receiver 本地可靠确认后异步发布到 NAS `voice_photos`。
 
 当前默认网络入口：
 
@@ -82,6 +83,7 @@ web:     HTTP 0.0.0.0:8080
 09_web_monitor/      FastAPI Web Monitor
 10_tests/            测试和模拟工具
 11_third_party/      第三方依赖放置说明
+12_apps/             独立应用实验；当前包含“小环”离线语音拍照服务
 ```
 
 ## 常用命令

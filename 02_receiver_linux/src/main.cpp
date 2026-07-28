@@ -109,7 +109,7 @@ constexpr size_t kMaxDepthCompressionChunks = 256;
 constexpr size_t kMaxDepthDecompressionWorkers = 8;
 constexpr uint32_t kMaxMediaDimension = 16384;
 constexpr size_t kMaxProtocolIdBytes = 64;
-constexpr size_t kMaxCodecNameBytes = 32;
+constexpr size_t kMaxCodecNameBytes = 128;
 constexpr uint64_t kAnnounceCacheSaveMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kRoutineStatusLogMinIntervalUs = 60ull * 1000ull * 1000ull;
 constexpr uint64_t kMaxGlobalTimestampReceiverSkewUs = 10ull * 60ull * 1000ull * 1000ull;
@@ -157,6 +157,8 @@ const char *stream_type_name(StreamType stream_type) {
         return "rgb_preview";
     case StreamType::depth_raw:
         return "depth";
+    case StreamType::rgb_snapshot:
+        return "rgb_snapshot";
     }
     return "unknown";
 }
@@ -707,6 +709,48 @@ bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &p
     return sent >= 0 && static_cast<size_t>(sent) == payload.size();
 }
 
+void fsync_directory_best_effort(const std::filesystem::path &path) {
+    const int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if(fd < 0) {
+        return;
+    }
+    while(fsync(fd) != 0 && errno == EINTR) {
+    }
+    close(fd);
+}
+
+void write_file_and_fsync(const std::filesystem::path &path, const uint8_t *data, size_t size) {
+    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+    if(fd < 0) {
+        throw std::runtime_error("cannot open staged photo file " + path.string() + ": " + std::strerror(errno));
+    }
+    ScopeExit close_file([&] { close(fd); });
+    size_t offset = 0;
+    while(offset < size) {
+        const ssize_t written = write(fd, data + offset, size - offset);
+        if(written < 0) {
+            if(errno == EINTR) {
+                continue;
+            }
+            throw std::runtime_error("cannot write staged photo file " + path.string() + ": " + std::strerror(errno));
+        }
+        if(written == 0) {
+            throw std::runtime_error("short write while staging photo " + path.string());
+        }
+        offset += static_cast<size_t>(written);
+    }
+    while(fsync(fd) != 0) {
+        if(errno == EINTR) {
+            continue;
+        }
+        throw std::runtime_error("cannot fsync staged photo file " + path.string() + ": " + std::strerror(errno));
+    }
+}
+
+void write_text_file_and_fsync(const std::filesystem::path &path, const std::string &text) {
+    write_file_and_fsync(path, reinterpret_cast<const uint8_t *>(text.data()), text.size());
+}
+
 std::string camera_key(const std::string &sender_id, const std::string &camera_id) {
     return sender_id + "_" + camera_id;
 }
@@ -725,8 +769,23 @@ bool is_valid_codec_name(const std::string &value) {
         return false;
     }
     return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
-        return std::isalnum(ch) || ch == '_' || ch == '-';
+        return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.' || ch == ';' || ch == '=';
     });
+}
+
+std::optional<std::string> rgb_snapshot_request_id(const std::string &codec) {
+    const std::string prefix = kRgbSnapshotCodecPrefix;
+    if(codec.rfind(prefix, 0) != 0) {
+        return std::nullopt;
+    }
+    const std::string request_id = codec.substr(prefix.size());
+    if(request_id.empty() || request_id.size() > 96
+       || !std::all_of(request_id.begin(), request_id.end(), [](unsigned char ch) {
+              return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+          })) {
+        return std::nullopt;
+    }
+    return request_id;
 }
 
 bool is_safe_storage_text(const std::string &value) {
@@ -1047,6 +1106,14 @@ struct Config {
         int idle_finalize_ms = 5000;
     };
 
+    struct PhotoCaptureConfig {
+        bool enabled = false;
+        std::string staging_root;
+        std::string nas_subdirectory = "voice_photos";
+        size_t max_jpeg_bytes = 8ull * 1024ull * 1024ull;
+        size_t queue_max_items = 128;
+    };
+
     std::string status_bind_ip = "0.0.0.0";
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
@@ -1063,6 +1130,7 @@ struct Config {
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
     RecordingStagingConfig recording_staging;
+    PhotoCaptureConfig photo_capture;
     std::string log_directory = "08_reports/receiver_logs";
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
@@ -1185,6 +1253,25 @@ Config load_config(const std::string &path) {
                    cfg.recording_staging.defer_player_compatible_finalize);
     cfg.recording_staging.idle_finalize_ms =
         int_value(recording_staging, "idle_finalize_ms", cfg.recording_staging.idle_finalize_ms);
+    Json::Value photo_capture(Json::objectValue);
+    if(!root["photo_capture"].isNull()) {
+        if(!root["photo_capture"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: photo_capture");
+        }
+        photo_capture = root["photo_capture"];
+    }
+    cfg.photo_capture.enabled = bool_value(photo_capture, "enabled", cfg.photo_capture.enabled);
+    cfg.photo_capture.staging_root = string_value(photo_capture, "staging_root", cfg.photo_capture.staging_root);
+    cfg.photo_capture.nas_subdirectory =
+        string_value(photo_capture, "nas_subdirectory", cfg.photo_capture.nas_subdirectory);
+    const int photo_max_jpeg_mb = int_value(photo_capture, "max_jpeg_mb", 8);
+    const int photo_queue_max_items = int_value(photo_capture, "queue_max_items", 128);
+    if(photo_max_jpeg_mb <= 0 || photo_max_jpeg_mb > 64
+       || photo_queue_max_items <= 0 || photo_queue_max_items > 4096) {
+        throw std::runtime_error("photo_capture limits are out of range");
+    }
+    cfg.photo_capture.max_jpeg_bytes = static_cast<size_t>(photo_max_jpeg_mb) * 1024ull * 1024ull;
+    cfg.photo_capture.queue_max_items = static_cast<size_t>(photo_queue_max_items);
     cfg.log_directory = string_value(root, "log_directory", cfg.log_directory);
     cfg.state_path = string_value(root, "state_path", cfg.state_path);
     cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
@@ -1229,6 +1316,12 @@ Config load_config(const std::string &path) {
     }
     if(cfg.recording_staging.idle_finalize_ms < 1000 || cfg.recording_staging.idle_finalize_ms > 300000) {
         throw std::runtime_error("recording_staging.idle_finalize_ms must be between 1000 and 300000");
+    }
+    if(cfg.photo_capture.enabled && cfg.photo_capture.staging_root.empty()) {
+        throw std::runtime_error("photo_capture.staging_root must not be empty when photo capture is enabled");
+    }
+    if(cfg.photo_capture.nas_subdirectory.empty() || !is_safe_storage_text(cfg.photo_capture.nas_subdirectory)) {
+        throw std::runtime_error("photo_capture.nas_subdirectory must be one safe directory name");
     }
     if(cfg.admin_bind_ip != "127.0.0.1") {
         throw std::runtime_error("admin_bind_ip must remain 127.0.0.1; expose only the authenticated Web proxy");
@@ -1868,7 +1961,7 @@ void validate_media_packet_metadata(const MediaPacket &packet, size_t max_payloa
         throw std::runtime_error("invalid media codec/compression name");
     }
     if(packet.stream_type != StreamType::rgb && packet.stream_type != StreamType::rgb_preview
-       && packet.stream_type != StreamType::depth_raw) {
+       && packet.stream_type != StreamType::depth_raw && packet.stream_type != StreamType::rgb_snapshot) {
         throw std::runtime_error("invalid media stream type");
     }
     if(packet.width == 0 || packet.height == 0 || packet.width > kMaxMediaDimension || packet.height > kMaxMediaDimension) {
@@ -1895,6 +1988,12 @@ void validate_media_packet_metadata(const MediaPacket &packet, size_t max_payloa
             "none", "zlib", "rvl", "qdelta", "lz4", "plz4", "pzlib", "q8lz4", "q8zlib", "pq12zlib", "pq8zlib", "pq8lz4"};
         if(supported_depth_codecs.count(packet.codec_or_compression) == 0) {
             throw std::runtime_error("unsupported depth compression");
+        }
+    }
+    else if(packet.stream_type == StreamType::rgb_snapshot) {
+        if(packet.pixel_format != PixelFormat::encoded_video || !rgb_snapshot_request_id(packet.codec_or_compression)
+           || packet.uncompressed_size != packet.payload_size) {
+            throw std::runtime_error("invalid RGB snapshot media format metadata");
         }
     }
     else {
@@ -5443,6 +5542,13 @@ public:
         bool activated = false;
     };
 
+    struct PhotoCaptureJob {
+        MediaPacket packet;
+        std::string request_id;
+        std::string status_endpoint;
+        uint64_t queued_us = 0;
+    };
+
     struct PreviewUdpAssembly {
         std::vector<uint8_t> bytes;
         std::vector<uint8_t> received;
@@ -5474,6 +5580,7 @@ public:
         preview_udp_ready_ = false;
         admin_ready_ = false;
         try {
+            start_photo_capture_worker();
             start_segment_finalize_worker();
             start_decoder_cleanup_worker();
             start_recording_maintenance_worker();
@@ -5544,6 +5651,7 @@ public:
         }
         shutdown_client_sockets();
         join_client_threads();
+        stop_photo_capture_worker();
         wait_segment_close_futures();
         std::vector<SegmentCloseTask> close_tasks;
         std::vector<std::shared_ptr<CameraState>> camera_snapshot;
@@ -5627,6 +5735,19 @@ public:
         out << "\"recording_staging_enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
         out << "\"recording_write_root\":\""
             << json_escape(config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root) << "\",";
+        {
+            std::lock_guard<std::mutex> photo_lock(photo_capture_mutex_);
+            out << "\"photo_capture\":{";
+            out << "\"enabled\":" << (config_.photo_capture.enabled ? "true" : "false") << ',';
+            out << "\"available\":" << (photo_capture_available_ ? "true" : "false") << ',';
+            out << "\"staging_root\":\"" << json_escape(config_.photo_capture.staging_root) << "\",";
+            out << "\"nas_subdirectory\":\"" << json_escape(config_.photo_capture.nas_subdirectory) << "\",";
+            out << "\"queue_items\":" << photo_capture_queue_.size() << ',';
+            out << "\"queue_bytes\":" << photo_capture_queue_bytes_ << ',';
+            out << "\"enqueued\":" << photo_capture_enqueued_.load() << ',';
+            out << "\"completed\":" << photo_capture_completed_.load() << ',';
+            out << "\"failures\":" << photo_capture_failures_.load() << "},";
+        }
         {
             std::lock_guard<std::mutex> uploader_lock(uploader_status_mutex_);
             out << "\"recording_uploader\":"
@@ -7761,6 +7882,332 @@ private:
                && (!(config_.preview_enabled && config_.preview_udp_enabled) || preview_udp_ready_);
     }
 
+    static bool is_safe_photo_relative_path(const std::filesystem::path &path) {
+        if(path.empty() || path.is_absolute()) {
+            return false;
+        }
+        for(const auto &part : path) {
+            const auto text = part.string();
+            if(text.empty() || !is_safe_storage_text(text)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void start_photo_capture_worker() {
+        if(!config_.photo_capture.enabled) {
+            logger_.info("receiver photo capture disabled by config");
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(config_.photo_capture.staging_root, ec);
+        if(ec) {
+            logger_.warn("receiver photo capture unavailable staging_root=" + config_.photo_capture.staging_root
+                         + " error=" + ec.message());
+            return;
+        }
+        fsync_directory_best_effort(std::filesystem::path(config_.photo_capture.staging_root).parent_path());
+        {
+            std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+            photo_capture_stop_ = false;
+            photo_capture_available_ = true;
+        }
+        photo_capture_thread_ = std::thread([this] { photo_capture_worker_loop(); });
+        logger_.info("receiver photo capture ready staging_root=" + config_.photo_capture.staging_root
+                     + " nas_subdirectory=" + config_.photo_capture.nas_subdirectory
+                     + " max_jpeg_bytes=" + std::to_string(config_.photo_capture.max_jpeg_bytes)
+                     + " queue_max_items=" + std::to_string(config_.photo_capture.queue_max_items));
+    }
+
+    void stop_photo_capture_worker() {
+        {
+            std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+            photo_capture_available_ = false;
+            photo_capture_stop_ = true;
+        }
+        photo_capture_cv_.notify_all();
+        if(photo_capture_thread_.joinable()) {
+            photo_capture_thread_.join();
+        }
+    }
+
+    void send_rgb_snapshot_result(const PhotoCaptureJob &job,
+                                  bool ok,
+                                  const std::string &status,
+                                  const std::string &image_path,
+                                  const std::string &error) {
+        Json::Value root(Json::objectValue);
+        root["protocol_version"] = kProtocolVersion;
+        root["message_type"] = "control";
+        root["control"] = "rgb_snapshot_result";
+        root["sender_id"] = job.packet.sender_id;
+        root["camera_id"] = job.packet.camera_id;
+        root["request_id"] = job.request_id;
+        root["ok"] = ok;
+        root["status"] = status;
+        root["image_path"] = image_path;
+        root["error"] = error;
+        root["frame_id"] = Json::UInt64(job.packet.frame_id);
+        root["frame_system_timestamp_us"] = Json::UInt64(job.packet.system_timestamp_us);
+        root["receiver_captured_timestamp_us"] = Json::UInt64(now_us());
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        const auto payload = Json::writeString(builder, root);
+
+        bool sent = false;
+        for(int attempt = 0; attempt < 3; ++attempt) {
+            sent = send_udp_text_to_endpoint(job.status_endpoint, payload) || sent;
+            if(attempt < 2) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        if(!sent) {
+            logger_.warn("rgb snapshot acknowledgement send failed request_id=" + job.request_id
+                         + " endpoint=" + job.status_endpoint);
+        }
+    }
+
+    void remember_completed_photo(const std::string &request_id, const std::string &image_path) {
+        std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+        if(photo_completed_paths_.count(request_id) == 0) {
+            photo_completed_order_.push_back(request_id);
+        }
+        photo_completed_paths_[request_id] = image_path;
+        while(photo_completed_order_.size() > 1024) {
+            photo_completed_paths_.erase(photo_completed_order_.front());
+            photo_completed_order_.pop_front();
+        }
+    }
+
+    std::optional<std::string> completed_photo_path(const std::string &request_id) {
+        std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+        const auto found = photo_completed_paths_.find(request_id);
+        return found == photo_completed_paths_.end() ? std::nullopt
+                                                     : std::optional<std::string>(found->second);
+    }
+
+    std::optional<std::string> existing_staged_photo_path(const std::filesystem::path &job_directory) {
+        const auto marker_path = job_directory / "photo_ready.json";
+        const auto jpeg_path = job_directory / "photo.jpg";
+        std::ifstream input(marker_path);
+        if(!input || !std::filesystem::is_regular_file(jpeg_path)) {
+            return std::nullopt;
+        }
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        Json::Value root;
+        if(!parse_json_object_strict(text, root) || !root["ready"].isBool() || !root["ready"].asBool()
+           || !root["relative_path"].isString()) {
+            return std::nullopt;
+        }
+        const std::filesystem::path relative_path = root["relative_path"].asString();
+        if(!is_safe_photo_relative_path(relative_path)) {
+            return std::nullopt;
+        }
+        return (std::filesystem::path(config_.nas_root) / relative_path).string();
+    }
+
+    std::filesystem::path reserve_photo_relative_path(const MediaPacket &packet, uint64_t frame_time_us) {
+        const std::string date = local_time_text_from_us(frame_time_us, "%Y-%m-%d");
+        const std::string time = local_time_text_from_us(frame_time_us, "%H-%M-%S");
+        const std::string stem = local_time_text_from_us(frame_time_us, "%Y%m%d_%H%M%S");
+        const std::filesystem::path directory =
+            std::filesystem::path(config_.photo_capture.nas_subdirectory)
+            / camera_key(packet.sender_id, packet.camera_id) / date / time;
+
+        std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+        for(size_t index = 0; index < 1000; ++index) {
+            std::ostringstream filename;
+            filename << stem;
+            if(index > 0) {
+                filename << '_' << std::setw(3) << std::setfill('0') << index;
+            }
+            filename << ".jpg";
+            const auto candidate = directory / filename.str();
+            const auto key = candidate.generic_string();
+            if(photo_reserved_relative_paths_.insert(key).second) {
+                return candidate;
+            }
+        }
+        throw std::runtime_error("cannot allocate unique photo path");
+    }
+
+    std::string stage_photo_capture(const PhotoCaptureJob &job) {
+        if(auto completed = completed_photo_path(job.request_id)) {
+            return *completed;
+        }
+        const std::filesystem::path staging_root = config_.photo_capture.staging_root;
+        const auto final_directory = staging_root / job.request_id;
+        if(std::filesystem::exists(final_directory)) {
+            if(auto existing = existing_staged_photo_path(final_directory)) {
+                remember_completed_photo(job.request_id, *existing);
+                return *existing;
+            }
+            throw std::runtime_error("existing staged photo task is incomplete: " + final_directory.string());
+        }
+
+        constexpr uint64_t kEarliestPlausibleEpochUs = 1'577'836'800ull * 1'000'000ull;
+        const uint64_t receiver_time_us =
+            job.packet.receiver_receive_timestamp_us > 0 ? job.packet.receiver_receive_timestamp_us : now_us();
+        const bool sender_time_plausible =
+            (job.packet.flags & has_system_timestamp) != 0u
+            && job.packet.system_timestamp_us >= kEarliestPlausibleEpochUs
+            && job.packet.system_timestamp_us <= receiver_time_us + 24ull * 60ull * 60ull * 1'000'000ull;
+        const uint64_t frame_time_us = sender_time_plausible ? job.packet.system_timestamp_us : receiver_time_us;
+        const auto relative_path = reserve_photo_relative_path(job.packet, frame_time_us);
+        if(!is_safe_photo_relative_path(relative_path)) {
+            throw std::runtime_error("generated unsafe photo relative path");
+        }
+
+        const uint64_t temp_sequence = photo_temp_sequence_.fetch_add(1) + 1;
+        const auto temporary_directory =
+            staging_root / ("." + job.request_id + "." + std::to_string(getpid()) + "." + std::to_string(temp_sequence) + ".tmp");
+        std::error_code ec;
+        std::filesystem::remove_all(temporary_directory, ec);
+        ec.clear();
+        std::filesystem::create_directories(temporary_directory, ec);
+        if(ec) {
+            throw std::runtime_error("cannot create temporary photo staging directory: " + ec.message());
+        }
+        ScopeExit cleanup([&] {
+            std::error_code cleanup_error;
+            std::filesystem::remove_all(temporary_directory, cleanup_error);
+        });
+
+        const auto jpeg_path = temporary_directory / "photo.jpg";
+        write_file_and_fsync(jpeg_path, job.packet.payload.data(), job.packet.payload.size());
+        const uint32_t jpeg_crc = static_cast<uint32_t>(
+            crc32(crc32(0L, Z_NULL, 0), job.packet.payload.data(), static_cast<uInt>(job.packet.payload.size())));
+
+        Json::Value marker(Json::objectValue);
+        marker["schema_version"] = 1;
+        marker["ready"] = true;
+        marker["request_id"] = job.request_id;
+        marker["sender_id"] = job.packet.sender_id;
+        marker["camera_id"] = job.packet.camera_id;
+        marker["frame_id"] = Json::UInt64(job.packet.frame_id);
+        marker["frame_timestamp_us"] = Json::UInt64(job.packet.timestamp_us);
+        marker["frame_system_timestamp_us"] = Json::UInt64(job.packet.system_timestamp_us);
+        marker["receiver_receive_timestamp_us"] = Json::UInt64(job.packet.receiver_receive_timestamp_us);
+        marker["global_timestamp_us"] = Json::UInt64(job.packet.global_timestamp_us);
+        marker["width"] = job.packet.width;
+        marker["height"] = job.packet.height;
+        marker["rgb_exposure_us"] = job.packet.rgb_exposure_us;
+        marker["rgb_gain"] = job.packet.rgb_gain;
+        marker["rgb_auto_exposure"] = job.packet.rgb_auto_exposure;
+        marker["format"] = "original_mjpeg";
+        marker["jpeg_file"] = "photo.jpg";
+        marker["jpeg_size"] = Json::UInt64(job.packet.payload.size());
+        marker["jpeg_crc32"] = Json::UInt64(jpeg_crc);
+        marker["relative_path"] = relative_path.generic_string();
+        marker["captured_at_unix_us"] = Json::UInt64(now_us());
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        const auto marker_text = Json::writeString(builder, marker) + "\n";
+        write_text_file_and_fsync(temporary_directory / "photo_ready.json", marker_text);
+        fsync_directory_best_effort(temporary_directory);
+
+        std::filesystem::rename(temporary_directory, final_directory, ec);
+        if(ec) {
+            throw std::runtime_error("cannot publish staged photo task: " + ec.message());
+        }
+        cleanup.release();
+        fsync_directory_best_effort(staging_root);
+
+        const auto image_path = (std::filesystem::path(config_.nas_root) / relative_path).string();
+        remember_completed_photo(job.request_id, image_path);
+        return image_path;
+    }
+
+    void photo_capture_worker_loop() {
+        for(;;) {
+            PhotoCaptureJob job;
+            {
+                std::unique_lock<std::mutex> lock(photo_capture_mutex_);
+                photo_capture_cv_.wait(lock, [&] { return photo_capture_stop_ || !photo_capture_queue_.empty(); });
+                if(photo_capture_queue_.empty()) {
+                    if(photo_capture_stop_) {
+                        return;
+                    }
+                    continue;
+                }
+                job = std::move(photo_capture_queue_.front());
+                photo_capture_queue_bytes_ -= std::min(photo_capture_queue_bytes_, job.packet.payload.size());
+                photo_capture_queue_.pop_front();
+            }
+
+            try {
+                const auto image_path = stage_photo_capture(job);
+                const uint64_t completed_us = now_us();
+                const uint64_t latency_us = job.queued_us > 0 && completed_us >= job.queued_us
+                                                ? completed_us - job.queued_us
+                                                : 0;
+                photo_capture_completed_.fetch_add(1);
+                logger_.info("rgb snapshot captured request_id=" + job.request_id
+                             + " sender_id=" + job.packet.sender_id
+                             + " camera_id=" + job.packet.camera_id
+                             + " frame_id=" + std::to_string(job.packet.frame_id)
+                             + " jpeg_bytes=" + std::to_string(job.packet.payload.size())
+                             + " staging_latency_us=" + std::to_string(latency_us)
+                             + " image_path=" + image_path);
+                send_rgb_snapshot_result(job, true, "captured", image_path, "");
+            }
+            catch(const std::exception &e) {
+                photo_capture_failures_.fetch_add(1);
+                logger_.warn("rgb snapshot staging failed request_id=" + job.request_id + " error=" + e.what());
+                send_rgb_snapshot_result(job, false, "error", "", e.what());
+            }
+        }
+    }
+
+    bool enqueue_photo_capture(MediaPacket packet, const std::string &request_id, const std::string &status_endpoint) {
+        PhotoCaptureJob rejected;
+        rejected.packet = media_packet_metadata_only(packet);
+        rejected.request_id = request_id;
+        rejected.status_endpoint = status_endpoint;
+        if(!config_.photo_capture.enabled) {
+            send_rgb_snapshot_result(rejected, false, "error", "", "receiver photo capture is disabled");
+            return false;
+        }
+        if(packet.payload.size() < 4 || packet.payload.size() > config_.photo_capture.max_jpeg_bytes
+           || packet.payload.front() != 0xff || packet.payload[1] != 0xd8
+           || packet.payload[packet.payload.size() - 2] != 0xff || packet.payload.back() != 0xd9) {
+            send_rgb_snapshot_result(rejected, false, "error", "", "invalid or oversized original MJPEG snapshot");
+            return false;
+        }
+
+        const size_t payload_size = packet.payload.size();
+        std::string rejection;
+        {
+            std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+            const size_t queue_max_bytes =
+                config_.photo_capture.max_jpeg_bytes * std::min<size_t>(config_.photo_capture.queue_max_items, 32);
+            if(!photo_capture_available_ || photo_capture_stop_) {
+                rejection = "receiver photo staging is unavailable";
+            }
+            else if(photo_capture_queue_.size() >= config_.photo_capture.queue_max_items
+                    || payload_size > queue_max_bytes || photo_capture_queue_bytes_ > queue_max_bytes - payload_size) {
+                rejection = "receiver photo staging queue is full";
+            }
+            else {
+                PhotoCaptureJob job;
+                job.packet = std::move(packet);
+                job.request_id = request_id;
+                job.status_endpoint = status_endpoint;
+                job.queued_us = now_us();
+                photo_capture_queue_bytes_ += payload_size;
+                photo_capture_queue_.push_back(std::move(job));
+                photo_capture_enqueued_.fetch_add(1);
+            }
+        }
+        if(!rejection.empty()) {
+            send_rgb_snapshot_result(rejected, false, "error", "", rejection);
+            return false;
+        }
+        photo_capture_cv_.notify_one();
+        return true;
+    }
+
     void start_decoder_cleanup_worker() {
         std::lock_guard<std::mutex> lock(decoder_cleanup_mutex_);
         if(decoder_cleanup_running_) {
@@ -8499,6 +8946,42 @@ private:
         if(!claim_media_ingress(packet, media_session_id, media_fd, peer_endpoint)) {
             return;
         }
+        if(packet.stream_type == StreamType::rgb_snapshot) {
+            const auto request_id = rgb_snapshot_request_id(packet.codec_or_compression);
+            if(!request_id) {
+                logger_.warn("rgb snapshot packet ignored because request_id is invalid");
+                return;
+            }
+            std::string status_endpoint;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(!bind_sender_source_locked(packet.sender_id, peer_endpoint, packet_receive_us)) {
+                    logger_.warn("rgb snapshot sender source mismatch ignored sender_id=" + packet.sender_id
+                                 + " from=" + peer_endpoint);
+                    return;
+                }
+                try {
+                    auto snapshot_camera = ensure_camera_ptr_locked(packet.sender_id, packet.camera_id);
+                    snapshot_camera->last_media_us = packet_receive_us;
+                    snapshot_camera->last_media_session_id = media_session_id;
+                    status_endpoint = snapshot_camera->status_endpoint;
+                    if(status_endpoint.empty()) {
+                        for(const auto &item : cameras_) {
+                            if(item.second->sender_id == packet.sender_id && !item.second->status_endpoint.empty()) {
+                                status_endpoint = item.second->status_endpoint;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch(const std::exception &e) {
+                    logger_.warn(std::string("rgb snapshot identity rejected: ") + e.what());
+                    return;
+                }
+            }
+            enqueue_photo_capture(std::move(packet), *request_id, status_endpoint);
+            return;
+        }
 
         std::shared_ptr<CameraState> cam;
         bool build_depth_preview = false;
@@ -8589,7 +9072,8 @@ private:
                 depth_preview_scale = cam->depth_scale;
             }
 
-            should_record = (recording_all_ || cam->recording_requested) && packet.stream_type != StreamType::rgb_preview;
+            should_record = (recording_all_ || cam->recording_requested)
+                            && (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw);
             if(should_record) {
                 {
                     std::lock_guard<std::mutex> record_lock(cam->record_mutex);
@@ -8735,6 +9219,8 @@ private:
             break;
         case StreamType::rgb_preview:
             stats.completed_preview_packets++;
+            break;
+        case StreamType::rgb_snapshot:
             break;
         }
     }
@@ -9380,9 +9866,11 @@ private:
     std::mutex status_cache_mutex_;
     std::mutex recording_maintenance_mutex_;
     std::mutex uploader_status_mutex_;
+    std::mutex photo_capture_mutex_;
     std::condition_variable decoder_cleanup_cv_;
     std::condition_variable segment_finalize_cv_;
     std::condition_variable recording_maintenance_cv_;
+    std::condition_variable photo_capture_cv_;
     bool decoder_cleanup_running_ = false;
     bool segment_finalize_worker_running_ = false;
     bool segment_finalize_worker_stop_ = false;
@@ -9400,6 +9888,17 @@ private:
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
     std::vector<std::future<void>> segment_close_futures_;
     std::deque<SegmentFinalizeTask> segment_finalize_queue_;
+    std::deque<PhotoCaptureJob> photo_capture_queue_;
+    std::set<std::string> photo_reserved_relative_paths_;
+    std::unordered_map<std::string, std::string> photo_completed_paths_;
+    std::deque<std::string> photo_completed_order_;
+    size_t photo_capture_queue_bytes_ = 0;
+    bool photo_capture_available_ = false;
+    bool photo_capture_stop_ = false;
+    std::atomic<uint64_t> photo_temp_sequence_{0};
+    std::atomic<uint64_t> photo_capture_enqueued_{0};
+    std::atomic<uint64_t> photo_capture_completed_{0};
+    std::atomic<uint64_t> photo_capture_failures_{0};
     std::atomic<size_t> segment_finalize_outstanding_status_{0};
     std::atomic<size_t> segment_finalize_queued_status_{0};
     std::atomic<size_t> segment_finalize_active_status_{0};
@@ -9416,6 +9915,7 @@ private:
     UdpReassemblyStats media_udp_stats_;
     UdpReassemblyStats preview_udp_stats_;
     std::thread decoder_cleanup_thread_;
+    std::thread photo_capture_thread_;
 };
 
 struct Args {

@@ -169,6 +169,18 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。只有最终目录中的 `recording_ready.json` 表示普通 MP4 已可交付。
 
+### 9.1 按需语音照片
+
+语音拍照不进入录制分片。发送端在采集线程拿到下一帧完整 MJPEG 时只复制一次原始压缩字节，放入独立可靠快照队列；它不会使用 H.264 编码输出，也不会占用 RGB/Depth 实时发送队列。
+
+接收端媒体线程把 `rgb_snapshot` 包移交给独立照片 worker。worker 在本地 staging 写入 `photo.jpg` 和带大小、CRC、帧时间戳的 `photo_ready.json`，完成文件与目录 `fsync` 及原子重命名后返回 `captured`。独立 `gwv3-photo-uploader.service` 再把 JPG 原子发布到：
+
+```text
+<nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
+```
+
+NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾或语音确认。最终 NAS 目录只保留 JPG。
+
 ## 10. `frames.csv` 的关键字段
 
 不同版本可能有更多诊断列，但当前下游最需要关注：
