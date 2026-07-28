@@ -124,7 +124,7 @@ tail -f wake_runtime.log
 
 当前语音服务在检测到“你好小环 / 您好小环”后，会先播放固定回复“我在，有什么可以帮到您的”。固定回复播放期间也会监听“拍照 / 拍张照 / 照相”；如果识别到拍照命令，会停止当前固定回复并向 RGBD 发送端写入本地拍照请求。固定回复自然播放结束后也会等待约 0.3 秒尾音，并默认开启 8 秒命令窗口。
 
-正式运行时，语音服务不直接打开 Orbbec 相机，避免和视频发送端抢 SDK 设备。发送端取得下一帧完整的相机原始 MJPEG 后，经独立可靠 TCP 通道发送给接收端，不进行 JPEG 解码或二次编码。接收端先把 JPG 和完整性清单原子写入本地 staging；本地 `fsync` 成功后立即返回 `captured`，语音服务收到该状态便播放“好的，已拍照”。NAS 写入由独立上传服务异步完成，NAS 短时不可用不会阻塞拍照确认，也不影响 RGBD 录制链路。
+正式运行时，语音服务不直接打开 Orbbec 相机，避免和视频发送端抢 SDK 设备。发送端取得下一帧完整的相机 MJPEG 后，经独立可靠 TCP 通道发送给接收端。方向正常时保留原始 JPEG 有效字节；配置 RGB 软件旋转 180 度时，在独立快照线程中校正方向，不阻塞采集线程。接收端先把 JPG 和完整性清单原子写入本地 staging；本地 `fsync` 成功后返回 `captured`。语音服务默认以 0.2 秒间隔连续拍摄 3 张，三张都确认后播放“好的，已拍照”。NAS 写入由独立上传服务异步完成，NAS 短时不可用不会阻塞拍照确认，也不影响 RGBD 录制链路。
 
 默认请求目录：
 
@@ -160,6 +160,8 @@ photo_request_dir: /tmp/gemini_rgb_snapshot_requests
 photo_result_dir: /tmp/gemini_rgb_snapshot_results
 photo_result_timeout_seconds: 5.0
 photo_result_retention_seconds: 86400.0
+photo_burst_count: 3
+photo_burst_interval_seconds: 0.2
 photo_camera_id: cam01
 photo_response_wav: response_photo_done.wav
 ```

@@ -75,4 +75,9 @@ if(BUILD_TESTING)
                 --receiver $<TARGET_FILE:gemini_receiver>
     )
     set_tests_properties(voice_photo_pipeline_integration PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME voice_photo_burst_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_photo_burst.py
+    )
+    set_tests_properties(voice_photo_burst_unit PROPERTIES TIMEOUT 10)
 endif()

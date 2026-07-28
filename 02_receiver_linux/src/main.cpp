@@ -7950,6 +7950,8 @@ private:
         root["error"] = error;
         root["frame_id"] = Json::UInt64(job.packet.frame_id);
         root["frame_system_timestamp_us"] = Json::UInt64(job.packet.system_timestamp_us);
+        root["orientation_applied_degrees"] =
+            (job.packet.flags & snapshot_orientation_applied) != 0u ? 180 : 0;
         root["receiver_captured_timestamp_us"] = Json::UInt64(now_us());
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "";
@@ -8095,7 +8097,9 @@ private:
         marker["rgb_exposure_us"] = job.packet.rgb_exposure_us;
         marker["rgb_gain"] = job.packet.rgb_gain;
         marker["rgb_auto_exposure"] = job.packet.rgb_auto_exposure;
-        marker["format"] = "original_mjpeg";
+        const bool orientation_applied = (job.packet.flags & snapshot_orientation_applied) != 0u;
+        marker["format"] = orientation_applied ? "jpeg_rotated_180" : "original_mjpeg";
+        marker["orientation_applied_degrees"] = orientation_applied ? 180 : 0;
         marker["jpeg_file"] = "photo.jpg";
         marker["jpeg_size"] = Json::UInt64(job.packet.payload.size());
         marker["jpeg_crc32"] = Json::UInt64(jpeg_crc);

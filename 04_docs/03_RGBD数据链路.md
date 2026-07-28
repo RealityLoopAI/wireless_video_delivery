@@ -171,13 +171,15 @@ NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_n
 
 ### 9.1 按需语音照片
 
-语音拍照不进入录制分片。发送端在采集线程拿到下一帧完整 MJPEG 时只复制一次原始压缩字节，放入独立可靠快照队列；它不会使用 H.264 编码输出，也不会占用 RGB/Depth 实时发送队列。
+语音拍照不进入录制分片。发送端在采集线程拿到下一帧完整 MJPEG 时只复制一次压缩字节，放入独立可靠快照队列；它不会使用 H.264 编码输出，也不会占用 RGB/Depth 实时发送队列。若相机配置要求 RGB 软件旋转 180 度，快照线程会独立完成 JPEG 解码、旋转和质量 95 重编码，采集线程不承担该处理。
 
 接收端媒体线程把 `rgb_snapshot` 包移交给独立照片 worker。worker 在本地 staging 写入 `photo.jpg` 和带大小、CRC、帧时间戳的 `photo_ready.json`，完成文件与目录 `fsync` 及原子重命名后返回 `captured`。独立 `gwv3-photo-uploader.service` 再把 JPG 原子发布到：
 
 ```text
 <nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
 ```
+
+d12 语音服务默认连续请求 3 张，按请求起始时刻间隔 0.2 秒；三张全部收到 `captured` 后才播放拍照成功提示。
 
 NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾或语音确认。最终 NAS 目录只保留 JPG。
 

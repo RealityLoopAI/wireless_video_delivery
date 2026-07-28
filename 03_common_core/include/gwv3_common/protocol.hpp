@@ -38,6 +38,7 @@ enum MediaFlags : uint32_t {
     has_system_timestamp = 1u << 3,
     has_rgb_diagnostics = 1u << 4,
     has_pipeline_diagnostics = 1u << 5,
+    snapshot_orientation_applied = 1u << 6,
 };
 
 struct MediaFrameMeta {

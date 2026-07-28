@@ -157,9 +157,11 @@ def play_response(path: Path, device: str):
     )
 
 
-def queue_photo_request(args):
+def queue_photo_request(args, burst_index=1, burst_count=1):
     now = datetime.now()
     request_id = f"xiaohuan_photo_{now.strftime('%Y%m%d_%H%M%S_%f')}"
+    if burst_count > 1:
+        request_id += f"_{burst_index:02d}of{burst_count:02d}"
     args.photo_request_dir.mkdir(parents=True, exist_ok=True)
     args.photo_result_dir.mkdir(parents=True, exist_ok=True)
     request_path = args.photo_request_dir / f"{request_id}.json"
@@ -173,6 +175,8 @@ def queue_photo_request(args):
         "result_path": str(result_path),
         "trigger": "xiaohuan_voice_photo",
         "storage_target": "receiver_nas",
+        "burst_index": burst_index,
+        "burst_count": burst_count,
         "requested_at_unix_us": int(time.time() * 1_000_000),
     }
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -203,6 +207,54 @@ def wait_photo_result(result_path: Path, timeout_seconds: float):
             return False, payload
         time.sleep(0.05)
     return False, {"status": "timeout", "error": last_error or "snapshot result timeout"}
+
+
+def capture_photo_burst(args):
+    pending_results = []
+    burst_started = time.monotonic()
+    for burst_index in range(1, args.photo_burst_count + 1):
+        request_at = burst_started + ((burst_index - 1) * args.photo_burst_interval_seconds)
+        delay = request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        _request_path, result_path = queue_photo_request(
+            args,
+            burst_index=burst_index,
+            burst_count=args.photo_burst_count,
+        )
+        pending_results.append((burst_index, result_path))
+
+    results = []
+    failures = []
+    for burst_index, result_path in pending_results:
+        saved, result = wait_photo_result(result_path, args.photo_result_timeout_seconds)
+        if not saved:
+            failures.append(
+                f"{burst_index}/{args.photo_burst_count}: "
+                f"{result.get('error', result.get('status', 'snapshot not confirmed'))}"
+            )
+            continue
+        results.append(result)
+        print(
+            f"photo burst captured index={burst_index}/{args.photo_burst_count} "
+            f"path={result.get('image_path', '<unknown>')}",
+            flush=True,
+        )
+    if failures:
+        return False, {
+            "status": "partial" if results else "error",
+            "error": "; ".join(failures),
+            "captured_count": len(results),
+            "requested_count": args.photo_burst_count,
+            "image_paths": [item.get("image_path", "") for item in results],
+        }
+    return True, {
+        "status": "captured",
+        "captured_count": len(results),
+        "requested_count": args.photo_burst_count,
+        "image_paths": [item.get("image_path", "") for item in results],
+        "results": results,
+    }
 
 
 def cleanup_old_photo_results(args):
@@ -437,6 +489,8 @@ def listen(args):
     print(f"photo_result_dir={args.photo_result_dir}")
     print(f"photo_result_timeout_seconds={args.photo_result_timeout_seconds}")
     print(f"photo_result_retention_seconds={args.photo_result_retention_seconds}")
+    print(f"photo_burst_count={args.photo_burst_count}")
+    print(f"photo_burst_interval_seconds={args.photo_burst_interval_seconds}")
     print("photo_storage_target=receiver_nas")
     print(f"zero_audio_rms={args.zero_audio_rms}")
     print(f"zero_audio_restart_seconds={args.zero_audio_restart_seconds}")
@@ -615,12 +669,11 @@ def listen(args):
                     playbacks = []
                     command_listen_until = 0.0
                     matcher.reset()
-                    _request_path, result_path = queue_photo_request(args)
-                    saved, result = wait_photo_result(result_path, args.photo_result_timeout_seconds)
+                    saved, result = capture_photo_burst(args)
                     if saved:
                         print(
                             f"photo command matched during playback: {text} -> "
-                            f"saved path={result.get('image_path', '<unknown>')}",
+                            f"saved paths={result.get('image_paths', [])}",
                             flush=True,
                         )
                         playback = play_response(args.photo_response_wav, args.playback_device)
@@ -629,7 +682,8 @@ def listen(args):
                     else:
                         print(
                             f"photo command during playback matched but snapshot not confirmed: "
-                            f"status={result.get('status')} error={result.get('error', '')}",
+                            f"status={result.get('status')} error={result.get('error', '')} "
+                            f"captured={result.get('captured_count', 0)}/{result.get('requested_count', 0)}",
                             flush=True,
                         )
 
@@ -729,11 +783,10 @@ def listen(args):
             )
             if command_mode:
                 if ok:
-                    _request_path, result_path = queue_photo_request(args)
-                    saved, result = wait_photo_result(result_path, args.photo_result_timeout_seconds)
+                    saved, result = capture_photo_burst(args)
                     if saved:
                         print(
-                            f"photo command matched: {text} -> saved path={result.get('image_path', '<unknown>')}",
+                            f"photo command matched: {text} -> saved paths={result.get('image_paths', [])}",
                             flush=True,
                         )
                         playback = play_response(args.photo_response_wav, args.playback_device)
@@ -742,7 +795,8 @@ def listen(args):
                     else:
                         print(
                             f"photo command matched but snapshot not confirmed: "
-                            f"status={result.get('status')} error={result.get('error', '')}",
+                            f"status={result.get('status')} error={result.get('error', '')} "
+                            f"captured={result.get('captured_count', 0)}/{result.get('requested_count', 0)}",
                             flush=True,
                         )
                     command_listen_until = 0.0
@@ -768,6 +822,13 @@ def listen(args):
             if playback.poll() is None:
                 playback.terminate()
         terminate_capture(capture_procs)
+
+
+def nonnegative_float(value):
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
 
 
 def build_parser():
@@ -800,6 +861,8 @@ def build_parser():
     p_listen.add_argument("--photo-result-dir", type=Path, default=DEFAULT_PHOTO_RESULT_DIR)
     p_listen.add_argument("--photo-result-timeout-seconds", type=float, default=5.0)
     p_listen.add_argument("--photo-result-retention-seconds", type=float, default=86400.0)
+    p_listen.add_argument("--photo-burst-count", type=int, choices=range(1, 11), default=3)
+    p_listen.add_argument("--photo-burst-interval-seconds", type=nonnegative_float, default=0.2)
     p_listen.add_argument("--photo-output-root", type=Path, default=DEFAULT_PHOTO_OUTPUT_ROOT)
     p_listen.add_argument("--photo-sender-id", default="*")
     p_listen.add_argument("--photo-camera-id", default="cam01")

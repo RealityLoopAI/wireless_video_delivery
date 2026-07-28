@@ -89,6 +89,7 @@ constexpr auto kGracefulQueueDrainTimeout = std::chrono::seconds(10);
 constexpr size_t kRgbSnapshotQueueMaxItems = 64;
 constexpr size_t kRgbSnapshotQueueMaxBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kRgbSnapshotMaxPendingPerCamera = 16;
+constexpr int kRgbSnapshotJpegQuality = 95;
 constexpr auto kRgbSnapshotRetryInterval = std::chrono::seconds(1);
 constexpr auto kRgbSnapshotRequestTimeout = std::chrono::seconds(30);
 
@@ -388,7 +389,9 @@ struct MediaPacketJob {
 
 struct ReliableSnapshotJob {
     MediaPacketJob media;
+    MediaFrameMeta meta;
     std::string request_id;
+    int rotation_degrees = 0;
     std::chrono::steady_clock::time_point first_queued_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_attempt_at = std::chrono::steady_clock::now();
     uint32_t attempts = 0;
@@ -5077,6 +5080,40 @@ void reject_next_rgb_snapshot_request(const AppConfig &config, CameraRuntime &ca
     write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
 }
 
+bool rotate_rgb_snapshot_mjpeg_180(const std::vector<uint8_t> &jpeg,
+                                   std::vector<uint8_t> &rotated_jpeg,
+                                   std::string &error) {
+    try {
+        if(jpeg.empty() || jpeg.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            error = "invalid MJPEG size";
+            return false;
+        }
+        cv::Mat encoded(1, static_cast<int>(jpeg.size()), CV_8UC1, const_cast<uint8_t *>(jpeg.data()));
+        cv::Mat decoded = cv::imdecode(encoded, cv::IMREAD_COLOR);
+        if(decoded.empty()) {
+            error = "MJPEG decode failed";
+            return false;
+        }
+        cv::Mat rotated;
+        cv::rotate(decoded, rotated, cv::ROTATE_180);
+        const std::vector<int> parameters{cv::IMWRITE_JPEG_QUALITY, kRgbSnapshotJpegQuality};
+        if(!cv::imencode(".jpg", rotated, rotated_jpeg, parameters)
+           || !mjpg_has_complete_jpeg_data(rotated_jpeg.data(), rotated_jpeg.size())) {
+            error = "rotated JPEG encode failed";
+            return false;
+        }
+        return true;
+    }
+    catch(const cv::Exception &e) {
+        error = e.what();
+        return false;
+    }
+    catch(const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+}
+
 void publish_rgb_snapshot_frame(const AppConfig &config,
                                 CameraRuntime &camera,
                                 const uint8_t *jpeg_data,
@@ -5134,11 +5171,17 @@ void publish_rgb_snapshot_frame(const AppConfig &config,
     meta.sender_capture_host_timestamp_us = timing.capture_host_timestamp_us;
     meta.sender_timing_bound_timestamp_us = timing.timing_bound_timestamp_us;
     meta.sender_packet_queued_timestamp_us = now_us();
+    const int snapshot_rotation_degrees = software_rgb_rotation_degrees(camera.config);
+    if(snapshot_rotation_degrees == 180) {
+        meta.flags |= snapshot_orientation_applied;
+    }
 
     std::vector<uint8_t> jpeg(jpeg_data, jpeg_data + jpeg_size);
     ReliableSnapshotJob job;
     job.media = make_owned_media_job(camera, StreamType::rgb_snapshot, meta, std::move(jpeg));
+    job.meta = meta;
     job.request_id = request->request_id;
+    job.rotation_degrees = snapshot_rotation_degrees;
     job.first_queued_at = std::chrono::steady_clock::now();
     job.next_attempt_at = job.first_queued_at;
     if(!queue->publish(std::move(job))) {
@@ -5397,6 +5440,27 @@ void rgb_snapshot_sender_loop(const AppConfig &config,
             fail_pending_rgb_snapshot(config, *job->media.camera, job->request_id,
                                       "receiver capture acknowledgement timeout", logger);
             continue;
+        }
+        if(job->rotation_degrees == 180) {
+            const auto rotation_started = std::chrono::steady_clock::now();
+            std::vector<uint8_t> rotated_jpeg;
+            std::string rotation_error;
+            if(!rotate_rgb_snapshot_mjpeg_180(job->media.owned_payload, rotated_jpeg, rotation_error)) {
+                fail_pending_rgb_snapshot(config, *job->media.camera, job->request_id,
+                                          "snapshot rotation failed: " + rotation_error, logger);
+                continue;
+            }
+            job->media.owned_payload = std::move(rotated_jpeg);
+            job->meta.payload_size = job->media.owned_payload.size();
+            job->meta.uncompressed_size = job->media.owned_payload.size();
+            job->media.header = build_media_header(job->meta);
+            job->rotation_degrees = 0;
+            logger.info("rgb snapshot orientation applied request_id=" + job->request_id
+                        + " camera_id=" + job->media.camera->config.camera_id
+                        + " degrees=180"
+                        + " jpeg_bytes=" + std::to_string(job->media.owned_payload.size())
+                        + " elapsed_ms=" + std::to_string(
+                              elapsed_ms(rotation_started, std::chrono::steady_clock::now())));
         }
 
         bool sent = false;
