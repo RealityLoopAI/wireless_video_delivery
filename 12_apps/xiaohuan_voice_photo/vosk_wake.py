@@ -157,7 +157,12 @@ def play_response(path: Path, device: str):
     )
 
 
-def queue_photo_request(args, burst_index=1, burst_count=1):
+def queue_photo_request(
+    args,
+    burst_index=1,
+    burst_count=1,
+    capture_not_before_unix_us=0,
+):
     now = datetime.now()
     request_id = f"xiaohuan_photo_{now.strftime('%Y%m%d_%H%M%S_%f')}"
     if burst_count > 1:
@@ -177,6 +182,7 @@ def queue_photo_request(args, burst_index=1, burst_count=1):
         "storage_target": "receiver_nas",
         "burst_index": burst_index,
         "burst_count": burst_count,
+        "capture_not_before_unix_us": capture_not_before_unix_us,
         "requested_at_unix_us": int(time.time() * 1_000_000),
     }
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -211,16 +217,15 @@ def wait_photo_result(result_path: Path, timeout_seconds: float):
 
 def capture_photo_burst(args):
     pending_results = []
-    burst_started = time.monotonic()
+    capture_schedule_base_us = time.time_ns() // 1000
+    interval_us = round(args.photo_burst_interval_seconds * 1_000_000)
     for burst_index in range(1, args.photo_burst_count + 1):
-        request_at = burst_started + ((burst_index - 1) * args.photo_burst_interval_seconds)
-        delay = request_at - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
+        capture_not_before_unix_us = capture_schedule_base_us + ((burst_index - 1) * interval_us)
         _request_path, result_path = queue_photo_request(
             args,
             burst_index=burst_index,
             burst_count=args.photo_burst_count,
+            capture_not_before_unix_us=capture_not_before_unix_us,
         )
         pending_results.append((burst_index, result_path))
 

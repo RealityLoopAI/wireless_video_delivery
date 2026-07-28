@@ -90,6 +90,7 @@ constexpr size_t kRgbSnapshotQueueMaxItems = 64;
 constexpr size_t kRgbSnapshotQueueMaxBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kRgbSnapshotMaxPendingPerCamera = 16;
 constexpr int kRgbSnapshotJpegQuality = 95;
+constexpr auto kRgbSnapshotRequestPollInterval = std::chrono::milliseconds(20);
 constexpr auto kRgbSnapshotRetryInterval = std::chrono::seconds(1);
 constexpr auto kRgbSnapshotRequestTimeout = std::chrono::seconds(30);
 
@@ -264,6 +265,7 @@ struct RgbSnapshotRequest {
     std::string result_path;
     std::string trigger;
     uint64_t requested_at_unix_us = 0;
+    uint64_t capture_not_before_unix_us = 0;
 };
 
 struct PendingRgbSnapshot {
@@ -4287,8 +4289,15 @@ void process_rgb_snapshot_request_file(const AppConfig &config,
     request.camera_id = json_string_or(*root, "camera_id", "cam01");
     request.trigger = json_string_or(*root, "trigger", "local_request");
     request.requested_at_unix_us = json_uint64_or(*root, "requested_at_unix_us", now_us());
+    request.capture_not_before_unix_us = json_uint64_or(*root, "capture_not_before_unix_us", 0);
     if(!is_safe_rgb_snapshot_request_id(request.request_id)) {
         logger.warn("rgb snapshot request ignored invalid request_id path=" + path.string());
+        remove_file_quietly(path);
+        return;
+    }
+    if(request.capture_not_before_unix_us > now_us() + 30ull * 1000ull * 1000ull) {
+        logger.warn("rgb snapshot request ignored because capture schedule is too far in the future request_id="
+                    + request.request_id);
         remove_file_quietly(path);
         return;
     }
@@ -4322,13 +4331,22 @@ void process_rgb_snapshot_request_file(const AppConfig &config,
         }
         else {
             request.camera_id = camera->config.camera_id;
-            camera->rgb_snapshot_requests.push_back(request);
+            const auto insert_at = std::upper_bound(
+                camera->rgb_snapshot_requests.begin(), camera->rgb_snapshot_requests.end(), request,
+                [](const RgbSnapshotRequest &left, const RgbSnapshotRequest &right) {
+                    if(left.capture_not_before_unix_us != right.capture_not_before_unix_us) {
+                        return left.capture_not_before_unix_us < right.capture_not_before_unix_us;
+                    }
+                    return left.request_id < right.request_id;
+                });
+            camera->rgb_snapshot_requests.insert(insert_at, request);
             queued = true;
         }
     }
     if(queued) {
         logger.info("rgb snapshot request queued request_id=" + request.request_id
-                    + " camera_id=" + camera->config.camera_id);
+                    + " camera_id=" + camera->config.camera_id
+                    + " capture_not_before_unix_us=" + std::to_string(request.capture_not_before_unix_us));
     }
     else {
         logger.warn("rgb snapshot request rejected request_id=" + request.request_id + " error=" + queue_error);
@@ -4345,7 +4363,7 @@ void poll_rgb_snapshot_requests(const AppConfig &config,
     if(now < next_poll) {
         return;
     }
-    next_poll = now + std::chrono::milliseconds(100);
+    next_poll = now + kRgbSnapshotRequestPollInterval;
 
     const auto request_dir = default_rgb_snapshot_request_dir();
     std::error_code ec;
@@ -5060,9 +5078,12 @@ MediaPacketJob make_external_media_job(CameraRuntime &camera, StreamType stream_
     return job;
 }
 
-std::optional<RgbSnapshotRequest> take_next_rgb_snapshot_request(CameraRuntime &camera) {
+std::optional<RgbSnapshotRequest> take_next_rgb_snapshot_request(CameraRuntime &camera, uint64_t capture_host_timestamp_us) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     if(camera.rgb_snapshot_requests.empty()) {
+        return std::nullopt;
+    }
+    if(camera.rgb_snapshot_requests.front().capture_not_before_unix_us > capture_host_timestamp_us) {
         return std::nullopt;
     }
     RgbSnapshotRequest request = std::move(camera.rgb_snapshot_requests.front());
@@ -5071,7 +5092,7 @@ std::optional<RgbSnapshotRequest> take_next_rgb_snapshot_request(CameraRuntime &
 }
 
 void reject_next_rgb_snapshot_request(const AppConfig &config, CameraRuntime &camera, const std::string &error, Logger &logger) {
-    auto request = take_next_rgb_snapshot_request(camera);
+    auto request = take_next_rgb_snapshot_request(camera, now_us());
     if(!request) {
         return;
     }
@@ -5120,7 +5141,9 @@ void publish_rgb_snapshot_frame(const AppConfig &config,
                                 size_t jpeg_size,
                                 const RgbEncodeTiming &timing,
                                 Logger &logger) {
-    auto request = take_next_rgb_snapshot_request(camera);
+    const uint64_t capture_host_timestamp_us =
+        timing.capture_host_timestamp_us > 0 ? timing.capture_host_timestamp_us : now_us();
+    auto request = take_next_rgb_snapshot_request(camera, capture_host_timestamp_us);
     if(!request) {
         return;
     }
