@@ -8169,11 +8169,19 @@ private:
             send_rgb_snapshot_result(rejected, false, "error", "", "receiver photo capture is disabled");
             return false;
         }
-        if(packet.payload.size() < 4 || packet.payload.size() > config_.photo_capture.max_jpeg_bytes
+        const size_t received_payload_size = packet.payload.size();
+        size_t jpeg_size = received_payload_size;
+        while(jpeg_size > 0 && packet.payload[jpeg_size - 1] == 0x00) {
+            --jpeg_size;
+        }
+        if(received_payload_size > config_.photo_capture.max_jpeg_bytes || jpeg_size < 4
            || packet.payload.front() != 0xff || packet.payload[1] != 0xd8
-           || packet.payload[packet.payload.size() - 2] != 0xff || packet.payload.back() != 0xd9) {
+           || packet.payload[jpeg_size - 2] != 0xff || packet.payload[jpeg_size - 1] != 0xd9) {
             send_rgb_snapshot_result(rejected, false, "error", "", "invalid or oversized original MJPEG snapshot");
             return false;
+        }
+        if(jpeg_size != received_payload_size) {
+            packet.payload.resize(jpeg_size);
         }
 
         const size_t payload_size = packet.payload.size();

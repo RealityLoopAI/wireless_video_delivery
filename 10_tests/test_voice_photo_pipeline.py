@@ -179,7 +179,8 @@ def run(args: argparse.Namespace) -> None:
 
                 frame_time_us = time.time_ns() // 1000
                 jpeg = b"\xff\xd8camera-original-mjpeg-payload\xff\xd9"
-                packet = snapshot_packet(sender_id, camera_id, request_id, 42, frame_time_us, jpeg)
+                sdk_padded_jpeg = jpeg + (b"\x00" * 32)
+                packet = snapshot_packet(sender_id, camera_id, request_id, 42, frame_time_us, sdk_padded_jpeg)
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
                     media.sendall(packet)
                     deadline = time.monotonic() + 5

@@ -2498,21 +2498,25 @@ cv::Mat mjpg_buffer_to_bgr(const uint8_t *data, size_t size, int flags) {
     return cv::imdecode(raw, flags);
 }
 
-bool mjpg_has_complete_jpeg_data(const void *payload, size_t payload_size) {
+size_t mjpg_complete_jpeg_size(const void *payload, size_t payload_size) {
     if(!payload || payload_size < 4) {
-        return false;
+        return 0;
     }
     const auto *data = static_cast<const uint8_t *>(payload);
     const size_t size = payload_size;
     if(data[0] != 0xff || data[1] != 0xd8) {
-        return false;
+        return 0;
     }
 
     size_t end = size;
     while(end > 0 && data[end - 1] == 0x00) {
         --end;
     }
-    return end >= 4 && data[end - 2] == 0xff && data[end - 1] == 0xd9;
+    return end >= 4 && data[end - 2] == 0xff && data[end - 1] == 0xd9 ? end : 0;
+}
+
+bool mjpg_has_complete_jpeg_data(const void *payload, size_t payload_size) {
+    return mjpg_complete_jpeg_size(payload, payload_size) != 0;
 }
 
 bool mjpg_has_complete_jpeg(const std::shared_ptr<ob::ColorFrame> &frame) {
@@ -5083,13 +5087,15 @@ void publish_rgb_snapshot_frame(const AppConfig &config,
     if(!request) {
         return;
     }
-    if(jpeg_data == nullptr || jpeg_size < 4 || !mjpg_has_complete_jpeg_data(jpeg_data, jpeg_size)) {
+    const size_t complete_jpeg_size = mjpg_complete_jpeg_size(jpeg_data, jpeg_size);
+    if(complete_jpeg_size == 0) {
         const std::string error = "captured RGB frame is not a complete MJPEG image";
         logger.warn("rgb snapshot request failed request_id=" + request->request_id
                     + " camera_id=" + camera.config.camera_id + " error=" + error);
         write_rgb_snapshot_result(config, camera.config.camera_id, *request, false, "error", "", error, logger);
         return;
     }
+    jpeg_size = complete_jpeg_size;
 
     ReliableSnapshotQueue *queue = nullptr;
     {
