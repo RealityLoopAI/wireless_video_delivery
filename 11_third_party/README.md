@@ -50,6 +50,14 @@ Gemini 305 需要单独验证。2026-07-27 在 LubanCat-3IO / RK3576 上确认�
 11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/
 ```
 
+当前验证使用 Orbbec 官方 v2.8.6 ARM64 tar 包：
+
+```text
+https://github.com/orbbec/OrbbecSDK_v2/releases/tag/v2.8.6
+OrbbecSDK_v2.8.6_202604271452_6399409_linux_arm64.tar.gz
+SHA256: a052221d4bdea6afb2f8b338bcd6e635afffcebbacab1483422b986e680fb441
+```
+
 SDK 实体仍由 `.gitignore` 排除。部署时必须从受控的 SDK 包或已验证设备同步，
 不能只复制发送端二进制而遗漏其运行时 SDK。
 
