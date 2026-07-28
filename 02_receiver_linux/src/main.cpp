@@ -788,6 +788,36 @@ std::optional<std::string> rgb_snapshot_request_id(const std::string &codec) {
     return request_id;
 }
 
+struct RgbSnapshotBurstInfo {
+    std::string group_id;
+    uint32_t index = 0;
+    uint32_t count = 0;
+};
+
+std::optional<RgbSnapshotBurstInfo> rgb_snapshot_burst_info(const std::string &request_id) {
+    constexpr size_t kSuffixBytes = 7;
+    if(request_id.size() <= kSuffixBytes) {
+        return std::nullopt;
+    }
+    const size_t suffix = request_id.size() - kSuffixBytes;
+    const auto is_digit = [&](size_t offset) {
+        return std::isdigit(static_cast<unsigned char>(request_id[suffix + offset])) != 0;
+    };
+    if(request_id[suffix] != '_' || !is_digit(1) || !is_digit(2)
+       || request_id[suffix + 3] != 'o' || request_id[suffix + 4] != 'f'
+       || !is_digit(5) || !is_digit(6)) {
+        return std::nullopt;
+    }
+    const uint32_t index = static_cast<uint32_t>((request_id[suffix + 1] - '0') * 10
+                                                  + (request_id[suffix + 2] - '0'));
+    const uint32_t count = static_cast<uint32_t>((request_id[suffix + 5] - '0') * 10
+                                                  + (request_id[suffix + 6] - '0'));
+    if(count < 2 || index == 0 || index > count) {
+        return std::nullopt;
+    }
+    return RgbSnapshotBurstInfo{request_id.substr(0, suffix), index, count};
+}
+
 bool is_safe_storage_text(const std::string &value) {
     if(value == "." || value == "..") {
         return false;
@@ -5549,6 +5579,12 @@ public:
         uint64_t queued_us = 0;
     };
 
+    struct PhotoBurstPathState {
+        std::filesystem::path directory;
+        std::string filename_stem;
+        uint32_t count = 0;
+    };
+
     struct PreviewUdpAssembly {
         std::vector<uint8_t> bytes;
         std::vector<uint8_t> received;
@@ -7952,6 +7988,11 @@ private:
         root["frame_system_timestamp_us"] = Json::UInt64(job.packet.system_timestamp_us);
         root["orientation_applied_degrees"] =
             (job.packet.flags & snapshot_orientation_applied) != 0u ? 180 : 0;
+        if(const auto burst = rgb_snapshot_burst_info(job.request_id)) {
+            root["burst_id"] = burst->group_id;
+            root["burst_index"] = burst->index;
+            root["burst_count"] = burst->count;
+        }
         root["receiver_captured_timestamp_us"] = Json::UInt64(now_us());
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "";
@@ -8009,15 +8050,65 @@ private:
         return (std::filesystem::path(config_.nas_root) / relative_path).string();
     }
 
-    std::filesystem::path reserve_photo_relative_path(const MediaPacket &packet, uint64_t frame_time_us) {
+    std::filesystem::path reserve_photo_relative_path(const MediaPacket &packet,
+                                                      uint64_t frame_time_us,
+                                                      const std::string &request_id) {
         const std::string date = local_time_text_from_us(frame_time_us, "%Y-%m-%d");
         const std::string time = local_time_text_from_us(frame_time_us, "%H-%M-%S");
         const std::string stem = local_time_text_from_us(frame_time_us, "%Y%m%d_%H%M%S");
-        const std::filesystem::path directory =
+        const std::filesystem::path camera_directory =
             std::filesystem::path(config_.photo_capture.nas_subdirectory)
-            / camera_key(packet.sender_id, packet.camera_id) / date / time;
+            / camera_key(packet.sender_id, packet.camera_id);
 
         std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+        if(const auto burst = rgb_snapshot_burst_info(request_id)) {
+            const std::string burst_key =
+                camera_key(packet.sender_id, packet.camera_id) + ":" + burst->group_id;
+            auto state_it = photo_burst_paths_.find(burst_key);
+            if(state_it == photo_burst_paths_.end()) {
+                std::filesystem::path burst_directory;
+                for(size_t directory_index = 0; directory_index < 1000; ++directory_index) {
+                    std::ostringstream directory_name;
+                    directory_name << time;
+                    if(directory_index > 0) {
+                        directory_name << '_' << std::setw(3) << std::setfill('0') << directory_index;
+                    }
+                    const auto candidate = camera_directory / date / directory_name.str();
+                    if(photo_reserved_directories_.insert(candidate.generic_string()).second) {
+                        burst_directory = candidate;
+                        break;
+                    }
+                }
+                if(burst_directory.empty()) {
+                    throw std::runtime_error("cannot allocate unique photo burst directory");
+                }
+                state_it = photo_burst_paths_
+                               .emplace(burst_key, PhotoBurstPathState{burst_directory, stem, burst->count})
+                               .first;
+                photo_burst_path_order_.push_back(burst_key);
+                while(photo_burst_path_order_.size() > 1024) {
+                    photo_burst_paths_.erase(photo_burst_path_order_.front());
+                    photo_burst_path_order_.pop_front();
+                }
+            }
+            if(state_it->second.count != burst->count) {
+                throw std::runtime_error("photo burst count changed within one burst");
+            }
+            std::ostringstream filename;
+            filename << state_it->second.filename_stem;
+            if(burst->index > 1) {
+                filename << '_' << std::setw(3) << std::setfill('0') << (burst->index - 1);
+            }
+            filename << ".jpg";
+            const auto candidate = state_it->second.directory / filename.str();
+            if(!photo_reserved_relative_paths_.insert(candidate.generic_string()).second) {
+                throw std::runtime_error("duplicate photo burst index");
+            }
+            return candidate;
+        }
+
+        const std::filesystem::path directory = camera_directory / date / time;
+        photo_reserved_directories_.insert(directory.generic_string());
         for(size_t index = 0; index < 1000; ++index) {
             std::ostringstream filename;
             filename << stem;
@@ -8056,7 +8147,7 @@ private:
             && job.packet.system_timestamp_us >= kEarliestPlausibleEpochUs
             && job.packet.system_timestamp_us <= receiver_time_us + 24ull * 60ull * 60ull * 1'000'000ull;
         const uint64_t frame_time_us = sender_time_plausible ? job.packet.system_timestamp_us : receiver_time_us;
-        const auto relative_path = reserve_photo_relative_path(job.packet, frame_time_us);
+        const auto relative_path = reserve_photo_relative_path(job.packet, frame_time_us, job.request_id);
         if(!is_safe_photo_relative_path(relative_path)) {
             throw std::runtime_error("generated unsafe photo relative path");
         }
@@ -8100,6 +8191,11 @@ private:
         const bool orientation_applied = (job.packet.flags & snapshot_orientation_applied) != 0u;
         marker["format"] = orientation_applied ? "jpeg_rotated_180" : "original_mjpeg";
         marker["orientation_applied_degrees"] = orientation_applied ? 180 : 0;
+        if(const auto burst = rgb_snapshot_burst_info(job.request_id)) {
+            marker["burst_id"] = burst->group_id;
+            marker["burst_index"] = burst->index;
+            marker["burst_count"] = burst->count;
+        }
         marker["jpeg_file"] = "photo.jpg";
         marker["jpeg_size"] = Json::UInt64(job.packet.payload.size());
         marker["jpeg_crc32"] = Json::UInt64(jpeg_crc);
@@ -9902,6 +9998,9 @@ private:
     std::deque<SegmentFinalizeTask> segment_finalize_queue_;
     std::deque<PhotoCaptureJob> photo_capture_queue_;
     std::set<std::string> photo_reserved_relative_paths_;
+    std::set<std::string> photo_reserved_directories_;
+    std::unordered_map<std::string, PhotoBurstPathState> photo_burst_paths_;
+    std::deque<std::string> photo_burst_path_order_;
     std::unordered_map<std::string, std::string> photo_completed_paths_;
     std::deque<std::string> photo_completed_order_;
     size_t photo_capture_queue_bytes_ = 0;

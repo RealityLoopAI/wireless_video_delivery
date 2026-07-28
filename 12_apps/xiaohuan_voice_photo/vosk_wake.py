@@ -161,10 +161,11 @@ def queue_photo_request(
     args,
     burst_index=1,
     burst_count=1,
+    burst_id="",
     capture_not_before_unix_us=0,
 ):
     now = datetime.now()
-    request_id = f"xiaohuan_photo_{now.strftime('%Y%m%d_%H%M%S_%f')}"
+    request_id = burst_id or f"xiaohuan_photo_{now.strftime('%Y%m%d_%H%M%S_%f')}"
     if burst_count > 1:
         request_id += f"_{burst_index:02d}of{burst_count:02d}"
     args.photo_request_dir.mkdir(parents=True, exist_ok=True)
@@ -180,6 +181,7 @@ def queue_photo_request(
         "result_path": str(result_path),
         "trigger": "xiaohuan_voice_photo",
         "storage_target": "receiver_nas",
+        "burst_id": burst_id,
         "burst_index": burst_index,
         "burst_count": burst_count,
         "capture_not_before_unix_us": capture_not_before_unix_us,
@@ -219,12 +221,14 @@ def capture_photo_burst(args):
     pending_results = []
     capture_schedule_base_us = time.time_ns() // 1000
     interval_us = round(args.photo_burst_interval_seconds * 1_000_000)
+    burst_id = f"xiaohuan_photo_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     for burst_index in range(1, args.photo_burst_count + 1):
         capture_not_before_unix_us = capture_schedule_base_us + ((burst_index - 1) * interval_us)
         _request_path, result_path = queue_photo_request(
             args,
             burst_index=burst_index,
             burst_count=args.photo_burst_count,
+            burst_id=burst_id,
             capture_not_before_unix_us=capture_not_before_unix_us,
         )
         pending_results.append((burst_index, result_path))

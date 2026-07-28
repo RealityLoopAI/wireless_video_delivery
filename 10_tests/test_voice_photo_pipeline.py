@@ -207,12 +207,79 @@ def run(args: argparse.Namespace) -> None:
                 assert marker["relative_path"].startswith(f"voice_photos/{sender_id}_{camera_id}/")
                 assert acknowledgement["image_path"] == str(nas_root / marker["relative_path"])
 
+                burst_id = "integration_burst_20260728_120000_000001"
+                burst_request_ids = [f"{burst_id}_{index:02d}of03" for index in range(1, 4)]
+                current_us = time.time_ns() // 1000
+                first_burst_frame_us = current_us - (current_us % 1_000_000) + 900_000
+                burst_frame_times_us = [
+                    first_burst_frame_us,
+                    first_burst_frame_us + 200_000,
+                    first_burst_frame_us + 400_000,
+                ]
+                with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+                    for index, (burst_request_id, burst_frame_time_us) in enumerate(
+                        zip(burst_request_ids, burst_frame_times_us), start=1
+                    ):
+                        burst_jpeg = b"\xff\xd8burst-photo-" + bytes([48 + index]) + b"\xff\xd9"
+                        media.sendall(
+                            snapshot_packet(
+                                sender_id,
+                                camera_id,
+                                burst_request_id,
+                                100 + index,
+                                burst_frame_time_us,
+                                burst_jpeg + (b"\x00" * 16),
+                            )
+                        )
+
+                    pending_request_ids = set(burst_request_ids)
+                    burst_acknowledgements = {}
+                    deadline = time.monotonic() + 5
+                    while pending_request_ids and time.monotonic() < deadline:
+                        payload, _peer = status.recvfrom(8192)
+                        candidate = json.loads(payload)
+                        candidate_request_id = candidate.get("request_id")
+                        if (
+                            candidate.get("control") == "rgb_snapshot_result"
+                            and candidate_request_id in pending_request_ids
+                        ):
+                            burst_acknowledgements[candidate_request_id] = candidate
+                            pending_request_ids.remove(candidate_request_id)
+                    assert not pending_request_ids
+
+                burst_markers = []
+                for index, burst_request_id in enumerate(burst_request_ids, start=1):
+                    burst_acknowledgement = burst_acknowledgements[burst_request_id]
+                    assert burst_acknowledgement["ok"] is True, burst_acknowledgement
+                    assert burst_acknowledgement["status"] == "captured"
+                    assert burst_acknowledgement["burst_id"] == burst_id
+                    assert burst_acknowledgement["burst_index"] == index
+                    assert burst_acknowledgement["burst_count"] == 3
+                    burst_marker = json.loads(
+                        (staging_root / burst_request_id / "photo_ready.json").read_text(encoding="utf-8")
+                    )
+                    assert burst_marker["burst_id"] == burst_id
+                    assert burst_marker["burst_index"] == index
+                    assert burst_marker["burst_count"] == 3
+                    burst_markers.append(burst_marker)
+
+                burst_relative_paths = [
+                    Path(burst_marker["relative_path"]) for burst_marker in burst_markers
+                ]
+                assert len({path.parent for path in burst_relative_paths}) == 1
+                first_filename_stem = burst_relative_paths[0].stem
+                assert [path.name for path in burst_relative_paths] == [
+                    f"{first_filename_stem}.jpg",
+                    f"{first_filename_stem}_001.jpg",
+                    f"{first_filename_stem}_002.jpg",
+                ]
+
             connection = http.client.HTTPConnection("127.0.0.1", ports["admin"], timeout=2)
             connection.request("GET", "/api/status")
             response = connection.getresponse()
             status_payload = json.loads(response.read())
             connection.close()
-            assert status_payload["photo_capture"]["completed"] == 1
+            assert status_payload["photo_capture"]["completed"] == 4
             assert status_payload["photo_capture"]["failures"] == 0
         finally:
             process.send_signal(signal.SIGTERM)

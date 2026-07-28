@@ -60,6 +60,9 @@ def test_success(module, root: Path):
     assert len(result["image_paths"]) == 3
     assert [item["burst_index"] for item in request_payloads] == [1, 2, 3]
     assert all(item["burst_count"] == 3 for item in request_payloads)
+    assert len({item["burst_id"] for item in request_payloads}) == 1
+    request_group_ids = [item["request_id"].rsplit("_", 1)[0] for item in request_payloads]
+    assert len(set(request_group_ids)) == 1
     assert request_times[-1] - request_times[0] < 0.04
     capture_schedule = [item["capture_not_before_unix_us"] for item in request_payloads]
     assert capture_schedule[1] - capture_schedule[0] == 50_000
