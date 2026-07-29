@@ -16,6 +16,7 @@ def load_voice_module(source_root: Path):
     vosk_stub.SetLogLevel = lambda _level: None
     sys.modules["vosk"] = vosk_stub
     module_path = source_root / "12_apps" / "xiaohuan_voice_photo" / "vosk_wake.py"
+    sys.path.insert(0, str(module_path.parent))
     spec = importlib.util.spec_from_file_location("gwv3_vosk_wake_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -136,6 +137,46 @@ def test_photo_text_matching(module, defaults):
             assert f"{first} {second}" in grammar
 
 
+def test_wake_text_matching(module, defaults):
+    aliases = list(
+        dict.fromkeys(module.normalize_text(item) for item in defaults.alias)
+    )
+    for text in ["你好小环", "你好 小环", "您好小环", "您好 小环"]:
+        assert module.is_wake_text(text, aliases), text
+    for text in [
+        "",
+        "[unk]",
+        "你好",
+        "小环",
+        "小环你好",
+        "[unk]你好小环",
+        "你好小环[unk]",
+        "你好小环你好小环",
+        "大家你好小环",
+    ]:
+        assert not module.is_wake_text(text, aliases), text
+
+    matcher = module.SplitWakeMatcher(2.4)
+    assert matcher.update("小环 你好", 1.0, aliases) == (False, "")
+    assert matcher.update("你好", 2.0, aliases) == (False, "")
+    assert matcher.update("小环", 3.0, aliases) == (True, "split")
+
+    strict_args = types.SimpleNamespace(
+        wake_require_end_silence=True,
+        wake_decode_max_seconds=3.2,
+    )
+    assert module.wake_segment_rejection_reason(strict_args, False, True, 2.0) == ""
+    assert (
+        module.wake_segment_rejection_reason(strict_args, False, False, 2.0)
+        == "wake_missing_end_silence"
+    )
+    assert (
+        module.wake_segment_rejection_reason(strict_args, False, True, 3.3)
+        == "wake_too_long"
+    )
+    assert module.wake_segment_rejection_reason(strict_args, True, False, 4.0) == ""
+
+
 def test_audio_stream_command(module):
     args = types.SimpleNamespace(
         record_device="plughw:3,0",
@@ -224,6 +265,17 @@ def main():
     assert defaults.photo_end_silence_seconds == 0.25
     assert defaults.barge_in is False
     assert defaults.audio_stream is False
+    assert defaults.tts_http is True
+    assert defaults.tts_http_port == 18082
+    assert defaults.tts_backend == "espeak"
+    assert defaults.tts_max_queue == 100
+    assert defaults.tts_max_text_chars == 500
+    assert defaults.tts_speaker_retry_seconds == 5.0
+    assert defaults.tts_resume_delay_seconds == 0.2
+    assert defaults.allow_split_wake is False
+    assert defaults.wake_require_end_silence is True
+    assert defaults.wake_decode_max_seconds == 3.2
+    test_wake_text_matching(module, defaults)
     test_photo_text_matching(module, defaults)
     test_audio_stream_command(module)
     test_async_capture_does_not_block(module)

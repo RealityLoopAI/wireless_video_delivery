@@ -16,6 +16,12 @@ sample_rate: 16000
 models/vosk-model-small-cn-0.22/
 ```
 
+远程文本播报默认使用系统包 `espeak-ng`，无需下载神经 TTS 模型：
+
+```bash
+sudo apt-get install -y espeak-ng
+```
+
 ## 1. 通用离线 ASR 方案
 
 当前优先使用 Vosk 中文小模型做离线识别，不需要录“你好小环”关键词模板，也不会把持续监听音频保存成 WAV。
@@ -28,8 +34,8 @@ models/vosk-model-small-cn-0.22/
 - 片段识别时只使用 `你好 小环 / 您好 小环 / 你好 / 您好 / 小环 / [unk]` 小语法，不跑完整中文听写搜索。
 - 支持分段命中：如果 `你好/您好` 和 `小环` 被切成相邻片段，只要在短时间窗口内出现，也算唤醒。
 - 低质量片段会先跳过，不再全部送进 Vosk。
-- 检测到唤醒后播放固定回复，并在回复播放结束后的尾音窗口内忽略麦克风输入，避免自激误识别。
-- 当前硬件没有播放参考信号可供 AEC 使用，因此默认不在固定回复播放期间识别命令，避免音箱回声被误判为“拍照”并截断回复。固定回复完整结束并忽略 0.3 秒尾音后，再开启 8 秒拍照命令窗口。
+- 检测到唤醒后把固定回复放入统一播放队列。
+- 当前硬件没有播放参考信号可供 AEC 使用。播放任何本地回复或远程文本前都会停止整条麦克风采集管线，因此 Vosk 识别和 RTP/Opus 推流同时暂停；队列暂时清空 200ms 后再恢复采集并开启 8 秒拍照命令窗口。
 - 拍照小语法覆盖“拍照 / 拍张照 / 拍一张照片 / 帮我拍照 / 照相”等说法，并兼容 Vosk 常见的“拍 [unk] / [unk] 照 / 牌照”结果。针对部分说话人把 `pai zhao` 说成 `pai zao` 的情况，命令窗口还会识别“拍/排/牌/派 + 照/早/造/澡/灶/遭”的近音组合；该兼容不会作用于常驻唤醒阶段。
 - 拍照命令窗口使用独立的短语音门槛和 0.25 秒尾静音判定，不降低普通唤醒词的门槛。
 
@@ -81,6 +87,12 @@ split_wake_window_seconds: 2.4
 noise_update_alpha: 0.03
 playback_ignore_seconds: 0.3
 echo_tail_seconds: 0.3
+tts_http_port: 18082
+tts_backend: espeak
+tts_queue_capacity: 100
+tts_max_text_chars: 500
+tts_speaker_retry_seconds: 5.0
+tts_resume_delay_seconds: 0.2
 zero_audio_rms: 0.0005
 zero_audio_restart_seconds: 12.0
 barge_in: false
@@ -102,6 +114,16 @@ tail -f wake_runtime.log
 
 更多 KWS 候选后端、AEC/NS/AGC 条件说明见 `KWS_AND_AUDIO_FRONTEND.md`。
 
+为降低无人说唤醒词时的误触发，正式服务使用严格唤醒模式：
+
+- 只接受完整、顺序正确且没有额外词的“你好小环 / 您好小环”；
+- 默认关闭“你好”和“小环”的跨片段拼接；
+- 没有正常静音结尾或超过 3.2 秒的连续声音不参与唤醒；
+- 启动时按声卡名称解析录音设备，将 USB 麦克风固定为 50% 捕获增益并关闭硬件 AGC。
+
+这些限制只作用于常驻唤醒阶段，不改变唤醒后的拍照近音匹配。可通过
+`XIAOHUAN_MIC_CAPTURE_LEVEL` 和 `XIAOHUAN_MIC_AGC` 覆盖麦克风参数。
+
 ## 2. sherpa-onnx KWS 方案
 
 已下载 sherpa-onnx 中文 KWS 模型，并提供候选脚本：
@@ -116,15 +138,15 @@ tail -f wake_runtime.log
 
 `wake_word.py` 是最早的模板匹配硬件验证原型，需要录关键词模板。它只用于验证麦克风和音箱链路，不作为正式方案；后续不要再走这条路径。
 
-## 4. 固定回复
+## 4. 固定回复与离线 TTS
 
 当前固定回复使用 `response_wozai_tts_default.wav`，内容为“我在，有什么可以帮到您的”。该文件由 `edge-tts` 生成，当前音量为轻提示音量，实测能听到。
 
-如需真正 TTS，可以后续接入本地中文 TTS 或在线 TTS 生成“我在”。
+外部设备提交的动态文本使用完全离线的 eSpeak NG 普通话后端。英文单词和缩写会在同一句中切换到 `en-us` 发音。该后端优先保证低延迟，音色比神经 TTS 更机械。仓库仍保留可选 `sherpa-onnx` 中英 VITS 后端及模型下载脚本，但当前 RK3588 视频发送负载下神经模型首句生成明显更慢，不作为默认。
 
 ## 5. 唤醒后拍照
 
-当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放固定回复“我在，有什么可以帮到您的”。播放期间不识别命令；播放结束后忽略约 0.3 秒尾音，再开启默认 8 秒命令窗口。此时识别到“拍照”会立即开始播放“好的，已拍照”，同时在后台向 RGBD 发送端写入拍照请求。
+当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放固定回复“我在，有什么可以帮到您的”。播放期间停止麦克风、识别和 RTP 推流；队列清空 200ms 后恢复采集，再开启默认 8 秒命令窗口。此时识别到“拍照”会把“好的，已拍照”加入同一播放队列，同时在后台向 RGBD 发送端写入拍照请求。
 
 正式运行时，语音服务不直接打开 Orbbec 相机，避免和视频发送端抢 SDK 设备。发送端取得下一帧完整的相机 MJPEG 后，经独立可靠 TCP 通道发送给接收端。方向正常时保留原始 JPEG 有效字节；配置 RGB 软件旋转 180 度时，在独立快照线程中校正方向，不阻塞采集线程。接收端先把 JPG 和完整性清单原子写入本地 staging；本地 `fsync` 成功后返回 `captured`。语音服务默认一次写入同一 `burst_id`、带目标采集时间的 3 个请求，目标间隔 0.2 秒，并在后台收集三张回执。即时语音表示“拍照命令已受理”，不表示三张已经持久化；最终结果以 `captured` 日志和 NAS 文件为准。连续触发的三连拍任务会串行执行，回执使用 30 秒总等待窗口，避免并发挤满接收端快照队列。NAS 写入由独立上传服务异步完成，NAS 短时不可用不会阻塞语音反馈，也不影响 RGBD 录制链路。
 
@@ -171,28 +193,38 @@ photo_decode_min_rms: 0.016
 photo_end_silence_seconds: 0.25
 ```
 
-## 6. RTP/Opus 实时音频
+## 6. 局域网文本播报
+
+`192.168.66.133` 默认监听：
+
+```text
+POST http://192.168.66.133:18082/api/tts/speak
+```
+
+请求必须包含 `request_id` 和 `text`。远程文本、唤醒回复和拍照回复共用一个容量为 100 的严格 FIFO 内存队列；重复 `request_id` 不会重复播放。接口返回 `accepted` 只表示已经入队。完整协议、错误码和调用示例见 `TTS_HTTP_API.md`。
+
+## 7. RTP/Opus 实时音频
 
 音频流默认关闭。启用后，GStreamer 只打开一次 USB 麦克风，并通过 `tee + queue` 分成两路：
 
 - 本机支路重采样为 `16kHz/S16LE/单声道`，继续执行现有 Vosk 唤醒和拍照指令识别。
 - 网络支路保留 `48kHz` 输入，编码为 `Opus 64kbps`，使用动态载荷类型 96 的 RTP/UDP 发送。
 
-网络队列限制为 200ms，并设置为丢弃旧数据，避免网络拥塞反向阻塞本机唤醒。当前 `192.168.66.133` 使用 systemd drop-in `systemd/xiaohuan-wake-audio-stream.conf`，持续发送到 `192.168.66.32:50020`。其他设备不安装该 drop-in 时仍保持默认关闭。
+网络队列限制为 200ms，并设置为丢弃旧数据，避免网络拥塞反向阻塞本机唤醒。当前 `192.168.66.133` 使用 systemd drop-in `systemd/xiaohuan-wake-audio-stream.conf`，持续发送到 macOS 接收端 `192.168.66.113:50020`。其他设备不安装该 drop-in 时仍保持默认关闭。
 
 可用环境变量：
 
 ```text
 XIAOHUAN_AUDIO_STREAM_ENABLED=1
-XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.32
+XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.113
 XIAOHUAN_AUDIO_STREAM_PORT=50020
 XIAOHUAN_AUDIO_STREAM_SAMPLE_RATE=48000
 XIAOHUAN_AUDIO_STREAM_BITRATE=64000
 ```
 
-Windows/VLC 必须通过 SDP 声明动态 RTP 载荷，不能只打开 `udp://@:50020`。
+macOS/VLC 必须通过 SDP 声明动态 RTP 载荷，不能只打开 `udp://@:50020`。
 
-## 7. 文件识别测试
+## 8. 文件识别测试
 
 ```bash
 python3 vosk_wake.py file debug_nihao_xiaohuan_live.wav

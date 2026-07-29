@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
+from speech_service import EspeakTtsEngine, OfflineTtsEngine, UnifiedSpeechService
+
 try:
     import webrtcvad
 except ImportError:
@@ -26,6 +28,7 @@ DEFAULT_PHOTO_RESPONSE = BASE_DIR / "response_photo_done.wav"
 DEFAULT_PHOTO_REQUEST_DIR = Path("/tmp/gemini_rgb_snapshot_requests")
 DEFAULT_PHOTO_RESULT_DIR = Path("/tmp/gemini_rgb_snapshot_results")
 DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
+DEFAULT_TTS_MODEL_DIR = BASE_DIR / "models" / "vits-melo-tts-zh_en"
 PHOTO_CAPTURE_LOCK = threading.Lock()
 
 AUDIO_FILTERS = {
@@ -55,7 +58,7 @@ def is_wake_text(text: str, aliases):
     text = normalize_text(text)
     if not text:
         return False
-    return any(alias in text for alias in aliases)
+    return text in aliases
 
 
 def is_photo_text(text: str, aliases):
@@ -175,16 +178,25 @@ class SplitWakeMatcher:
             self.reset()
             return True, "full"
 
-        has_greeting = "你好" in compact or "您好" in compact
+        greeting_positions = [
+            position
+            for greeting in ("你好", "您好")
+            if (position := compact.find(greeting)) >= 0
+        ]
+        has_greeting = bool(greeting_positions)
         has_name = "小环" in compact
 
         if has_greeting and has_name:
+            name_position = compact.find("小环")
+            if any(position < name_position for position in greeting_positions):
+                self.reset()
+                return True, "same-segment"
             self.reset()
-            return True, "same-segment"
+            return False, ""
 
-        if has_greeting:
+        if has_greeting and not has_name:
             self.last_greeting_time = now
-        if has_name:
+        if has_name and not has_greeting:
             self.last_name_time = now
 
         if (
@@ -201,17 +213,6 @@ class SplitWakeMatcher:
         if self.last_name_time is not None and self.last_name_time < expire_before:
             self.last_name_time = None
         return False, ""
-
-
-def play_response(path: Path, device: str):
-    if not path.exists():
-        print(f"response wav not found: {path}", file=sys.stderr)
-        return None
-    return subprocess.Popen(
-        ["aplay", "-q", "-D", device, str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
 
 def queue_photo_request(
@@ -456,6 +457,16 @@ def compute_vad_threshold(args, noise_rms: float):
     return max(args.vad_min_rms, noise_rms * args.vad_noise_scale, noise_rms + args.vad_noise_margin)
 
 
+def wake_segment_rejection_reason(args, command_mode: bool, ended: bool, speech_seconds: float):
+    if command_mode:
+        return ""
+    if args.wake_require_end_silence and not ended:
+        return "wake_missing_end_silence"
+    if args.wake_decode_max_seconds > 0 and speech_seconds > args.wake_decode_max_seconds:
+        return "wake_too_long"
+    return ""
+
+
 def make_arecord_cmd(args):
     return [
         "arecord",
@@ -673,12 +684,29 @@ def listen(args):
         else:
             vad = webrtcvad.Vad(args.webrtc_vad_mode)
             vad_mode = f"webrtcvad(mode={args.webrtc_vad_mode})+rms"
+    if args.tts_backend == "espeak":
+        tts_engine = EspeakTtsEngine()
+    else:
+        tts_engine = OfflineTtsEngine(
+            model_dir=args.tts_model_dir,
+            num_threads=args.tts_num_threads,
+        )
+    speech_service = UnifiedSpeechService(
+        tts_engine=tts_engine,
+        http_bind=args.tts_http_bind,
+        http_port=args.tts_http_port,
+        max_queue=args.tts_max_queue,
+        max_text_chars=args.tts_max_text_chars,
+        speaker_retry_seconds=args.tts_speaker_retry_seconds,
+    )
+    speech_service.start(enable_http=args.tts_http)
     capture_out, capture_procs, audio_filter = start_capture(args)
     stop = False
 
     def handle_signal(_signum, _frame):
         nonlocal stop
         stop = True
+        speech_service.request_stop()
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -688,6 +716,12 @@ def listen(args):
     print(f"record_device={args.record_device}, playback_device={args.playback_device}")
     print(f"mode=gated-vad-asr, vad={vad_mode}")
     print(f"audio_filter={audio_filter}")
+    print(
+        f"tts_http={args.tts_http} bind={args.tts_http_bind}:{args.tts_http_port} "
+        f"backend={args.tts_backend} model={args.tts_model_dir} "
+        f"queue_capacity={args.tts_max_queue} "
+        f"max_text_chars={args.tts_max_text_chars}"
+    )
     print(f"audio_stream={args.audio_stream}")
     if args.audio_stream:
         print(
@@ -739,14 +773,9 @@ def listen(args):
     pre_roll = collections.deque(maxlen=max(1, int(args.pre_roll_seconds / args.chunk_seconds)))
     speech_chunks = []
     speech_voice_ratios = []
-    playback_speech_chunks = []
-    playback_speech_voice_ratios = []
-    playbacks = []
     photo_capture_threads = []
     in_speech = False
-    playback_in_speech = False
     silence_chunks = 0
-    playback_silence_chunks = 0
     skipped_segments = 0
     zero_audio_since = None
     last_skip_log = time.time()
@@ -754,9 +783,10 @@ def listen(args):
     photo_end_silence_chunks = max(1, int(args.photo_end_silence_seconds / args.chunk_seconds))
 
     def acknowledge_and_capture_photo(text: str, source: str, detected_at: float):
-        playback = play_response(args.photo_response_wav, args.playback_device)
-        if playback is not None:
-            playbacks.append((playback, False, detected_at))
+        playback = speech_service.enqueue_wav(
+            args.photo_response_wav,
+            source="photo-acknowledgement",
+        )
         print(
             f"photo command acknowledged immediately source={source} text={text} "
             f"feedback_started={playback is not None}",
@@ -767,6 +797,46 @@ def listen(args):
     try:
         while not stop:
             photo_capture_threads[:] = [thread for thread in photo_capture_threads if thread.is_alive()]
+
+            playback_task = speech_service.next_ready_task()
+            if playback_task is not None:
+                terminate_capture(capture_procs)
+                capture_procs = []
+                opens_command_window = False
+                while playback_task is not None and not stop:
+                    playback_ok = speech_service.play_task(
+                        playback_task,
+                        args.playback_device,
+                    )
+                    opens_command_window = (
+                        opens_command_window or playback_task.opens_command_window
+                    )
+                    speech_service.complete_task(playback_task, playback_ok)
+                    playback_task = speech_service.next_ready_task(
+                        timeout=args.tts_resume_delay_seconds,
+                    )
+                if stop:
+                    break
+
+                capture_out, capture_procs, audio_filter = start_capture(args)
+                now = time.time()
+                ignore_until = now
+                if opens_command_window:
+                    command_listen_until = now + args.post_wake_command_seconds
+                    print(
+                        f"photo command window opens after unified playback: "
+                        f"window={args.post_wake_command_seconds:.2f}s",
+                        flush=True,
+                    )
+                matcher.reset()
+                pre_roll.clear()
+                speech_chunks = []
+                speech_voice_ratios = []
+                in_speech = False
+                silence_chunks = 0
+                zero_audio_since = None
+                continue
+
             data = capture_out.read(chunk_bytes)
             if len(data) < chunk_bytes:
                 terminate_capture(capture_procs)
@@ -802,127 +872,11 @@ def listen(args):
                 energy_active = energy_active and level >= noise_rms * args.energy_fallback_scale
             active = voice_active or energy_active
 
-            active_playbacks = []
-            for playback, opens_command_window, started_at in playbacks:
-                if playback.poll() is None:
-                    active_playbacks.append((playback, opens_command_window, started_at))
-                else:
-                    ignore_until = max(ignore_until, now + args.echo_tail_seconds)
-                    if opens_command_window:
-                        command_listen_until = max(command_listen_until, now + args.echo_tail_seconds + args.post_wake_command_seconds)
-                        print(
-                            f"photo command window opens after playback: "
-                            f"tail={args.echo_tail_seconds:.2f}s window={args.post_wake_command_seconds:.2f}s",
-                            flush=True,
-                        )
-            playbacks = active_playbacks
-
-            if playbacks:
-                opens_command_window = any(opens for _playback, opens, _started_at in playbacks)
-                playback_started_at = min(started_at for _playback, _opens, started_at in playbacks)
-                barge_threshold = max(
-                    args.barge_in_min_rms,
-                    noise_rms + args.barge_in_noise_margin,
-                    noise_rms * args.barge_in_noise_scale,
-                )
-                barge_active = (
-                    args.barge_in
-                    and opens_command_window
-                    and now - playback_started_at >= args.barge_in_ignore_seconds
-                    and level >= barge_threshold
-                    and (vad is None or voice_ratio >= args.barge_in_voice_ratio)
-                )
-
-                if not playback_in_speech:
-                    if barge_active:
-                        playback_in_speech = True
-                        playback_speech_chunks = [data]
-                        playback_speech_voice_ratios = [voice_ratio]
-                        playback_silence_chunks = 0
-                    else:
-                        playback_speech_chunks = []
-                        playback_speech_voice_ratios = []
-                        playback_silence_chunks = 0
-                    pre_roll.clear()
-                    speech_chunks = []
-                    speech_voice_ratios = []
-                    in_speech = False
-                    silence_chunks = 0
-                    continue
-
-                playback_speech_chunks.append(data)
-                playback_speech_voice_ratios.append(voice_ratio)
-                if barge_active:
-                    playback_silence_chunks = 0
-                else:
-                    playback_silence_chunks += 1
-
-                playback_speech_seconds = len(playback_speech_chunks) * args.chunk_seconds
-                playback_ended = (
-                    playback_silence_chunks >= photo_end_silence_chunks
-                    and playback_speech_seconds >= args.min_speech_seconds
-                )
-                playback_too_long = playback_speech_seconds >= args.max_speech_seconds
-                if not playback_ended and not playback_too_long:
-                    pre_roll.clear()
-                    speech_chunks = []
-                    speech_voice_ratios = []
-                    in_speech = False
-                    silence_chunks = 0
-                    continue
-
-                segment = b"".join(playback_speech_chunks)
-                segment_rms = pcm_rms(segment)
-                segment_voice_ratio = max(playback_speech_voice_ratios) if playback_speech_voice_ratios else 0.0
-                too_short = (
-                    len(playback_speech_chunks) < args.barge_in_min_chunks
-                    or playback_speech_seconds < args.photo_decode_min_seconds
-                )
-                ok = False
-                text = ""
-                if not too_short and opens_command_window:
-                    ok, text = decode_segment(
-                        model,
-                        args,
-                        segment,
-                        photo_aliases,
-                        photo_grammar,
-                        is_photo_text,
-                    )
-                print(
-                    f"playback command candidate seconds={playback_speech_seconds:.2f} "
-                    f"rms={segment_rms:.5f} threshold={barge_threshold:.5f} "
-                    f"voice_ratio={segment_voice_ratio:.2f} text={text or '<empty>'} matched={ok}",
-                    flush=True,
-                )
-                playback_speech_chunks = []
-                playback_speech_voice_ratios = []
-                playback_in_speech = False
-                playback_silence_chunks = 0
-
-                if ok:
-                    for playback, _opens, _started_at in playbacks:
-                        if playback.poll() is None:
-                            playback.terminate()
-                    playbacks = []
-                    command_listen_until = 0.0
-                    matcher.reset()
-                    acknowledge_and_capture_photo(text, "wake-playback", now)
-
-                pre_roll.clear()
-                speech_chunks = []
-                speech_voice_ratios = []
-                in_speech = False
-                silence_chunks = 0
-                continue
-
-            playback_speech_chunks = []
-            playback_speech_voice_ratios = []
-            playback_in_speech = False
-            playback_silence_chunks = 0
-
             if now < ignore_until:
-                pre_roll.clear()
+                if command_listen_until > now:
+                    pre_roll.append(data)
+                else:
+                    pre_roll.clear()
                 speech_chunks = []
                 speech_voice_ratios = []
                 in_speech = False
@@ -972,11 +926,24 @@ def listen(args):
             too_weak = segment_rms < decode_rms_threshold
             decode_min_seconds = args.photo_decode_min_seconds if command_mode else args.decode_min_seconds
             too_short = speech_seconds < decode_min_seconds
-            if too_weak or too_short:
+            wake_rejection = wake_segment_rejection_reason(
+                args,
+                command_mode,
+                ended,
+                speech_seconds,
+            )
+            if too_weak or too_short or wake_rejection:
                 skipped_segments += 1
                 if now - last_skip_log >= args.skip_log_seconds:
+                    if wake_rejection:
+                        skip_reason = wake_rejection
+                    elif too_weak:
+                        skip_reason = "low_rms"
+                    else:
+                        skip_reason = "too_short"
                     print(
                         f"skipped low_quality segments={skipped_segments} "
+                        f"last_reason={skip_reason} "
                         f"last_seconds={speech_seconds:.2f} last_rms={segment_rms:.5f} "
                         f"decode_rms_threshold={decode_rms_threshold:.5f} "
                         f"last_voice_ratio={segment_voice_ratio:.2f}",
@@ -1020,9 +987,12 @@ def listen(args):
                     matcher.reset()
             elif ok and now - last_trigger >= args.cooldown_seconds:
                 print(f"wake matched: {text} ({match_reason or 'full'}) -> 我在", flush=True)
-                playback = play_response(args.response_wav, args.playback_device)
+                playback = speech_service.enqueue_wav(
+                    args.response_wav,
+                    source="wake-response",
+                    opens_command_window=True,
+                )
                 if playback is not None:
-                    playbacks.append((playback, True, now))
                     command_listen_until = 0.0
                 else:
                     command_listen_until = now + args.post_wake_command_seconds
@@ -1035,12 +1005,10 @@ def listen(args):
             in_speech = False
             silence_chunks = 0
     finally:
-        for playback, _opens_command_window, _started_at in playbacks:
-            if playback.poll() is None:
-                playback.terminate()
         for thread in photo_capture_threads:
             thread.join(timeout=0.2)
         terminate_capture(capture_procs)
+        speech_service.stop()
 
 
 def nonnegative_float(value):
@@ -1082,6 +1050,24 @@ def build_parser():
     p_listen = sub.add_parser("listen")
     p_listen.add_argument("--record-device", default="plughw:4,0")
     p_listen.add_argument("--playback-device", default="plughw:3,0")
+    p_listen.add_argument(
+        "--tts-http",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p_listen.add_argument("--tts-http-bind", default="0.0.0.0")
+    p_listen.add_argument("--tts-http-port", type=udp_port, default=18082)
+    p_listen.add_argument(
+        "--tts-backend",
+        choices=["espeak", "sherpa"],
+        default="espeak",
+    )
+    p_listen.add_argument("--tts-model-dir", type=Path, default=DEFAULT_TTS_MODEL_DIR)
+    p_listen.add_argument("--tts-num-threads", type=int, choices=range(1, 9), default=4)
+    p_listen.add_argument("--tts-max-queue", type=int, choices=range(1, 101), default=100)
+    p_listen.add_argument("--tts-max-text-chars", type=int, choices=range(1, 501), default=500)
+    p_listen.add_argument("--tts-speaker-retry-seconds", type=nonnegative_float, default=5.0)
+    p_listen.add_argument("--tts-resume-delay-seconds", type=nonnegative_float, default=0.2)
     p_listen.add_argument("--response-wav", type=Path, default=DEFAULT_RESPONSE)
     p_listen.add_argument("--photo-response-wav", type=Path, default=DEFAULT_PHOTO_RESPONSE)
     p_listen.add_argument(
@@ -1155,8 +1141,10 @@ def build_parser():
     p_listen.add_argument("--photo-decode-min-rms", type=float, default=0.016)
     p_listen.add_argument("--decode-noise-margin", type=float, default=0.008)
     p_listen.add_argument("--skip-log-seconds", type=float, default=20.0)
-    p_listen.add_argument("--allow-split-wake", action=argparse.BooleanOptionalAction, default=True)
+    p_listen.add_argument("--allow-split-wake", action=argparse.BooleanOptionalAction, default=False)
     p_listen.add_argument("--split-wake-window-seconds", type=float, default=2.4)
+    p_listen.add_argument("--wake-require-end-silence", action=argparse.BooleanOptionalAction, default=True)
+    p_listen.add_argument("--wake-decode-max-seconds", type=nonnegative_float, default=3.2)
     p_listen.add_argument("--pre-roll-seconds", type=float, default=0.30)
     p_listen.add_argument("--min-speech-seconds", type=float, default=0.45)
     p_listen.add_argument("--end-silence-seconds", type=float, default=0.55)
