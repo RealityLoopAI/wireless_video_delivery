@@ -991,7 +991,7 @@ def build_parser():
     p_listen.add_argument("--noise-log-seconds", type=float, default=20.0)
     p_listen.add_argument("--zero-audio-rms", type=float, default=0.0005)
     p_listen.add_argument("--zero-audio-restart-seconds", type=float, default=12.0)
-    p_listen.add_argument("--barge-in", action=argparse.BooleanOptionalAction, default=True)
+    p_listen.add_argument("--barge-in", action=argparse.BooleanOptionalAction, default=False)
     p_listen.add_argument("--barge-in-ignore-seconds", type=float, default=0.45)
     p_listen.add_argument("--barge-in-min-rms", type=float, default=0.035)
     p_listen.add_argument("--barge-in-noise-margin", type=float, default=0.020)

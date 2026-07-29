@@ -102,5 +102,6 @@ wait_for_audio_devices() {
   echo "resolved_playback_device=$PLAYBACK_DEVICE match=$PLAYBACK_CARD_MATCH"
   exec python3 -u vosk_wake.py listen \
     --record-device "$RECORD_DEVICE" \
-    --playback-device "$PLAYBACK_DEVICE"
+    --playback-device "$PLAYBACK_DEVICE" \
+    --no-barge-in
 } >> "$LOG_FILE" 2>&1

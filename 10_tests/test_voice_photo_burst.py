@@ -177,6 +177,7 @@ def main():
     assert defaults.photo_decode_min_seconds == 0.45
     assert defaults.photo_decode_min_rms == 0.016
     assert defaults.photo_end_silence_seconds == 0.25
+    assert defaults.barge_in is False
     test_photo_text_matching(module, defaults)
     test_async_capture_does_not_block(module)
     with tempfile.TemporaryDirectory(prefix="gwv3_voice_burst_") as temporary:
