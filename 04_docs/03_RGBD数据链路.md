@@ -179,7 +179,7 @@ NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_n
 <nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
 ```
 
-d12 语音服务默认连续请求 3 张，按请求起始时刻间隔 0.2 秒；一次连拍共用稳定 `burst_id`，receiver 以第一张有效帧确定 NAS 目录，后两张跨秒也沿用该目录。三张全部收到 `captured` 后才播放拍照成功提示。
+d12 语音服务默认连续请求 3 张，按请求起始时刻间隔 0.2 秒；一次连拍共用稳定 `burst_id`，receiver 以第一张有效帧确定 NAS 目录，后两张跨秒也沿用该目录。识别到拍照命令后立即播放“好的，已拍照”，三张请求和 `captured` 回执检查在后台执行；语音表示命令已受理，最终持久化结果以回执日志和 NAS 文件为准。
 
 NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾或语音确认。最终 NAS 目录只保留 JPG。
 

@@ -6,6 +6,7 @@ import json
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +26,7 @@ DEFAULT_PHOTO_RESPONSE = BASE_DIR / "response_photo_done.wav"
 DEFAULT_PHOTO_REQUEST_DIR = Path("/tmp/gemini_rgb_snapshot_requests")
 DEFAULT_PHOTO_RESULT_DIR = Path("/tmp/gemini_rgb_snapshot_results")
 DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
+PHOTO_CAPTURE_LOCK = threading.Lock()
 
 AUDIO_FILTERS = {
     "none": "",
@@ -46,10 +48,15 @@ def is_wake_text(text: str, aliases):
 
 
 def is_photo_text(text: str, aliases):
-    text = normalize_text(text)
-    if not text:
+    compact = normalize_text(text)
+    if not compact:
         return False
-    return any(alias in text for alias in aliases)
+    if any(alias in compact for alias in aliases):
+        return True
+    # The constrained Vosk grammar commonly returns these forms for the
+    # two-syllable command. This fallback is only used in photo command mode.
+    compact_without_unknown = compact.replace("[unk]", "")
+    return compact_without_unknown in {"拍", "照", "拍照", "牌照"}
 
 
 def unique_items(items):
@@ -95,7 +102,17 @@ def make_photo_grammar(args):
         "拍照",
         "拍 照",
         "拍 张 照",
+        "拍 一 张 照",
+        "拍 一 张 照片",
+        "拍 照片",
+        "拍 一下",
         "照相",
+        "帮 我 拍照",
+        "帮 我 拍 张 照",
+        "给 我 拍照",
+        "请 拍照",
+        "开始 拍照",
+        "牌照",
     ]
     return unique_items(phrases + ["[unk]"])
 
@@ -197,23 +214,30 @@ def queue_photo_request(
     return request_path, result_path
 
 
+def read_photo_result(result_path: Path):
+    if not result_path.exists():
+        return None, {}
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, {"error": str(exc)}
+    status = payload.get("status")
+    ok = bool(payload.get("ok")) or status == "ok"
+    return ok, payload
+
+
 def wait_photo_result(result_path: Path, timeout_seconds: float):
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
     last_error = None
-    while time.time() < deadline:
-        if result_path.exists():
-            try:
-                payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                last_error = str(exc)
-                time.sleep(0.05)
-                continue
-            status = payload.get("status")
-            ok = bool(payload.get("ok")) or status == "ok"
-            if ok:
-                return True, payload
-            return False, payload
-        time.sleep(0.05)
+    while True:
+        saved, payload = read_photo_result(result_path)
+        if saved is not None:
+            return saved, payload
+        last_error = payload.get("error") or last_error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
     return False, {"status": "timeout", "error": last_error or "snapshot result timeout"}
 
 
@@ -233,22 +257,48 @@ def capture_photo_burst(args):
         )
         pending_results.append((burst_index, result_path))
 
-    results = []
-    failures = []
-    for burst_index, result_path in pending_results:
-        saved, result = wait_photo_result(result_path, args.photo_result_timeout_seconds)
-        if not saved:
-            failures.append(
-                f"{burst_index}/{args.photo_burst_count}: "
-                f"{result.get('error', result.get('status', 'snapshot not confirmed'))}"
+    pending = dict(pending_results)
+    results_by_index = {}
+    failures_by_index = {}
+    pending_errors = {}
+    deadline = time.monotonic() + args.photo_result_timeout_seconds
+    while pending:
+        for burst_index, result_path in list(pending.items()):
+            saved, result = read_photo_result(result_path)
+            if saved is None:
+                if result.get("error"):
+                    pending_errors[burst_index] = result["error"]
+                continue
+            del pending[burst_index]
+            if not saved:
+                failures_by_index[burst_index] = result.get(
+                    "error",
+                    result.get("status", "snapshot not confirmed"),
+                )
+                continue
+            results_by_index[burst_index] = result
+            print(
+                f"photo burst captured index={burst_index}/{args.photo_burst_count} "
+                f"path={result.get('image_path', '<unknown>')}",
+                flush=True,
             )
-            continue
-        results.append(result)
-        print(
-            f"photo burst captured index={burst_index}/{args.photo_burst_count} "
-            f"path={result.get('image_path', '<unknown>')}",
-            flush=True,
+        if not pending:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+
+    for burst_index in pending:
+        failures_by_index[burst_index] = pending_errors.get(
+            burst_index,
+            "snapshot result timeout",
         )
+    results = [results_by_index[index] for index in sorted(results_by_index)]
+    failures = [
+        f"{index}/{args.photo_burst_count}: {failures_by_index[index]}"
+        for index in sorted(failures_by_index)
+    ]
     if failures:
         return False, {
             "status": "partial" if results else "error",
@@ -264,6 +314,38 @@ def capture_photo_burst(args):
         "image_paths": [item.get("image_path", "") for item in results],
         "results": results,
     }
+
+
+def start_photo_capture_async(args, matched_text: str, source: str):
+    def worker():
+        started = time.monotonic()
+        with PHOTO_CAPTURE_LOCK:
+            queue_wait_ms = round((time.monotonic() - started) * 1000)
+            saved, result = capture_photo_burst(args)
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        if saved:
+            print(
+                f"photo capture completed source={source} text={matched_text} "
+                f"queue_wait_ms={queue_wait_ms} elapsed_ms={elapsed_ms} "
+                f"paths={result.get('image_paths', [])}",
+                flush=True,
+            )
+        else:
+            print(
+                f"photo capture failed after immediate acknowledgement source={source} "
+                f"text={matched_text} queue_wait_ms={queue_wait_ms} elapsed_ms={elapsed_ms} "
+                f"status={result.get('status')} error={result.get('error', '')} "
+                f"captured={result.get('captured_count', 0)}/{result.get('requested_count', 0)}",
+                flush=True,
+            )
+
+    thread = threading.Thread(
+        target=worker,
+        name="xiaohuan-photo-capture",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def cleanup_old_photo_results(args):
@@ -285,7 +367,7 @@ def cleanup_old_photo_results(args):
         print(f"photo result cleanup removed={removed}", flush=True)
 
 
-def check_result(result_json: str, aliases, label: str):
+def check_result(result_json: str, aliases, label: str, text_matcher=is_wake_text):
     try:
         data = json.loads(result_json)
     except json.JSONDecodeError:
@@ -293,7 +375,7 @@ def check_result(result_json: str, aliases, label: str):
     text = data.get(label, "") or data.get("text", "")
     if text:
         print(f"{label}: {text}")
-    return is_wake_text(text, aliases), text
+    return text_matcher(text, aliases), text
 
 
 def pcm_rms(data: bytes):
@@ -454,10 +536,10 @@ def run_file(args):
     return 0 if detected else 1
 
 
-def decode_segment(model, args, segment: bytes, aliases, grammar):
+def decode_segment(model, args, segment: bytes, aliases, grammar, text_matcher=is_wake_text):
     rec = make_recognizer(args, model, grammar)
     rec.AcceptWaveform(segment)
-    ok, text = check_result(rec.FinalResult(), aliases, "text")
+    ok, text = check_result(rec.FinalResult(), aliases, "text", text_matcher)
     return ok, text
 
 
@@ -538,6 +620,7 @@ def listen(args):
     playback_speech_chunks = []
     playback_speech_voice_ratios = []
     playbacks = []
+    photo_capture_threads = []
     in_speech = False
     playback_in_speech = False
     silence_chunks = 0
@@ -546,8 +629,22 @@ def listen(args):
     zero_audio_since = None
     last_skip_log = time.time()
     end_silence_chunks = max(1, int(args.end_silence_seconds / args.chunk_seconds))
+    photo_end_silence_chunks = max(1, int(args.photo_end_silence_seconds / args.chunk_seconds))
+
+    def acknowledge_and_capture_photo(text: str, source: str, detected_at: float):
+        playback = play_response(args.photo_response_wav, args.playback_device)
+        if playback is not None:
+            playbacks.append((playback, False, detected_at))
+        print(
+            f"photo command acknowledged immediately source={source} text={text} "
+            f"feedback_started={playback is not None}",
+            flush=True,
+        )
+        photo_capture_threads.append(start_photo_capture_async(args, text, source))
+
     try:
         while not stop:
+            photo_capture_threads[:] = [thread for thread in photo_capture_threads if thread.is_alive()]
             data = capture_out.read(chunk_bytes)
             if len(data) < chunk_bytes:
                 terminate_capture(capture_procs)
@@ -640,7 +737,7 @@ def listen(args):
 
                 playback_speech_seconds = len(playback_speech_chunks) * args.chunk_seconds
                 playback_ended = (
-                    playback_silence_chunks >= end_silence_chunks
+                    playback_silence_chunks >= photo_end_silence_chunks
                     and playback_speech_seconds >= args.min_speech_seconds
                 )
                 playback_too_long = playback_speech_seconds >= args.max_speech_seconds
@@ -655,11 +752,21 @@ def listen(args):
                 segment = b"".join(playback_speech_chunks)
                 segment_rms = pcm_rms(segment)
                 segment_voice_ratio = max(playback_speech_voice_ratios) if playback_speech_voice_ratios else 0.0
-                too_short = len(playback_speech_chunks) < args.barge_in_min_chunks or playback_speech_seconds < args.decode_min_seconds
+                too_short = (
+                    len(playback_speech_chunks) < args.barge_in_min_chunks
+                    or playback_speech_seconds < args.photo_decode_min_seconds
+                )
                 ok = False
                 text = ""
                 if not too_short and opens_command_window:
-                    ok, text = decode_segment(model, args, segment, photo_aliases, photo_grammar)
+                    ok, text = decode_segment(
+                        model,
+                        args,
+                        segment,
+                        photo_aliases,
+                        photo_grammar,
+                        is_photo_text,
+                    )
                 print(
                     f"playback command candidate seconds={playback_speech_seconds:.2f} "
                     f"rms={segment_rms:.5f} threshold={barge_threshold:.5f} "
@@ -678,23 +785,7 @@ def listen(args):
                     playbacks = []
                     command_listen_until = 0.0
                     matcher.reset()
-                    saved, result = capture_photo_burst(args)
-                    if saved:
-                        print(
-                            f"photo command matched during playback: {text} -> "
-                            f"saved paths={result.get('image_paths', [])}",
-                            flush=True,
-                        )
-                        playback = play_response(args.photo_response_wav, args.playback_device)
-                        if playback is not None:
-                            playbacks.append((playback, False, now))
-                    else:
-                        print(
-                            f"photo command during playback matched but snapshot not confirmed: "
-                            f"status={result.get('status')} error={result.get('error', '')} "
-                            f"captured={result.get('captured_count', 0)}/{result.get('requested_count', 0)}",
-                            flush=True,
-                        )
+                    acknowledge_and_capture_photo(text, "wake-playback", now)
 
                 pre_roll.clear()
                 speech_chunks = []
@@ -744,7 +835,9 @@ def listen(args):
                 silence_chunks += 1
 
             speech_seconds = len(speech_chunks) * args.chunk_seconds
-            ended = silence_chunks >= end_silence_chunks and speech_seconds >= args.min_speech_seconds
+            command_mode = now <= command_listen_until
+            required_end_silence_chunks = photo_end_silence_chunks if command_mode else end_silence_chunks
+            ended = silence_chunks >= required_end_silence_chunks and speech_seconds >= args.min_speech_seconds
             too_long = speech_seconds >= args.max_speech_seconds
             if not ended and not too_long:
                 continue
@@ -752,9 +845,11 @@ def listen(args):
             segment = b"".join(speech_chunks)
             segment_rms = pcm_rms(segment)
             segment_voice_ratio = max(speech_voice_ratios) if speech_voice_ratios else 0.0
-            decode_rms_threshold = max(args.decode_min_rms, noise_rms + args.decode_noise_margin)
+            decode_min_rms = args.photo_decode_min_rms if command_mode else args.decode_min_rms
+            decode_rms_threshold = max(decode_min_rms, noise_rms + args.decode_noise_margin)
             too_weak = segment_rms < decode_rms_threshold
-            too_short = speech_seconds < args.decode_min_seconds
+            decode_min_seconds = args.photo_decode_min_seconds if command_mode else args.decode_min_seconds
+            too_short = speech_seconds < decode_min_seconds
             if too_weak or too_short:
                 skipped_segments += 1
                 if now - last_skip_log >= args.skip_log_seconds:
@@ -773,10 +868,16 @@ def listen(args):
                 in_speech = False
                 silence_chunks = 0
                 continue
-            command_mode = now <= command_listen_until
             decode_aliases = photo_aliases if command_mode else aliases
             decode_grammar = photo_grammar if command_mode else wake_grammar
-            ok, text = decode_segment(model, args, segment, decode_aliases, decode_grammar)
+            ok, text = decode_segment(
+                model,
+                args,
+                segment,
+                decode_aliases,
+                decode_grammar,
+                is_photo_text if command_mode else is_wake_text,
+            )
             if command_mode:
                 match_reason = "photo-command" if ok else ""
             elif args.allow_split_wake:
@@ -792,22 +893,7 @@ def listen(args):
             )
             if command_mode:
                 if ok:
-                    saved, result = capture_photo_burst(args)
-                    if saved:
-                        print(
-                            f"photo command matched: {text} -> saved paths={result.get('image_paths', [])}",
-                            flush=True,
-                        )
-                        playback = play_response(args.photo_response_wav, args.playback_device)
-                        if playback is not None:
-                            playbacks.append((playback, False, now))
-                    else:
-                        print(
-                            f"photo command matched but snapshot not confirmed: "
-                            f"status={result.get('status')} error={result.get('error', '')} "
-                            f"captured={result.get('captured_count', 0)}/{result.get('requested_count', 0)}",
-                            flush=True,
-                        )
+                    acknowledge_and_capture_photo(text, "command-window", now)
                     command_listen_until = 0.0
                     matcher.reset()
             elif ok and now - last_trigger >= args.cooldown_seconds:
@@ -830,6 +916,8 @@ def listen(args):
         for playback, _opens_command_window, _started_at in playbacks:
             if playback.poll() is None:
                 playback.terminate()
+        for thread in photo_capture_threads:
+            thread.join(timeout=0.2)
         terminate_capture(capture_procs)
 
 
@@ -863,12 +951,26 @@ def build_parser():
     p_listen.add_argument(
         "--photo-alias",
         action="append",
-        default=["拍照", "拍 照", "拍张照", "拍 张 照", "照相"],
+        default=[
+            "拍照",
+            "拍 照",
+            "拍张照",
+            "拍 张 照",
+            "拍一张照",
+            "拍一张照片",
+            "拍照片",
+            "拍一下",
+            "帮我拍照",
+            "给我拍照",
+            "请拍照",
+            "照相",
+            "牌照",
+        ],
     )
     p_listen.add_argument("--post-wake-command-seconds", type=float, default=8.0)
     p_listen.add_argument("--photo-request-dir", type=Path, default=DEFAULT_PHOTO_REQUEST_DIR)
     p_listen.add_argument("--photo-result-dir", type=Path, default=DEFAULT_PHOTO_RESULT_DIR)
-    p_listen.add_argument("--photo-result-timeout-seconds", type=float, default=5.0)
+    p_listen.add_argument("--photo-result-timeout-seconds", type=float, default=30.0)
     p_listen.add_argument("--photo-result-retention-seconds", type=float, default=86400.0)
     p_listen.add_argument("--photo-burst-count", type=int, choices=range(1, 11), default=3)
     p_listen.add_argument("--photo-burst-interval-seconds", type=nonnegative_float, default=0.2)
@@ -904,6 +1006,8 @@ def build_parser():
     p_listen.add_argument("--energy-fallback-scale", type=float, default=1.35)
     p_listen.add_argument("--decode-min-seconds", type=float, default=0.70)
     p_listen.add_argument("--decode-min-rms", type=float, default=0.024)
+    p_listen.add_argument("--photo-decode-min-seconds", type=float, default=0.45)
+    p_listen.add_argument("--photo-decode-min-rms", type=float, default=0.016)
     p_listen.add_argument("--decode-noise-margin", type=float, default=0.008)
     p_listen.add_argument("--skip-log-seconds", type=float, default=20.0)
     p_listen.add_argument("--allow-split-wake", action=argparse.BooleanOptionalAction, default=True)
@@ -911,6 +1015,7 @@ def build_parser():
     p_listen.add_argument("--pre-roll-seconds", type=float, default=0.30)
     p_listen.add_argument("--min-speech-seconds", type=float, default=0.45)
     p_listen.add_argument("--end-silence-seconds", type=float, default=0.55)
+    p_listen.add_argument("--photo-end-silence-seconds", type=float, default=0.25)
     p_listen.add_argument("--max-speech-seconds", type=float, default=4.0)
     p_listen.set_defaults(func=listen)
     return parser
