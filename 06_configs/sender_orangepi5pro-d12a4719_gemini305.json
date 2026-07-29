@@ -91,7 +91,7 @@
       },
       "color_controls": {
         "auto_exposure": false,
-        "exposure": 150,
+        "exposure": 100,
         "gain": 16,
         "brightness": 0,
         "contrast": 50,
