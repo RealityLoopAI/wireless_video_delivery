@@ -136,6 +136,30 @@ def test_photo_text_matching(module, defaults):
             assert f"{first} {second}" in grammar
 
 
+def test_audio_stream_command(module):
+    args = types.SimpleNamespace(
+        record_device="plughw:3,0",
+        sample_rate=16000,
+        audio_stream_host="192.168.66.32",
+        audio_stream_port=50020,
+        audio_stream_sample_rate=48000,
+        audio_stream_bitrate=64000,
+    )
+    command = module.make_streaming_capture_cmd(args)
+    command_text = " ".join(command)
+    assert command[0] == "gst-launch-1.0"
+    assert "device=plughw:3,0" in command
+    assert "rate=48000" in command_text
+    assert "rate=16000" in command_text
+    assert "leaky=downstream" in command
+    assert "bitrate=64000" in command
+    assert "complexity=5" in command
+    assert "host=192.168.66.32" in command
+    assert "port=50020" in command
+    assert module.udp_port("50020") == 50020
+    assert module.opus_bitrate("64000") == 64000
+
+
 def test_async_capture_does_not_block(module):
     started = threading.Event()
     release = threading.Event()
@@ -199,7 +223,9 @@ def main():
     assert defaults.photo_decode_min_rms == 0.016
     assert defaults.photo_end_silence_seconds == 0.25
     assert defaults.barge_in is False
+    assert defaults.audio_stream is False
     test_photo_text_matching(module, defaults)
+    test_audio_stream_command(module)
     test_async_capture_does_not_block(module)
     with tempfile.TemporaryDirectory(prefix="gwv3_voice_burst_") as temporary:
         root = Path(temporary)

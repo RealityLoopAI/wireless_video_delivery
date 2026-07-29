@@ -12,6 +12,11 @@ DEFAULT_RECORD_DEVICE="plughw:4,0"
 DEFAULT_PLAYBACK_DEVICE="plughw:3,0"
 RECORD_CARD_MATCH="${XIAOHUAN_RECORD_CARD_MATCH:-USB PnP Sound Device}"
 PLAYBACK_CARD_MATCH="${XIAOHUAN_PLAYBACK_CARD_MATCH:-USB2.0 Device}"
+AUDIO_STREAM_ENABLED="${XIAOHUAN_AUDIO_STREAM_ENABLED:-0}"
+AUDIO_STREAM_HOST="${XIAOHUAN_AUDIO_STREAM_HOST:-127.0.0.1}"
+AUDIO_STREAM_PORT="${XIAOHUAN_AUDIO_STREAM_PORT:-50020}"
+AUDIO_STREAM_SAMPLE_RATE="${XIAOHUAN_AUDIO_STREAM_SAMPLE_RATE:-48000}"
+AUDIO_STREAM_BITRATE="${XIAOHUAN_AUDIO_STREAM_BITRATE:-64000}"
 
 cd "$ROOT_DIR"
 
@@ -100,8 +105,19 @@ wait_for_audio_devices() {
   wait_for_audio_devices
   echo "resolved_record_device=$RECORD_DEVICE match=$RECORD_CARD_MATCH"
   echo "resolved_playback_device=$PLAYBACK_DEVICE match=$PLAYBACK_CARD_MATCH"
+  AUDIO_STREAM_ARGS=(--no-audio-stream)
+  if [[ "$AUDIO_STREAM_ENABLED" == "1" ]]; then
+    AUDIO_STREAM_ARGS=(
+      --audio-stream
+      --audio-stream-host "$AUDIO_STREAM_HOST"
+      --audio-stream-port "$AUDIO_STREAM_PORT"
+      --audio-stream-sample-rate "$AUDIO_STREAM_SAMPLE_RATE"
+      --audio-stream-bitrate "$AUDIO_STREAM_BITRATE"
+    )
+  fi
   exec python3 -u vosk_wake.py listen \
     --record-device "$RECORD_DEVICE" \
     --playback-device "$PLAYBACK_DEVICE" \
+    "${AUDIO_STREAM_ARGS[@]}" \
     --no-barge-in
 } >> "$LOG_FILE" 2>&1

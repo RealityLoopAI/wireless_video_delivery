@@ -171,7 +171,28 @@ photo_decode_min_rms: 0.016
 photo_end_silence_seconds: 0.25
 ```
 
-## 6. 文件识别测试
+## 6. RTP/Opus 实时音频
+
+音频流默认关闭。启用后，GStreamer 只打开一次 USB 麦克风，并通过 `tee + queue` 分成两路：
+
+- 本机支路重采样为 `16kHz/S16LE/单声道`，继续执行现有 Vosk 唤醒和拍照指令识别。
+- 网络支路保留 `48kHz` 输入，编码为 `Opus 64kbps`，使用动态载荷类型 96 的 RTP/UDP 发送。
+
+网络队列限制为 200ms，并设置为丢弃旧数据，避免网络拥塞反向阻塞本机唤醒。当前 `192.168.66.133` 使用 systemd drop-in `systemd/xiaohuan-wake-audio-stream.conf`，持续发送到 `192.168.66.32:50020`。其他设备不安装该 drop-in 时仍保持默认关闭。
+
+可用环境变量：
+
+```text
+XIAOHUAN_AUDIO_STREAM_ENABLED=1
+XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.32
+XIAOHUAN_AUDIO_STREAM_PORT=50020
+XIAOHUAN_AUDIO_STREAM_SAMPLE_RATE=48000
+XIAOHUAN_AUDIO_STREAM_BITRATE=64000
+```
+
+Windows/VLC 必须通过 SDP 声明动态 RTP 载荷，不能只打开 `udp://@:50020`。
+
+## 7. 文件识别测试
 
 ```bash
 python3 vosk_wake.py file debug_nihao_xiaohuan_live.wav

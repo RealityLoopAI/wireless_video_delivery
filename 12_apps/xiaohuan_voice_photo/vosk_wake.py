@@ -473,16 +473,91 @@ def make_arecord_cmd(args):
     ]
 
 
+def make_streaming_capture_cmd(args):
+    return [
+        "gst-launch-1.0",
+        "-q",
+        "alsasrc",
+        f"device={args.record_device}",
+        "do-timestamp=true",
+        "!",
+        (
+            "audio/x-raw,"
+            f"format=S16LE,rate={args.audio_stream_sample_rate},"
+            "channels=1,layout=interleaved"
+        ),
+        "!",
+        "tee",
+        "name=audio",
+        "audio.",
+        "!",
+        "queue",
+        "max-size-time=500000000",
+        "max-size-bytes=0",
+        "max-size-buffers=0",
+        "!",
+        "audioconvert",
+        "!",
+        "audioresample",
+        "!",
+        (
+            "audio/x-raw,"
+            f"format=S16LE,rate={args.sample_rate},"
+            "channels=1,layout=interleaved"
+        ),
+        "!",
+        "fdsink",
+        "fd=1",
+        "sync=false",
+        "audio.",
+        "!",
+        "queue",
+        "leaky=downstream",
+        "max-size-time=200000000",
+        "max-size-bytes=0",
+        "max-size-buffers=0",
+        "!",
+        "opusenc",
+        f"bitrate={args.audio_stream_bitrate}",
+        "bitrate-type=cbr",
+        "audio-type=voice",
+        "frame-size=20",
+        "complexity=5",
+        "inband-fec=true",
+        "packet-loss-percentage=5",
+        "perfect-timestamp=true",
+        "!",
+        "rtpopuspay",
+        "pt=96",
+        "mtu=1200",
+        "!",
+        "udpsink",
+        f"host={args.audio_stream_host}",
+        f"port={args.audio_stream_port}",
+        "sync=false",
+        "async=false",
+    ]
+
+
 def start_capture(args):
-    arecord = subprocess.Popen(
-        make_arecord_cmd(args),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    procs = [("arecord", arecord)]
+    if args.audio_stream:
+        source = subprocess.Popen(
+            make_streaming_capture_cmd(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        procs = [("gstreamer-audio-tee", source)]
+    else:
+        source = subprocess.Popen(
+            make_arecord_cmd(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        procs = [("arecord", source)]
+
     filter_graph = args.audio_filter_graph or AUDIO_FILTERS[args.audio_filter]
     if not filter_graph:
-        return arecord.stdout, procs, "none"
+        return source.stdout, procs, "none"
 
     ffmpeg_cmd = [
         "ffmpeg",
@@ -509,11 +584,11 @@ def start_capture(args):
     ]
     ffmpeg = subprocess.Popen(
         ffmpeg_cmd,
-        stdin=arecord.stdout,
+        stdin=source.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    arecord.stdout.close()
+    source.stdout.close()
     procs.append(("ffmpeg", ffmpeg))
     return ffmpeg.stdout, procs, filter_graph
 
@@ -613,6 +688,13 @@ def listen(args):
     print(f"record_device={args.record_device}, playback_device={args.playback_device}")
     print(f"mode=gated-vad-asr, vad={vad_mode}")
     print(f"audio_filter={audio_filter}")
+    print(f"audio_stream={args.audio_stream}")
+    if args.audio_stream:
+        print(
+            f"audio_stream_target={args.audio_stream_host}:{args.audio_stream_port} "
+            f"codec=opus rate={args.audio_stream_sample_rate} channels=1 "
+            f"bitrate={args.audio_stream_bitrate} transport=rtp/udp"
+        )
     print(f"wake_grammar={wake_grammar}")
     print(f"photo_aliases={photo_aliases}")
     print(f"photo_grammar={photo_grammar}")
@@ -968,6 +1050,20 @@ def nonnegative_float(value):
     return parsed
 
 
+def udp_port(value):
+    parsed = int(value)
+    if not 1 <= parsed <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return parsed
+
+
+def opus_bitrate(value):
+    parsed = int(value)
+    if not 6000 <= parsed <= 510000:
+        raise argparse.ArgumentTypeError("Opus bitrate must be between 6000 and 510000")
+    return parsed
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Vosk ASR wake word prototype for 你好小环")
     parser.add_argument("--sample-rate", type=int, default=16000)
@@ -1019,6 +1115,15 @@ def build_parser():
     p_listen.add_argument("--photo-camera-id", default="cam01")
     p_listen.add_argument("--audio-filter", choices=sorted(AUDIO_FILTERS), default="voice")
     p_listen.add_argument("--audio-filter-graph", default="")
+    p_listen.add_argument("--audio-stream", action=argparse.BooleanOptionalAction, default=False)
+    p_listen.add_argument("--audio-stream-host", default="127.0.0.1")
+    p_listen.add_argument("--audio-stream-port", type=udp_port, default=50020)
+    p_listen.add_argument("--audio-stream-sample-rate", type=int, choices=[48000], default=48000)
+    p_listen.add_argument(
+        "--audio-stream-bitrate",
+        type=opus_bitrate,
+        default=64000,
+    )
     p_listen.add_argument("--chunk-seconds", type=float, default=0.10)
     p_listen.add_argument("--cooldown-seconds", type=float, default=2.5)
     p_listen.add_argument("--playback-ignore-seconds", type=float, default=0.3)
