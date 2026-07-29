@@ -25,6 +25,7 @@
     "enabled": true,
     "root": "/home/fz/recording_staging",
     "defer_player_compatible_finalize": true,
+    "rgb_output_mode": "fragmented_mp4",
     "idle_finalize_ms": 5000,
     "upload_interval_ms": 2000,
     "upload_bandwidth_limit_mbps": 240,

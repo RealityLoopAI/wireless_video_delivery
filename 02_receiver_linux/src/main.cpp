@@ -1133,6 +1133,7 @@ struct Config {
         bool enabled = false;
         std::string root;
         bool defer_player_compatible_finalize = true;
+        std::string rgb_output_mode = "conventional_mp4";
         int idle_finalize_ms = 5000;
     };
 
@@ -1281,6 +1282,8 @@ Config load_config(const std::string &path) {
     cfg.recording_staging.defer_player_compatible_finalize =
         bool_value(recording_staging, "defer_player_compatible_finalize",
                    cfg.recording_staging.defer_player_compatible_finalize);
+    cfg.recording_staging.rgb_output_mode =
+        string_value(recording_staging, "rgb_output_mode", cfg.recording_staging.rgb_output_mode);
     cfg.recording_staging.idle_finalize_ms =
         int_value(recording_staging, "idle_finalize_ms", cfg.recording_staging.idle_finalize_ms);
     Json::Value photo_capture(Json::objectValue);
@@ -1346,6 +1349,11 @@ Config load_config(const std::string &path) {
     }
     if(cfg.recording_staging.idle_finalize_ms < 1000 || cfg.recording_staging.idle_finalize_ms > 300000) {
         throw std::runtime_error("recording_staging.idle_finalize_ms must be between 1000 and 300000");
+    }
+    if(cfg.recording_staging.rgb_output_mode != "conventional_mp4"
+       && cfg.recording_staging.rgb_output_mode != "fragmented_mp4") {
+        throw std::runtime_error(
+            "recording_staging.rgb_output_mode must be conventional_mp4 or fragmented_mp4");
     }
     if(cfg.photo_capture.enabled && cfg.photo_capture.staging_root.empty()) {
         throw std::runtime_error("photo_capture.staging_root must not be empty when photo capture is enabled");
@@ -5018,6 +5026,8 @@ private:
         bool checked_any_media = false;
         const bool defer_full_validation = cfg.recording_staging.enabled
                                            && cfg.recording_staging.defer_player_compatible_finalize;
+        const bool preserve_fragmented_rgb =
+            cfg.recording_staging.rgb_output_mode == "fragmented_mp4";
 
         const auto validate_media = [&](const std::filesystem::path &path, const std::string &stream_name) -> bool {
             if(!file_size_nonzero(path)) {
@@ -5040,14 +5050,17 @@ private:
         if((rgb_pipe_failed_ || !rgb_ok) && rebuild_rgb_from_recovery(cfg, ffprobe_path, logger)) {
             rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_recovered");
         }
-        if(rgb_ok && !defer_full_validation) {
+        if(rgb_ok && !defer_full_validation && !preserve_fragmented_rgb) {
             rgb_ok = finalize_rgb_player_compatible(cfg, ffprobe_path, logger);
             if(rgb_ok) {
                 rgb_ok = validate_media(file_path("rgb.mp4"), "rgb_compatible");
             }
         }
-        else if(rgb_ok && defer_full_validation) {
+        else if(rgb_ok && defer_full_validation && !preserve_fragmented_rgb) {
             append_retime_log(log_path, "rgb player-compatible remux deferred to recording uploader");
+        }
+        else if(rgb_ok && preserve_fragmented_rgb) {
+            append_retime_log(log_path, "rgb fragmented MP4 retained for final delivery");
         }
         if(rgb_ok && !cfg.write_debug_h264 && !rgb_debug_path_.empty()) {
             std::error_code ec;
@@ -5115,8 +5128,13 @@ private:
              << (cfg.recording_staging.enabled ? "local_staging" : "direct_nas") << "\",\n";
         meta << "  \"recording_relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
         meta << "  \"nas_publish_root\": \"" << json_escape(cfg.nas_root) << "\",\n";
+        meta << "  \"rgb_output_mode\": \"" << json_escape(cfg.recording_staging.rgb_output_mode) << "\",\n";
         meta << "  \"player_compatible_finalize_deferred\": "
-             << (cfg.recording_staging.enabled && cfg.recording_staging.defer_player_compatible_finalize ? "true" : "false")
+             << (cfg.recording_staging.enabled
+                     && cfg.recording_staging.defer_player_compatible_finalize
+                     && cfg.recording_staging.rgb_output_mode == "conventional_mp4"
+                     ? "true"
+                     : "false")
              << ",\n";
         meta << "  \"recording_ready_file\": \""
              << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
@@ -5767,6 +5785,8 @@ public:
         out << "\"root\":\"" << json_escape(config_.recording_staging.root) << "\",";
         out << "\"defer_player_compatible_finalize\":"
             << (config_.recording_staging.defer_player_compatible_finalize ? "true" : "false") << ',';
+        out << "\"rgb_output_mode\":\""
+            << json_escape(config_.recording_staging.rgb_output_mode) << "\",";
         out << "\"idle_finalize_ms\":" << config_.recording_staging.idle_finalize_ms << "},";
         out << "\"recording_staging_enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
         out << "\"recording_write_root\":\""

@@ -52,14 +52,14 @@ Orbbec RGB frame
   -> H.264 编码
   -> TCP 媒体包 stream_type=rgb
   -> 接收端录制阶段写入 fragmented rgb.mp4
-  -> 正常停止后无损重封装并原子发布普通 rgb.mp4
+  -> 正常停止后校验 moov/moof/mfra 并原子发布 fMP4
   -> 接收端在 frames.csv 中记录对应关系
 ```
 
 当前设计要点：
 
 1. RGB 正式录制文件是 `rgb.mp4`。
-2. 录制阶段使用 fragmented MP4，降低异常中断时缺 `moov` 导致整段不可读的风险；正常停止后转换为普通 MP4，兼容 Windows 等播放器的进度条拖动。
+2. 录制阶段使用 fragmented MP4，降低异常中断时缺 `moov` 导致整段不可读的风险；生产交付保持 fMP4，避免长文件整段重封装。VLC、mpv、ffplay 和基于 FFmpeg 的下游可直接播放、定位和解码；旧播放器兼容模式可改回普通 MP4。
 3. RGB 视频帧和 `frames.csv` 行之间不能靠“第 N 行等于第 N 帧”这种隐含假设。
 4. 当前正式做法是在 `frames.csv` 中写 `rgb_recorded` 和 `rgb_video_frame_index`。
 5. 下游读取 `rgb.mp4` 时，应通过 `rgb_video_frame_index` 找到对应的视频帧。
@@ -142,7 +142,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 <recording_staging.root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
 ```
 
-本地分片完成后，独立上传器先复制到 `<nas_root>/.gwv3_capture_queue/`。NAS 已持久化 capture 后，本地 fMP4 作为可回收的重封装缓存暂时保留；后台优先从本地读取 fMP4，并把普通 MP4 直接写入 NAS，避免通过 CIFS 把 RGB 从 NAS 完整读回。最终目录发布成功后删除本地缓存；本地缓存缺失或达到磁盘高水位时自动回退为 NAS capture 源。下游只能读取带正式 ready 标记的 NAS 最终目录，不能扫描隐藏 capture queue。
+本地分片完成后，独立上传器先复制到 `<nas_root>/.gwv3_capture_queue/`。生产配置检查 RGB fMP4 已正常关闭后直接发布，不执行整文件重封装；最终目录发布成功后删除本地缓存。配置为 `conventional_mp4` 时仍保留原有本地优先、NAS 回退的无损重封装路径。下游只能读取带正式 ready 标记的 NAS 最终目录，不能扫描隐藏 capture queue。
 
 默认 `storage_key` 是：
 
@@ -156,7 +156,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 | 文件 | 当前作用 |
 | --- | --- |
-| `rgb.mp4` | RGB 正式视频文件；本地与 NAS capture 阶段为 fragmented MP4，后台无损转换为普通可拖动 MP4 后发布 |
+| `rgb.mp4` | RGB 正式视频文件；生产输出为正常关闭的 fragmented MP4，ready 标记中的 `rgb_container_format` 给出实际类型 |
 | `depth.mkv` | Depth 正式文件，FFV1 封装 `uint16` 深度帧 |
 | `frames.csv` | 每个媒体包和录制帧的帧号、时间戳、诊断字段和 RGB 视频帧索引 |
 | `meta.json` | 录制段元信息、实际帧率、文件名、帧数和状态 |
@@ -167,7 +167,7 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 | `recording_staged.json` | 本地媒体和索引已关闭，等待 uploader 处理 |
 | `recording_ready.json` | NAS 最终目录已完整发布，可供下游使用 |
 
-NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。只有最终目录中的 `recording_ready.json` 表示普通 MP4 已可交付。
+NAS 隐藏队列内部还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。只有最终目录中的 `recording_ready.json` 表示该段媒体已完整交付。
 
 ### 9.1 按需语音照片
 

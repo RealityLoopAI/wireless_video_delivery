@@ -72,6 +72,14 @@ TRANSIENT_SUFFIXES = (
 CAPTURE_QUEUE_DIRECTORY = ".gwv3_capture_queue"
 PUBLISH_JOURNAL_PREFIX = ".gwv3-publish-"
 PUBLISH_JOURNAL_SUFFIX = ".json"
+RGB_OUTPUT_CONVENTIONAL_MP4 = "conventional_mp4"
+RGB_OUTPUT_FRAGMENTED_MP4 = "fragmented_mp4"
+RGB_OUTPUT_MODES = frozenset(
+    {
+        RGB_OUTPUT_CONVENTIONAL_MP4,
+        RGB_OUTPUT_FRAGMENTED_MP4,
+    }
+)
 
 
 def request_stop(_signum: int, _frame: object) -> None:
@@ -409,7 +417,10 @@ def finalize_rgb(
     heartbeat: Callable[[], None] | None = None,
     pause: Callable[[], bool] | None = None,
     source_rgb_path: Path | None = None,
+    rgb_output_mode: str = RGB_OUTPUT_CONVENTIONAL_MP4,
 ) -> str:
+    if rgb_output_mode not in RGB_OUTPUT_MODES:
+        raise ValueError(f"unsupported RGB output mode: {rgb_output_mode}")
     rgb_path = segment / rgb_name
     if not rgb_path.is_file() or rgb_path.stat().st_size == 0:
         return "missing"
@@ -429,6 +440,8 @@ def finalize_rgb(
         return "already_seekable"
     if b"mfra" not in atoms:
         raise RuntimeError(f"RGB fragmented MP4 has no closing mfra atom: {rgb_path}")
+    if rgb_output_mode == RGB_OUTPUT_FRAGMENTED_MP4:
+        return "fragmented_passthrough"
 
     remux_source = rgb_path
     source_kind = "nas"
@@ -502,6 +515,7 @@ def finalize_staged_segment(
     ffmpeg_path: str,
     heartbeat: Callable[[], None] | None = None,
     pause: Callable[[], bool] | None = None,
+    rgb_output_mode: str = RGB_OUTPUT_CONVENTIONAL_MP4,
 ) -> tuple[dict[str, Any], Path]:
     frames_name = marker_filename(staged.get("frames_file"), "frames.csv", "frames_file")
     rgb_name = marker_filename(staged.get("rgb_file"), "rgb.mp4", "rgb_file")
@@ -524,13 +538,27 @@ def finalize_staged_segment(
             expected_rgb_duration = value
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
-    finalize_rgb(segment, rgb_name, ffmpeg_path, expected_rgb_duration, heartbeat, pause)
+    finalize_rgb(
+        segment,
+        rgb_name,
+        ffmpeg_path,
+        expected_rgb_duration,
+        heartbeat,
+        pause,
+        rgb_output_mode=rgb_output_mode,
+    )
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
     if not rgb_exists and not depth_exists:
         raise RuntimeError(f"no finalized media file found under {segment}")
     if depth_exists and media_duration(segment / depth_name, ffmpeg_path, pause) is None:
         raise RuntimeError(f"depth recording is not readable: {segment / depth_name}")
+    rgb_atoms = mp4_atoms(segment / rgb_name) if rgb_exists else None
+    rgb_container_format = (
+        RGB_OUTPUT_FRAGMENTED_MP4
+        if rgb_atoms is not None and b"moof" in rgb_atoms
+        else RGB_OUTPUT_CONVENTIONAL_MP4 if rgb_exists else "missing"
+    )
 
     ready_name = str(staged.get("ready_file") or "")
     if not ready_name:
@@ -558,6 +586,8 @@ def finalize_staged_segment(
         "meta_file": meta_name,
         "rgb_file": rgb_name,
         "depth_file": depth_name,
+        "rgb_container_format": rgb_container_format,
+        "rgb_fragmented": rgb_container_format == RGB_OUTPUT_FRAGMENTED_MP4,
         "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
         "finalized_by": "gwv3_recording_uploader",
     }
@@ -618,7 +648,10 @@ def expected_rgb_duration(segment: Path, meta_name: str) -> float | None:
         return None
 
 
-def build_ready_marker(source: dict[str, Any]) -> dict[str, Any]:
+def build_ready_marker(
+    source: dict[str, Any],
+    rgb_container_format: str,
+) -> dict[str, Any]:
     ready_name = marker_filename(source.get("ready_file"), "recording_ready.json", "ready_file")
     return {
         "schema": "gwv3_recording_ready_v1",
@@ -637,6 +670,8 @@ def build_ready_marker(source: dict[str, Any]) -> dict[str, Any]:
         "rgb_file": marker_filename(source.get("rgb_file"), "rgb.mp4", "rgb_file"),
         "depth_file": marker_filename(source.get("depth_file"), "depth.mkv", "depth_file"),
         "ready_file": ready_name,
+        "rgb_container_format": rgb_container_format,
+        "rgb_fragmented": rgb_container_format == RGB_OUTPUT_FRAGMENTED_MP4,
         "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
         "finalized_by": "gwv3_recording_uploader_nas_first",
     }
@@ -735,6 +770,7 @@ def finalize_captured_segment(
     heartbeat: Callable[[], None] | None = None,
     pause: Callable[[], bool] | None = None,
     local_segment: Path | None = None,
+    rgb_output_mode: str = RGB_OUTPUT_CONVENTIONAL_MP4,
 ) -> tuple[dict[str, Any], Path, str]:
     frames_name = marker_filename(capture.get("frames_file"), "frames.csv", "frames_file")
     rgb_name = marker_filename(capture.get("rgb_file"), "rgb.mp4", "rgb_file")
@@ -751,7 +787,8 @@ def finalize_captured_segment(
         expected_rgb_duration(segment, meta_name),
         heartbeat,
         pause,
-        (local_segment / rgb_name) if local_segment is not None else None,
+        source_rgb_path=(local_segment / rgb_name) if local_segment is not None else None,
+        rgb_output_mode=rgb_output_mode,
     )
     rgb_exists = (segment / rgb_name).is_file() and (segment / rgb_name).stat().st_size > 0
     depth_exists = (segment / depth_name).is_file() and (segment / depth_name).stat().st_size > 0
@@ -759,8 +796,14 @@ def finalize_captured_segment(
         raise RuntimeError(f"no finalized media file found under NAS capture {segment}")
     if depth_exists and media_duration(segment / depth_name, ffmpeg_path, pause) is None:
         raise RuntimeError(f"depth recording is not readable: {segment / depth_name}")
+    rgb_atoms = mp4_atoms(segment / rgb_name) if rgb_exists else None
+    rgb_container_format = (
+        RGB_OUTPUT_FRAGMENTED_MP4
+        if rgb_atoms is not None and b"moof" in rgb_atoms
+        else RGB_OUTPUT_CONVENTIONAL_MP4 if rgb_exists else "missing"
+    )
 
-    ready = build_ready_marker(capture)
+    ready = build_ready_marker(capture, rgb_container_format)
     finalized_path = segment / nas_finalized_marker_name(ready_name)
     atomic_json_write(
         finalized_path,
@@ -1456,6 +1499,14 @@ class Uploader:
         self.retain_local_capture_for_finalize = bool(
             staging.get("retain_local_capture_for_finalize", True)
         )
+        self.rgb_output_mode = str(
+            staging.get("rgb_output_mode") or RGB_OUTPUT_CONVENTIONAL_MP4
+        )
+        if self.rgb_output_mode not in RGB_OUTPUT_MODES:
+            raise ValueError(
+                "recording_staging.rgb_output_mode must be "
+                f"one of {sorted(RGB_OUTPUT_MODES)}"
+            )
         self.local_cache_high_watermark_percent = min(
             100.0,
             max(0.0, float(staging.get("local_cache_high_watermark_percent", 75))),
@@ -1502,6 +1553,7 @@ class Uploader:
         self.running = False
         self.local_remuxes = 0
         self.nas_fallback_remuxes = 0
+        self.fragmented_passthroughs = 0
         self.local_cache_pressure_releases = 0
         self.last_capture_duration_ms = 0
         self.last_finalize_duration_ms = 0
@@ -1554,7 +1606,12 @@ class Uploader:
                     "schema": "gwv3_recording_uploader_status_v2",
                     "running": self.running and not STOP_REQUESTED,
                     "updated_us": now_us(),
-                    "pipeline_mode": "nas_first_local_cache_finalize",
+                    "pipeline_mode": (
+                        "nas_first_fragmented_mp4"
+                        if self.rgb_output_mode == RGB_OUTPUT_FRAGMENTED_MP4
+                        else "nas_first_local_cache_finalize"
+                    ),
+                    "rgb_output_mode": self.rgb_output_mode,
                     "staging_root": str(self.staging_root),
                     "nas_root": str(self.nas_root),
                     "capture_queue_root": str(self.capture_queue_root),
@@ -1607,6 +1664,7 @@ class Uploader:
                     "last_success_us": self.last_success_us,
                     "local_remuxes": self.local_remuxes,
                     "nas_fallback_remuxes": self.nas_fallback_remuxes,
+                    "fragmented_passthroughs": self.fragmented_passthroughs,
                     "local_cache_pressure_releases": self.local_cache_pressure_releases,
                     "last_capture_duration_ms": self.last_capture_duration_ms,
                     "last_finalize_duration_ms": self.last_finalize_duration_ms,
@@ -2000,6 +2058,7 @@ class Uploader:
                     "finalizing_local_cache_batch"
                 ),
                 local_segment=local_segment,
+                rgb_output_mode=self.rgb_output_mode,
             )
             return {
                 "segment": segment,
@@ -2076,6 +2135,8 @@ class Uploader:
                 self.local_remuxes += 1
             elif remux_source == "nas":
                 self.nas_fallback_remuxes += 1
+            elif remux_source == "fragmented_passthrough":
+                self.fragmented_passthroughs += 1
             cached = self.local_cache_marker(local_segment)
             if cached is not None:
                 self.release_local_cache(
@@ -2230,6 +2291,7 @@ class Uploader:
                     heartbeat=self.update_active_status,
                     pause=lambda: self.should_pause_for_receiver_io("finalizing_on_nas"),
                     local_segment=local_segment,
+                    rgb_output_mode=self.rgb_output_mode,
                 )
                 finalize_duration_ms = round(
                     (time.monotonic() - finalize_started) * 1000
@@ -2273,6 +2335,8 @@ class Uploader:
                 self.local_remuxes += 1
             elif remux_source == "nas":
                 self.nas_fallback_remuxes += 1
+            elif remux_source == "fragmented_passthrough":
+                self.fragmented_passthroughs += 1
             if local_segment is not None:
                 cached = self.local_cache_marker(local_segment)
                 if cached is not None:

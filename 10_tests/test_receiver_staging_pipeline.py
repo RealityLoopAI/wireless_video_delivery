@@ -59,6 +59,7 @@ def run(args: argparse.Namespace) -> None:
                 "enabled": True,
                 "root": str(staging_root),
                 "defer_player_compatible_finalize": True,
+                "rgb_output_mode": "fragmented_mp4",
                 "idle_finalize_ms": 1000,
                 "upload_interval_ms": 100,
                 "delete_after_upload": True,
@@ -172,7 +173,11 @@ def run(args: argparse.Namespace) -> None:
             else:
                 raise AssertionError("staged recording was not finalized and published to NAS")
 
-            assert_recording_output(nas_root, minimum_rgb_duration=2.0)
+            assert_recording_output(
+                nas_root,
+                minimum_rgb_duration=2.0,
+                expected_rgb_container="fragmented_mp4",
+            )
             # The NAS ready marker is published before the uploader releases
             # its optional local remux cache. Allow that small cleanup window.
             deadline = time.monotonic() + 10
@@ -194,6 +199,9 @@ def run(args: argparse.Namespace) -> None:
                 raise AssertionError("receiver did not refresh the drained uploader backlog status")
             assert status["recording_staging_enabled"] is True
             assert status["recording_write_root"] == str(staging_root)
+            assert status["recording_staging"]["rgb_output_mode"] == "fragmented_mp4"
+            assert status["recording_uploader"]["pipeline_mode"] == "nas_first_fragmented_mp4"
+            assert status["recording_uploader"]["fragmented_passthroughs"] == 1
         except Exception:
             receiver_log.flush()
             uploader_log.flush()

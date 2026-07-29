@@ -690,6 +690,138 @@ def run(args: argparse.Namespace) -> None:
         assert fallback_uploader.local_cache_pressure_releases == 1
         assert not fallback_segment.exists()
 
+        fragmented_staging = temporary / "fragmented-staging"
+        fragmented_nas = temporary / "fragmented-nas"
+        fragmented_segment = (
+            fragmented_staging / "camera-fragmented" / "2026-07-24" / "160000"
+        )
+        shutil.copytree(interrupt_segment, fragmented_segment)
+        fragmented_marker_path = next(
+            fragmented_segment.glob("*recording_staged.json")
+        )
+        fragmented_marker = json.loads(
+            fragmented_marker_path.read_text(encoding="ascii")
+        )
+        fragmented_marker["relative_path"] = (
+            "camera-fragmented/2026-07-24/160000"
+        )
+        fragmented_marker_path.write_text(
+            json.dumps(fragmented_marker),
+            encoding="ascii",
+        )
+        fragmented_nas.mkdir()
+        fragmented_config_path = temporary / "fragmented-receiver.json"
+        fragmented_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(fragmented_nas),
+                    "ffmpeg_path": ffmpeg,
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(fragmented_staging),
+                        "rgb_output_mode": "fragmented_mp4",
+                        "delete_after_upload": True,
+                        "retain_local_capture_for_finalize": True,
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        fragmented_uploader = uploader_module.Uploader(fragmented_config_path)
+        original_run_checked = uploader_module.run_checked
+
+        def reject_remux(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("fMP4 delivery unexpectedly invoked FFmpeg remux")
+
+        uploader_module.run_checked = reject_remux
+        try:
+            assert fragmented_uploader.run_once() is True
+        finally:
+            uploader_module.run_checked = original_run_checked
+        fragmented_destination = (
+            fragmented_nas / "camera-fragmented" / "2026-07-24" / "160000"
+        )
+        fragmented_rgb = fragmented_destination / f"{prefix}rgb.mp4"
+        fragmented_atoms = atoms(fragmented_rgb)
+        assert {b"moov", b"moof", b"mfra"} <= fragmented_atoms
+        fragmented_ready = json.loads(
+            (
+                fragmented_destination / f"{prefix}recording_ready.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert fragmented_ready["rgb_container_format"] == "fragmented_mp4"
+        assert fragmented_ready["rgb_fragmented"] is True
+        assert fragmented_uploader.fragmented_passthroughs == 1
+        assert fragmented_uploader.local_remuxes == 0
+        assert fragmented_uploader.nas_fallback_remuxes == 0
+        fragmented_status = json.loads(
+            (
+                fragmented_staging / ".gwv3_uploader_status.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert fragmented_status["pipeline_mode"] == "nas_first_fragmented_mp4"
+        assert fragmented_status["rgb_output_mode"] == "fragmented_mp4"
+        assert fragmented_status["fragmented_passthroughs"] == 1
+        assert fragmented_status["last_remux_source"] == "fragmented_passthrough"
+        fragmented_probe = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(fragmented_rgb),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        assert (
+            fragmented_probe.returncode == 0
+            and float(fragmented_probe.stdout) > 2.0
+        ), fragmented_probe.stderr
+        fragmented_seek = subprocess.run(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-ss",
+                "1",
+                "-i",
+                str(fragmented_rgb),
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        assert fragmented_seek.returncode == 0, fragmented_seek.stderr
+
+        invalid_mode_config = json.loads(
+            fragmented_config_path.read_text(encoding="ascii")
+        )
+        invalid_mode_config["recording_staging"]["rgb_output_mode"] = "unknown"
+        invalid_mode_path = temporary / "invalid-output-mode.json"
+        invalid_mode_path.write_text(
+            json.dumps(invalid_mode_config),
+            encoding="ascii",
+        )
+        try:
+            uploader_module.Uploader(invalid_mode_path)
+        except ValueError as error:
+            assert "rgb_output_mode" in str(error)
+        else:
+            raise AssertionError("invalid RGB output mode was accepted")
+
         unsafe_segment = staging_root / "camera-unsafe" / "2026-07-21" / "120100"
         unsafe_segment.mkdir(parents=True)
         unsafe_marker = dict(staged)

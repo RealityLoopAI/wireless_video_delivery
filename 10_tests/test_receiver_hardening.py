@@ -841,7 +841,11 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
     assert len(ready_files) >= 2, "idle finalization/reconnect did not create separate finalized sessions"
 
 
-def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -> None:
+def assert_recording_output(
+    nas_root: Path,
+    minimum_rgb_duration: float = 1.0,
+    expected_rgb_container: str = "conventional_mp4",
+) -> None:
     rgb_files = list(nas_root.rglob("rgb.mp4"))
     assert rgb_files, "rgb.mp4 was not finalized"
     for rgb_file in rgb_files:
@@ -859,7 +863,14 @@ def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -
         assert metadata.get("streams", [{}])[0].get("codec_name") == "h264"
         assert float(metadata.get("format", {}).get("duration", 0)) > minimum_rgb_duration
         atoms = mp4_top_level_atoms(rgb_file)
-        assert b"moov" in atoms and b"moof" not in atoms, "finalized RGB must be a conventional MP4"
+        if expected_rgb_container == "fragmented_mp4":
+            assert {b"moov", b"moof", b"mfra"} <= atoms, (
+                "finalized RGB must be a closed fragmented MP4"
+            )
+        else:
+            assert b"moov" in atoms and b"moof" not in atoms, (
+                "finalized RGB must be a conventional MP4"
+            )
         seek = subprocess.run(
             ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(rgb_file), "-frames:v", "1", "-f", "null", "-"],
             stdout=subprocess.PIPE,
@@ -920,6 +931,11 @@ def assert_recording_output(nas_root: Path, minimum_rgb_duration: float = 1.0) -
     for ready_file in ready_files:
         ready = json.loads(ready_file.read_text(encoding="utf-8"))
         assert ready.get("ready") is True
+        if "rgb_container_format" in ready:
+            assert ready["rgb_container_format"] == expected_rgb_container
+            assert ready["rgb_fragmented"] is (
+                expected_rgb_container == "fragmented_mp4"
+            )
         session_id = int(ready.get("recording_session_id", 0))
         window_start = int(ready.get("recording_window_start_global_us", 0))
         assert session_id > 0
