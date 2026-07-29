@@ -104,15 +104,36 @@ def test_photo_text_matching(module, defaults):
         "拍 [unk]",
         "[unk] 照",
         "牌照",
+        "拍 早",
+        "排 造",
+        "派 澡",
+        "拍我[unk]",
+        "帮我排早",
+        "请派造",
     ]
     for text in accepted:
         assert module.is_photo_text(text, aliases), text
-    for text in ["", "[unk]", "播放音乐", "你好小环"]:
+    for first in module.PHOTO_PAI_SYLLABLES:
+        for second in module.PHOTO_ZAO_SYLLABLES:
+            assert module.is_photo_text(f"{first} {second}", aliases)
+    for text in ["", "[unk]", "播放音乐", "你好小环", "早上好", "排队"]:
         assert not module.is_photo_text(text, aliases), text
 
     grammar = module.make_photo_grammar(defaults)
-    for phrase in ["拍 一 张 照片", "帮 我 拍照", "请 拍照", "牌照", "[unk]"]:
+    for phrase in [
+        "拍 一 张 照片",
+        "帮 我 拍照",
+        "请 拍照",
+        "牌照",
+        "拍 早",
+        "排 造",
+        "派 澡",
+        "[unk]",
+    ]:
         assert phrase in grammar
+    for first in module.PHOTO_PAI_SYLLABLES:
+        for second in module.PHOTO_ZAO_SYLLABLES:
+            assert f"{first} {second}" in grammar
 
 
 def test_async_capture_does_not_block(module):

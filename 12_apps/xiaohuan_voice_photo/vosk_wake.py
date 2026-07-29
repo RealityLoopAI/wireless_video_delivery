@@ -35,6 +35,17 @@ AUDIO_FILTERS = {
     "voice-agc": "highpass=f=80,lowpass=f=7600,afftdn=nf=-30,dynaudnorm=f=75:g=8:p=0.9",
 }
 
+# Some speakers pronounce "拍照" as "pai zao" rather than "pai zhao".
+# Keep these alternatives scoped to the post-wake photo grammar.
+PHOTO_PAI_SYLLABLES = ("拍", "排", "牌", "派")
+PHOTO_ZAO_SYLLABLES = ("照", "早", "造", "澡", "灶", "遭")
+PHOTO_PHONETIC_FORMS = frozenset(
+    first + second
+    for first in PHOTO_PAI_SYLLABLES
+    for second in PHOTO_ZAO_SYLLABLES
+)
+PHOTO_PARTIAL_FORMS = frozenset(PHOTO_PAI_SYLLABLES + PHOTO_ZAO_SYLLABLES)
+
 
 def normalize_text(text: str):
     return "".join(ch for ch in text if not ch.isspace())
@@ -53,10 +64,34 @@ def is_photo_text(text: str, aliases):
         return False
     if any(alias in compact for alias in aliases):
         return True
-    # The constrained Vosk grammar commonly returns these forms for the
-    # two-syllable command. This fallback is only used in photo command mode.
+    # The constrained Vosk grammar may retain only one syllable or emit a
+    # homophone. This matcher is only called in the post-wake command mode.
+    has_unknown = "[unk]" in compact
     compact_without_unknown = compact.replace("[unk]", "")
-    return compact_without_unknown in {"拍", "照", "拍照", "牌照"}
+    if compact_without_unknown in PHOTO_PARTIAL_FORMS:
+        return True
+    if compact_without_unknown in PHOTO_PHONETIC_FORMS:
+        return True
+
+    # Preserve intent when a longer request such as "帮我拍照" contains filler
+    # words or one undecodable syllable.
+    for first in PHOTO_PAI_SYLLABLES:
+        first_pos = compact_without_unknown.find(first)
+        if first_pos < 0:
+            continue
+        for second in PHOTO_ZAO_SYLLABLES:
+            second_pos = compact_without_unknown.find(second, first_pos + 1)
+            if 0 < second_pos - first_pos <= 4:
+                return True
+        if has_unknown and compact_without_unknown in {
+            first,
+            first + "我",
+            "帮我" + first,
+            "给我" + first,
+            "请" + first,
+        }:
+            return True
+    return False
 
 
 def unique_items(items):
@@ -114,7 +149,12 @@ def make_photo_grammar(args):
         "开始 拍照",
         "牌照",
     ]
-    return unique_items(phrases + ["[unk]"])
+    phonetic_phrases = [
+        f"{first} {second}"
+        for first in PHOTO_PAI_SYLLABLES
+        for second in PHOTO_ZAO_SYLLABLES
+    ]
+    return unique_items(phrases + phonetic_phrases + ["[unk]"])
 
 
 class SplitWakeMatcher:
