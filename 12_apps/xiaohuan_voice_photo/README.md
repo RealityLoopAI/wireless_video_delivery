@@ -150,7 +150,9 @@ tail -f wake_runtime.log
 
 唤醒固定回复 `response_wozai_tts_default.wav` 的内容为“我在，有什么可以帮到您的”；
 拍照固定回复 `response_photo_done.wav` 的内容为“好的，已拍照”。两者都使用 Edge
-TTS `zh-CN-XiaoyiNeural` 的默认语速、音调和音量提前生成，因此触发时无需联网。
+TTS `zh-CN-XiaoyiNeural` 的默认语速、音调和音量提前生成，并裁除 Edge 输出自带的
+长首尾静音，因此触发时无需联网，也不会在可听回复结束后继续阻塞麦克风。唤醒回复
+播放完后不再等待远程 TTS 队列聚合，立即重开命令识别。
 
 `192.168.66.133` 上的外部动态文本默认使用 Edge TTS
 `zh-CN-XiaoyiNeural`。首次遇到的文本需要联网合成；成功结果写入

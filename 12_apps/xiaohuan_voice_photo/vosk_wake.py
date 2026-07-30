@@ -830,8 +830,13 @@ def listen(args):
                         opens_command_window or playback_task.opens_command_window
                     )
                     speech_service.complete_task(playback_task, playback_ok)
+                    queue_wait_seconds = (
+                        0.0
+                        if opens_command_window
+                        else args.tts_resume_delay_seconds
+                    )
                     playback_task = speech_service.next_ready_task(
-                        timeout=args.tts_resume_delay_seconds,
+                        timeout=queue_wait_seconds,
                     )
                 if stop:
                     break

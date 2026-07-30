@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+from array import array
 import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import time
+import wave
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -97,6 +99,40 @@ def test_espeak_mixed_language_markup(module):
     assert "&lt; 5" in ssml
     assert ssml.startswith("<speak>")
     assert ssml.endswith("</speak>")
+
+
+def test_fixed_xiaoyi_prompts_are_trimmed(source_root: Path):
+    prompts = {
+        "response_wozai_tts_default.wav": 2.2,
+        "response_wozai_tts_fast.wav": 2.2,
+        "response_photo_done.wav": 1.4,
+    }
+    prompt_dir = source_root / "12_apps" / "xiaohuan_voice_photo"
+    threshold = int(32767 * (10 ** (-45 / 20)))
+    for filename, max_duration in prompts.items():
+        with wave.open(str(prompt_dir / filename), "rb") as audio:
+            assert audio.getsampwidth() == 2
+            channels = audio.getnchannels()
+            sample_rate = audio.getframerate()
+            frame_count = audio.getnframes()
+            samples = array("h")
+            samples.frombytes(audio.readframes(frame_count))
+        if sys.byteorder != "little":
+            samples.byteswap()
+        active_frames = [
+            frame
+            for frame in range(frame_count)
+            if max(
+                abs(samples[frame * channels + channel])
+                for channel in range(channels)
+            )
+            > threshold
+        ]
+        assert active_frames
+        duration = frame_count / sample_rate
+        trailing_silence = duration - ((active_frames[-1] + 1) / sample_rate)
+        assert duration <= max_duration
+        assert trailing_silence <= 0.08
 
 
 def test_edge_tts_persistent_cache_and_failure(module):
@@ -345,6 +381,7 @@ def main():
     module = load_speech_module(source_root)
     test_sentence_splitting(module)
     test_espeak_mixed_language_markup(module)
+    test_fixed_xiaoyi_prompts_are_trimmed(source_root)
     test_edge_tts_persistent_cache_and_failure(module)
     test_http_queue_and_idempotency(module)
     test_local_wav_uses_same_queue(module)
