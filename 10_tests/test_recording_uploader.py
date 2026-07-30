@@ -115,6 +115,186 @@ def run(args: argparse.Namespace) -> None:
         assert spec is not None and spec.loader is not None
         uploader_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(uploader_module)
+
+        incremental_staging = temporary / "incremental-staging"
+        incremental_nas = temporary / "incremental-nas"
+        incremental_segment = (
+            incremental_staging
+            / "camera-incremental"
+            / "2026-07-30"
+            / "120000"
+        )
+        incremental_segment.mkdir(parents=True)
+        incremental_nas.mkdir()
+        incremental_prefix = "incremental_"
+        incremental_rgb = incremental_segment / f"{incremental_prefix}rgb.mp4"
+        incremental_depth_part = (
+            incremental_segment / f"{incremental_prefix}depth_part_000.mkv"
+        )
+        incremental_rgb.write_bytes(
+            b"R" * (3 * 1024 * 1024) + b"rgb-active-tail"
+        )
+        incremental_depth_part.write_bytes(
+            b"D" * (2 * 1024 * 1024) + b"depth-active-tail"
+        )
+        incremental_relative = "camera-incremental/2026-07-30/120000"
+        incremental_meta = {
+            "closed": False,
+            "sender_id": "sender-incremental",
+            "camera_id": "cam01",
+            "segment_start_us": 1785384000000000,
+            "recording_relative_path": incremental_relative,
+            "file_prefix": incremental_prefix,
+            "rgb_file": f"{incremental_prefix}rgb.mp4",
+            "depth_file": f"{incremental_prefix}depth.mkv",
+        }
+        incremental_meta_path = (
+            incremental_segment / f"{incremental_prefix}meta.json"
+        )
+        incremental_meta_path.write_text(
+            json.dumps(incremental_meta),
+            encoding="ascii",
+        )
+        incremental_config_path = temporary / "incremental-receiver.json"
+        incremental_config_path.write_text(
+            json.dumps(
+                {
+                    "nas_root": str(incremental_nas),
+                    "recording_staging": {
+                        "enabled": True,
+                        "root": str(incremental_staging),
+                        "incremental_mirror_enabled": True,
+                        "incremental_mirror_interval_ms": 250,
+                        "incremental_mirror_chunk_mb": 1,
+                        "incremental_mirror_lag_mb": 0,
+                        "pause_during_receiver_finalize": False,
+                    },
+                }
+            ),
+            encoding="ascii",
+        )
+        incremental_uploader = uploader_module.Uploader(
+            incremental_config_path
+        )
+        assert incremental_uploader.process_active_mirrors() is True
+        descriptor = uploader_module.active_segment_descriptor(
+            incremental_segment,
+            incremental_staging,
+        )
+        assert descriptor is not None
+        incremental_capture = descriptor[0]
+        mirror_directory = uploader_module.incremental_mirror_directory(
+            incremental_nas / ".gwv3_capture_queue",
+            incremental_capture,
+        )
+        mirror_state = json.loads(
+            (
+                mirror_directory
+                / uploader_module.INCREMENTAL_MIRROR_STATE_NAME
+            ).read_text(encoding="utf-8")
+        )
+        assert mirror_state["files"][f"{incremental_prefix}rgb.mp4"][
+            "mirrored_bytes"
+        ] == 3 * 1024 * 1024
+        assert mirror_state["files"][f"{incremental_prefix}depth.mkv"][
+            "mirrored_bytes"
+        ] == 2 * 1024 * 1024
+
+        with incremental_rgb.open("r+b") as handle:
+            handle.write(b"RGB-CLOSED")
+            handle.seek(0, 2)
+            handle.write(b"-rgb-final-tail")
+        incremental_depth = (
+            incremental_segment / f"{incremental_prefix}depth.mkv"
+        )
+        incremental_depth_part.replace(incremental_depth)
+        with incremental_depth.open("r+b") as handle:
+            handle.write(b"DEPTH-CLOSED")
+            handle.seek(0, 2)
+            handle.write(b"-depth-final-tail")
+        incremental_frames = (
+            incremental_segment / f"{incremental_prefix}frames.csv"
+        )
+        incremental_frames.write_text(
+            "local_time_us,stream_type\n1,rgb\n",
+            encoding="ascii",
+        )
+        incremental_meta["closed"] = True
+        incremental_meta_path.write_text(
+            json.dumps(incremental_meta),
+            encoding="ascii",
+        )
+        incremental_capture.update(
+            {
+                "schema": "gwv3_recording_capture_ready_v1",
+                "capture_ready": True,
+                "segment_end_us": 1785384015000000,
+                "recording_session_id": 1785384000000000,
+                "recording_window_start_global_us": 1785384000000000,
+                "recording_window_end_global_us": 1785384015000000,
+                "frames_file": incremental_frames.name,
+                "meta_file": incremental_meta_path.name,
+                "ready_file": f"{incremental_prefix}recording_ready.json",
+                "capture_file": (
+                    f"{incremental_prefix}recording_capture_ready.json"
+                ),
+            }
+        )
+        incremental_marker = (
+            incremental_segment
+            / f"{incremental_prefix}recording_staged.json"
+        )
+        incremental_marker.write_text(
+            json.dumps(
+                {
+                    **incremental_capture,
+                    "schema": "gwv3_recording_staged_v1",
+                    "staged": True,
+                }
+            ),
+            encoding="ascii",
+        )
+        original_copy_file_limited = uploader_module.copy_file_limited
+
+        def reject_incremental_media_recopy(
+            source: Path,
+            *copy_args: object,
+            **copy_kwargs: object,
+        ) -> None:
+            assert source.name not in {
+                incremental_rgb.name,
+                incremental_depth.name,
+            }, f"incrementally mirrored media was fully recopied: {source}"
+            original_copy_file_limited(source, *copy_args, **copy_kwargs)
+
+        uploader_module.copy_file_limited = reject_incremental_media_recopy
+        try:
+            incremental_destination, incremental_already_captured = (
+                uploader_module.publish_capture_segment(
+                    incremental_segment,
+                    incremental_nas / ".gwv3_capture_queue",
+                    incremental_capture,
+                    str(incremental_capture["capture_file"]),
+                    0,
+                    incremental_mirror_instance_id=(
+                        incremental_uploader.incremental_mirror_instance_id
+                    ),
+                )
+            )
+        finally:
+            uploader_module.copy_file_limited = original_copy_file_limited
+        assert incremental_already_captured is False
+        assert (
+            incremental_destination / incremental_rgb.name
+        ).read_bytes() == incremental_rgb.read_bytes()
+        assert (
+            incremental_destination / incremental_depth.name
+        ).read_bytes() == incremental_depth.read_bytes()
+        assert not (
+            incremental_destination
+            / uploader_module.INCREMENTAL_MIRROR_STATE_NAME
+        ).exists()
+
         pause_now_us = 1_800_000_000_000_000
         active_camera = {
             "recording": True,

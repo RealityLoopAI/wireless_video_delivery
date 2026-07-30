@@ -43,6 +43,8 @@ TRANSIENT_NAS_ERRNOS = frozenset(
 TRANSIENT_NAMES = {
     ".gwv3_uploader.lock",
     ".gwv3_publish_incomplete.json",
+    ".gwv3_incremental_mirror.json",
+    ".gwv3_incremental_mirror.json.tmp",
     "recording_staged.json",
     "recording_staged.json.tmp",
     "recording_capture_ready.json",
@@ -70,6 +72,8 @@ TRANSIENT_SUFFIXES = (
     "recording_uploaded.json",
 )
 CAPTURE_QUEUE_DIRECTORY = ".gwv3_capture_queue"
+INCREMENTAL_MIRROR_DIRECTORY_PREFIX = ".gwv3-mirroring-"
+INCREMENTAL_MIRROR_STATE_NAME = ".gwv3_incremental_mirror.json"
 PUBLISH_JOURNAL_PREFIX = ".gwv3-publish-"
 PUBLISH_JOURNAL_SUFFIX = ".json"
 RGB_OUTPUT_CONVENTIONAL_MP4 = "conventional_mp4"
@@ -848,6 +852,7 @@ def copy_file_limited(
     bandwidth_mbps: float,
     progress: Callable[[int, int], None] | None = None,
     pause: Callable[[], bool] | None = None,
+    durable: bool = True,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -888,7 +893,8 @@ def copy_file_limited(
                     time.sleep(min(delay, 0.25))
         wait_for_receiver_io()
         output_handle.flush()
-        os.fsync(output_handle.fileno())
+        if durable:
+            os.fsync(output_handle.fileno())
     try:
         shutil.copystat(source, destination, follow_symlinks=False)
     except OSError as error:
@@ -902,6 +908,211 @@ def copy_file_limited(
         )
     if progress is not None:
         progress(total, total)
+
+
+def mirror_complete_file_chunks(
+    source: Path,
+    destination: Path,
+    entry: dict[str, Any] | None,
+    chunk_size: int,
+    lag_bytes: int,
+    bandwidth_mbps: float,
+    progress: Callable[[int, int], None] | None = None,
+    pause: Callable[[], bool] | None = None,
+    cancel: Callable[[], bool] | None = None,
+    output_handle: Any | None = None,
+) -> tuple[dict[str, Any], int]:
+    source_stat = source.stat()
+    source_identity = {
+        "source_name": source.name,
+        "source_dev": int(source_stat.st_dev),
+        "source_ino": int(source_stat.st_ino),
+    }
+    hashes: list[str] = []
+    if isinstance(entry, dict):
+        candidate_hashes = entry.get("chunk_hashes")
+        if (
+            entry.get("source_name") == source_identity["source_name"]
+            and int(entry.get("source_dev") or -1) == source_identity["source_dev"]
+            and int(entry.get("source_ino") or -1) == source_identity["source_ino"]
+            and int(entry.get("chunk_size") or 0) == chunk_size
+            and isinstance(candidate_hashes, list)
+            and all(isinstance(value, str) and len(value) == 64 for value in candidate_hashes)
+        ):
+            hashes = list(candidate_hashes)
+
+    mirrored_bytes = len(hashes) * chunk_size
+    if mirrored_bytes > source_stat.st_size:
+        hashes = []
+        mirrored_bytes = 0
+    try:
+        destination_size = destination.stat().st_size
+    except OSError:
+        destination_size = 0
+    if destination_size < mirrored_bytes:
+        hashes = []
+        mirrored_bytes = 0
+
+    available = max(0, source_stat.st_size - max(0, lag_bytes))
+    target_bytes = available // chunk_size * chunk_size
+    if progress is not None:
+        progress(mirrored_bytes, target_bytes)
+    if target_bytes <= mirrored_bytes and destination_size == mirrored_bytes:
+        assert isinstance(entry, dict)
+        return entry, 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    started = time.monotonic()
+    owns_output = output_handle is None
+    if output_handle is None:
+        mode = "r+b" if destination.is_file() else "w+b"
+        output_handle = destination.open(mode)
+    try:
+        with source.open("rb") as input_handle:
+            output_handle.truncate(mirrored_bytes)
+            input_handle.seek(mirrored_bytes)
+            output_handle.seek(mirrored_bytes)
+            offset = mirrored_bytes
+            while offset < target_bytes:
+                if cancel is not None and cancel():
+                    raise InterruptedError("active segment closed during mirror")
+                wait_while_paused(
+                    pause,
+                    (lambda: progress(offset, target_bytes)) if progress is not None else None,
+                )
+                if cancel is not None and cancel():
+                    raise InterruptedError("active segment closed during mirror")
+                data = input_handle.read(chunk_size)
+                if len(data) != chunk_size:
+                    break
+                output_handle.write(data)
+                digest = hashlib.sha256(data).hexdigest()
+                hashes.append(digest)
+                offset += len(data)
+                copied += len(data)
+                if progress is not None:
+                    progress(offset, target_bytes)
+                if bandwidth_mbps > 0:
+                    expected = copied * 8.0 / (bandwidth_mbps * 1_000_000.0)
+                    delay = expected - (time.monotonic() - started)
+                    if delay > 0:
+                        time.sleep(delay)
+            # The local staging file remains authoritative. Active mirroring
+            # is a disposable prefetch; final capture performs durable fsync.
+            output_handle.flush()
+    finally:
+        if owns_output:
+            output_handle.close()
+
+    updated = {
+        **source_identity,
+        "chunk_size": chunk_size,
+        "chunk_hashes": hashes,
+        "mirrored_bytes": len(hashes) * chunk_size,
+        "source_size_at_update": int(source_stat.st_size),
+        "updated_us": now_us(),
+    }
+    return updated, copied
+
+
+def synchronize_file_from_incremental_mirror(
+    source: Path,
+    destination: Path,
+    entry: dict[str, Any],
+    bandwidth_mbps: float,
+    progress: Callable[[int, int], None] | None = None,
+    pause: Callable[[], bool] | None = None,
+    durable: bool = True,
+) -> int:
+    chunk_size = int(entry.get("chunk_size") or 0)
+    chunk_hashes = entry.get("chunk_hashes")
+    if (
+        chunk_size < 64 * 1024
+        or chunk_size > 64 * 1024 * 1024
+        or not isinstance(chunk_hashes, list)
+        or not all(isinstance(value, str) and len(value) == 64 for value in chunk_hashes)
+        or not destination.is_file()
+    ):
+        raise ValueError("incremental mirror state cannot be reused")
+
+    total = source.stat().st_size
+    existing_size = destination.stat().st_size
+    full_chunks = total // chunk_size
+    written = 0
+    processed = 0
+    started = time.monotonic()
+    with source.open("rb") as input_handle, destination.open("r+b") as output_handle:
+        for index in range(full_chunks):
+            wait_while_paused(
+                pause,
+                (lambda: progress(processed, total)) if progress is not None else None,
+            )
+            data = input_handle.read(chunk_size)
+            if len(data) != chunk_size:
+                raise RuntimeError(f"source changed during incremental sync: {source}")
+            end_offset = (index + 1) * chunk_size
+            digest = hashlib.sha256(data).hexdigest()
+            reusable = (
+                index < len(chunk_hashes)
+                and digest == chunk_hashes[index]
+                and existing_size >= end_offset
+            )
+            if not reusable:
+                output_handle.seek(index * chunk_size)
+                output_handle.write(data)
+                written += len(data)
+            processed = end_offset
+            if progress is not None:
+                progress(processed, total)
+            if bandwidth_mbps > 0 and written > 0:
+                expected = written * 8.0 / (bandwidth_mbps * 1_000_000.0)
+                delay = expected - (time.monotonic() - started)
+                if delay > 0:
+                    time.sleep(delay)
+
+        tail = input_handle.read()
+        if len(tail) != total - processed:
+            raise RuntimeError(f"source changed during incremental tail sync: {source}")
+        if tail:
+            output_handle.seek(processed)
+            output_handle.write(tail)
+            written += len(tail)
+            processed += len(tail)
+            if progress is not None:
+                progress(processed, total)
+        output_handle.truncate(total)
+        output_handle.flush()
+        if durable:
+            os.fsync(output_handle.fileno())
+    try:
+        shutil.copystat(source, destination, follow_symlinks=False)
+    except OSError as error:
+        print(
+            f"recording upload metadata preservation skipped source={source} "
+            f"destination={destination} error={error}",
+            file=sys.stderr,
+            flush=True,
+        )
+    if progress is not None:
+        progress(total, total)
+    return written
+
+
+def fsync_regular_files_parallel(
+    paths: list[Path],
+    workers: int = 4,
+) -> None:
+    if not paths:
+        return
+
+    def fsync_one(path: Path) -> None:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
+
+    with ThreadPoolExecutor(max_workers=min(max(1, workers), len(paths))) as executor:
+        futures = [executor.submit(fsync_one, path) for path in paths]
+        for future in as_completed(futures):
+            future.result()
 
 
 def manifest(root: Path) -> dict[str, int]:
@@ -931,6 +1142,172 @@ def capture_queue_key(capture: dict[str, Any]) -> str:
     return hashlib.sha256("\0".join(identity).encode("utf-8")).hexdigest()[:24]
 
 
+def incremental_mirror_directory(
+    capture_queue_root: Path,
+    capture: dict[str, Any],
+) -> Path:
+    return capture_queue_root / (
+        INCREMENTAL_MIRROR_DIRECTORY_PREFIX + capture_queue_key(capture)
+    )
+
+
+def incremental_mirror_identity(capture: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sender_id": str(capture.get("sender_id") or ""),
+        "camera_id": str(capture.get("camera_id") or ""),
+        "segment_start_us": int(capture.get("segment_start_us") or 0),
+        "relative_path": str(capture.get("relative_path") or ""),
+    }
+
+
+def incremental_mirror_identity_matches(
+    state: dict[str, Any],
+    capture: dict[str, Any],
+) -> bool:
+    identity = state.get("identity")
+    return (
+        isinstance(identity, dict)
+        and incremental_mirror_identity(identity)
+        == incremental_mirror_identity(capture)
+    )
+
+
+def load_incremental_mirror_state(
+    mirror_directory: Path,
+    capture: dict[str, Any],
+    instance_id: str,
+) -> dict[str, Any]:
+    state_path = mirror_directory / INCREMENTAL_MIRROR_STATE_NAME
+    try:
+        state = load_json(state_path)
+        files = state.get("files")
+        if (
+            state.get("schema") != "gwv3_incremental_mirror_v1"
+            or not incremental_mirror_identity_matches(state, capture)
+            or str(state.get("instance_id") or "") != instance_id
+            or not isinstance(files, dict)
+        ):
+            raise ValueError(f"invalid incremental mirror state: {state_path}")
+        return state
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {
+            "schema": "gwv3_incremental_mirror_v1",
+            "instance_id": instance_id,
+            "identity": incremental_mirror_identity(capture),
+            "updated_us": 0,
+            "files": {},
+        }
+
+
+def write_incremental_mirror_state(
+    mirror_directory: Path,
+    state: dict[str, Any],
+) -> None:
+    state["updated_us"] = now_us()
+    state_path = mirror_directory / INCREMENTAL_MIRROR_STATE_NAME
+    temporary = state_path.with_name(state_path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(state, handle, ensure_ascii=True, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+    os.replace(temporary, state_path)
+
+
+def active_segment_descriptor(
+    segment: Path,
+    staging_root: Path,
+) -> tuple[dict[str, Any], dict[str, Path]] | None:
+    if (
+        list(segment.glob("*recording_staged.json"))
+        or list(segment.glob("*recording_ready.json"))
+        or list(segment.glob("*recording_capture_cached.json"))
+    ):
+        return None
+    meta_paths = sorted(segment.glob("*meta.json"))
+    if len(meta_paths) != 1:
+        return None
+    try:
+        meta = load_json(meta_paths[0])
+        if meta.get("closed") is not False:
+            return None
+        relative = safe_relative_path(
+            meta.get("recording_relative_path"),
+            segment.relative_to(staging_root),
+        )
+        if (staging_root / relative).resolve() != segment.resolve():
+            return None
+        sender_id = str(meta.get("sender_id") or "")
+        camera_id = str(meta.get("camera_id") or "")
+        segment_start_us = int(meta.get("segment_start_us") or 0)
+        if not sender_id or not camera_id or segment_start_us <= 0:
+            return None
+        file_prefix = str(meta.get("file_prefix") or "")
+        rgb_name = marker_filename(
+            meta.get("rgb_file"),
+            f"{file_prefix}rgb.mp4",
+            "rgb_file",
+        )
+        depth_name = marker_filename(
+            meta.get("depth_file"),
+            f"{file_prefix}depth.mkv",
+            "depth_file",
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    capture = {
+        "sender_id": sender_id,
+        "camera_id": camera_id,
+        "segment_start_us": segment_start_us,
+        "relative_path": relative.as_posix(),
+        "rgb_file": rgb_name,
+        "depth_file": depth_name,
+    }
+    sources: dict[str, Path] = {}
+    rgb_path = segment / rgb_name
+    if rgb_path.is_file():
+        sources[rgb_name] = rgb_path
+
+    depth_path = segment / depth_name
+    if depth_path.is_file():
+        sources[depth_name] = depth_path
+    else:
+        depth_parts = sorted(segment.glob(f"{file_prefix}depth_part_*.mkv"))
+        if len(depth_parts) == 1 and depth_parts[0].is_file():
+            # A single part is atomically renamed to depth.mkv during close.
+            # Mirror it under the final name so the close-time copy can resume.
+            sources[depth_name] = depth_parts[0]
+    return capture, sources
+
+
+def discover_active_segments(
+    staging_root: Path,
+) -> list[tuple[Path, dict[str, Any], dict[str, Path]]]:
+    result: list[tuple[Path, dict[str, Any], dict[str, Path]]] = []
+    if not staging_root.exists():
+        return result
+    candidates: set[Path] = set()
+    for meta_path in staging_root.rglob("*meta.json"):
+        if (
+            meta_path.parent != staging_root
+            and ".gwv3-uploading-" not in meta_path.as_posix()
+        ):
+            candidates.add(meta_path.parent)
+    for segment in sorted(candidates):
+        descriptor = active_segment_descriptor(segment, staging_root)
+        if descriptor is not None and descriptor[1]:
+            result.append((segment, descriptor[0], descriptor[1]))
+    return result
+
+
+def local_segment_is_closed(segment: Path) -> bool:
+    return bool(
+        list(segment.glob("*recording_staged.json"))
+        or list(segment.glob("*recording_ready.json"))
+        or list(segment.glob("*recording_capture_cached.json"))
+    )
+
+
 def publish_capture_segment(
     source: Path,
     capture_queue_root: Path,
@@ -939,6 +1316,7 @@ def publish_capture_segment(
     bandwidth_mbps: float,
     progress: Callable[[int, int], None] | None = None,
     pause: Callable[[], bool] | None = None,
+    incremental_mirror_instance_id: str = "",
 ) -> tuple[Path, bool]:
     capture_name = marker_filename(capture_name, "recording_capture_ready.json", "capture_file")
     key = capture_queue_key(capture)
@@ -968,26 +1346,98 @@ def publish_capture_segment(
         if stale_temporary.is_dir():
             shutil.rmtree(stale_temporary, ignore_errors=True)
     temporary = capture_queue_root / f"{temporary_prefix}{os.getpid()}"
-    temporary.mkdir(parents=False)
+    mirror_directory = incremental_mirror_directory(capture_queue_root, capture)
+    mirror_state: dict[str, Any] | None = None
+    mirror_adopted = False
+    if mirror_directory.is_dir():
+        try:
+            candidate_state = load_json(
+                mirror_directory / INCREMENTAL_MIRROR_STATE_NAME
+            )
+            if (
+                candidate_state.get("schema") != "gwv3_incremental_mirror_v1"
+                or not incremental_mirror_identity_matches(
+                    candidate_state,
+                    capture,
+                )
+                or not incremental_mirror_instance_id
+                or str(candidate_state.get("instance_id") or "")
+                != incremental_mirror_instance_id
+                or not isinstance(candidate_state.get("files"), dict)
+            ):
+                raise ValueError("incremental mirror identity mismatch")
+            os.replace(mirror_directory, temporary)
+            mirror_state = candidate_state
+            mirror_adopted = True
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            shutil.rmtree(mirror_directory, ignore_errors=True)
+    if not mirror_adopted:
+        temporary.mkdir(parents=False)
     try:
+        expected_paths = {Path(value) for value in source_manifest}
+        for existing in sorted(
+            temporary.rglob("*"),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            relative_existing = existing.relative_to(temporary)
+            if existing.is_file() and (
+                relative_existing not in expected_paths
+                and existing.name != INCREMENTAL_MIRROR_STATE_NAME
+            ):
+                existing.unlink(missing_ok=True)
+            elif existing.is_dir():
+                try:
+                    existing.rmdir()
+                except OSError:
+                    pass
+
         copied_before_file = 0
         if progress is not None:
             progress(0, total_bytes)
         for relative_text in sorted(source_manifest):
             relative = Path(relative_text)
             file_size = source_manifest[relative_text]
-            copy_file_limited(
-                source / relative,
-                temporary / relative,
-                bandwidth_mbps,
-                (
-                    lambda copied, _total, base=copied_before_file: progress(base + copied, total_bytes)
-                    if progress is not None
-                    else None
-                ),
-                pause,
+            callback = (
+                lambda copied, _total, base=copied_before_file: progress(
+                    base + copied,
+                    total_bytes,
+                )
+                if progress is not None
+                else None
             )
+            entry = None
+            if mirror_state is not None:
+                entry = mirror_state.get("files", {}).get(relative_text)
+            reused_mirror = False
+            if isinstance(entry, dict) and (temporary / relative).is_file():
+                try:
+                    synchronize_file_from_incremental_mirror(
+                        source / relative,
+                        temporary / relative,
+                        entry,
+                        bandwidth_mbps,
+                        callback,
+                        pause,
+                        durable=False,
+                    )
+                    reused_mirror = True
+                except (OSError, TypeError, ValueError, RuntimeError):
+                    reused_mirror = False
+            if not reused_mirror:
+                copy_file_limited(
+                    source / relative,
+                    temporary / relative,
+                    bandwidth_mbps,
+                    callback,
+                    pause,
+                    durable=False,
+                )
             copied_before_file += file_size
+        fsync_regular_files_parallel(
+            [temporary / relative for relative in sorted(expected_paths)],
+        )
+        (temporary / INCREMENTAL_MIRROR_STATE_NAME).unlink(missing_ok=True)
         for root, directories, _files in os.walk(temporary, topdown=False):
             for directory in directories:
                 fsync_directory(Path(root) / directory)
@@ -1008,7 +1458,18 @@ def publish_capture_segment(
             progress(total_bytes, total_bytes)
         return destination, False
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if (
+            mirror_adopted
+            and temporary.is_dir()
+            and (temporary / INCREMENTAL_MIRROR_STATE_NAME).is_file()
+            and not mirror_directory.exists()
+        ):
+            try:
+                os.replace(temporary, mirror_directory)
+            except OSError:
+                shutil.rmtree(temporary, ignore_errors=True)
+        else:
+            shutil.rmtree(temporary, ignore_errors=True)
         raise
 
 
@@ -1519,6 +1980,37 @@ class Uploader:
             4,
             max(1, int(staging.get("finalize_workers", 2))),
         )
+        self.capture_workers = min(
+            4,
+            max(1, int(staging.get("capture_workers", 2))),
+        )
+        self.incremental_mirror_enabled = bool(
+            staging.get("incremental_mirror_enabled", False)
+        )
+        self.incremental_mirror_instance_id = f"{os.getpid()}-{now_us()}"
+        self.incremental_mirror_interval = max(
+            0.25,
+            int(staging.get("incremental_mirror_interval_ms", 2000)) / 1000.0,
+        )
+        self.incremental_mirror_chunk_bytes = (
+            min(64, max(1, int(staging.get("incremental_mirror_chunk_mb", 4))))
+            * 1024
+            * 1024
+        )
+        self.incremental_mirror_lag_bytes = (
+            min(256, max(0, int(staging.get("incremental_mirror_lag_mb", 4))))
+            * 1024
+            * 1024
+        )
+        self.incremental_mirror_quiet_before_segment_finalize_ms = max(
+            0,
+            int(
+                staging.get(
+                    "incremental_mirror_quiet_before_segment_finalize_ms",
+                    1000,
+                )
+            ),
+        )
         self.status_write_interval = max(
             0.25,
             int(staging.get("status_write_interval_ms", 2000)) / 1000.0,
@@ -1559,6 +2051,16 @@ class Uploader:
         self.last_finalize_duration_ms = 0
         self.last_publish_duration_ms = 0
         self.last_remux_source = ""
+        self.incremental_mirror_active_segments = 0
+        self.incremental_mirror_bytes = 0
+        self.incremental_mirror_files = 0
+        self.incremental_mirror_failures = 0
+        self.incremental_mirror_last_success_us = 0
+        self.incremental_mirror_last_error = ""
+        self.incremental_mirror_last_warning_us = 0
+        self.next_incremental_mirror_at = 0.0
+        self.incremental_mirror_handles: dict[str, Any] = {}
+        self.incremental_mirror_handle_lock = threading.Lock()
         self.status_lock = threading.RLock()
         self.receiver_status_lock = threading.Lock()
         self.cached_pending_status: dict[str, int] | None = None
@@ -1665,12 +2167,23 @@ class Uploader:
                     "local_remuxes": self.local_remuxes,
                     "nas_fallback_remuxes": self.nas_fallback_remuxes,
                     "fragmented_passthroughs": self.fragmented_passthroughs,
+                    "incremental_mirror_enabled": self.incremental_mirror_enabled,
+                    "incremental_mirror_instance_id": self.incremental_mirror_instance_id,
+                    "incremental_mirror_active_segments": self.incremental_mirror_active_segments,
+                    "incremental_mirror_bytes": self.incremental_mirror_bytes,
+                    "incremental_mirror_files": self.incremental_mirror_files,
+                    "incremental_mirror_failures": self.incremental_mirror_failures,
+                    "incremental_mirror_last_success_us": self.incremental_mirror_last_success_us,
+                    "incremental_mirror_last_error": self.incremental_mirror_last_error,
+                    "incremental_mirror_chunk_bytes": self.incremental_mirror_chunk_bytes,
+                    "incremental_mirror_lag_bytes": self.incremental_mirror_lag_bytes,
                     "local_cache_pressure_releases": self.local_cache_pressure_releases,
                     "last_capture_duration_ms": self.last_capture_duration_ms,
                     "last_finalize_duration_ms": self.last_finalize_duration_ms,
                     "last_publish_duration_ms": self.last_publish_duration_ms,
                     "last_remux_source": self.last_remux_source,
                     "finalize_workers": self.finalize_workers,
+                    "capture_workers": self.capture_workers,
                     "last_error": self.last_error,
                 },
             )
@@ -1714,7 +2227,11 @@ class Uploader:
                         status,
                         now_us(),
                         self.segment_seconds,
-                        self.quiet_before_segment_finalize_ms,
+                        (
+                            self.incremental_mirror_quiet_before_segment_finalize_ms
+                            if resume_phase == "mirroring_active"
+                            else self.quiet_before_segment_finalize_ms
+                        ),
                         self.pause_record_queue_bytes,
                         self.pause_record_queue_oldest_age_ms,
                     )
@@ -1931,59 +2448,274 @@ class Uploader:
                 break
         return progress
 
-    def process_local_one(self, segment: Path) -> bool:
-        operation_started = time.monotonic()
-        lock_path = local_segment_lock_path(segment)
-        descriptor = acquire_file_lock(lock_path)
-        if descriptor is None:
+    def incremental_mirror_output_handle(self, path: Path) -> Any:
+        key = str(path)
+        with self.incremental_mirror_handle_lock:
+            handle = self.incremental_mirror_handles.get(key)
+            if handle is not None and not handle.closed:
+                return handle
+            path.parent.mkdir(parents=True, exist_ok=True)
+            mode = "r+b" if path.is_file() else "w+b"
+            handle = path.open(mode)
+            self.incremental_mirror_handles[key] = handle
+            return handle
+
+    def close_incremental_mirror_handles(
+        self,
+        mirror_directory: Path | None = None,
+    ) -> None:
+        with self.incremental_mirror_handle_lock:
+            for key, handle in list(self.incremental_mirror_handles.items()):
+                path = Path(key)
+                if (
+                    mirror_directory is not None
+                    and path.parent != mirror_directory
+                ):
+                    continue
+                try:
+                    handle.flush()
+                    handle.close()
+                except OSError:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
+                self.incremental_mirror_handles.pop(key, None)
+
+    def process_active_mirror(
+        self,
+        segment: Path,
+        capture: dict[str, Any],
+        sources: dict[str, Path],
+    ) -> bool:
+        mirror_directory = incremental_mirror_directory(
+            self.capture_queue_root,
+            capture,
+        )
+        if local_segment_is_closed(segment):
+            self.close_incremental_mirror_handles(mirror_directory)
+            return True
+        if (self.capture_queue_root / capture_queue_key(capture)).exists():
             return False
+        copied_total = 0
         self.active_segment = str(segment)
         self.active_started_us = now_us()
         self.active_bytes_done = 0
         self.active_bytes_total = 0
         self.next_active_status_at = 0.0
-        self.update_active_status(phase="validating_local_capture", force=True)
+        self.update_active_status(phase="mirroring_active", force=True)
+        try:
+            self.capture_queue_root.mkdir(parents=True, exist_ok=True)
+            mirror_directory.mkdir(parents=False, exist_ok=True)
+            state = load_incremental_mirror_state(
+                mirror_directory,
+                capture,
+                self.incremental_mirror_instance_id,
+            )
+            files = state.setdefault("files", {})
+            if not isinstance(files, dict):
+                files = {}
+                state["files"] = files
+            for destination_name, source in sorted(sources.items()):
+                if STOP_REQUESTED:
+                    break
+                if local_segment_is_closed(segment):
+                    self.close_incremental_mirror_handles(mirror_directory)
+                    return True
+                try:
+                    source_size = source.stat().st_size
+                except OSError:
+                    continue
+                if (
+                    source_size
+                    < self.incremental_mirror_chunk_bytes
+                    + self.incremental_mirror_lag_bytes
+                ):
+                    continue
+                with self.receiver_status_lock:
+                    self.next_receiver_status_at = 0.0
+                self.wait_for_receiver_io("mirroring_active")
+                self.update_active_status(
+                    phase="mirroring_active",
+                    bytes_done=0,
+                    bytes_total=source_size,
+                    force=True,
+                )
+                previous_entry = (
+                    files.get(destination_name)
+                    if isinstance(files.get(destination_name), dict)
+                    else None
+                )
+                updated, copied = mirror_complete_file_chunks(
+                    source,
+                    mirror_directory / destination_name,
+                    previous_entry,
+                    self.incremental_mirror_chunk_bytes,
+                    self.incremental_mirror_lag_bytes,
+                    self.bandwidth_mbps,
+                    progress=lambda done, total: self.update_active_status(
+                        phase="mirroring_active",
+                        bytes_done=done,
+                        bytes_total=total,
+                    ),
+                    pause=lambda: self.should_pause_for_receiver_io(
+                        "mirroring_active"
+                    ),
+                    cancel=lambda: local_segment_is_closed(segment),
+                    output_handle=self.incremental_mirror_output_handle(
+                        mirror_directory / destination_name
+                    ),
+                )
+                if updated != previous_entry:
+                    files[destination_name] = updated
+                    write_incremental_mirror_state(mirror_directory, state)
+                if copied > 0:
+                    copied_total += copied
+                    self.incremental_mirror_bytes += copied
+                    self.incremental_mirror_files += 1
+                    self.incremental_mirror_last_success_us = now_us()
+            if copied_total > 0:
+                self.incremental_mirror_last_error = ""
+                print(
+                    f"recording incremental mirror updated source={segment} "
+                    f"bytes={copied_total} destination={mirror_directory}",
+                    flush=True,
+                )
+            return copied_total > 0
+        except InterruptedError:
+            self.close_incremental_mirror_handles(mirror_directory)
+            return not STOP_REQUESTED
+        except FileNotFoundError:
+            self.close_incremental_mirror_handles(mirror_directory)
+            return not STOP_REQUESTED
+        except Exception as error:
+            self.close_incremental_mirror_handles(mirror_directory)
+            self.incremental_mirror_failures += 1
+            self.incremental_mirror_last_error = f"{type(error).__name__}: {error}"
+            current_us = now_us()
+            if current_us - self.incremental_mirror_last_warning_us >= 30_000_000:
+                self.incremental_mirror_last_warning_us = current_us
+                print(
+                    f"recording incremental mirror deferred source={segment} "
+                    f"error={self.incremental_mirror_last_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return False
+        finally:
+            self.active_segment = ""
+            self.active_phase = ""
+            self.active_bytes_done = 0
+            self.active_bytes_total = 0
+            self.active_started_us = 0
+            self.update_active_status(force=True)
+
+    def process_active_mirrors(self) -> bool:
+        if not self.incremental_mirror_enabled or STOP_REQUESTED:
+            self.incremental_mirror_active_segments = 0
+            return False
+        current = time.monotonic()
+        if current < self.next_incremental_mirror_at:
+            return False
+        self.next_incremental_mirror_at = (
+            current + self.incremental_mirror_interval
+        )
+        active_segments = discover_active_segments(self.staging_root)
+        self.incremental_mirror_active_segments = len(active_segments)
+        progress = False
+        for segment, capture, sources in active_segments:
+            if STOP_REQUESTED:
+                break
+            if self.process_active_mirror(segment, capture, sources):
+                progress = True
+        return progress
+
+    def process_local_one(
+        self,
+        segment: Path,
+        track_active: bool = True,
+    ) -> bool:
+        operation_started = time.monotonic()
+        lock_path = local_segment_lock_path(segment)
+        descriptor = acquire_file_lock(lock_path)
+        if descriptor is None:
+            return False
+        if track_active:
+            self.active_segment = str(segment)
+            self.active_started_us = now_us()
+            self.active_bytes_done = 0
+            self.active_bytes_total = 0
+            self.next_active_status_at = 0.0
+            self.update_active_status(
+                phase="validating_local_capture",
+                force=True,
+            )
         try:
             capture, capture_name = prepare_local_capture(segment, self.staging_root)
+            self.close_incremental_mirror_handles(
+                incremental_mirror_directory(
+                    self.capture_queue_root,
+                    capture,
+                )
+            )
 
             def publish_once() -> tuple[Path, bool]:
                 self.wait_for_receiver_io("capturing_to_nas")
-                self.update_active_status(
-                    phase="capturing_to_nas",
-                    bytes_done=0,
-                    bytes_total=0,
-                    force=True,
-                )
+                if track_active:
+                    self.update_active_status(
+                        phase="capturing_to_nas",
+                        bytes_done=0,
+                        bytes_total=0,
+                        force=True,
+                    )
                 return publish_capture_segment(
                     segment,
                     self.capture_queue_root,
                     capture,
                     capture_name,
                     self.bandwidth_mbps,
-                    progress=lambda done, total: self.update_active_status(
-                        phase="capturing_to_nas", bytes_done=done, bytes_total=total
-                    ),
+                    progress=(
+                        lambda done, total: self.update_active_status(
+                            phase="capturing_to_nas",
+                            bytes_done=done,
+                            bytes_total=total,
+                        )
+                    )
+                    if track_active
+                    else None,
                     pause=lambda: self.should_pause_for_receiver_io("capturing_to_nas"),
+                    incremental_mirror_instance_id=self.incremental_mirror_instance_id,
+                )
+
+            def capture_retry(
+                attempt: int,
+                attempts: int,
+                error: BaseException,
+                delay: float,
+            ) -> None:
+                if track_active:
+                    self.update_active_status(
+                        phase="capture_retry_wait",
+                        bytes_done=0,
+                        bytes_total=0,
+                        force=True,
+                    )
+                print(
+                    f"recording capture transient NAS error source={segment} "
+                    f"attempt={attempt}/{attempts} retry_delay_s={delay:g} error={error}",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
             destination, already_captured = run_with_transient_nas_retries(
                 publish_once,
-                on_retry=lambda attempt, attempts, error, delay: (
-                    self.update_active_status(
-                        phase="capture_retry_wait", bytes_done=0, bytes_total=0, force=True
-                    ),
-                    print(
-                        f"recording capture transient NAS error source={segment} "
-                        f"attempt={attempt}/{attempts} retry_delay_s={delay:g} error={error}",
-                        file=sys.stderr,
-                        flush=True,
-                    ),
-                ),
+                on_retry=capture_retry,
             )
-            if not already_captured:
-                self.captured += 1
-            self.last_capture_success_us = now_us()
-            self.last_error = ""
+            with self.status_lock:
+                if not already_captured:
+                    self.captured += 1
+                self.last_capture_success_us = now_us()
+                self.last_error = ""
             if self.retain_local_capture_for_finalize:
                 write_local_capture_cache_marker(segment, destination, capture)
             elif self.delete_after_upload:
@@ -1999,34 +2731,96 @@ class Uploader:
                 )
             release_file_lock(lock_path, descriptor)
             descriptor = None
-            self.last_capture_duration_ms = round(
+            capture_duration_ms = round(
                 (time.monotonic() - operation_started) * 1000
             )
+            with self.status_lock:
+                self.last_capture_duration_ms = capture_duration_ms
             print(
                 f"recording capture completed source={segment} destination={destination} "
-                f"duration_ms={self.last_capture_duration_ms} "
+                f"duration_ms={capture_duration_ms} "
                 f"local_cache_retained={str(self.retain_local_capture_for_finalize).lower()}",
                 flush=True,
             )
-            self.enforce_local_cache_watermark()
             return True
         except InterruptedError as error:
             print(f"recording capture interrupted source={segment} error={error}", file=sys.stderr, flush=True)
             return False
         except Exception as error:
-            self.failures += 1
-            self.last_error = f"{type(error).__name__}: {error}"
-            print(f"recording capture failed source={segment} error={self.last_error}", file=sys.stderr, flush=True)
+            error_text = f"{type(error).__name__}: {error}"
+            with self.status_lock:
+                self.failures += 1
+                self.last_error = error_text
+            print(f"recording capture failed source={segment} error={error_text}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             return False
         finally:
             release_file_lock(lock_path, descriptor)
+            if track_active:
+                self.active_segment = ""
+                self.active_phase = ""
+                self.active_bytes_done = 0
+                self.active_bytes_total = 0
+                self.active_started_us = 0
+                self.update_active_status(force=True)
+
+    def process_local_batch(self, segments: list[Path]) -> bool:
+        if not segments:
+            return False
+        if self.capture_workers <= 1 or len(segments) == 1:
+            progress = False
+            for segment in segments:
+                if self.process_local_one(segment):
+                    progress = True
+            return progress
+
+        progress = False
+        self.active_segment = f"{len(segments)} staged segments"
+        self.active_started_us = now_us()
+        self.active_bytes_done = 0
+        self.active_bytes_total = 0
+        self.next_active_status_at = 0.0
+        self.update_active_status(
+            phase="capturing_batch_to_nas",
+            force=True,
+        )
+        try:
+            with ThreadPoolExecutor(
+                max_workers=min(self.capture_workers, len(segments))
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        self.process_local_one,
+                        segment,
+                        False,
+                    ): segment
+                    for segment in segments
+                }
+                for future in as_completed(futures):
+                    segment = futures[future]
+                    try:
+                        if future.result():
+                            progress = True
+                    except Exception as error:
+                        error_text = f"{type(error).__name__}: {error}"
+                        with self.status_lock:
+                            self.failures += 1
+                            self.last_error = error_text
+                        print(
+                            f"recording parallel capture failed source={segment} "
+                            f"error={error_text}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        traceback.print_exc(file=sys.stderr)
+        finally:
             self.active_segment = ""
             self.active_phase = ""
             self.active_bytes_done = 0
             self.active_bytes_total = 0
             self.active_started_us = 0
             self.update_active_status(force=True)
+        return progress
 
     def finalize_local_capture_worker(self, segment: Path) -> dict[str, Any]:
         operation_started = time.monotonic()
@@ -2448,15 +3242,16 @@ class Uploader:
 
     def run_once(self) -> bool:
         progress = self.recover_pending_publications()
+        # Keep the segment currently being recorded close to NAS before
+        # processing older closed segments. Otherwise a backlog can starve the
+        # mirror that makes the next stop fast.
+        progress = self.process_active_mirrors() or progress
         progress = self.reconcile_local_capture_caches() or progress
         local_segments = discover_local_segments(self.staging_root)
         self.write_status(refresh_metrics=True)
-        for segment in local_segments:
-            if STOP_REQUESTED:
-                break
-            if self.process_local_one(segment):
-                progress = True
-            self.write_status()
+        if not STOP_REQUESTED and self.process_local_batch(local_segments):
+            progress = True
+        self.write_status()
         progress = self.enforce_local_cache_watermark() or progress
         self.write_status(refresh_metrics=True)
         capture_segments = discover_capture_segments(self.capture_queue_root)
@@ -2475,6 +3270,7 @@ class Uploader:
             try:
                 self.run_once()
             finally:
+                self.close_incremental_mirror_handles()
                 self.running = False
                 remaining_local = discover_local_segments(self.staging_root)
                 remaining_capture = discover_capture_segments(self.capture_queue_root)
@@ -2484,11 +3280,13 @@ class Uploader:
         self.running = True
         try:
             while not STOP_REQUESTED:
-                self.run_once()
+                if self.run_once():
+                    continue
                 deadline = time.monotonic() + self.interval
                 while not STOP_REQUESTED and time.monotonic() < deadline:
                     time.sleep(min(0.25, deadline - time.monotonic()))
         finally:
+            self.close_incremental_mirror_handles()
             self.running = False
             self.write_status(refresh_metrics=True)
         return 0
