@@ -29,6 +29,9 @@ TTS_HTTP_PORT="${XIAOHUAN_TTS_HTTP_PORT:-18082}"
 TTS_BACKEND="${XIAOHUAN_TTS_BACKEND:-espeak}"
 TTS_MODEL_DIR="${XIAOHUAN_TTS_MODEL_DIR:-$ROOT_DIR/models/vits-melo-tts-zh_en}"
 TTS_NUM_THREADS="${XIAOHUAN_TTS_NUM_THREADS:-4}"
+TTS_EDGE_VOICE="${XIAOHUAN_TTS_EDGE_VOICE:-zh-CN-XiaoyiNeural}"
+TTS_EDGE_TIMEOUT_SECONDS="${XIAOHUAN_TTS_EDGE_TIMEOUT_SECONDS:-4}"
+TTS_EDGE_CACHE_ENTRIES="${XIAOHUAN_TTS_EDGE_CACHE_ENTRIES:-64}"
 TTS_SPEAKER_RETRY_SECONDS="${XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS:-5}"
 TTS_RESUME_DELAY_SECONDS="${XIAOHUAN_TTS_RESUME_DELAY_SECONDS:-0.2}"
 
@@ -169,6 +172,9 @@ configure_record_mixer() {
     --tts-backend "$TTS_BACKEND" \
     --tts-model-dir "$TTS_MODEL_DIR" \
     --tts-num-threads "$TTS_NUM_THREADS" \
+    --tts-edge-voice "$TTS_EDGE_VOICE" \
+    --tts-edge-timeout-seconds "$TTS_EDGE_TIMEOUT_SECONDS" \
+    --tts-edge-cache-entries "$TTS_EDGE_CACHE_ENTRIES" \
     --tts-speaker-retry-seconds "$TTS_SPEAKER_RETRY_SECONDS" \
     --tts-resume-delay-seconds "$TTS_RESUME_DELAY_SECONDS" \
     --response-wav "$WAKE_RESPONSE_WAV" \

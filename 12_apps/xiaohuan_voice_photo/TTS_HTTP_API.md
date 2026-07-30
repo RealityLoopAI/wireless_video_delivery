@@ -1,4 +1,4 @@
-# 133 离线语音播报 HTTP 接口
+# 133 语音播报 HTTP 接口
 
 ## 服务地址
 
@@ -108,7 +108,7 @@ curl -sS http://192.168.66.133:18082/healthz
   "ok": true,
   "service": "xiaohuan_speech",
   "tts_ready": true,
-  "tts_backend": "espeak-ng",
+  "tts_backend": "edge-tts:zh-CN-XiaoyiNeural+offline-fallback",
   "queue_depth": 0,
   "queue_capacity": 100
 }
@@ -116,14 +116,18 @@ curl -sS http://192.168.66.133:18082/healthz
 
 ## 播放和麦克风行为
 
-- 默认使用完全离线的 eSpeak NG 普通话后端，英文片段自动切到 `en-us` 发音。
+- 133 默认使用联网 Edge TTS `zh-CN-XiaoyiNeural` 音色；待播文本会发送给
+  Edge TTS 服务进行合成。
+- Edge 请求失败或 4 秒内未完成时自动回退到离线 eSpeak NG；失败后 30 秒内的新任务
+  直接使用离线回退，避免反复等待网络超时。
+- 相同文本在当前进程内命中有界 PCM 缓存后不再访问网络；服务重启后缓存清空。
 - 文本按句切分；首句合成后立即开始播放，后续句子继续生成。
 - 播放期间停止 USB 麦克风采集，所以 Vosk 唤醒、拍照命令识别和 RTP/Opus 麦克风
   推流会同时暂停。
 - 队列暂时清空后等待 200 ms，再重新打开麦克风并恢复识别和 RTP。
 - 音箱打开或播放失败时重试 5 秒；仍失败则丢弃当前任务并继续下一条。
-- eSpeak NG 优先低延迟，音色比神经 TTS 更机械。可由设备管理员切换
-  `XIAOHUAN_TTS_BACKEND=sherpa`，但当前 RK3588 视频发送负载下首句延迟明显更高。
+- 当前局域网实测 `Xiaoyi` 首次合成完整短句约需 1.4～2.4 秒；接口入队响应不等待
+  合成。离线回退音色比神经 TTS 更机械。
 
 ## 运维
 
@@ -141,15 +145,20 @@ tail -f /home/orangepi/Desktop/new_experiment_2026-07-02/wake_runtime.log
 XIAOHUAN_TTS_HTTP_ENABLED=1
 XIAOHUAN_TTS_HTTP_BIND=0.0.0.0
 XIAOHUAN_TTS_HTTP_PORT=18082
-XIAOHUAN_TTS_BACKEND=espeak
+XIAOHUAN_TTS_BACKEND=edge
+XIAOHUAN_TTS_EDGE_VOICE=zh-CN-XiaoyiNeural
+XIAOHUAN_TTS_EDGE_TIMEOUT_SECONDS=4
+XIAOHUAN_TTS_EDGE_CACHE_ENTRIES=64
 XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS=5
 XIAOHUAN_TTS_RESUME_DELAY_SECONDS=0.2
 ```
 
-默认后端依赖：
+后端依赖：
 
 ```bash
-sudo apt-get install -y espeak-ng
+sudo apt-get install -y espeak-ng ffmpeg
+python3 -m pip install --user edge-tts
 ```
 
-可选 sherpa 中英模型可通过 `./download_tts_model.sh` 安装。
+`XIAOHUAN_TTS_BACKEND=espeak` 可强制完全离线运行。可选 sherpa 中英模型可通过
+`./download_tts_model.sh` 安装。

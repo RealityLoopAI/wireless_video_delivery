@@ -13,7 +13,12 @@ from pathlib import Path
 import numpy as np
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
-from speech_service import EspeakTtsEngine, OfflineTtsEngine, UnifiedSpeechService
+from speech_service import (
+    EdgeTtsEngine,
+    EspeakTtsEngine,
+    OfflineTtsEngine,
+    UnifiedSpeechService,
+)
 
 try:
     import webrtcvad
@@ -686,10 +691,17 @@ def listen(args):
             vad_mode = f"webrtcvad(mode={args.webrtc_vad_mode})+rms"
     if args.tts_backend == "espeak":
         tts_engine = EspeakTtsEngine()
-    else:
+    elif args.tts_backend == "sherpa":
         tts_engine = OfflineTtsEngine(
             model_dir=args.tts_model_dir,
             num_threads=args.tts_num_threads,
+        )
+    else:
+        tts_engine = EdgeTtsEngine(
+            fallback_engine=EspeakTtsEngine(),
+            voice=args.tts_edge_voice,
+            timeout_seconds=args.tts_edge_timeout_seconds,
+            cache_entries=args.tts_edge_cache_entries,
         )
     speech_service = UnifiedSpeechService(
         tts_engine=tts_engine,
@@ -1018,6 +1030,13 @@ def nonnegative_float(value):
     return parsed
 
 
+def positive_float(value):
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
 def udp_port(value):
     parsed = int(value)
     if not 1 <= parsed <= 65535:
@@ -1059,11 +1078,26 @@ def build_parser():
     p_listen.add_argument("--tts-http-port", type=udp_port, default=18082)
     p_listen.add_argument(
         "--tts-backend",
-        choices=["espeak", "sherpa"],
+        choices=["espeak", "sherpa", "edge"],
         default="espeak",
     )
     p_listen.add_argument("--tts-model-dir", type=Path, default=DEFAULT_TTS_MODEL_DIR)
     p_listen.add_argument("--tts-num-threads", type=int, choices=range(1, 9), default=4)
+    p_listen.add_argument(
+        "--tts-edge-voice",
+        default="zh-CN-XiaoyiNeural",
+    )
+    p_listen.add_argument(
+        "--tts-edge-timeout-seconds",
+        type=positive_float,
+        default=4.0,
+    )
+    p_listen.add_argument(
+        "--tts-edge-cache-entries",
+        type=int,
+        choices=range(0, 257),
+        default=64,
+    )
     p_listen.add_argument("--tts-max-queue", type=int, choices=range(1, 101), default=100)
     p_listen.add_argument("--tts-max-text-chars", type=int, choices=range(1, 501), default=500)
     p_listen.add_argument("--tts-speaker-retry-seconds", type=nonnegative_float, default=5.0)

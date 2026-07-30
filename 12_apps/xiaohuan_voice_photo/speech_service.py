@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio
 import html
 import io
 import json
@@ -11,7 +12,7 @@ import threading
 import time
 import uuid
 import wave
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -195,6 +196,198 @@ class EspeakTtsEngine:
             flush=True,
         )
         return PcmSegment(data=pcm, sample_rate=sample_rate)
+
+
+class EdgeTtsEngine:
+    def __init__(
+        self,
+        fallback_engine=None,
+        voice: str = "zh-CN-XiaoyiNeural",
+        timeout_seconds: float = 4.0,
+        retry_seconds: float = 30.0,
+        cache_entries: int = 64,
+        cache_max_bytes: int = 32 * 1024 * 1024,
+        decoder_executable: str = "ffmpeg",
+        edge_module=None,
+    ):
+        self.fallback_engine = fallback_engine
+        self.voice = voice
+        self.timeout_seconds = timeout_seconds
+        self.retry_seconds = retry_seconds
+        self.cache_entries = cache_entries
+        self.cache_max_bytes = cache_max_bytes
+        self.decoder_executable = decoder_executable
+        self.ready = False
+        self.load_error = ""
+        self.backend_name = f"edge-tts:{voice}+offline-fallback"
+        self._edge_tts = edge_module
+        self._decoder = None
+        self._edge_available = False
+        self._edge_retry_after = 0.0
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_lock = threading.Lock()
+
+    def load(self):
+        fallback_error = ""
+        if self.fallback_engine is not None:
+            self.fallback_engine.load()
+            if not self.fallback_engine.ready:
+                fallback_error = self.fallback_engine.load_error
+
+        try:
+            if self._edge_tts is None:
+                import edge_tts
+
+                self._edge_tts = edge_tts
+            decoder = shutil.which(self.decoder_executable)
+            if decoder is None:
+                raise FileNotFoundError(
+                    f"{self.decoder_executable} is not installed"
+                )
+            self._decoder = decoder
+            self._edge_available = True
+            self.load_error = ""
+            print(
+                f"online TTS loaded backend=edge-tts voice={self.voice} "
+                f"timeout_seconds={self.timeout_seconds:.1f} "
+                f"cache_entries={self.cache_entries}",
+                flush=True,
+            )
+        except Exception as exc:
+            self._edge_available = False
+            self.load_error = str(exc)
+            print(f"online TTS unavailable: {exc}", file=sys.stderr, flush=True)
+
+        self.ready = self._edge_available or bool(
+            self.fallback_engine is not None and self.fallback_engine.ready
+        )
+        if not self.ready and fallback_error:
+            self.load_error = (
+                f"edge-tts: {self.load_error}; fallback: {fallback_error}"
+            )
+
+    def synthesize(self, text: str):
+        cached = self._cache_get(text)
+        if cached is not None:
+            print(
+                f"online TTS cache hit backend=edge-tts voice={self.voice} "
+                f"chars={len(text)}",
+                flush=True,
+            )
+            return cached
+
+        if self._edge_available and time.monotonic() >= self._edge_retry_after:
+            started = time.monotonic()
+            try:
+                mp3 = asyncio.run(
+                    asyncio.wait_for(
+                        self._collect_mp3(text),
+                        timeout=self.timeout_seconds,
+                    )
+                )
+                segment = self._decode_mp3(mp3)
+                elapsed = time.monotonic() - started
+                duration = len(segment.data) / (segment.sample_rate * 2)
+                print(
+                    f"online TTS generated backend=edge-tts voice={self.voice} "
+                    f"chars={len(text)} seconds={elapsed:.3f} "
+                    f"audio_seconds={duration:.3f}",
+                    flush=True,
+                )
+                self._edge_retry_after = 0.0
+                self._cache_put(text, segment)
+                return segment
+            except Exception as exc:
+                self._edge_retry_after = time.monotonic() + self.retry_seconds
+                print(
+                    f"online TTS failed backend=edge-tts voice={self.voice} "
+                    f"error={exc}; retry_after_seconds={self.retry_seconds:.1f}; "
+                    f"using fallback",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        if self.fallback_engine is not None and self.fallback_engine.ready:
+            return self.fallback_engine.synthesize(text)
+        raise RuntimeError(self.load_error or "no TTS backend is ready")
+
+    async def _collect_mp3(self, text: str):
+        if self._edge_tts is None:
+            raise RuntimeError("edge-tts is not loaded")
+        connect_timeout = max(1, int(self.timeout_seconds))
+        communicate = self._edge_tts.Communicate(
+            text=text,
+            voice=self.voice,
+            connect_timeout=connect_timeout,
+            receive_timeout=connect_timeout,
+        )
+        audio = bytearray()
+        async for item in communicate.stream():
+            if item.get("type") == "audio":
+                audio.extend(item.get("data", b""))
+        if not audio:
+            raise RuntimeError("edge-tts returned empty audio")
+        return bytes(audio)
+
+    def _decode_mp3(self, mp3: bytes):
+        if self._decoder is None:
+            raise RuntimeError("ffmpeg decoder is not ready")
+        sample_rate = 24000
+        result = subprocess.run(
+            [
+                self._decoder,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "pipe:1",
+            ],
+            input=mp3,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5.0,
+            check=False,
+        )
+        if result.returncode != 0:
+            error = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(error or f"ffmpeg exited with {result.returncode}")
+        if not result.stdout:
+            raise RuntimeError("ffmpeg returned empty PCM audio")
+        return PcmSegment(data=result.stdout, sample_rate=sample_rate)
+
+    def _cache_get(self, text: str):
+        with self._cache_lock:
+            segment = self._cache.get(text)
+            if segment is None:
+                return None
+            self._cache.move_to_end(text)
+            return segment
+
+    def _cache_put(self, text: str, segment: PcmSegment):
+        if self.cache_entries <= 0 or len(segment.data) > self.cache_max_bytes:
+            return
+        with self._cache_lock:
+            previous = self._cache.pop(text, None)
+            if previous is not None:
+                self._cache_bytes -= len(previous.data)
+            self._cache[text] = segment
+            self._cache_bytes += len(segment.data)
+            while (
+                len(self._cache) > self.cache_entries
+                or self._cache_bytes > self.cache_max_bytes
+            ):
+                _old_text, old_segment = self._cache.popitem(last=False)
+                self._cache_bytes -= len(old_segment.data)
 
 
 class OfflineTtsEngine:

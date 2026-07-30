@@ -35,6 +35,24 @@ class FakeTtsEngine:
         return self.module.PcmSegment(data=b"\x00\x00" * 80, sample_rate=16000)
 
 
+class FakeEdgeModule:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.calls = []
+
+    def Communicate(self, **kwargs):
+        self.calls.append(kwargs)
+        fail = self.fail
+
+        class FakeCommunicate:
+            async def stream(self):
+                if fail:
+                    raise RuntimeError("injected Edge failure")
+                yield {"type": "audio", "data": b"fake-mp3"}
+
+        return FakeCommunicate()
+
+
 def request_json(port: int, path: str, payload=None):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = Request(
@@ -79,6 +97,44 @@ def test_espeak_mixed_language_markup(module):
     assert "&lt; 5" in ssml
     assert ssml.startswith("<speak>")
     assert ssml.endswith("</speak>")
+
+
+def test_edge_tts_cache_and_fallback(module):
+    edge_module = FakeEdgeModule()
+    fallback = FakeTtsEngine(module)
+    engine = module.EdgeTtsEngine(
+        fallback_engine=fallback,
+        voice="zh-CN-XiaoyiNeural",
+        edge_module=edge_module,
+        decoder_executable="/bin/true",
+    )
+    engine.load()
+    engine._decode_mp3 = lambda data: module.PcmSegment(
+        data=data + b"\x00\x00",
+        sample_rate=24000,
+    )
+
+    first = engine.synthesize("缓存测试")
+    second = engine.synthesize("缓存测试")
+    assert first == second
+    assert len(edge_module.calls) == 1
+    assert edge_module.calls[0]["voice"] == "zh-CN-XiaoyiNeural"
+    assert fallback.generated == []
+
+    failing_module = FakeEdgeModule(fail=True)
+    fallback_after_failure = FakeTtsEngine(module)
+    failing_engine = module.EdgeTtsEngine(
+        fallback_engine=fallback_after_failure,
+        edge_module=failing_module,
+        decoder_executable="/bin/true",
+    )
+    failing_engine.load()
+    result = failing_engine.synthesize("故障回退")
+    second_result = failing_engine.synthesize("退避期直接回退")
+    assert result.sample_rate == 16000
+    assert second_result.sample_rate == 16000
+    assert len(failing_module.calls) == 1
+    assert fallback_after_failure.generated == ["故障回退", "退避期直接回退"]
 
 
 def test_http_queue_and_idempotency(module):
@@ -256,6 +312,7 @@ def main():
     module = load_speech_module(source_root)
     test_sentence_splitting(module)
     test_espeak_mixed_language_markup(module)
+    test_edge_tts_cache_and_fallback(module)
     test_http_queue_and_idempotency(module)
     test_local_wav_uses_same_queue(module)
     test_speaker_retry_deadline(module)
