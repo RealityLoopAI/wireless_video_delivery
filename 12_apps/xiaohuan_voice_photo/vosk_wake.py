@@ -22,6 +22,7 @@ from speech_service import (
     OfflineTtsEngine,
     UnifiedSpeechService,
 )
+from utterance_forwarder import UtteranceForwarder, pcm_to_wav_bytes
 
 try:
     import webrtcvad
@@ -33,6 +34,8 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "models" / "vosk-model-small-cn-0.22"
 DEFAULT_RESPONSE = BASE_DIR / "response_wozai_tts_default.wav"
 DEFAULT_PHOTO_RESPONSE = BASE_DIR / "response_photo_done.wav"
+DEFAULT_PHOTO_CUE = BASE_DIR / "cue_photo_ding.wav"
+DEFAULT_FORWARD_CUE = BASE_DIR / "cue_forward_deng.wav"
 DEFAULT_PHOTO_REQUEST_DIR = Path("/tmp/gemini_rgb_snapshot_requests")
 DEFAULT_PHOTO_RESULT_DIR = Path("/tmp/gemini_rgb_snapshot_results")
 DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
@@ -466,6 +469,24 @@ def compute_vad_threshold(args, noise_rms: float):
     return max(args.vad_min_rms, noise_rms * args.vad_noise_scale, noise_rms + args.vad_noise_margin)
 
 
+def chunks_for_seconds(seconds: float, chunk_seconds: float):
+    return max(1, int(round(seconds / chunk_seconds)))
+
+
+def trim_command_pcm(
+    speech_chunks,
+    trailing_silence_chunks: int,
+    *,
+    chunk_seconds: float,
+    tail_seconds: float,
+):
+    keep_tail_chunks = max(0, int(round(tail_seconds / chunk_seconds)))
+    drop_chunks = max(0, trailing_silence_chunks - keep_tail_chunks)
+    if drop_chunks > 0:
+        speech_chunks = speech_chunks[:-drop_chunks]
+    return b"".join(speech_chunks)
+
+
 def wake_segment_rejection_reason(args, command_mode: bool, ended: bool, speech_seconds: float):
     if command_mode:
         return ""
@@ -871,6 +892,16 @@ def listen(args):
         speaker_retry_seconds=args.tts_speaker_retry_seconds,
     )
     speech_service.start(enable_http=args.tts_http)
+    utterance_forwarder = None
+    if args.utterance_forward:
+        utterance_forwarder = UtteranceForwarder(
+            args.utterance_forward_url,
+            queue_capacity=args.utterance_forward_queue,
+            timeout_seconds=args.utterance_forward_timeout_seconds,
+            max_retries=args.utterance_forward_retries,
+            retry_delay_seconds=args.utterance_forward_retry_delay_seconds,
+        )
+        utterance_forwarder.start()
     stop = False
     stream_gate = None
     stream_target = None
@@ -922,6 +953,21 @@ def listen(args):
                 "playback_policy=drop",
                 flush=True,
             )
+    print(f"utterance_forward={args.utterance_forward}")
+    if args.utterance_forward:
+        print(
+            f"utterance_forward_url={args.utterance_forward_url} "
+            f"format=wav/pcm_s16le/{args.sample_rate}Hz/mono "
+            f"queue_capacity={args.utterance_forward_queue} "
+            f"max_retries={args.utterance_forward_retries}",
+            flush=True,
+        )
+        print(
+            f"command_start_timeout_seconds={args.post_wake_command_seconds} "
+            f"command_end_silence_seconds={args.command_end_silence_seconds} "
+            f"command_max_speech_seconds={args.command_max_speech_seconds}",
+            flush=True,
+        )
     print(f"wake_grammar={wake_grammar}")
     print(f"photo_aliases={photo_aliases}")
     print(f"photo_grammar={photo_grammar}")
@@ -1028,6 +1074,8 @@ def listen(args):
     if capture_state is None:
         if stream_gate is not None:
             stream_gate.stop()
+        if utterance_forwarder is not None:
+            utterance_forwarder.stop()
         speech_service.stop()
         return 12
     capture_out, capture_procs, audio_filter, noise_rms = capture_state
@@ -1037,37 +1085,90 @@ def listen(args):
     last_trigger = 0.0
     ignore_until = 0.0
     command_listen_until = 0.0
+    command_session_active = False
+    wake_response_pending = False
+    pending_command_action = None
+    active_photo_action_thread = None
     last_noise_log = time.time()
     matcher = SplitWakeMatcher(args.split_wake_window_seconds)
-    pre_roll = collections.deque(maxlen=max(1, int(args.pre_roll_seconds / args.chunk_seconds)))
+    pre_roll = collections.deque(
+        maxlen=chunks_for_seconds(
+            max(args.pre_roll_seconds, args.command_pre_roll_seconds),
+            args.chunk_seconds,
+        )
+    )
     speech_chunks = []
     speech_voice_ratios = []
     photo_capture_threads = []
     in_speech = False
+    speech_is_command = False
     silence_chunks = 0
     skipped_segments = 0
     zero_audio_since = None
     last_skip_log = time.time()
-    end_silence_chunks = max(1, int(args.end_silence_seconds / args.chunk_seconds))
-    photo_end_silence_chunks = max(1, int(args.photo_end_silence_seconds / args.chunk_seconds))
+    end_silence_chunks = chunks_for_seconds(
+        args.end_silence_seconds,
+        args.chunk_seconds,
+    )
+    command_end_silence_chunks = chunks_for_seconds(
+        args.command_end_silence_seconds,
+        args.chunk_seconds,
+    )
+    command_pre_roll_chunks = chunks_for_seconds(
+        args.command_pre_roll_seconds,
+        args.chunk_seconds,
+    )
 
-    def acknowledge_and_capture_photo(text: str, source: str, detected_at: float):
-        playback = speech_service.enqueue_wav(
-            args.photo_response_wav,
-            source="photo-acknowledgement",
+    def interaction_busy():
+        return (
+            wake_response_pending
+            or command_session_active
+            or pending_command_action is not None
+            or (
+                active_photo_action_thread is not None
+                and active_photo_action_thread.is_alive()
+            )
+        )
+
+    def execute_command_action(action):
+        nonlocal active_photo_action_thread
+        if action["kind"] == "photo":
+            active_photo_action_thread = start_photo_capture_async(
+                args,
+                action["text"],
+                "command-window",
+            )
+            photo_capture_threads.append(active_photo_action_thread)
+            print(
+                f"photo command dispatched after cue text={action['text'] or '<empty>'}",
+                flush=True,
+            )
+            return
+
+        wav_data = action["wav_data"]
+        queued = (
+            utterance_forwarder is not None
+            and utterance_forwarder.enqueue(wav_data)
         )
         print(
-            f"photo command acknowledged immediately source={source} text={text} "
-            f"feedback_started={playback is not None}",
+            f"utterance dispatch after cue queued={str(bool(queued)).lower()} "
+            f"bytes={len(wav_data)} text={action['text'] or '<empty>'}",
             flush=True,
         )
-        photo_capture_threads.append(start_photo_capture_async(args, text, source))
 
     try:
         while not stop:
             photo_capture_threads[:] = [thread for thread in photo_capture_threads if thread.is_alive()]
+            if (
+                active_photo_action_thread is not None
+                and not active_photo_action_thread.is_alive()
+            ):
+                print("photo command action completed; external TTS released", flush=True)
+                active_photo_action_thread = None
 
-            playback_task = speech_service.next_ready_task()
+            playback_task = speech_service.next_ready_task(
+                allow_http=not interaction_busy(),
+            )
             if playback_task is not None:
                 playback_started = time.monotonic()
                 if stream_gate is not None:
@@ -1084,23 +1185,35 @@ def listen(args):
                         "audio capture paused for half-duplex playback",
                         flush=True,
                     )
-                opens_command_window = False
                 while playback_task is not None and not stop:
                     playback_ok = speech_service.play_task(
                         playback_task,
                         args.playback_device,
                     )
-                    opens_command_window = (
-                        opens_command_window or playback_task.opens_command_window
-                    )
+                    task_source = playback_task.source
+                    opens_command_window = playback_task.opens_command_window
                     speech_service.complete_task(playback_task, playback_ok)
+
+                    if opens_command_window:
+                        wake_response_pending = False
+                        command_session_active = True
+                        command_listen_until = 0.0
+                    elif (
+                        task_source in {"photo-cue", "forward-cue"}
+                        and pending_command_action is not None
+                    ):
+                        action = pending_command_action
+                        pending_command_action = None
+                        execute_command_action(action)
+
                     queue_wait_seconds = (
                         0.0
-                        if opens_command_window
+                        if interaction_busy()
                         else args.tts_resume_delay_seconds
                     )
                     playback_task = speech_service.next_ready_task(
                         timeout=queue_wait_seconds,
+                        allow_http=not interaction_busy(),
                     )
                 echo_deadline = time.monotonic() + args.echo_tail_seconds
                 while not stop and time.monotonic() < echo_deadline:
@@ -1163,11 +1276,14 @@ def listen(args):
                     stream_gate.resume()
                 now = time.time()
                 ignore_until = now
-                if opens_command_window:
-                    command_listen_until = now + args.post_wake_command_seconds
+                if command_session_active and command_listen_until <= 0:
+                    command_listen_until = (
+                        now + args.post_wake_command_seconds
+                    )
                     print(
-                        f"photo command window opens after unified playback: "
-                        f"window={args.post_wake_command_seconds:.2f}s",
+                        "utterance command window opened after wake response: "
+                        f"start_timeout={args.post_wake_command_seconds:.2f}s "
+                        f"max_speech={args.command_max_speech_seconds:.2f}s",
                         flush=True,
                     )
                 matcher.reset()
@@ -1175,6 +1291,7 @@ def listen(args):
                 speech_chunks = []
                 speech_voice_ratios = []
                 in_speech = False
+                speech_is_command = False
                 silence_chunks = 0
                 zero_audio_since = None
                 continue
@@ -1203,10 +1320,25 @@ def listen(args):
                 speech_chunks = []
                 speech_voice_ratios = []
                 in_speech = False
+                speech_is_command = False
                 silence_chunks = 0
                 zero_audio_since = None
                 continue
             now = time.time()
+
+            if (
+                command_session_active
+                and not in_speech
+                and now >= command_listen_until
+            ):
+                command_session_active = False
+                command_listen_until = 0.0
+                pre_roll.clear()
+                print(
+                    "utterance command window timed out before speech started",
+                    flush=True,
+                )
+                continue
 
             level = pcm_rms(data)
             if args.zero_audio_restart_seconds > 0:
@@ -1234,20 +1366,25 @@ def listen(args):
             active = voice_active or energy_active
 
             if now < ignore_until:
-                if command_listen_until > now:
+                if command_session_active:
                     pre_roll.append(data)
                 else:
                     pre_roll.clear()
                 speech_chunks = []
                 speech_voice_ratios = []
                 in_speech = False
+                speech_is_command = False
                 silence_chunks = 0
                 continue
 
             if not in_speech:
                 if active:
                     in_speech = True
-                    speech_chunks = list(pre_roll)
+                    speech_is_command = command_session_active
+                    if speech_is_command:
+                        speech_chunks = list(pre_roll)[-command_pre_roll_chunks:]
+                    else:
+                        speech_chunks = list(pre_roll)
                     speech_chunks.append(data)
                     speech_voice_ratios = [voice_ratio]
                     silence_chunks = 0
@@ -1272,19 +1409,37 @@ def listen(args):
                 silence_chunks += 1
 
             speech_seconds = len(speech_chunks) * args.chunk_seconds
-            command_mode = now <= command_listen_until
-            required_end_silence_chunks = photo_end_silence_chunks if command_mode else end_silence_chunks
+            command_mode = speech_is_command
+            required_end_silence_chunks = (
+                command_end_silence_chunks
+                if command_mode
+                else end_silence_chunks
+            )
             ended = silence_chunks >= required_end_silence_chunks and speech_seconds >= args.min_speech_seconds
-            too_long = speech_seconds >= args.max_speech_seconds
+            max_speech_seconds = (
+                args.command_max_speech_seconds
+                if command_mode
+                else args.max_speech_seconds
+            )
+            too_long = speech_seconds >= max_speech_seconds
             if not ended and not too_long:
                 continue
 
-            segment = b"".join(speech_chunks)
+            if command_mode:
+                segment = trim_command_pcm(
+                    speech_chunks,
+                    silence_chunks,
+                    chunk_seconds=args.chunk_seconds,
+                    tail_seconds=args.command_tail_seconds,
+                )
+                speech_seconds = len(segment) / max(1, args.sample_rate * 2)
+            else:
+                segment = b"".join(speech_chunks)
             segment_rms = pcm_rms(segment)
             segment_voice_ratio = max(speech_voice_ratios) if speech_voice_ratios else 0.0
             decode_min_rms = args.photo_decode_min_rms if command_mode else args.decode_min_rms
             decode_rms_threshold = max(decode_min_rms, noise_rms + args.decode_noise_margin)
-            too_weak = segment_rms < decode_rms_threshold
+            too_weak = not command_mode and segment_rms < decode_rms_threshold
             decode_min_seconds = args.photo_decode_min_seconds if command_mode else args.decode_min_seconds
             too_short = speech_seconds < decode_min_seconds
             wake_rejection = wake_segment_rejection_reason(
@@ -1316,6 +1471,7 @@ def listen(args):
                 speech_chunks = []
                 speech_voice_ratios = []
                 in_speech = False
+                speech_is_command = False
                 silence_chunks = 0
                 continue
             decode_aliases = photo_aliases if command_mode else aliases
@@ -1342,10 +1498,39 @@ def listen(args):
                 flush=True,
             )
             if command_mode:
+                command_session_active = False
+                command_listen_until = 0.0
                 if ok:
-                    acknowledge_and_capture_photo(text, "command-window", now)
-                    command_listen_until = 0.0
-                    matcher.reset()
+                    pending_command_action = {
+                        "kind": "photo",
+                        "text": text,
+                    }
+                    cue_path = args.photo_cue_wav
+                    cue_source = "photo-cue"
+                else:
+                    wav_data = pcm_to_wav_bytes(segment, args.sample_rate)
+                    pending_command_action = {
+                        "kind": "forward",
+                        "text": text,
+                        "wav_data": wav_data,
+                    }
+                    cue_path = args.forward_cue_wav
+                    cue_source = "forward-cue"
+                cue_task = speech_service.enqueue_wav(
+                    cue_path,
+                    source=cue_source,
+                )
+                print(
+                    f"utterance classified action={pending_command_action['kind']} "
+                    f"cue={cue_path.name} text={text or '<empty>'} "
+                    f"duration={speech_seconds:.2f}s",
+                    flush=True,
+                )
+                if cue_task is None:
+                    action = pending_command_action
+                    pending_command_action = None
+                    execute_command_action(action)
+                matcher.reset()
             elif ok and now - last_trigger >= args.cooldown_seconds:
                 print(f"wake matched: {text} ({match_reason or 'full'}) -> 我在", flush=True)
                 playback = speech_service.enqueue_wav(
@@ -1354,8 +1539,10 @@ def listen(args):
                     opens_command_window=True,
                 )
                 if playback is not None:
+                    wake_response_pending = True
                     command_listen_until = 0.0
                 else:
+                    command_session_active = True
                     command_listen_until = now + args.post_wake_command_seconds
                 last_trigger = now
                 ignore_until = now + args.playback_ignore_seconds
@@ -1364,6 +1551,7 @@ def listen(args):
             speech_chunks = []
             speech_voice_ratios = []
             in_speech = False
+            speech_is_command = False
             silence_chunks = 0
     finally:
         for thread in photo_capture_threads:
@@ -1371,6 +1559,8 @@ def listen(args):
         shutdown_capture(capture_out, capture_procs)
         if stream_gate is not None:
             stream_gate.stop()
+        if utterance_forwarder is not None:
+            utterance_forwarder.stop()
         speech_service.stop()
 
 
@@ -1466,6 +1656,8 @@ def build_parser():
     p_listen.add_argument("--tts-resume-delay-seconds", type=nonnegative_float, default=0.2)
     p_listen.add_argument("--response-wav", type=Path, default=DEFAULT_RESPONSE)
     p_listen.add_argument("--photo-response-wav", type=Path, default=DEFAULT_PHOTO_RESPONSE)
+    p_listen.add_argument("--photo-cue-wav", type=Path, default=DEFAULT_PHOTO_CUE)
+    p_listen.add_argument("--forward-cue-wav", type=Path, default=DEFAULT_FORWARD_CUE)
     p_listen.add_argument(
         "--photo-alias",
         action="append",
@@ -1505,6 +1697,37 @@ def build_parser():
         "--audio-stream-bitrate",
         type=opus_bitrate,
         default=64000,
+    )
+    p_listen.add_argument(
+        "--utterance-forward",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p_listen.add_argument(
+        "--utterance-forward-url",
+        default="http://127.0.0.1:50020/api/audio",
+    )
+    p_listen.add_argument(
+        "--utterance-forward-queue",
+        type=int,
+        choices=range(1, 65),
+        default=8,
+    )
+    p_listen.add_argument(
+        "--utterance-forward-timeout-seconds",
+        type=positive_float,
+        default=10.0,
+    )
+    p_listen.add_argument(
+        "--utterance-forward-retries",
+        type=int,
+        choices=range(0, 11),
+        default=3,
+    )
+    p_listen.add_argument(
+        "--utterance-forward-retry-delay-seconds",
+        type=nonnegative_float,
+        default=0.5,
     )
     p_listen.add_argument("--chunk-seconds", type=float, default=0.10)
     p_listen.add_argument("--cooldown-seconds", type=float, default=2.5)
@@ -1558,6 +1781,10 @@ def build_parser():
     p_listen.add_argument("--end-silence-seconds", type=float, default=0.55)
     p_listen.add_argument("--photo-end-silence-seconds", type=float, default=0.25)
     p_listen.add_argument("--max-speech-seconds", type=float, default=4.0)
+    p_listen.add_argument("--command-pre-roll-seconds", type=nonnegative_float, default=0.20)
+    p_listen.add_argument("--command-tail-seconds", type=nonnegative_float, default=0.30)
+    p_listen.add_argument("--command-end-silence-seconds", type=positive_float, default=0.60)
+    p_listen.add_argument("--command-max-speech-seconds", type=positive_float, default=60.0)
     p_listen.set_defaults(func=listen)
     return parser
 

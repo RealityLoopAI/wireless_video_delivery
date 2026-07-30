@@ -106,6 +106,8 @@ def test_fixed_xiaoyi_prompts_are_trimmed(source_root: Path):
         "response_wozai_tts_default.wav": 1.0,
         "response_wozai_tts_fast.wav": 1.0,
         "response_photo_done.wav": 1.4,
+        "cue_photo_ding.wav": 0.5,
+        "cue_forward_deng.wav": 0.5,
     }
     prompt_dir = source_root / "12_apps" / "xiaohuan_voice_photo"
     threshold = int(32767 * (10 ** (-45 / 20)))
@@ -328,6 +330,44 @@ def test_local_wav_uses_same_queue(module):
         service.stop()
 
 
+def test_local_prompt_priority_and_http_deferral(module):
+    engine = FakeTtsEngine(module)
+    service = module.UnifiedSpeechService(
+        tts_engine=engine,
+        http_bind="127.0.0.1",
+        http_port=0,
+        max_queue=100,
+    )
+    service.start(enable_http=False)
+    service._play_segment_once = lambda _segment, _device: (0, "")
+    try:
+        remote = service.enqueue_text("remote-before-local", "远程提示")
+        deadline = time.monotonic() + 1.0
+        while service._playback_queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not service._playback_queue.empty()
+
+        with tempfile.TemporaryDirectory(prefix="gwv3_tts_priority_") as temporary:
+            wav = Path(temporary) / "cue.wav"
+            wav.write_bytes(b"RIFF")
+            local = service.enqueue_wav(wav, source="photo-cue")
+            assert local is not None
+
+            local_ready = service.next_ready_task(allow_http=False)
+            assert local_ready is not None
+            assert local_ready.task_id == local.task_id
+            assert service.play_task(local_ready, "test-device") is True
+            service.complete_task(local_ready, True)
+
+            assert service.next_ready_task(allow_http=False) is None
+            remote_ready = wait_ready_task(service)
+            assert remote_ready.task_id == remote.task_id
+            assert service.play_task(remote_ready, "test-device") is True
+            service.complete_task(remote_ready, True)
+    finally:
+        service.stop()
+
+
 def test_speaker_retry_deadline(module):
     engine = FakeTtsEngine(module)
     service = module.UnifiedSpeechService(
@@ -427,6 +467,7 @@ def main():
     test_edge_tts_persistent_cache_and_failure(module)
     test_http_queue_and_idempotency(module)
     test_local_wav_uses_same_queue(module)
+    test_local_prompt_priority_and_http_deferral(module)
     test_speaker_retry_deadline(module)
     test_player_start_failure_is_reported(module)
     test_hung_player_is_killed(module)

@@ -653,6 +653,7 @@ class UnifiedSpeechService:
         self.speaker_retry_seconds = speaker_retry_seconds
 
         self._input_queue = queue.Queue()
+        self._local_playback_queue = queue.Queue()
         self._playback_queue = queue.Queue()
         self._state_lock = threading.Lock()
         self._request_records = {}
@@ -746,13 +747,6 @@ class UnifiedSpeechService:
             print(f"speech wav not found: {wav_path}", file=sys.stderr, flush=True)
             return None
         with self._state_lock:
-            if self._outstanding >= self.max_queue:
-                print(
-                    f"speech queue full; local prompt dropped source={source}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return None
             task = SpeechTask(
                 task_id=uuid.uuid4().hex,
                 request_id="",
@@ -761,7 +755,9 @@ class UnifiedSpeechService:
                 opens_command_window=opens_command_window,
             )
             position = self._append_task_locked(task)
-        self._input_queue.put(task)
+        task.segments.put_nowait(WavSegment(wav_path))
+        task.segments.put_nowait(STREAM_END)
+        self._local_playback_queue.put(task)
         print(
             f"speech prompt queued source={source} task_id={task.task_id} "
             f"queue_position={position}",
@@ -769,13 +765,27 @@ class UnifiedSpeechService:
         )
         return task
 
-    def next_ready_task(self, timeout: Optional[float] = None):
-        try:
-            if timeout is None:
-                return self._playback_queue.get_nowait()
-            return self._playback_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+    def next_ready_task(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        allow_http: bool = True,
+    ):
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while not self._stop.is_set():
+            try:
+                return self._local_playback_queue.get_nowait()
+            except queue.Empty:
+                pass
+            if allow_http:
+                try:
+                    return self._playback_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            if timeout is None or time.monotonic() >= deadline:
+                return None
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        return None
 
     def play_task(self, task: SpeechTask, playback_device: str):
         success = True

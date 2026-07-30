@@ -272,6 +272,19 @@ def test_audio_capture_read_timeout(module):
         os.close(write_fd)
 
 
+def test_command_audio_trimming(module):
+    chunks = [bytes([index, index]) * 1600 for index in range(10)]
+    trimmed = module.trim_command_pcm(
+        chunks,
+        6,
+        chunk_seconds=0.1,
+        tail_seconds=0.3,
+    )
+    assert trimmed == b"".join(chunks[:7])
+    assert module.chunks_for_seconds(0.6, 0.1) == 6
+    assert module.chunks_for_seconds(0.2, 0.1) == 2
+
+
 def test_capture_termination_reaps_killed_process(module):
     class StubbornProcess:
         def __init__(self):
@@ -337,9 +350,14 @@ def test_usb_audio_exclusive_install(source_root: Path):
     assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE" in (
         app_root / "run_wake_service.sh"
     ).read_text(encoding="utf-8")
-    assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE=restart" in (
-        app_root / "systemd" / "xiaohuan-wake-audio-stream.conf"
+    profile = (
+        app_root / "systemd" / "xiaohuan-wake-utterance-forward.conf"
     ).read_text(encoding="utf-8")
+    assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE=restart" in profile
+    assert "XIAOHUAN_AUDIO_STREAM_ENABLED=0" in profile
+    assert "XIAOHUAN_UTTERANCE_FORWARD_ENABLED=1" in profile
+    assert "http://192.168.66.113:50020/api/audio" in profile
+    assert "XIAOHUAN_COMMAND_MAX_SPEECH_SECONDS=60" in profile
 
 
 def test_async_capture_does_not_block(module):
@@ -418,12 +436,20 @@ def main():
     assert defaults.audio_recovery_interval_seconds == 0.5
     assert defaults.echo_tail_seconds == 0.03
     assert defaults.capture_playback_mode == "keep"
+    assert defaults.utterance_forward is False
+    assert defaults.utterance_forward_queue == 8
+    assert defaults.utterance_forward_retries == 3
+    assert defaults.command_pre_roll_seconds == 0.2
+    assert defaults.command_tail_seconds == 0.3
+    assert defaults.command_end_silence_seconds == 0.6
+    assert defaults.command_max_speech_seconds == 60.0
     assert defaults.allow_split_wake is False
     assert defaults.wake_require_end_silence is True
     assert defaults.wake_decode_max_seconds == 3.2
     test_wake_text_matching(module, defaults)
     test_photo_text_matching(module, defaults)
     test_audio_capture_read_timeout(module)
+    test_command_audio_trimming(module)
     test_capture_termination_reaps_killed_process(module)
     test_capture_streams_are_closed(module)
     test_audio_stream_command(module)

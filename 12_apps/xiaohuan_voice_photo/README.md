@@ -38,9 +38,10 @@ python3 -m pip install --user edge-tts
 - 支持分段命中：如果 `你好/您好` 和 `小环` 被切成相邻片段，只要在短时间窗口内出现，也算唤醒。
 - 低质量片段会先跳过，不再全部送进 Vosk。
 - 检测到唤醒后把固定回复放入统一播放队列。
-- 当前硬件没有播放参考信号可供 AEC 使用。通用默认 `capture_playback_mode=keep` 会在播报期间保持采集，识别 PCM 由 drain 丢弃；133 的 USB 麦克风和音箱位于同一个不稳定的单 TT Hub，因此正式 drop-in 使用 `restart` 半双工模式：播放前释放麦克风端点，播放后快速重开、沿用已有噪声阈值且不重复 1.5 秒标定。两种模式都会暂停 RTP/Opus gate，避免把音箱回复发送给监听端。
+- 当前硬件没有播放参考信号可供 AEC 使用。通用默认 `capture_playback_mode=keep` 会在播报期间保持采集，识别 PCM 由 drain 丢弃；133 的 USB 麦克风和音箱位于同一个不稳定的单 TT Hub，因此正式 drop-in 使用 `restart` 半双工模式：播放前释放麦克风端点，播放后快速重开、沿用已有噪声阈值且不重复 1.5 秒标定。
 - 拍照小语法覆盖“拍照 / 拍张照 / 拍一张照片 / 帮我拍照 / 照相”等说法，并兼容 Vosk 常见的“拍 [unk] / [unk] 照 / 牌照”结果。针对部分说话人把 `pai zhao` 说成 `pai zao` 的情况，命令窗口还会识别“拍/排/牌/派 + 照/早/造/澡/灶/遭”的近音组合；该兼容不会作用于常驻唤醒阶段。
-- 拍照命令窗口使用独立的短语音门槛和 0.25 秒尾静音判定，不降低普通唤醒词的门槛。
+- 唤醒回复结束后等待用户开口 8 秒；一旦开口，连续静音 0.6 秒判定说完，单句最长 60 秒。命令音频保留约 0.2 秒前缓冲和 0.3 秒后缓冲。
+- 拍照命令会先播放“叮”再执行三连拍；其他内容或本地识别为空时先播放“登”，再把完整 WAV 异步发送给下游。
 
 启动前台监听：
 
@@ -106,6 +107,14 @@ tts_queue_capacity: 100
 tts_max_text_chars: 500
 tts_speaker_retry_seconds: 15.0
 tts_resume_delay_seconds: 0.2
+utterance_forward_url: http://192.168.66.113:50020/api/audio
+utterance_forward_queue: 8
+utterance_forward_retries: 3
+command_start_timeout_seconds: 8.0
+command_end_silence_seconds: 0.6
+command_max_speech_seconds: 60.0
+command_pre_roll_seconds: 0.2
+command_tail_seconds: 0.3
 audio_read_timeout_seconds: 2.0
 audio_recovery_seconds: 20.0
 audio_recovery_interval_seconds: 0.5
@@ -157,11 +166,10 @@ tail -f wake_runtime.log
 
 ## 4. 固定回复与动态 TTS
 
-唤醒固定回复 `response_wozai_tts_default.wav` 的内容为“我在”；
-拍照固定回复 `response_photo_done.wav` 的内容为“好的，已拍照”。两者都使用 Edge
-TTS `zh-CN-XiaoyiNeural` 提前生成，并裁除 Edge 输出自带的
-长首尾静音，因此触发时无需联网，也不会在可听回复结束后继续阻塞麦克风。唤醒回复
-播放完后不再等待远程 TTS 队列聚合，立即重开命令识别。
+唤醒固定回复 `response_wozai_tts_default.wav` 使用 Edge TTS
+`zh-CN-XiaoyiNeural` 提前生成并裁除首尾静音。拍照和普通语音分别使用本地短提示音
+`cue_photo_ding.wav` 与 `cue_forward_deng.wav`，触发时均不依赖网络。历史文件
+`response_photo_done.wav` 只为旧流程兼容保留，正式流程不再播放“好的，已拍照”。
 
 `192.168.66.133` 上的外部动态文本默认使用 Edge TTS
 `zh-CN-XiaoyiNeural`。首次遇到的文本需要联网合成；成功结果写入
@@ -178,11 +186,11 @@ HTTP 接口已经返回的 `accepted` 仅表示任务入队，不表示合成成
 
 ## 5. 唤醒后拍照
 
-当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放预生成的 Xiaoyi 固定回复
-“我在”。133 播放前会释放麦克风 USB 端点，RTP 转发 gate 同时暂停；播完只等待
-30ms 防回声尾窗，然后快速重开麦克风并沿用已有噪声标定，随即开启默认 8 秒命令窗口。此时识别到
-“拍照”会把预生成的同音色回复“好的，已拍照”加入同一播放队列，同时在后台向
-RGBD 发送端写入拍照请求。
+当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放预生成的固定回复“我在”。
+133 播放前释放麦克风 USB 端点，播完等待 30ms 防回声尾窗，再快速重开麦克风并沿用
+已有噪声标定。设备等待用户开口 8 秒；开始说话后不再受 8 秒窗口限制，而是录到
+0.6 秒尾静音或 60 秒上限。识别到拍照指令后先完整播放“叮”，再向 RGBD 发送端写入
+原有三连拍拍照请求。其他语音播放“登”后进入 HTTP WAV 后台发送队列。
 
 正式运行时，语音服务不直接打开 Orbbec 相机，避免和视频发送端抢 SDK 设备。发送端取得下一帧完整的相机 MJPEG 后，经独立可靠 TCP 通道发送给接收端。方向正常时保留原始 JPEG 有效字节；配置 RGB 软件旋转 180 度时，在独立快照线程中校正方向，不阻塞采集线程。接收端先把 JPG 和完整性清单原子写入本地 staging；本地 `fsync` 成功后返回 `captured`。语音服务默认一次写入同一 `burst_id`、带目标采集时间的 3 个请求，目标间隔 0.2 秒，并在后台收集三张回执。即时语音表示“拍照命令已受理”，不表示三张已经持久化；最终结果以 `captured` 日志和 NAS 文件为准。连续触发的三连拍任务会串行执行，回执使用 30 秒总等待窗口，避免并发挤满接收端快照队列。NAS 写入由独立上传服务异步完成，NAS 短时不可用不会阻塞语音反馈，也不影响 RGBD 录制链路。
 
@@ -223,10 +231,12 @@ photo_result_retention_seconds: 86400.0
 photo_burst_count: 3
 photo_burst_interval_seconds: 0.2
 photo_camera_id: cam01
-photo_response_wav: response_photo_done.wav
+photo_cue_wav: cue_photo_ding.wav
+forward_cue_wav: cue_forward_deng.wav
 photo_decode_min_seconds: 0.45
 photo_decode_min_rms: 0.016
-photo_end_silence_seconds: 0.25
+command_end_silence_seconds: 0.6
+command_max_speech_seconds: 60.0
 ```
 
 ## 6. 局域网文本播报
@@ -237,30 +247,39 @@ photo_end_silence_seconds: 0.25
 POST http://192.168.66.133:18082/api/tts/speak
 ```
 
-请求必须包含 `request_id` 和 `text`。远程文本、唤醒回复和拍照回复共用一个容量为 100 的严格 FIFO 内存队列；重复 `request_id` 不会重复播放。接口返回 `accepted` 只表示已经入队。完整协议、错误码和调用示例见 `TTS_HTTP_API.md`。
+请求必须包含 `request_id` 和 `text`。重复 `request_id` 不会重复播放。接口返回
+`accepted` 只表示已经入队。唤醒后的用户会话进行期间，远程文本只排队不插播；固定
+回复和“叮/登”本地提示音优先于远程文本。完整协议、错误码和调用示例见
+`TTS_HTTP_API.md`。
 
-## 7. RTP/Opus 实时音频
+## 7. 唤醒后整句 WAV 发送
 
-音频流默认关闭。启用后，GStreamer 只打开一次 USB 麦克风，并通过 `tee + queue` 分成两路：
+133 正式配置不再持续发送 RTP/Opus。只有一次唤醒会话中的非拍照语音会发送到：
 
-- 本机支路重采样为 `16kHz/S16LE/单声道`，继续执行现有 Vosk 唤醒和拍照指令识别。
-- 网络支路保留 `48kHz` 输入，编码为 `Opus 64kbps`，使用动态载荷类型 96 的 RTP/UDP 发送。
-
-网络队列限制为 200ms，并设置为丢弃旧数据，避免网络拥塞反向阻塞本机唤醒。当前 `192.168.66.133` 使用 systemd drop-in `systemd/xiaohuan-wake-audio-stream.conf`，持续发送到 macOS 接收端 `192.168.66.113:50020`。其他设备不安装该 drop-in 时仍保持默认关闭。
-
-启用实时音频后，网络支路先发送到进程内的本地 UDP gate，再由 gate 转发到目标端。音箱播报期间 gate 暂停转发，避免把本机回复传给监听端。133 使用半双工快速重开，重开时只验证一个 100ms 音频块并沿用原噪声阈值，不再产生完整 1.5 秒重新标定空窗。
+```text
+POST http://192.168.66.113:50020/api/audio
+Content-Type: audio/wav
+Body: 16000Hz / mono / PCM signed 16-bit WAV
+```
 
 可用环境变量：
 
 ```text
-XIAOHUAN_AUDIO_STREAM_ENABLED=1
-XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.113
-XIAOHUAN_AUDIO_STREAM_PORT=50020
-XIAOHUAN_AUDIO_STREAM_SAMPLE_RATE=48000
-XIAOHUAN_AUDIO_STREAM_BITRATE=64000
+XIAOHUAN_AUDIO_STREAM_ENABLED=0
+XIAOHUAN_UTTERANCE_FORWARD_ENABLED=1
+XIAOHUAN_UTTERANCE_FORWARD_URL=http://192.168.66.113:50020/api/audio
+XIAOHUAN_UTTERANCE_FORWARD_QUEUE=8
+XIAOHUAN_UTTERANCE_FORWARD_TIMEOUT_SECONDS=10
+XIAOHUAN_UTTERANCE_FORWARD_RETRIES=3
+XIAOHUAN_UTTERANCE_FORWARD_RETRY_DELAY_SECONDS=0.5
 ```
 
-macOS/VLC 必须通过 SDP 声明动态 RTP 载荷，不能只打开 `udp://@:50020`。
+HTTP 请求体不附带 JSON 或 multipart 元数据。任意 `2xx` 响应视为成功；失败最多重试
+3 次。队列满时丢弃最旧语音，上传成功后发送端不保留本地 WAV。参考 macOS 接收脚本
+为 `05_tools/xiaohuan_audio_receiver.py`，完整接口见 `UTTERANCE_AUDIO_HTTP_API.md`。
+
+旧 RTP/Opus 参数和实现仅保留用于兼容诊断，133 的正式 systemd profile
+`systemd/xiaohuan-wake-utterance-forward.conf` 明确关闭该链路。
 
 ## 8. 文件识别测试
 
