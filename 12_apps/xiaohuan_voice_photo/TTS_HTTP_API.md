@@ -125,11 +125,14 @@ curl -sS http://192.168.66.133:18082/healthz
 - 文本按句切分；首句合成后立即开始播放，后续句子继续生成。
 - 播放期间停止 USB 麦克风采集，所以 Vosk 唤醒、拍照命令识别和 RTP/Opus 麦克风
   推流会同时暂停。
-- 队列暂时清空后等待 200 ms，再重新打开麦克风并恢复识别和 RTP。
-- 音箱打开或播放失败时重试 5 秒；仍失败则丢弃当前任务并继续下一条。
+- 动态文本队列暂时清空后等待 200 ms，再快速打开麦克风并恢复识别和 RTP；固定唤醒
+  回复不等待该聚合窗口。
+- 音箱打开或播放失败时重试 15 秒；播放进程超过音频时长 3 秒仍未退出时会被回收，
+  防止 USB 断连把整个语音队列永久卡住。
 - 当前局域网实测 `Xiaoyi` 首次合成完整短句约需 1.4～2.4 秒；接口入队响应不等待
   合成。已缓存文本只需本地读取和解码。
-- 唤醒回复和拍照回复使用预生成的同参数 Xiaoyi WAV，不依赖实时联网。
+- 唤醒回复“我在”和拍照回复“好的，已拍照”使用预生成的 Xiaoyi WAV，不依赖实时
+  联网。
 
 ## 运维
 
@@ -153,9 +156,16 @@ XIAOHUAN_TTS_EDGE_TIMEOUT_SECONDS=4
 XIAOHUAN_TTS_EDGE_CACHE_ENTRIES=64
 XIAOHUAN_TTS_EDGE_CACHE_DIR=/home/orangepi/.cache/xiaohuan/edge_tts
 XIAOHUAN_TTS_EDGE_CACHE_MAX_MB=256
-XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS=5
+XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS=15
 XIAOHUAN_TTS_RESUME_DELAY_SECONDS=0.2
+XIAOHUAN_ECHO_TAIL_SECONDS=0.03
+XIAOHUAN_CAPTURE_PLAYBACK_MODE=restart
 ```
+
+133 使用半双工快速恢复：播放前释放 USB 麦克风端点，识别和 RTP/Opus 外发暂停；
+正常播放结束后保留 30ms 防回声尾窗，只验证一个 100ms 音频块并沿用原噪声阈值，
+不重新执行 1.5 秒标定。如果 USB 音箱暂时忙或重枚举，同一条任务会在 15 秒窗口内
+重试，队列不会因单次 `aplay` 失败而永久卡住。
 
 后端依赖：
 

@@ -103,8 +103,8 @@ def test_espeak_mixed_language_markup(module):
 
 def test_fixed_xiaoyi_prompts_are_trimmed(source_root: Path):
     prompts = {
-        "response_wozai_tts_default.wav": 2.2,
-        "response_wozai_tts_fast.wav": 2.2,
+        "response_wozai_tts_default.wav": 1.0,
+        "response_wozai_tts_fast.wav": 1.0,
         "response_photo_done.wav": 1.4,
     }
     prompt_dir = source_root / "12_apps" / "xiaohuan_voice_photo"
@@ -132,7 +132,7 @@ def test_fixed_xiaoyi_prompts_are_trimmed(source_root: Path):
         duration = frame_count / sample_rate
         trailing_silence = duration - ((active_frames[-1] + 1) / sample_rate)
         assert duration <= max_duration
-        assert trailing_silence <= 0.08
+        assert trailing_silence <= 0.10
 
 
 def test_edge_tts_persistent_cache_and_failure(module):
@@ -376,6 +376,48 @@ def test_player_start_failure_is_reported(module):
     assert "injected missing aplay" in error
 
 
+def test_hung_player_is_killed(module):
+    engine = FakeTtsEngine(module)
+    service = module.UnifiedSpeechService(tts_engine=engine)
+    original_popen = module.subprocess.Popen
+
+    class HungPlayer:
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+            self.calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            del input, timeout
+            self.calls += 1
+            if self.calls == 1:
+                raise module.subprocess.TimeoutExpired("aplay", 3)
+            self.returncode = -9
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+    player = HungPlayer()
+    module.subprocess.Popen = lambda *_args, **_kwargs: player
+    try:
+        return_code, error = service._play_segment_once(
+            module.PcmSegment(data=b"\x00\x00", sample_rate=16000),
+            "test-device",
+        )
+    finally:
+        module.subprocess.Popen = original_popen
+    assert return_code == 124
+    assert "timed out" in error
+    assert player.killed is True
+
+
 def main():
     source_root = Path(__file__).resolve().parents[1]
     module = load_speech_module(source_root)
@@ -387,6 +429,7 @@ def main():
     test_local_wav_uses_same_queue(module)
     test_speaker_retry_deadline(module)
     test_player_start_failure_is_reported(module)
+    test_hung_player_is_killed(module)
     print("voice TTS service test passed")
 
 

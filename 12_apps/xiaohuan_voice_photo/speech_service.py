@@ -914,14 +914,18 @@ class UnifiedSpeechService:
     def _play_segment_with_retry(self, segment, playback_device: str):
         failure_deadline = None
         last_error = ""
+        attempt = 0
+        last_warning_at = 0.0
         while not self._stop.is_set():
+            attempt += 1
             return_code, error = self._play_segment_once(segment, playback_device)
             if return_code == 0:
                 return True
             last_error = error or f"aplay exited with {return_code}"
             if failure_deadline is None:
                 failure_deadline = time.monotonic() + self.speaker_retry_seconds
-            remaining = failure_deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = failure_deadline - now
             if remaining <= 0:
                 print(
                     f"speaker unavailable after {self.speaker_retry_seconds:.1f}s: "
@@ -930,6 +934,14 @@ class UnifiedSpeechService:
                     flush=True,
                 )
                 return False
+            if now - last_warning_at >= 1.0:
+                print(
+                    f"speaker playback retry attempt={attempt} "
+                    f"remaining={remaining:.1f}s error={last_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                last_warning_at = now
             time.sleep(min(0.2, remaining))
         return False
 
@@ -937,6 +949,11 @@ class UnifiedSpeechService:
         if isinstance(segment, WavSegment):
             command = ["aplay", "-q", "-D", playback_device, str(segment.path)]
             payload = None
+            try:
+                with wave.open(str(segment.path), "rb") as audio:
+                    duration_seconds = audio.getnframes() / audio.getframerate()
+            except (OSError, EOFError, wave.Error, ZeroDivisionError):
+                duration_seconds = 0.0
         else:
             command = [
                 "aplay",
@@ -953,6 +970,7 @@ class UnifiedSpeechService:
                 "1",
             ]
             payload = segment.data
+            duration_seconds = len(payload) / max(1, segment.sample_rate * 2)
 
         try:
             player = subprocess.Popen(
@@ -966,7 +984,21 @@ class UnifiedSpeechService:
         with self._player_lock:
             self._current_player = player
         try:
-            _stdout, stderr = player.communicate(input=payload)
+            timeout_seconds = max(1.5, duration_seconds + 1.0)
+            try:
+                _stdout, stderr = player.communicate(
+                    input=payload,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                player.kill()
+                _stdout, stderr = player.communicate()
+                detail = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
+                return (
+                    124,
+                    f"aplay timed out after {timeout_seconds:.1f}s"
+                    + (f": {detail}" if detail else ""),
+                )
             error = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
             return player.returncode, error
         finally:

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import threading
@@ -197,8 +200,146 @@ def test_audio_stream_command(module):
     assert "complexity=5" in command
     assert "host=192.168.66.32" in command
     assert "port=50020" in command
+    gated_command = module.make_streaming_capture_cmd(
+        args,
+        ("127.0.0.1", 43123),
+    )
+    assert "host=127.0.0.1" in gated_command
+    assert "port=43123" in gated_command
     assert module.udp_port("50020") == 50020
     assert module.opus_bitrate("64000") == 64000
+
+
+def test_audio_stream_gate(module):
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    receiver.settimeout(0.2)
+    gate = module.UdpPacketGate("127.0.0.1", receiver.getsockname()[1])
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    gate.start()
+    try:
+        sender.sendto(b"forwarded", ("127.0.0.1", gate.local_port))
+        assert receiver.recvfrom(1024)[0] == b"forwarded"
+
+        gate.pause()
+        sender.sendto(b"dropped", ("127.0.0.1", gate.local_port))
+        try:
+            receiver.recvfrom(1024)
+        except socket.timeout:
+            pass
+        else:
+            raise AssertionError("paused audio stream gate forwarded a packet")
+
+        gate.resume()
+        sender.sendto(b"resumed", ("127.0.0.1", gate.local_port))
+        assert receiver.recvfrom(1024)[0] == b"resumed"
+    finally:
+        gate.stop()
+        sender.close()
+        receiver.close()
+
+
+def test_playback_capture_drain(module):
+    read_fd, write_fd = os.pipe()
+    read_stream = os.fdopen(read_fd, "rb", buffering=0)
+    drain = module.CapturePlaybackDrain(read_stream)
+    drain.start()
+    try:
+        os.write(write_fd, b"x" * 4096)
+        deadline = time.monotonic() + 0.5
+        while drain.bytes_drained < 4096 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert drain.bytes_drained == 4096
+        assert drain.ended is False
+    finally:
+        drain.stop()
+        read_stream.close()
+        os.close(write_fd)
+
+
+def test_audio_capture_read_timeout(module):
+    read_fd, write_fd = os.pipe()
+    read_stream = os.fdopen(read_fd, "rb", buffering=0)
+    try:
+        started = time.monotonic()
+        assert module.read_capture_chunk(read_stream, 16, 0.03) == b""
+        assert time.monotonic() - started < 0.2
+
+        os.write(write_fd, b"0123456789abcdef")
+        assert module.read_capture_chunk(read_stream, 16, 0.1) == b"0123456789abcdef"
+    finally:
+        read_stream.close()
+        os.close(write_fd)
+
+
+def test_capture_termination_reaps_killed_process(module):
+    class StubbornProcess:
+        def __init__(self):
+            self.running = True
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_calls = 0
+
+        def poll(self):
+            return None if self.running else -9
+
+        def terminate(self):
+            self.terminate_calls += 1
+
+        def kill(self):
+            self.kill_calls += 1
+            self.running = False
+
+        def wait(self, timeout):
+            del timeout
+            self.wait_calls += 1
+            if self.running:
+                raise module.subprocess.TimeoutExpired("capture", 1)
+            return -9
+
+    process = StubbornProcess()
+    module.terminate_capture([("stubborn", process)])
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.wait_calls == 2
+
+
+def test_capture_streams_are_closed(module):
+    capture_out = io.BytesIO()
+    process = type(
+        "CaptureProcess",
+        (),
+        {
+            "stdin": io.BytesIO(),
+            "stdout": capture_out,
+            "stderr": io.BytesIO(),
+        },
+    )()
+    module.close_capture_streams(capture_out, [("capture", process)])
+    assert capture_out.closed
+    assert process.stdin.closed
+    assert process.stderr.closed
+
+
+def test_usb_audio_exclusive_install(source_root: Path):
+    app_root = source_root / "12_apps" / "xiaohuan_voice_photo"
+    rule_path = app_root / "systemd" / "90-xiaohuan-usb-audio-exclusive.rules"
+    rule_text = rule_path.read_text(encoding="utf-8")
+    assert 'ATTRS{idVendor}=="8087"' in rule_text
+    assert 'ATTRS{idProduct}=="1024"' in rule_text
+    assert 'ATTRS{idVendor}=="08bb"' in rule_text
+    assert 'ATTRS{idProduct}=="2902"' in rule_text
+    assert rule_text.count('ENV{PULSE_IGNORE}="1"') == 2
+
+    installer = (app_root / "install_wake_service.sh").read_text(encoding="utf-8")
+    assert "90-xiaohuan-usb-audio-exclusive.rules" in installer
+    assert "udevadm control --reload-rules" in installer
+    assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE" in (
+        app_root / "run_wake_service.sh"
+    ).read_text(encoding="utf-8")
+    assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE=restart" in (
+        app_root / "systemd" / "xiaohuan-wake-audio-stream.conf"
+    ).read_text(encoding="utf-8")
 
 
 def test_async_capture_does_not_block(module):
@@ -267,17 +408,28 @@ def main():
     assert defaults.audio_stream is False
     assert defaults.tts_http is True
     assert defaults.tts_http_port == 18082
-    assert defaults.tts_backend == "espeak"
+    assert defaults.tts_backend == "edge"
     assert defaults.tts_max_queue == 100
     assert defaults.tts_max_text_chars == 500
-    assert defaults.tts_speaker_retry_seconds == 5.0
+    assert defaults.tts_speaker_retry_seconds == 15.0
     assert defaults.tts_resume_delay_seconds == 0.2
+    assert defaults.audio_read_timeout_seconds == 2.0
+    assert defaults.audio_recovery_seconds == 20.0
+    assert defaults.audio_recovery_interval_seconds == 0.5
+    assert defaults.echo_tail_seconds == 0.03
+    assert defaults.capture_playback_mode == "keep"
     assert defaults.allow_split_wake is False
     assert defaults.wake_require_end_silence is True
     assert defaults.wake_decode_max_seconds == 3.2
     test_wake_text_matching(module, defaults)
     test_photo_text_matching(module, defaults)
+    test_audio_capture_read_timeout(module)
+    test_capture_termination_reaps_killed_process(module)
+    test_capture_streams_are_closed(module)
     test_audio_stream_command(module)
+    test_audio_stream_gate(module)
+    test_playback_capture_drain(module)
+    test_usb_audio_exclusive_install(source_root)
     test_async_capture_does_not_block(module)
     with tempfile.TemporaryDirectory(prefix="gwv3_voice_burst_") as temporary:
         root = Path(temporary)

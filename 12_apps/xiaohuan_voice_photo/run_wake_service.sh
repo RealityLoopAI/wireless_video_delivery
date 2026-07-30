@@ -22,7 +22,7 @@ MIC_AGC="${XIAOHUAN_MIC_AGC:-off}"
 WAKE_DECODE_MIN_RMS="${XIAOHUAN_WAKE_DECODE_MIN_RMS:-0.016}"
 DECODE_NOISE_MARGIN="${XIAOHUAN_DECODE_NOISE_MARGIN:-0.006}"
 WAKE_RESPONSE_WAV="${XIAOHUAN_WAKE_RESPONSE_WAV:-$ROOT_DIR/response_wozai_tts_default.wav}"
-ECHO_TAIL_SECONDS="${XIAOHUAN_ECHO_TAIL_SECONDS:-0.10}"
+ECHO_TAIL_SECONDS="${XIAOHUAN_ECHO_TAIL_SECONDS:-0.03}"
 TTS_HTTP_ENABLED="${XIAOHUAN_TTS_HTTP_ENABLED:-1}"
 TTS_HTTP_BIND="${XIAOHUAN_TTS_HTTP_BIND:-0.0.0.0}"
 TTS_HTTP_PORT="${XIAOHUAN_TTS_HTTP_PORT:-18082}"
@@ -34,8 +34,12 @@ TTS_EDGE_TIMEOUT_SECONDS="${XIAOHUAN_TTS_EDGE_TIMEOUT_SECONDS:-4}"
 TTS_EDGE_CACHE_ENTRIES="${XIAOHUAN_TTS_EDGE_CACHE_ENTRIES:-64}"
 TTS_EDGE_CACHE_DIR="${XIAOHUAN_TTS_EDGE_CACHE_DIR:-$HOME/.cache/xiaohuan/edge_tts}"
 TTS_EDGE_CACHE_MAX_MB="${XIAOHUAN_TTS_EDGE_CACHE_MAX_MB:-256}"
-TTS_SPEAKER_RETRY_SECONDS="${XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS:-5}"
+TTS_SPEAKER_RETRY_SECONDS="${XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS:-15}"
 TTS_RESUME_DELAY_SECONDS="${XIAOHUAN_TTS_RESUME_DELAY_SECONDS:-0.2}"
+AUDIO_READ_TIMEOUT_SECONDS="${XIAOHUAN_AUDIO_READ_TIMEOUT_SECONDS:-2}"
+AUDIO_RECOVERY_SECONDS="${XIAOHUAN_AUDIO_RECOVERY_SECONDS:-20}"
+AUDIO_RECOVERY_INTERVAL_SECONDS="${XIAOHUAN_AUDIO_RECOVERY_INTERVAL_SECONDS:-0.5}"
+CAPTURE_PLAYBACK_MODE="${XIAOHUAN_CAPTURE_PLAYBACK_MODE:-keep}"
 
 cd "$ROOT_DIR"
 
@@ -64,7 +68,10 @@ resolve_alsa_card_by_match() {
   local pattern="$1"
   awk -v pattern="$pattern" '
     /^[[:space:]]*[0-9]+[[:space:]]+\[/ {
-      card=$1
+      card=$0
+      sub(/^.*\[/, "", card)
+      sub(/\].*$/, "", card)
+      gsub(/[[:space:]]/, "", card)
       line=$0
       desc=""
       if (getline nextline > 0) {
@@ -90,7 +97,7 @@ resolve_alsa_device() {
   local card
   card="$(resolve_alsa_card_by_match "$match")"
   if [[ -n "$card" ]]; then
-    printf 'plughw:%s,0\n' "$card"
+    printf 'plughw:CARD=%s,DEV=0\n' "$card"
   elif [[ "$ALLOW_DEVICE_FALLBACK" == "1" ]]; then
     printf '%s\n' "$fallback"
   else
@@ -126,9 +133,14 @@ configure_record_mixer() {
 
   local device_suffix card
   device_suffix="${RECORD_DEVICE#*:}"
-  card="${device_suffix%%,*}"
-  if [[ ! "$card" =~ ^[0-9]+$ ]]; then
-    echo "record mixer configuration skipped for non-numeric device=$RECORD_DEVICE"
+  if [[ "$device_suffix" == CARD=* ]]; then
+    card="${device_suffix#CARD=}"
+    card="${card%%,*}"
+  else
+    card="${device_suffix%%,*}"
+  fi
+  if [[ -z "$card" ]]; then
+    echo "record mixer configuration skipped for unresolved device=$RECORD_DEVICE"
     return
   fi
 
@@ -181,6 +193,10 @@ configure_record_mixer() {
     --tts-edge-cache-max-mb "$TTS_EDGE_CACHE_MAX_MB" \
     --tts-speaker-retry-seconds "$TTS_SPEAKER_RETRY_SECONDS" \
     --tts-resume-delay-seconds "$TTS_RESUME_DELAY_SECONDS" \
+    --audio-read-timeout-seconds "$AUDIO_READ_TIMEOUT_SECONDS" \
+    --audio-recovery-seconds "$AUDIO_RECOVERY_SECONDS" \
+    --audio-recovery-interval-seconds "$AUDIO_RECOVERY_INTERVAL_SECONDS" \
+    --capture-playback-mode "$CAPTURE_PLAYBACK_MODE" \
     --response-wav "$WAKE_RESPONSE_WAV" \
     --echo-tail-seconds "$ECHO_TAIL_SECONDS" \
     "${AUDIO_STREAM_ARGS[@]}" \

@@ -3,7 +3,10 @@ import argparse
 import collections
 from datetime import datetime
 import json
+import os
+import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -490,7 +493,109 @@ def make_arecord_cmd(args):
     ]
 
 
-def make_streaming_capture_cmd(args):
+class UdpPacketGate:
+    def __init__(self, remote_host: str, remote_port: int):
+        self._remote_address = (socket.gethostbyname(remote_host), remote_port)
+        self._input = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._input.bind(("127.0.0.1", 0))
+        self._input.settimeout(0.1)
+        self._output = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._enabled = threading.Event()
+        self._enabled.set()
+        self._stop = threading.Event()
+        self._thread = None
+
+    @property
+    def local_port(self):
+        return self._input.getsockname()[1]
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run,
+            name="xiaohuan-audio-stream-gate",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def pause(self):
+        self._enabled.clear()
+
+    def resume(self):
+        self._enabled.set()
+
+    def stop(self):
+        self._stop.set()
+        self._input.close()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._output.close()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                packet, _source = self._input.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not self._enabled.is_set():
+                continue
+            try:
+                self._output.sendto(packet, self._remote_address)
+            except OSError:
+                continue
+
+
+class CapturePlaybackDrain:
+    def __init__(self, capture_out):
+        self.capture_out = capture_out
+        self.bytes_drained = 0
+        self.ended = False
+        self.error = ""
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run,
+            name="xiaohuan-playback-capture-drain",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _run(self):
+        try:
+            descriptor = self.capture_out.fileno()
+            while not self._stop.is_set():
+                readable, _writable, _exceptional = select.select(
+                    [descriptor],
+                    [],
+                    [],
+                    0.05,
+                )
+                if not readable:
+                    continue
+                data = os.read(descriptor, 65536)
+                if not data:
+                    self.ended = True
+                    break
+                self.bytes_drained += len(data)
+        except (OSError, ValueError) as exc:
+            if not self._stop.is_set():
+                self.ended = True
+                self.error = str(exc)
+
+
+def make_streaming_capture_cmd(args, stream_target=None):
+    stream_host, stream_port = stream_target or (
+        args.audio_stream_host,
+        args.audio_stream_port,
+    )
     return [
         "gst-launch-1.0",
         "-q",
@@ -549,17 +654,17 @@ def make_streaming_capture_cmd(args):
         "mtu=1200",
         "!",
         "udpsink",
-        f"host={args.audio_stream_host}",
-        f"port={args.audio_stream_port}",
+        f"host={stream_host}",
+        f"port={stream_port}",
         "sync=false",
         "async=false",
     ]
 
 
-def start_capture(args):
+def start_capture(args, stream_target=None):
     if args.audio_stream:
         source = subprocess.Popen(
-            make_streaming_capture_cmd(args),
+            make_streaming_capture_cmd(args, stream_target),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -614,6 +719,28 @@ def start_capture(args):
     return ffmpeg.stdout, procs, filter_graph
 
 
+def read_capture_chunk(capture_out, expected_bytes: int, timeout_seconds: float):
+    data = bytearray()
+    deadline = time.monotonic() + timeout_seconds
+    while len(data) < expected_bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _writable, _exceptional = select.select(
+            [capture_out.fileno()],
+            [],
+            [],
+            remaining,
+        )
+        if not readable:
+            break
+        chunk = os.read(capture_out.fileno(), expected_bytes - len(data))
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
+
+
 def terminate_capture(procs):
     for _name, proc in reversed(procs):
         if proc.poll() is None:
@@ -623,6 +750,10 @@ def terminate_capture(procs):
             proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def capture_errors(procs):
@@ -634,6 +765,28 @@ def capture_errors(procs):
         if text:
             errors.append(f"{name} stderr: {text}")
     return "\n".join(errors)
+
+
+def close_capture_streams(capture_out, procs):
+    streams = [capture_out]
+    for _name, proc in procs:
+        streams.extend((proc.stdin, proc.stdout, proc.stderr))
+    closed = set()
+    for stream in streams:
+        if stream is None or id(stream) in closed:
+            continue
+        closed.add(id(stream))
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+
+def shutdown_capture(capture_out, procs, collect_errors=False):
+    terminate_capture(procs)
+    errors = capture_errors(procs) if collect_errors else ""
+    close_capture_streams(capture_out, procs)
+    return errors
 
 
 def run_file(args):
@@ -718,8 +871,25 @@ def listen(args):
         speaker_retry_seconds=args.tts_speaker_retry_seconds,
     )
     speech_service.start(enable_http=args.tts_http)
-    capture_out, capture_procs, audio_filter = start_capture(args)
     stop = False
+    stream_gate = None
+    stream_target = None
+    if args.audio_stream:
+        try:
+            stream_gate = UdpPacketGate(
+                args.audio_stream_host,
+                args.audio_stream_port,
+            )
+            stream_gate.start()
+            stream_target = ("127.0.0.1", stream_gate.local_port)
+        except OSError as exc:
+            if stream_gate is not None:
+                stream_gate.stop()
+            stream_gate = None
+            print(
+                f"audio stream gate unavailable; using direct output: {exc}",
+                flush=True,
+            )
 
     def handle_signal(_signum, _frame):
         nonlocal stop
@@ -733,7 +903,6 @@ def listen(args):
     print(f"aliases={aliases}")
     print(f"record_device={args.record_device}, playback_device={args.playback_device}")
     print(f"mode=gated-vad-asr, vad={vad_mode}")
-    print(f"audio_filter={audio_filter}")
     print(
         f"tts_http={args.tts_http} bind={args.tts_http_bind}:{args.tts_http_port} "
         f"backend={args.tts_backend} model={args.tts_model_dir} "
@@ -747,6 +916,12 @@ def listen(args):
             f"codec=opus rate={args.audio_stream_sample_rate} channels=1 "
             f"bitrate={args.audio_stream_bitrate} transport=rtp/udp"
         )
+        if stream_gate is not None:
+            print(
+                f"audio_stream_gate=127.0.0.1:{stream_gate.local_port} "
+                "playback_policy=drop",
+                flush=True,
+            )
     print(f"wake_grammar={wake_grammar}")
     print(f"photo_aliases={photo_aliases}")
     print(f"photo_grammar={photo_grammar}")
@@ -759,6 +934,10 @@ def listen(args):
     print("photo_storage_target=receiver_nas")
     print(f"zero_audio_rms={args.zero_audio_rms}")
     print(f"zero_audio_restart_seconds={args.zero_audio_restart_seconds}")
+    print(f"audio_read_timeout_seconds={args.audio_read_timeout_seconds}")
+    print(f"audio_recovery_seconds={args.audio_recovery_seconds}")
+    print(f"audio_recovery_interval_seconds={args.audio_recovery_interval_seconds}")
+    print(f"capture_playback_mode={args.capture_playback_mode}")
     print(f"barge_in={args.barge_in}")
     print(
         f"barge_in_min_rms={args.barge_in_min_rms}, "
@@ -768,18 +947,90 @@ def listen(args):
     cleanup_old_photo_results(args)
 
     calibration_chunks = max(1, int(args.vad_calibration_seconds / args.chunk_seconds))
-    noise_levels = []
-    for _ in range(calibration_chunks):
-        data = capture_out.read(chunk_bytes)
-        if len(data) < chunk_bytes:
-            terminate_capture(capture_procs)
-            err = capture_errors(capture_procs)
-            print(f"audio stream ended during calibration: got={len(data)} expected={chunk_bytes}", flush=True)
-            if err.strip():
-                print(err.strip(), flush=True)
-            return
-        noise_levels.append(pcm_rms(data))
-    noise_rms = float(np.median(noise_levels)) if noise_levels else 0.0
+
+    def open_capture(
+        phase: str,
+        *,
+        calibrate: bool,
+        previous_noise_rms: float = 0.0,
+    ):
+        recovery_started = time.monotonic()
+        attempt = 0
+        while not stop:
+            attempt += 1
+            capture_out = None
+            capture_procs = []
+            try:
+                capture_out, capture_procs, audio_filter = start_capture(
+                    args,
+                    stream_target,
+                )
+                noise_levels = []
+                sample_count = calibration_chunks if calibrate else 1
+                for _ in range(sample_count):
+                    data = read_capture_chunk(
+                        capture_out,
+                        chunk_bytes,
+                        args.audio_read_timeout_seconds,
+                    )
+                    if len(data) < chunk_bytes:
+                        raise RuntimeError(
+                            f"short audio read got={len(data)} expected={chunk_bytes}"
+                        )
+                    if calibrate:
+                        noise_levels.append(pcm_rms(data))
+            except (OSError, RuntimeError) as exc:
+                err = shutdown_capture(
+                    capture_out,
+                    capture_procs,
+                    collect_errors=True,
+                )
+                elapsed = time.monotonic() - recovery_started
+                print(
+                    f"audio capture unavailable phase={phase} attempt={attempt} "
+                    f"elapsed={elapsed:.2f}s error={exc}",
+                    flush=True,
+                )
+                if err.strip():
+                    print(err.strip(), flush=True)
+                if (
+                    args.audio_recovery_seconds > 0
+                    and elapsed >= args.audio_recovery_seconds
+                ):
+                    print(
+                        f"audio recovery exhausted phase={phase} "
+                        f"after={elapsed:.2f}s",
+                        flush=True,
+                    )
+                    return None
+                retry_until = time.monotonic() + args.audio_recovery_interval_seconds
+                while not stop and time.monotonic() < retry_until:
+                    time.sleep(max(0.0, min(0.05, retry_until - time.monotonic())))
+                continue
+
+            noise_rms = (
+                float(np.median(noise_levels))
+                if calibrate
+                else previous_noise_rms
+            )
+            if phase != "startup" or attempt > 1:
+                elapsed = time.monotonic() - recovery_started
+                print(
+                    f"audio capture recovered phase={phase} attempt={attempt} "
+                    f"elapsed={elapsed:.2f}s calibrated={str(calibrate).lower()}",
+                    flush=True,
+                )
+            print(f"audio_filter={audio_filter}")
+            return capture_out, capture_procs, audio_filter, noise_rms
+        return None
+
+    capture_state = open_capture("startup", calibrate=True)
+    if capture_state is None:
+        if stream_gate is not None:
+            stream_gate.stop()
+        speech_service.stop()
+        return 12
+    capture_out, capture_procs, audio_filter, noise_rms = capture_state
     vad_threshold = compute_vad_threshold(args, noise_rms)
     print(f"noise_rms={noise_rms:.5f}, vad_threshold={vad_threshold:.5f}")
 
@@ -818,8 +1069,21 @@ def listen(args):
 
             playback_task = speech_service.next_ready_task()
             if playback_task is not None:
-                terminate_capture(capture_procs)
-                capture_procs = []
+                playback_started = time.monotonic()
+                if stream_gate is not None:
+                    stream_gate.pause()
+                capture_drain = None
+                if args.capture_playback_mode == "keep":
+                    capture_drain = CapturePlaybackDrain(capture_out)
+                    capture_drain.start()
+                else:
+                    shutdown_capture(capture_out, capture_procs)
+                    capture_out = None
+                    capture_procs = []
+                    print(
+                        "audio capture paused for half-duplex playback",
+                        flush=True,
+                    )
                 opens_command_window = False
                 while playback_task is not None and not stop:
                     playback_ok = speech_service.play_task(
@@ -838,10 +1102,65 @@ def listen(args):
                     playback_task = speech_service.next_ready_task(
                         timeout=queue_wait_seconds,
                     )
+                echo_deadline = time.monotonic() + args.echo_tail_seconds
+                while not stop and time.monotonic() < echo_deadline:
+                    time.sleep(min(0.01, echo_deadline - time.monotonic()))
                 if stop:
+                    if capture_drain is not None:
+                        capture_drain.stop()
                     break
 
-                capture_out, capture_procs, audio_filter = start_capture(args)
+                if args.capture_playback_mode == "restart":
+                    capture_state = open_capture(
+                        "post-playback-resume",
+                        calibrate=False,
+                        previous_noise_rms=noise_rms,
+                    )
+                    if capture_state is None:
+                        return 12
+                    capture_out, capture_procs, audio_filter, noise_rms = capture_state
+                    print(
+                        "audio capture resumed after half-duplex playback: "
+                        f"elapsed={time.monotonic() - playback_started:.3f}s",
+                        flush=True,
+                    )
+                else:
+                    capture_drain.stop()
+                    capture_failed = capture_drain.ended or any(
+                        proc.poll() is not None
+                        for _name, proc in capture_procs
+                    )
+                    if capture_failed:
+                        err = shutdown_capture(
+                            capture_out,
+                            capture_procs,
+                            collect_errors=True,
+                        )
+                        print(
+                            "audio capture lost during playback: "
+                            f"error={capture_drain.error or 'capture process exited'}",
+                            flush=True,
+                        )
+                        if err.strip():
+                            print(err.strip(), flush=True)
+                        capture_state = open_capture(
+                            "post-playback-failure",
+                            calibrate=True,
+                        )
+                        if capture_state is None:
+                            return 12
+                        capture_out, capture_procs, audio_filter, noise_rms = capture_state
+                        vad_threshold = compute_vad_threshold(args, noise_rms)
+                    else:
+                        print(
+                            "audio capture kept alive across playback: "
+                            f"elapsed={time.monotonic() - playback_started:.3f}s "
+                            f"drained_bytes={capture_drain.bytes_drained} "
+                            f"echo_tail={args.echo_tail_seconds:.3f}s",
+                            flush=True,
+                        )
+                if stream_gate is not None:
+                    stream_gate.resume()
                 now = time.time()
                 ignore_until = now
                 if opens_command_window:
@@ -860,14 +1179,33 @@ def listen(args):
                 zero_audio_since = None
                 continue
 
-            data = capture_out.read(chunk_bytes)
+            data = read_capture_chunk(
+                capture_out,
+                chunk_bytes,
+                args.audio_read_timeout_seconds,
+            )
             if len(data) < chunk_bytes:
-                terminate_capture(capture_procs)
-                err = capture_errors(capture_procs)
+                err = shutdown_capture(
+                    capture_out,
+                    capture_procs,
+                    collect_errors=True,
+                )
                 print(f"audio stream ended: got={len(data)} expected={chunk_bytes}", flush=True)
                 if err.strip():
                     print(err.strip(), flush=True)
-                break
+                capture_state = open_capture("runtime", calibrate=True)
+                if capture_state is None:
+                    return 12
+                capture_out, capture_procs, audio_filter, noise_rms = capture_state
+                vad_threshold = compute_vad_threshold(args, noise_rms)
+                matcher.reset()
+                pre_roll.clear()
+                speech_chunks = []
+                speech_voice_ratios = []
+                in_speech = False
+                silence_chunks = 0
+                zero_audio_since = None
+                continue
             now = time.time()
 
             level = pcm_rms(data)
@@ -876,7 +1214,7 @@ def listen(args):
                     if zero_audio_since is None:
                         zero_audio_since = now
                     elif now - zero_audio_since >= args.zero_audio_restart_seconds:
-                        terminate_capture(capture_procs)
+                        shutdown_capture(capture_out, capture_procs)
                         print(
                             f"zero audio watchdog triggered: level={level:.6f} "
                             f"threshold={args.zero_audio_rms:.6f} "
@@ -1030,7 +1368,9 @@ def listen(args):
     finally:
         for thread in photo_capture_threads:
             thread.join(timeout=0.2)
-        terminate_capture(capture_procs)
+        shutdown_capture(capture_out, capture_procs)
+        if stream_gate is not None:
+            stream_gate.stop()
         speech_service.stop()
 
 
@@ -1122,7 +1462,7 @@ def build_parser():
     )
     p_listen.add_argument("--tts-max-queue", type=int, choices=range(1, 101), default=100)
     p_listen.add_argument("--tts-max-text-chars", type=int, choices=range(1, 501), default=500)
-    p_listen.add_argument("--tts-speaker-retry-seconds", type=nonnegative_float, default=5.0)
+    p_listen.add_argument("--tts-speaker-retry-seconds", type=nonnegative_float, default=15.0)
     p_listen.add_argument("--tts-resume-delay-seconds", type=nonnegative_float, default=0.2)
     p_listen.add_argument("--response-wav", type=Path, default=DEFAULT_RESPONSE)
     p_listen.add_argument("--photo-response-wav", type=Path, default=DEFAULT_PHOTO_RESPONSE)
@@ -1169,7 +1509,7 @@ def build_parser():
     p_listen.add_argument("--chunk-seconds", type=float, default=0.10)
     p_listen.add_argument("--cooldown-seconds", type=float, default=2.5)
     p_listen.add_argument("--playback-ignore-seconds", type=float, default=0.3)
-    p_listen.add_argument("--echo-tail-seconds", type=float, default=0.3)
+    p_listen.add_argument("--echo-tail-seconds", type=nonnegative_float, default=0.03)
     p_listen.add_argument("--vad-calibration-seconds", type=float, default=1.5)
     p_listen.add_argument("--vad-noise-scale", type=float, default=1.25)
     p_listen.add_argument("--vad-noise-margin", type=float, default=0.003)
@@ -1178,6 +1518,18 @@ def build_parser():
     p_listen.add_argument("--noise-log-seconds", type=float, default=20.0)
     p_listen.add_argument("--zero-audio-rms", type=float, default=0.0005)
     p_listen.add_argument("--zero-audio-restart-seconds", type=float, default=12.0)
+    p_listen.add_argument("--audio-read-timeout-seconds", type=positive_float, default=2.0)
+    p_listen.add_argument("--audio-recovery-seconds", type=nonnegative_float, default=20.0)
+    p_listen.add_argument(
+        "--audio-recovery-interval-seconds",
+        type=positive_float,
+        default=0.5,
+    )
+    p_listen.add_argument(
+        "--capture-playback-mode",
+        choices=["keep", "restart"],
+        default="keep",
+    )
     p_listen.add_argument("--barge-in", action=argparse.BooleanOptionalAction, default=False)
     p_listen.add_argument("--barge-in-ignore-seconds", type=float, default=0.45)
     p_listen.add_argument("--barge-in-min-rms", type=float, default=0.035)
