@@ -34,6 +34,7 @@ DEFAULT_PHOTO_REQUEST_DIR = Path("/tmp/gemini_rgb_snapshot_requests")
 DEFAULT_PHOTO_RESULT_DIR = Path("/tmp/gemini_rgb_snapshot_results")
 DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
 DEFAULT_TTS_MODEL_DIR = BASE_DIR / "models" / "vits-melo-tts-zh_en"
+DEFAULT_EDGE_TTS_CACHE_DIR = Path.home() / ".cache" / "xiaohuan" / "edge_tts"
 PHOTO_CAPTURE_LOCK = threading.Lock()
 
 AUDIO_FILTERS = {
@@ -698,10 +699,11 @@ def listen(args):
         )
     else:
         tts_engine = EdgeTtsEngine(
-            fallback_engine=EspeakTtsEngine(),
             voice=args.tts_edge_voice,
             timeout_seconds=args.tts_edge_timeout_seconds,
             cache_entries=args.tts_edge_cache_entries,
+            disk_cache_dir=args.tts_edge_cache_dir,
+            disk_cache_max_bytes=args.tts_edge_cache_max_mb * 1024 * 1024,
         )
     speech_service = UnifiedSpeechService(
         tts_engine=tts_engine,
@@ -1079,7 +1081,7 @@ def build_parser():
     p_listen.add_argument(
         "--tts-backend",
         choices=["espeak", "sherpa", "edge"],
-        default="espeak",
+        default="edge",
     )
     p_listen.add_argument("--tts-model-dir", type=Path, default=DEFAULT_TTS_MODEL_DIR)
     p_listen.add_argument("--tts-num-threads", type=int, choices=range(1, 9), default=4)
@@ -1097,6 +1099,17 @@ def build_parser():
         type=int,
         choices=range(0, 257),
         default=64,
+    )
+    p_listen.add_argument(
+        "--tts-edge-cache-dir",
+        type=Path,
+        default=DEFAULT_EDGE_TTS_CACHE_DIR,
+    )
+    p_listen.add_argument(
+        "--tts-edge-cache-max-mb",
+        type=int,
+        choices=range(1, 4097),
+        default=256,
     )
     p_listen.add_argument("--tts-max-queue", type=int, choices=range(1, 101), default=100)
     p_listen.add_argument("--tts-max-text-chars", type=int, choices=range(1, 501), default=500)

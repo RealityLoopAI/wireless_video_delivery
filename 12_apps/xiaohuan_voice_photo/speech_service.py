@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import asyncio
+import hashlib
 import html
 import io
 import json
+import os
 import queue
 import re
 import shutil
@@ -201,40 +203,45 @@ class EspeakTtsEngine:
 class EdgeTtsEngine:
     def __init__(
         self,
-        fallback_engine=None,
         voice: str = "zh-CN-XiaoyiNeural",
+        rate: str = "+0%",
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
         timeout_seconds: float = 4.0,
         retry_seconds: float = 30.0,
         cache_entries: int = 64,
         cache_max_bytes: int = 32 * 1024 * 1024,
+        disk_cache_dir: Optional[Path] = None,
+        disk_cache_max_bytes: int = 256 * 1024 * 1024,
         decoder_executable: str = "ffmpeg",
         edge_module=None,
     ):
-        self.fallback_engine = fallback_engine
         self.voice = voice
+        self.rate = rate
+        self.volume = volume
+        self.pitch = pitch
         self.timeout_seconds = timeout_seconds
         self.retry_seconds = retry_seconds
         self.cache_entries = cache_entries
         self.cache_max_bytes = cache_max_bytes
+        self.disk_cache_dir = (
+            Path(disk_cache_dir).expanduser() if disk_cache_dir is not None else None
+        )
+        self.disk_cache_max_bytes = disk_cache_max_bytes
         self.decoder_executable = decoder_executable
         self.ready = False
         self.load_error = ""
-        self.backend_name = f"edge-tts:{voice}+offline-fallback"
+        self.backend_name = f"edge-tts:{voice}"
         self._edge_tts = edge_module
         self._decoder = None
         self._edge_available = False
         self._edge_retry_after = 0.0
+        self._disk_cache_ready = False
         self._cache = OrderedDict()
         self._cache_bytes = 0
         self._cache_lock = threading.Lock()
 
     def load(self):
-        fallback_error = ""
-        if self.fallback_engine is not None:
-            self.fallback_engine.load()
-            if not self.fallback_engine.ready:
-                fallback_error = self.fallback_engine.load_error
-
         try:
             if self._edge_tts is None:
                 import edge_tts
@@ -247,25 +254,22 @@ class EdgeTtsEngine:
                 )
             self._decoder = decoder
             self._edge_available = True
+            self.ready = True
             self.load_error = ""
+            self._prepare_disk_cache()
             print(
                 f"online TTS loaded backend=edge-tts voice={self.voice} "
                 f"timeout_seconds={self.timeout_seconds:.1f} "
-                f"cache_entries={self.cache_entries}",
+                f"memory_cache_entries={self.cache_entries} "
+                f"disk_cache={self.disk_cache_dir if self._disk_cache_ready else 'disabled'} "
+                f"disk_cache_max_bytes={self.disk_cache_max_bytes}",
                 flush=True,
             )
         except Exception as exc:
             self._edge_available = False
+            self.ready = False
             self.load_error = str(exc)
             print(f"online TTS unavailable: {exc}", file=sys.stderr, flush=True)
-
-        self.ready = self._edge_available or bool(
-            self.fallback_engine is not None and self.fallback_engine.ready
-        )
-        if not self.ready and fallback_error:
-            self.load_error = (
-                f"edge-tts: {self.load_error}; fallback: {fallback_error}"
-            )
 
     def synthesize(self, text: str):
         cached = self._cache_get(text)
@@ -277,40 +281,65 @@ class EdgeTtsEngine:
             )
             return cached
 
-        if self._edge_available and time.monotonic() >= self._edge_retry_after:
-            started = time.monotonic()
+        disk_cached = self._disk_cache_get(text)
+        if disk_cached is not None:
             try:
-                mp3 = asyncio.run(
-                    asyncio.wait_for(
-                        self._collect_mp3(text),
-                        timeout=self.timeout_seconds,
-                    )
-                )
-                segment = self._decode_mp3(mp3)
-                elapsed = time.monotonic() - started
-                duration = len(segment.data) / (segment.sample_rate * 2)
+                segment = self._decode_mp3(disk_cached)
+                self._cache_put(text, segment)
                 print(
-                    f"online TTS generated backend=edge-tts voice={self.voice} "
-                    f"chars={len(text)} seconds={elapsed:.3f} "
-                    f"audio_seconds={duration:.3f}",
+                    f"online TTS disk cache hit backend=edge-tts voice={self.voice} "
+                    f"chars={len(text)}",
                     flush=True,
                 )
-                self._edge_retry_after = 0.0
-                self._cache_put(text, segment)
                 return segment
             except Exception as exc:
-                self._edge_retry_after = time.monotonic() + self.retry_seconds
+                self._disk_cache_delete(text)
                 print(
-                    f"online TTS failed backend=edge-tts voice={self.voice} "
-                    f"error={exc}; retry_after_seconds={self.retry_seconds:.1f}; "
-                    f"using fallback",
+                    f"online TTS discarded corrupt disk cache voice={self.voice} "
+                    f"error={exc}",
                     file=sys.stderr,
                     flush=True,
                 )
 
-        if self.fallback_engine is not None and self.fallback_engine.ready:
-            return self.fallback_engine.synthesize(text)
-        raise RuntimeError(self.load_error or "no TTS backend is ready")
+        if not self._edge_available:
+            raise RuntimeError(self.load_error or "edge-tts is not ready")
+        retry_remaining = self._edge_retry_after - time.monotonic()
+        if retry_remaining > 0:
+            raise RuntimeError(
+                f"edge-tts retry backoff active for {retry_remaining:.1f}s"
+            )
+
+        started = time.monotonic()
+        try:
+            mp3 = asyncio.run(
+                asyncio.wait_for(
+                    self._collect_mp3(text),
+                    timeout=self.timeout_seconds,
+                )
+            )
+            segment = self._decode_mp3(mp3)
+            elapsed = time.monotonic() - started
+            duration = len(segment.data) / (segment.sample_rate * 2)
+            print(
+                f"online TTS generated backend=edge-tts voice={self.voice} "
+                f"chars={len(text)} seconds={elapsed:.3f} "
+                f"audio_seconds={duration:.3f}",
+                flush=True,
+            )
+            self._edge_retry_after = 0.0
+            self._disk_cache_put(text, mp3)
+            self._cache_put(text, segment)
+            return segment
+        except Exception as exc:
+            self._edge_retry_after = time.monotonic() + self.retry_seconds
+            print(
+                f"online TTS failed backend=edge-tts voice={self.voice} "
+                f"error={exc}; retry_after_seconds={self.retry_seconds:.1f}; "
+                f"dropping task",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise RuntimeError(f"edge-tts synthesis failed: {exc}") from exc
 
     async def _collect_mp3(self, text: str):
         if self._edge_tts is None:
@@ -319,6 +348,9 @@ class EdgeTtsEngine:
         communicate = self._edge_tts.Communicate(
             text=text,
             voice=self.voice,
+            rate=self.rate,
+            volume=self.volume,
+            pitch=self.pitch,
             connect_timeout=connect_timeout,
             receive_timeout=connect_timeout,
         )
@@ -364,6 +396,116 @@ class EdgeTtsEngine:
         if not result.stdout:
             raise RuntimeError("ffmpeg returned empty PCM audio")
         return PcmSegment(data=result.stdout, sample_rate=sample_rate)
+
+    def _prepare_disk_cache(self):
+        if self.disk_cache_dir is None or self.disk_cache_max_bytes <= 0:
+            return
+        try:
+            self.disk_cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.disk_cache_dir, 0o700)
+            self._disk_cache_ready = True
+            self._prune_disk_cache()
+        except OSError as exc:
+            self._disk_cache_ready = False
+            print(
+                f"online TTS disk cache unavailable path={self.disk_cache_dir} "
+                f"error={exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _disk_cache_path(self, text: str):
+        if self.disk_cache_dir is None:
+            raise RuntimeError("disk cache directory is not configured")
+        cache_key = hashlib.sha256(
+            (
+                f"edge-tts-v1\0{self.voice}\0{self.rate}\0{self.volume}\0"
+                f"{self.pitch}\0{text}"
+            ).encode("utf-8")
+        ).hexdigest()
+        return self.disk_cache_dir / f"{cache_key}.mp3"
+
+    def _disk_cache_get(self, text: str):
+        if not self._disk_cache_ready:
+            return None
+        path = self._disk_cache_path(text)
+        try:
+            payload = path.read_bytes()
+            if not payload:
+                path.unlink(missing_ok=True)
+                return None
+            os.utime(path, None)
+            return payload
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            print(
+                f"online TTS disk cache read failed path={path} error={exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+
+    def _disk_cache_put(self, text: str, mp3: bytes):
+        if (
+            not self._disk_cache_ready
+            or not mp3
+            or len(mp3) > self.disk_cache_max_bytes
+        ):
+            return
+        path = self._disk_cache_path(text)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("wb") as output:
+                output.write(mp3)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+            self._prune_disk_cache()
+        except OSError as exc:
+            print(
+                f"online TTS disk cache write failed path={path} error={exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _disk_cache_delete(self, text: str):
+        if not self._disk_cache_ready:
+            return
+        try:
+            self._disk_cache_path(text).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _prune_disk_cache(self):
+        if not self._disk_cache_ready or self.disk_cache_dir is None:
+            return
+        entries = []
+        total_bytes = 0
+        for path in self.disk_cache_dir.glob("*.mp3"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append((stat.st_mtime, stat.st_size, path))
+            total_bytes += stat.st_size
+        for _mtime, size, path in sorted(
+            entries,
+            key=lambda entry: (entry[0], str(entry[2])),
+        ):
+            if total_bytes <= self.disk_cache_max_bytes:
+                break
+            try:
+                path.unlink()
+                total_bytes -= size
+            except OSError:
+                continue
 
     def _cache_get(self, text: str):
         with self._cache_lock:

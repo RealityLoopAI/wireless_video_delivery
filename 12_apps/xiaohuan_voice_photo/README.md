@@ -16,10 +16,12 @@ sample_rate: 16000
 models/vosk-model-small-cn-0.22/
 ```
 
-远程文本播报默认使用系统包 `espeak-ng`，无需下载神经 TTS 模型：
+动态文本播报默认使用 Edge TTS `zh-CN-XiaoyiNeural`，需要 `ffmpeg` 和
+`edge-tts`：
 
 ```bash
-sudo apt-get install -y espeak-ng
+sudo apt-get install -y ffmpeg
+python3 -m pip install --user edge-tts
 ```
 
 ## 1. 通用离线 ASR 方案
@@ -88,7 +90,11 @@ noise_update_alpha: 0.03
 playback_ignore_seconds: 0.3
 echo_tail_seconds: 0.3
 tts_http_port: 18082
-tts_backend: espeak
+tts_backend: edge
+tts_edge_voice: zh-CN-XiaoyiNeural
+tts_edge_timeout_seconds: 4.0
+tts_edge_cache_dir: ~/.cache/xiaohuan/edge_tts
+tts_edge_cache_max_mb: 256
 tts_queue_capacity: 100
 tts_max_text_chars: 500
 tts_speaker_retry_seconds: 5.0
@@ -140,20 +146,29 @@ tail -f wake_runtime.log
 
 ## 4. 固定回复与动态 TTS
 
-当前固定回复使用 `response_wozai_tts_default.wav`，内容为“我在，有什么可以帮到您的”。该文件由 `edge-tts` 生成，当前音量为轻提示音量，实测能听到。
+唤醒固定回复 `response_wozai_tts_default.wav` 的内容为“我在，有什么可以帮到您的”；
+拍照固定回复 `response_photo_done.wav` 的内容为“好的，已拍照”。两者都使用 Edge
+TTS `zh-CN-XiaoyiNeural` 的默认语速、音调和音量提前生成，因此触发时无需联网。
 
 `192.168.66.133` 上的外部动态文本默认使用 Edge TTS
-`zh-CN-XiaoyiNeural`。首次遇到的文本需要联网合成，相同文本在当前进程内命中
-有界缓存后直接播放。网络请求失败或 4 秒超时会自动回退到完全离线的 eSpeak NG，
-并在 30 秒退避期内直接使用离线语音，不会阻塞唤醒、拍照和后续播报任务。需要注意，
-Edge 模式会把待播文本发送给云端服务。
+`zh-CN-XiaoyiNeural`。首次遇到的文本需要联网合成；成功结果写入
+`~/.cache/xiaohuan/edge_tts`，相同文本在进程重启后仍可复用。磁盘缓存上限为
+256 MB，超出后按最久未使用顺序清理。
 
-仓库仍保留可强制选择的 `espeak` 后端和可选 `sherpa-onnx` 中英 VITS 后端。eSpeak
-延迟低但音色机械；当前 RK3588 视频发送负载下，sherpa 神经模型首句生成明显更慢。
+Edge 请求失败或 4 秒超时时，该条动态播报失败并写日志，不切换到 eSpeak，从而保证
+所有成功播放的语音音色一致。失败后进入 30 秒退避期，避免连续请求反复等待网络超时。
+HTTP 接口已经返回的 `accepted` 仅表示任务入队，不表示合成成功。Edge 模式会把待播
+文本发送给云端服务。
+
+代码仍保留手工诊断用的 `espeak` 和 `sherpa` 后端，但 133 的正式配置不得启用它们，
+否则不能保证统一音色。
 
 ## 5. 唤醒后拍照
 
-当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放固定回复“我在，有什么可以帮到您的”。播放期间停止麦克风、识别和 RTP 推流；队列清空 200ms 后恢复采集，再开启默认 8 秒命令窗口。此时识别到“拍照”会把“好的，已拍照”加入同一播放队列，同时在后台向 RGBD 发送端写入拍照请求。
+当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放预生成的 Xiaoyi 固定回复
+“我在，有什么可以帮到您的”。播放期间停止麦克风、识别和 RTP 推流；队列清空
+200ms 后恢复采集，再开启默认 8 秒命令窗口。此时识别到“拍照”会把预生成的同音色
+回复“好的，已拍照”加入同一播放队列，同时在后台向 RGBD 发送端写入拍照请求。
 
 正式运行时，语音服务不直接打开 Orbbec 相机，避免和视频发送端抢 SDK 设备。发送端取得下一帧完整的相机 MJPEG 后，经独立可靠 TCP 通道发送给接收端。方向正常时保留原始 JPEG 有效字节；配置 RGB 软件旋转 180 度时，在独立快照线程中校正方向，不阻塞采集线程。接收端先把 JPG 和完整性清单原子写入本地 staging；本地 `fsync` 成功后返回 `captured`。语音服务默认一次写入同一 `burst_id`、带目标采集时间的 3 个请求，目标间隔 0.2 秒，并在后台收集三张回执。即时语音表示“拍照命令已受理”，不表示三张已经持久化；最终结果以 `captured` 日志和 NAS 文件为准。连续触发的三连拍任务会串行执行，回执使用 30 秒总等待窗口，避免并发挤满接收端快照队列。NAS 写入由独立上传服务异步完成，NAS 短时不可用不会阻塞语音反馈，也不影响 RGBD 录制链路。
 

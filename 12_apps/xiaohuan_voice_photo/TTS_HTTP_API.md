@@ -108,7 +108,7 @@ curl -sS http://192.168.66.133:18082/healthz
   "ok": true,
   "service": "xiaohuan_speech",
   "tts_ready": true,
-  "tts_backend": "edge-tts:zh-CN-XiaoyiNeural+offline-fallback",
+  "tts_backend": "edge-tts:zh-CN-XiaoyiNeural",
   "queue_depth": 0,
   "queue_capacity": 100
 }
@@ -118,16 +118,18 @@ curl -sS http://192.168.66.133:18082/healthz
 
 - 133 默认使用联网 Edge TTS `zh-CN-XiaoyiNeural` 音色；待播文本会发送给
   Edge TTS 服务进行合成。
-- Edge 请求失败或 4 秒内未完成时自动回退到离线 eSpeak NG；失败后 30 秒内的新任务
-  直接使用离线回退，避免反复等待网络超时。
-- 相同文本在当前进程内命中有界 PCM 缓存后不再访问网络；服务重启后缓存清空。
+- Edge 请求失败或 4 秒内未完成时丢弃该条并记录失败，不回退到其他音色；失败后
+  30 秒内的新任务直接失败，避免反复等待网络超时。
+- 成功合成的文本同时写入内存缓存和本地 MP3 缓存。磁盘缓存重启后仍有效，上限
+  256 MB，超出后按最久未使用顺序删除。
 - 文本按句切分；首句合成后立即开始播放，后续句子继续生成。
 - 播放期间停止 USB 麦克风采集，所以 Vosk 唤醒、拍照命令识别和 RTP/Opus 麦克风
   推流会同时暂停。
 - 队列暂时清空后等待 200 ms，再重新打开麦克风并恢复识别和 RTP。
 - 音箱打开或播放失败时重试 5 秒；仍失败则丢弃当前任务并继续下一条。
 - 当前局域网实测 `Xiaoyi` 首次合成完整短句约需 1.4～2.4 秒；接口入队响应不等待
-  合成。离线回退音色比神经 TTS 更机械。
+  合成。已缓存文本只需本地读取和解码。
+- 唤醒回复和拍照回复使用预生成的同参数 Xiaoyi WAV，不依赖实时联网。
 
 ## 运维
 
@@ -149,6 +151,8 @@ XIAOHUAN_TTS_BACKEND=edge
 XIAOHUAN_TTS_EDGE_VOICE=zh-CN-XiaoyiNeural
 XIAOHUAN_TTS_EDGE_TIMEOUT_SECONDS=4
 XIAOHUAN_TTS_EDGE_CACHE_ENTRIES=64
+XIAOHUAN_TTS_EDGE_CACHE_DIR=/home/orangepi/.cache/xiaohuan/edge_tts
+XIAOHUAN_TTS_EDGE_CACHE_MAX_MB=256
 XIAOHUAN_TTS_SPEAKER_RETRY_SECONDS=5
 XIAOHUAN_TTS_RESUME_DELAY_SECONDS=0.2
 ```
@@ -156,9 +160,9 @@ XIAOHUAN_TTS_RESUME_DELAY_SECONDS=0.2
 后端依赖：
 
 ```bash
-sudo apt-get install -y espeak-ng ffmpeg
+sudo apt-get install -y ffmpeg
 python3 -m pip install --user edge-tts
 ```
 
-`XIAOHUAN_TTS_BACKEND=espeak` 可强制完全离线运行。可选 sherpa 中英模型可通过
-`./download_tts_model.sh` 安装。
+代码仍保留 `espeak` 和 `sherpa` 诊断后端，但 133 正式服务固定使用 `edge`，避免
+不同播报来源出现不同音色。

@@ -99,42 +99,75 @@ def test_espeak_mixed_language_markup(module):
     assert ssml.endswith("</speak>")
 
 
-def test_edge_tts_cache_and_fallback(module):
-    edge_module = FakeEdgeModule()
-    fallback = FakeTtsEngine(module)
-    engine = module.EdgeTtsEngine(
-        fallback_engine=fallback,
-        voice="zh-CN-XiaoyiNeural",
-        edge_module=edge_module,
-        decoder_executable="/bin/true",
-    )
-    engine.load()
-    engine._decode_mp3 = lambda data: module.PcmSegment(
-        data=data + b"\x00\x00",
-        sample_rate=24000,
-    )
+def test_edge_tts_persistent_cache_and_failure(module):
+    with tempfile.TemporaryDirectory(prefix="gwv3_edge_cache_") as temporary:
+        cache_dir = Path(temporary) / "cache"
+        edge_module = FakeEdgeModule()
+        engine = module.EdgeTtsEngine(
+            voice="zh-CN-XiaoyiNeural",
+            edge_module=edge_module,
+            decoder_executable="/bin/true",
+            disk_cache_dir=cache_dir,
+        )
+        engine.load()
+        engine._decode_mp3 = lambda data: module.PcmSegment(
+            data=data + b"\x00\x00",
+            sample_rate=24000,
+        )
 
-    first = engine.synthesize("缓存测试")
-    second = engine.synthesize("缓存测试")
-    assert first == second
-    assert len(edge_module.calls) == 1
-    assert edge_module.calls[0]["voice"] == "zh-CN-XiaoyiNeural"
-    assert fallback.generated == []
+        first = engine.synthesize("缓存测试")
+        second = engine.synthesize("缓存测试")
+        assert first == second
+        assert len(edge_module.calls) == 1
+        assert edge_module.calls[0]["voice"] == "zh-CN-XiaoyiNeural"
+        assert edge_module.calls[0]["rate"] == "+0%"
+        assert edge_module.calls[0]["volume"] == "+0%"
+        assert edge_module.calls[0]["pitch"] == "+0Hz"
+        assert len(list(cache_dir.glob("*.mp3"))) == 1
 
-    failing_module = FakeEdgeModule(fail=True)
-    fallback_after_failure = FakeTtsEngine(module)
-    failing_engine = module.EdgeTtsEngine(
-        fallback_engine=fallback_after_failure,
-        edge_module=failing_module,
-        decoder_executable="/bin/true",
-    )
-    failing_engine.load()
-    result = failing_engine.synthesize("故障回退")
-    second_result = failing_engine.synthesize("退避期直接回退")
-    assert result.sample_rate == 16000
-    assert second_result.sample_rate == 16000
-    assert len(failing_module.calls) == 1
-    assert fallback_after_failure.generated == ["故障回退", "退避期直接回退"]
+        reloaded_module = FakeEdgeModule()
+        reloaded = module.EdgeTtsEngine(
+            voice="zh-CN-XiaoyiNeural",
+            edge_module=reloaded_module,
+            decoder_executable="/bin/true",
+            disk_cache_dir=cache_dir,
+        )
+        reloaded.load()
+        reloaded._decode_mp3 = engine._decode_mp3
+        cached_after_restart = reloaded.synthesize("缓存测试")
+        assert cached_after_restart == first
+        assert reloaded_module.calls == []
+
+        failing_module = FakeEdgeModule(fail=True)
+        failing_engine = module.EdgeTtsEngine(
+            edge_module=failing_module,
+            decoder_executable="/bin/true",
+            disk_cache_dir=Path(temporary) / "failing-cache",
+        )
+        failing_engine.load()
+        for text in ("合成失败", "退避期直接失败"):
+            try:
+                failing_engine.synthesize(text)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Edge failure must not fall back to another voice")
+        assert len(failing_module.calls) == 1
+
+        limited_cache = Path(temporary) / "limited-cache"
+        limited_engine = module.EdgeTtsEngine(
+            edge_module=FakeEdgeModule(),
+            decoder_executable="/bin/true",
+            disk_cache_dir=limited_cache,
+            disk_cache_max_bytes=10,
+        )
+        limited_engine.load()
+        limited_engine._disk_cache_put("第一条", b"12345678")
+        time.sleep(0.01)
+        limited_engine._disk_cache_put("第二条", b"abcdefgh")
+        cached_files = list(limited_cache.glob("*.mp3"))
+        assert len(cached_files) == 1
+        assert sum(path.stat().st_size for path in cached_files) <= 10
 
 
 def test_http_queue_and_idempotency(module):
@@ -312,7 +345,7 @@ def main():
     module = load_speech_module(source_root)
     test_sentence_splitting(module)
     test_espeak_mixed_language_markup(module)
-    test_edge_tts_cache_and_fallback(module)
+    test_edge_tts_persistent_cache_and_failure(module)
     test_http_queue_and_idempotency(module)
     test_local_wav_uses_same_queue(module)
     test_speaker_retry_deadline(module)
