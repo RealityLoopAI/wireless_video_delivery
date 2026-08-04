@@ -44,6 +44,21 @@ struct ColorControlsConfig {
     std::optional<int> backlight_compensation;
 };
 
+struct AdaptiveExposureConfig {
+    bool enabled = false;
+    int interval_ms = 500;
+    int exposure_min = 80;
+    int exposure_max = 200;
+    int gain_min = 16;
+    int gain_max = 32;
+    int target_p95_luma = 200;
+    int luma_deadband = 8;
+    int highlight_luma = 245;
+    double max_highlight_fraction = 0.0025;
+    int underexposed_samples = 3;
+    int roi_margin_percent = 10;
+};
+
 struct CameraConfig {
     std::string camera_id;
     std::string capture_backend = "orbbec_sdk";
@@ -61,6 +76,7 @@ struct CameraConfig {
     RgbEncodingConfig rgb_encoding;
     DepthTransportConfig depth_transport;
     ColorControlsConfig color_controls;
+    AdaptiveExposureConfig adaptive_exposure;
 };
 
 struct ReceiverConfig {

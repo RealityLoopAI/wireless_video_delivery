@@ -1,4 +1,5 @@
 #include "gwv3_common/protocol.hpp"
+#include "gwv3_sender/adaptive_exposure_controller.hpp"
 #include "gwv3_sender/clock_sync_client.hpp"
 #include "gwv3_sender/config.hpp"
 #include "gwv3_sender/gst_h264_encoder.hpp"
@@ -229,6 +230,17 @@ struct CameraLiveStats {
     int64_t color_actual_fps = -1;
     int64_t color_frame_rate = -1;
     int64_t color_exposure_priority = -1;
+    bool adaptive_exposure_enabled = false;
+    int adaptive_luma_p50 = -1;
+    int adaptive_luma_p95 = -1;
+    int adaptive_luma_p99 = -1;
+    double adaptive_highlight_fraction = 0.0;
+    int adaptive_requested_exposure = -1;
+    int adaptive_requested_gain = -1;
+    uint64_t adaptive_samples = 0;
+    uint64_t adaptive_adjustments = 0;
+    uint64_t adaptive_failures = 0;
+    std::string adaptive_last_reason;
 };
 
 struct RgbPreviewFrame {
@@ -291,6 +303,7 @@ struct CameraRuntime {
     std::unique_ptr<GstH264Encoder> encoder;
     std::unique_ptr<GstH264Encoder> web_preview_encoder;
     std::unique_ptr<GstJpegDualH264Encoder> jpeg_dual_encoder;
+    std::unique_ptr<AdaptiveExposureController> adaptive_exposure_controller;
     bool jpeg_dual_encoder_disabled = false;
     uint32_t jpeg_dual_no_main_output = 0;
     GstH264InputFormat encoder_input_format = GstH264InputFormat::Bgr;
@@ -349,6 +362,8 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point next_capture_stall_reconnect = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point web_rgb_preview_suppressed_until = std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point gemini305_manual_exposure_reapply_at = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point next_adaptive_exposure_sample = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point next_adaptive_exposure_warning = std::chrono::steady_clock::time_point::min();
     bool gemini305_manual_exposure_reapply_pending = false;
     bool publish_warmup_active = false;
     bool publish_warmup_exposure_verified = true;
@@ -1380,6 +1395,13 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_gain=" << camera.live.color_gain
         << " rgb_meta_actual_fps=" << camera.live.color_actual_fps
         << " rgb_exposure_priority=" << camera.live.color_exposure_priority
+        << " adaptive_ae=" << bool_text(camera.live.adaptive_exposure_enabled)
+        << " adaptive_p95=" << camera.live.adaptive_luma_p95
+        << " adaptive_highlights_pct=" << camera.live.adaptive_highlight_fraction * 100.0
+        << " adaptive_exposure=" << camera.live.adaptive_requested_exposure
+        << " adaptive_gain=" << camera.live.adaptive_requested_gain
+        << " adaptive_adjustments=" << camera.live.adaptive_adjustments
+        << " adaptive_failures=" << camera.live.adaptive_failures
         << " rgb_corrupt_jpeg_frames=" << perf.rgb_corrupt_jpeg_frames
         << " rgb_timing_mismatch_drops=" << perf.rgb_timing_mismatch_drops
         << " rgb_encoder_lag_resets=" << perf.rgb_encoder_lag_resets
@@ -3076,6 +3098,199 @@ cv::Mat color_to_preview_bgr(const std::shared_ptr<ob::ColorFrame> &frame) {
     return color_to_bgr(frame);
 }
 
+std::optional<ExposureMeteringSample> meter_mjpg_luma(const std::shared_ptr<ob::ColorFrame> &frame,
+                                                      const AdaptiveExposureConfig &config,
+                                                      std::string &error) {
+    if(!frame || frame->format() != OB_FORMAT_MJPG || !frame->data() || frame->dataSize() == 0
+       || frame->dataSize() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        error = "adaptive metering requires a valid MJPEG frame";
+        return std::nullopt;
+    }
+
+    cv::Mat gray;
+    try {
+        cv::Mat encoded(1, static_cast<int>(frame->dataSize()), CV_8UC1, frame->data());
+        gray = cv::imdecode(encoded, cv::IMREAD_REDUCED_GRAYSCALE_8);
+    }
+    catch(const cv::Exception &e) {
+        error = e.what();
+        return std::nullopt;
+    }
+    if(gray.empty() || gray.type() != CV_8UC1) {
+        error = "adaptive metering JPEG decode returned no grayscale pixels";
+        return std::nullopt;
+    }
+
+    const int margin_x = gray.cols * config.roi_margin_percent / 100;
+    const int margin_y = gray.rows * config.roi_margin_percent / 100;
+    const int roi_x0 = std::clamp(margin_x, 0, gray.cols - 1);
+    const int roi_y0 = std::clamp(margin_y, 0, gray.rows - 1);
+    const int roi_x1 = std::clamp(gray.cols - margin_x, roi_x0 + 1, gray.cols);
+    const int roi_y1 = std::clamp(gray.rows - margin_y, roi_y0 + 1, gray.rows);
+
+    uint64_t histogram[256] = {};
+    uint64_t pixel_count = 0;
+    uint64_t highlight_count = 0;
+    for(int y = roi_y0; y < roi_y1; ++y) {
+        const auto *row = gray.ptr<uint8_t>(y);
+        for(int x = roi_x0; x < roi_x1; ++x) {
+            const uint8_t value = row[x];
+            ++histogram[value];
+            ++pixel_count;
+            if(value >= config.highlight_luma) {
+                ++highlight_count;
+            }
+        }
+    }
+    if(pixel_count == 0) {
+        error = "adaptive metering ROI is empty";
+        return std::nullopt;
+    }
+
+    auto percentile = [&](int numerator, int denominator) {
+        const uint64_t threshold = (pixel_count * static_cast<uint64_t>(numerator) + denominator - 1)
+                                   / static_cast<uint64_t>(denominator);
+        uint64_t cumulative = 0;
+        for(int value = 0; value < 256; ++value) {
+            cumulative += histogram[value];
+            if(cumulative >= threshold) {
+                return value;
+            }
+        }
+        return 255;
+    };
+
+    ExposureMeteringSample sample;
+    sample.p50_luma = percentile(50, 100);
+    sample.p95_luma = percentile(95, 100);
+    sample.p99_luma = percentile(99, 100);
+    sample.highlight_fraction = static_cast<double>(highlight_count) / static_cast<double>(pixel_count);
+    return sample;
+}
+
+bool apply_adaptive_exposure_decision(CameraRuntime &camera, const ExposureControlDecision &decision,
+                                      Logger &logger, std::string &error) {
+    if(!decision.apply || !camera.adaptive_exposure_controller) {
+        return true;
+    }
+
+    std::shared_ptr<ob::Device> device;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        device = camera.device;
+    }
+    if(!device) {
+        error = "camera device is unavailable";
+        return false;
+    }
+
+    auto set_and_verify = [&](OBPropertyID property_id, int desired, const char *name) {
+        if(!device->isPropertySupported(property_id, OB_PERMISSION_WRITE)) {
+            error = std::string(name) + " is not writable";
+            return false;
+        }
+        device->setIntProperty(property_id, desired);
+        if(device->isPropertySupported(property_id, OB_PERMISSION_READ)) {
+            const int readback = device->getIntProperty(property_id);
+            if(readback != desired) {
+                error = std::string(name) + " readback=" + std::to_string(readback)
+                        + " expected=" + std::to_string(desired);
+                return false;
+            }
+        }
+        return true;
+    };
+
+    try {
+        const int old_exposure = camera.adaptive_exposure_controller->exposure();
+        const int old_gain = camera.adaptive_exposure_controller->gain();
+        if(decision.exposure != old_exposure
+           && !set_and_verify(OB_PROP_COLOR_EXPOSURE_INT, decision.exposure, "exposure")) {
+            return false;
+        }
+        if(decision.gain != old_gain && !set_and_verify(OB_PROP_COLOR_GAIN_INT, decision.gain, "gain")) {
+            if(decision.exposure != old_exposure) {
+                try {
+                    device->setIntProperty(OB_PROP_COLOR_EXPOSURE_INT, old_exposure);
+                }
+                catch(...) {
+                }
+            }
+            return false;
+        }
+        camera.adaptive_exposure_controller->commit(decision);
+        logger.info("adaptive exposure adjusted camera_id=" + camera.config.camera_id
+                    + " reason=" + decision.reason
+                    + " exposure=" + std::to_string(decision.exposure)
+                    + " gain=" + std::to_string(decision.gain));
+        return true;
+    }
+    catch(const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+}
+
+void maybe_update_adaptive_exposure(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color,
+                                    std::chrono::steady_clock::time_point now, Logger &logger) {
+    if(!camera.adaptive_exposure_controller) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(now < camera.next_adaptive_exposure_sample) {
+            return;
+        }
+        camera.next_adaptive_exposure_sample =
+            now + std::chrono::milliseconds(camera.config.adaptive_exposure.interval_ms);
+    }
+
+    std::string error;
+    const auto sample = meter_mjpg_luma(color, camera.config.adaptive_exposure, error);
+    if(!sample) {
+        bool should_log = false;
+        {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            ++camera.live.adaptive_failures;
+            camera.live.adaptive_last_reason = "metering_failed";
+            if(now >= camera.next_adaptive_exposure_warning) {
+                camera.next_adaptive_exposure_warning = now + std::chrono::seconds(10);
+                should_log = true;
+            }
+        }
+        if(should_log) {
+            logger.warn("adaptive exposure metering failed camera_id=" + camera.config.camera_id + " error=" + error);
+        }
+        return;
+    }
+
+    const auto decision = camera.adaptive_exposure_controller->evaluate(*sample);
+    const bool applied = apply_adaptive_exposure_decision(camera, decision, logger, error);
+    bool should_log_failure = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        camera.live.adaptive_luma_p50 = sample->p50_luma;
+        camera.live.adaptive_luma_p95 = sample->p95_luma;
+        camera.live.adaptive_luma_p99 = sample->p99_luma;
+        camera.live.adaptive_highlight_fraction = sample->highlight_fraction;
+        camera.live.adaptive_requested_exposure = camera.adaptive_exposure_controller->exposure();
+        camera.live.adaptive_requested_gain = camera.adaptive_exposure_controller->gain();
+        camera.live.adaptive_samples = camera.adaptive_exposure_controller->sample_count();
+        camera.live.adaptive_adjustments = camera.adaptive_exposure_controller->adjustment_count();
+        camera.live.adaptive_last_reason = applied ? decision.reason : "apply_failed";
+        if(!applied) {
+            ++camera.live.adaptive_failures;
+            if(now >= camera.next_adaptive_exposure_warning) {
+                camera.next_adaptive_exposure_warning = now + std::chrono::seconds(10);
+                should_log_failure = true;
+            }
+        }
+    }
+    if(should_log_failure) {
+        logger.warn("adaptive exposure apply failed camera_id=" + camera.config.camera_id + " error=" + error);
+    }
+}
+
 void apply_software_rgb_rotation(cv::Mat &bgr, const CameraConfig &config) {
     if(bgr.empty() || software_rgb_rotation_degrees(config) == 0) {
         return;
@@ -3816,6 +4031,17 @@ Json::Value camera_heartbeat(const AppConfig &config,
     msg["rgb_gain"] = Json::Int64(camera.live.color_gain);
     msg["rgb_metadata_actual_fps"] = Json::Int64(camera.live.color_actual_fps);
     msg["rgb_exposure_priority"] = Json::Int64(camera.live.color_exposure_priority);
+    msg["adaptive_exposure_enabled"] = camera.live.adaptive_exposure_enabled;
+    msg["adaptive_exposure_luma_p50"] = camera.live.adaptive_luma_p50;
+    msg["adaptive_exposure_luma_p95"] = camera.live.adaptive_luma_p95;
+    msg["adaptive_exposure_luma_p99"] = camera.live.adaptive_luma_p99;
+    msg["adaptive_exposure_highlight_fraction"] = camera.live.adaptive_highlight_fraction;
+    msg["adaptive_exposure_requested_exposure"] = camera.live.adaptive_requested_exposure;
+    msg["adaptive_exposure_requested_gain"] = camera.live.adaptive_requested_gain;
+    msg["adaptive_exposure_samples"] = Json::UInt64(camera.live.adaptive_samples);
+    msg["adaptive_exposure_adjustments"] = Json::UInt64(camera.live.adaptive_adjustments);
+    msg["adaptive_exposure_failures"] = Json::UInt64(camera.live.adaptive_failures);
+    msg["adaptive_exposure_last_reason"] = camera.live.adaptive_last_reason;
     msg["publish_warmup_active"] = camera.publish_warmup_active;
     msg["publish_warmup_dropped_framesets"] = Json::UInt64(camera.publish_warmup_dropped_framesets);
     msg["last_error"] = camera.last_error;
@@ -4797,6 +5023,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.encoder.reset();
     camera.web_preview_encoder.reset();
     camera.jpeg_dual_encoder.reset();
+    camera.adaptive_exposure_controller.reset();
     camera.v4l2_capture.reset();
     camera.jpeg_dual_encoder_disabled = false;
     camera.jpeg_dual_no_main_output = 0;
@@ -4812,6 +5039,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.online = false;
     camera.announced = false;
     camera.hardware_encoder = false;
+    camera.live.adaptive_exposure_enabled = false;
     camera.rgb_sent_timing_seen = false;
     camera.rgb_last_sent_frame_id = 0;
     camera.rgb_last_sent_system_timestamp_us = 0;
@@ -4839,6 +5067,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.encoder.reset();
         runtime.web_preview_encoder.reset();
         runtime.jpeg_dual_encoder.reset();
+        runtime.adaptive_exposure_controller.reset();
         runtime.jpeg_dual_encoder_disabled = false;
         runtime.jpeg_dual_no_main_output = 0;
         runtime.web_preview_width = 0;
@@ -4848,6 +5077,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.hardware_encoder = false;
         runtime.depth_scale = 0.0f;
         runtime.last_error.clear();
+        runtime.live = CameraLiveStats{};
         runtime.perf = CameraPerfStats{};
         runtime.perf.interval_started = now;
         runtime.next_preview = now;
@@ -4954,6 +5184,17 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const auto depth_format = depth_profile ? ob_format_name(depth_profile->format()) : "disabled";
     const auto now = std::chrono::steady_clock::now();
     const int publish_warmup_ms = camera_publish_warmup_ms(runtime.config, device_model);
+    std::unique_ptr<AdaptiveExposureController> adaptive_exposure_controller;
+    if(runtime.config.adaptive_exposure.enabled) {
+        if(camera_model_is_gemini305(device_model)) {
+            adaptive_exposure_controller = std::make_unique<AdaptiveExposureController>(
+                runtime.config.adaptive_exposure, *runtime.config.color_controls.exposure, *runtime.config.color_controls.gain);
+        }
+        else {
+            logger.warn("adaptive exposure disabled camera_id=" + runtime.config.camera_id
+                        + " reason=unsupported_device_model device_model=" + device_model);
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(runtime.mutex);
         runtime.device = std::move(device);
@@ -4967,6 +5208,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.encoder.reset();
         runtime.web_preview_encoder.reset();
         runtime.jpeg_dual_encoder.reset();
+        runtime.adaptive_exposure_controller = std::move(adaptive_exposure_controller);
         runtime.jpeg_dual_encoder_disabled = false;
         runtime.jpeg_dual_no_main_output = 0;
         runtime.web_preview_width = 0;
@@ -4976,6 +5218,13 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.hardware_encoder = false;
         runtime.depth_scale = 0.0f;
         runtime.last_error.clear();
+        runtime.live = CameraLiveStats{};
+        runtime.live.adaptive_exposure_enabled = runtime.adaptive_exposure_controller != nullptr;
+        if(runtime.adaptive_exposure_controller) {
+            runtime.live.adaptive_requested_exposure = runtime.adaptive_exposure_controller->exposure();
+            runtime.live.adaptive_requested_gain = runtime.adaptive_exposure_controller->gain();
+            runtime.live.adaptive_last_reason = "initialized";
+        }
         runtime.perf = CameraPerfStats{};
         runtime.perf.interval_started = now;
         runtime.next_preview = now;
@@ -4988,6 +5237,8 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.last_depth_frame_at = now;
         runtime.next_capture_stall_reconnect = now;
         runtime.gemini305_manual_exposure_reapply_pending = gemini305_manual_exposure;
+        runtime.next_adaptive_exposure_sample = now;
+        runtime.next_adaptive_exposure_warning = now;
         runtime.gemini305_manual_exposure_reapply_at = runtime.gemini305_manual_exposure_reapply_pending
                                                           ? now + std::chrono::seconds(2)
                                                           : std::chrono::steady_clock::time_point::min();
@@ -5025,7 +5276,8 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         << " connection=" << device_connection_type
         << " aggregate_mode=" << frame_aggregate_mode_name(aggregate_mode)
         << " publish_warmup_ms=" << publish_warmup_ms
-        << " exposure_verification=" << (gemini305_manual_exposure ? "required" : "not_required");
+        << " exposure_verification=" << (gemini305_manual_exposure ? "required" : "not_required")
+        << " adaptive_exposure=" << (runtime.config.adaptive_exposure.enabled ? "enabled" : "disabled");
     logger.info(oss.str());
 }
 
@@ -6142,6 +6394,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             }
 
             if(rgb_usable) {
+                maybe_update_adaptive_exposure(camera, color, frame_now, logger);
                 if(color_is_mjpg) {
                     publish_rgb_snapshot_frame(config, camera, static_cast<const uint8_t *>(color->data()), color->dataSize(),
                                                rgb_capture_timing, logger);

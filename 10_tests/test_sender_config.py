@@ -61,6 +61,14 @@ def run(args) -> None:
         invalid["cameras"][0]["rotation_degrees"] = 45
         expect_invalid(args.sender, temporary, "invalid_rotation", invalid)
 
+        invalid = copy.deepcopy(base)
+        invalid["cameras"][0]["adaptive_exposure"] = {"enabled": True}
+        expect_invalid(args.sender, temporary, "adaptive_exposure_with_native_ae", invalid)
+
+        invalid = copy.deepcopy(base)
+        invalid["cameras"][0]["adaptive_exposure"] = {"exposure_max": 326}
+        expect_invalid(args.sender, temporary, "adaptive_exposure_unsafe_fps_boundary", invalid)
+
         trailing = temporary / "trailing.json"
         trailing.write_text(json.dumps(base) + "{}", encoding="utf-8")
         result = validate(args.sender, trailing)

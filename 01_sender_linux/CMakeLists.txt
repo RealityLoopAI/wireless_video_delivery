@@ -58,6 +58,7 @@ foreach(_ORBBEC_SDK_CONFIG_CANDIDATE
 endforeach()
 
 add_executable(gemini_sender
+    src/adaptive_exposure_controller.cpp
     src/clock_sync_client.cpp
     src/config.cpp
     src/gst_h264_encoder.cpp
@@ -200,6 +201,15 @@ set_target_properties(depth_compression_bench PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    add_executable(adaptive_exposure_controller_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_adaptive_exposure_controller.cpp"
+        src/adaptive_exposure_controller.cpp
+    )
+    target_include_directories(adaptive_exposure_controller_test PRIVATE include)
+    target_compile_options(adaptive_exposure_controller_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME adaptive_exposure_controller COMMAND adaptive_exposure_controller_test)
+
     add_test(
         NAME sender_config_validation
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_config.py"
