@@ -51,11 +51,13 @@ struct AdaptiveExposureConfig {
     int max_exposure_step = 16;
     int exposure_min = 80;
     int exposure_max = 200;
+    int soft_highlight_exposure_floor = -1;
     int gain_min = 16;
     int gain_max = 32;
     int target_p50_luma = -1;
     int target_p95_luma = 200;
     int luma_deadband = 8;
+    int soft_highlight_luma = -1;
     int highlight_luma = 245;
     double max_highlight_fraction = 0.0025;
     int underexposed_samples = 3;

@@ -107,8 +107,8 @@ int main() {
         controller.evaluate(mixed_sample(75, 220, 230));
         controller.evaluate(mixed_sample(75, 220, 230));
         const auto decision = controller.evaluate(mixed_sample(75, 220, 230));
-        require(decision.apply && decision.exposure > 130,
-                "dark midtones with highlight headroom must increase exposure");
+        require(decision.apply && decision.exposure > 130 && decision.exposure <= 133,
+                "dark midtones must increase only within available highlight headroom");
     }
 
     {
@@ -117,8 +117,85 @@ int main() {
         config.target_p95_luma = 225;
         AdaptiveExposureController controller(config, 130, 16);
         const auto decision = controller.evaluate(mixed_sample(75, 235, 240));
+        require(decision.apply && decision.exposure < 130
+                    && decision.reason == "highlight_ceiling_reduce_exposure",
+                "upper tones above the ceiling must actively reduce exposure");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        config.soft_highlight_exposure_floor = 130;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(75, 235, 240));
+        require(!decision.apply && decision.exposure == 130
+                    && decision.reason == "highlight_limited_at_floor",
+                "soft highlight protection must preserve the configured midtone exposure floor");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        config.soft_highlight_luma = 235;
+        config.soft_highlight_exposure_floor = 100;
+        AdaptiveExposureController controller(config, 180, 20);
+        auto decision = controller.evaluate(mixed_sample(100, 220, 235));
+        require(decision.apply && decision.exposure == 180 && decision.gain == 18
+                    && decision.reason == "soft_highlights_reduce_gain",
+                "P99 soft highlights must reduce gain before exposure");
+
+        controller.commit(decision);
+        controller = AdaptiveExposureController(config, 180, 16);
+        decision = controller.evaluate(mixed_sample(100, 220, 235));
+        require(decision.apply && decision.exposure < 180
+                    && decision.reason == "soft_highlights_reduce_exposure",
+                "P99 soft highlights must reduce exposure after gain reaches its floor");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        config.soft_highlight_luma = 235;
+        config.soft_highlight_exposure_floor = 130;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(75, 220, 235));
+        require(!decision.apply && decision.reason == "soft_highlight_limited_at_floor",
+                "P99 soft highlight control must preserve its configured exposure floor");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        config.soft_highlight_luma = 235;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(75, 210, 230));
         require(!decision.apply && decision.reason == "highlight_limited",
-                "bright upper tones must block midtone amplification");
+                "P99 recovery hysteresis must block immediate re-amplification near the soft limit");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 20);
+        const auto decision = controller.evaluate(mixed_sample(75, 235, 240));
+        require(decision.apply && decision.exposure == 130 && decision.gain == 18
+                    && decision.reason == "highlight_ceiling_reduce_gain",
+                "upper tones above the ceiling must reduce gain before exposure");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(75, 228, 235));
+        require(!decision.apply && decision.reason == "highlight_limited",
+                "upper-tone hysteresis must prevent immediate re-amplification");
     }
 
     {

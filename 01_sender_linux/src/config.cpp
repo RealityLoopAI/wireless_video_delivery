@@ -298,11 +298,14 @@ AdaptiveExposureConfig load_adaptive_exposure(const Json::Value &node) {
     config.max_exposure_step = optional_int(node, "max_exposure_step", config.max_exposure_step);
     config.exposure_min = optional_int(node, "exposure_min", config.exposure_min);
     config.exposure_max = optional_int(node, "exposure_max", config.exposure_max);
+    config.soft_highlight_exposure_floor =
+        optional_int(node, "soft_highlight_exposure_floor", config.soft_highlight_exposure_floor);
     config.gain_min = optional_int(node, "gain_min", config.gain_min);
     config.gain_max = optional_int(node, "gain_max", config.gain_max);
     config.target_p50_luma = optional_int(node, "target_p50_luma", config.target_p50_luma);
     config.target_p95_luma = optional_int(node, "target_p95_luma", config.target_p95_luma);
     config.luma_deadband = optional_int(node, "luma_deadband", config.luma_deadband);
+    config.soft_highlight_luma = optional_int(node, "soft_highlight_luma", config.soft_highlight_luma);
     config.highlight_luma = optional_int(node, "highlight_luma", config.highlight_luma);
     config.max_highlight_fraction =
         optional_double(node, "max_highlight_fraction", config.max_highlight_fraction);
@@ -717,11 +720,20 @@ void validate_config(const AppConfig &config) {
         if(adaptive.exposure_min < 1 || adaptive.exposure_max < adaptive.exposure_min || adaptive.exposure_max > 10000) {
             throw std::runtime_error("adaptive_exposure exposure range must satisfy 1 <= min <= max <= 10000");
         }
+        if(adaptive.soft_highlight_exposure_floor != -1
+           && (adaptive.soft_highlight_exposure_floor < adaptive.exposure_min
+               || adaptive.soft_highlight_exposure_floor > adaptive.exposure_max)) {
+            throw std::runtime_error(
+                "adaptive_exposure.soft_highlight_exposure_floor must be -1 or within the exposure range");
+        }
         if(adaptive.gain_min < 0 || adaptive.gain_max < adaptive.gain_min || adaptive.gain_max > 255) {
             throw std::runtime_error("adaptive_exposure gain range must satisfy 0 <= min <= max <= 255");
         }
         if(adaptive.target_p95_luma < 1 || adaptive.target_p95_luma > 254
            || adaptive.luma_deadband < 1 || adaptive.luma_deadband > 64
+           || (adaptive.soft_highlight_luma != -1
+               && (adaptive.soft_highlight_luma < 1
+                   || adaptive.soft_highlight_luma >= adaptive.highlight_luma))
            || adaptive.highlight_luma < 1 || adaptive.highlight_luma > 255
            || (adaptive.target_p50_luma != -1
                && (adaptive.target_p50_luma < 1 || adaptive.target_p50_luma > 254))
