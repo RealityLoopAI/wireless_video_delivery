@@ -1396,7 +1396,9 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_meta_actual_fps=" << camera.live.color_actual_fps
         << " rgb_exposure_priority=" << camera.live.color_exposure_priority
         << " adaptive_ae=" << bool_text(camera.live.adaptive_exposure_enabled)
+        << " adaptive_p50=" << camera.live.adaptive_luma_p50
         << " adaptive_p95=" << camera.live.adaptive_luma_p95
+        << " adaptive_p99=" << camera.live.adaptive_luma_p99
         << " adaptive_highlights_pct=" << camera.live.adaptive_highlight_fraction * 100.0
         << " adaptive_exposure=" << camera.live.adaptive_requested_exposure
         << " adaptive_gain=" << camera.live.adaptive_requested_gain
@@ -3284,6 +3286,10 @@ void maybe_update_adaptive_exposure(CameraRuntime &camera, const std::shared_ptr
                 camera.next_adaptive_exposure_warning = now + std::chrono::seconds(10);
                 should_log_failure = true;
             }
+        }
+        else if(decision.apply) {
+            camera.next_adaptive_exposure_sample =
+                now + std::chrono::milliseconds(camera.config.adaptive_exposure.settle_ms);
         }
     }
     if(should_log_failure) {

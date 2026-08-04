@@ -294,10 +294,13 @@ AdaptiveExposureConfig load_adaptive_exposure(const Json::Value &node) {
     }
     config.enabled = optional_bool(node, "enabled", config.enabled);
     config.interval_ms = optional_int(node, "interval_ms", config.interval_ms);
+    config.settle_ms = optional_int(node, "settle_ms", config.interval_ms);
+    config.max_exposure_step = optional_int(node, "max_exposure_step", config.max_exposure_step);
     config.exposure_min = optional_int(node, "exposure_min", config.exposure_min);
     config.exposure_max = optional_int(node, "exposure_max", config.exposure_max);
     config.gain_min = optional_int(node, "gain_min", config.gain_min);
     config.gain_max = optional_int(node, "gain_max", config.gain_max);
+    config.target_p50_luma = optional_int(node, "target_p50_luma", config.target_p50_luma);
     config.target_p95_luma = optional_int(node, "target_p95_luma", config.target_p95_luma);
     config.luma_deadband = optional_int(node, "luma_deadband", config.luma_deadband);
     config.highlight_luma = optional_int(node, "highlight_luma", config.highlight_luma);
@@ -705,6 +708,12 @@ void validate_config(const AppConfig &config) {
         if(adaptive.interval_ms < 100 || adaptive.interval_ms > 5000) {
             throw std::runtime_error("adaptive_exposure.interval_ms must be in range [100, 5000]");
         }
+        if(adaptive.settle_ms < adaptive.interval_ms || adaptive.settle_ms > 5000) {
+            throw std::runtime_error("adaptive_exposure.settle_ms must be in range [interval_ms, 5000]");
+        }
+        if(adaptive.max_exposure_step < 2 || adaptive.max_exposure_step > 1000) {
+            throw std::runtime_error("adaptive_exposure.max_exposure_step must be in range [2, 1000]");
+        }
         if(adaptive.exposure_min < 1 || adaptive.exposure_max < adaptive.exposure_min || adaptive.exposure_max > 10000) {
             throw std::runtime_error("adaptive_exposure exposure range must satisfy 1 <= min <= max <= 10000");
         }
@@ -713,8 +722,12 @@ void validate_config(const AppConfig &config) {
         }
         if(adaptive.target_p95_luma < 1 || adaptive.target_p95_luma > 254
            || adaptive.luma_deadband < 1 || adaptive.luma_deadband > 64
+           || adaptive.highlight_luma < 1 || adaptive.highlight_luma > 255
+           || (adaptive.target_p50_luma != -1
+               && (adaptive.target_p50_luma < 1 || adaptive.target_p50_luma > 254))
            || adaptive.target_p95_luma + adaptive.luma_deadband >= adaptive.highlight_luma
-           || adaptive.highlight_luma < 1 || adaptive.highlight_luma > 255) {
+           || (adaptive.target_p50_luma != -1
+               && adaptive.target_p50_luma + adaptive.luma_deadband >= adaptive.target_p95_luma)) {
             throw std::runtime_error("adaptive_exposure luma thresholds are invalid");
         }
         if(!std::isfinite(adaptive.max_highlight_fraction) || adaptive.max_highlight_fraction < 0.0

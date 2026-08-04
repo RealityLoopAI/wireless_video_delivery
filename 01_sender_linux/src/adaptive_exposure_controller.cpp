@@ -1,6 +1,7 @@
 #include "gwv3_sender/adaptive_exposure_controller.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace gwv3 {
@@ -13,11 +14,24 @@ AdaptiveExposureController::AdaptiveExposureController(AdaptiveExposureConfig co
 ExposureControlDecision AdaptiveExposureController::evaluate(const ExposureMeteringSample &sample) {
     ++sample_count_;
     ExposureControlDecision decision{false, exposure_, gain_, "stable"};
-    const int upper_luma = config_.target_p95_luma + config_.luma_deadband;
-    const int lower_luma = config_.target_p95_luma - config_.luma_deadband;
+    const bool use_midtones = config_.target_p50_luma >= 0;
+    const int target_luma = use_midtones ? config_.target_p50_luma : config_.target_p95_luma;
+    const int measured_luma = use_midtones ? sample.p50_luma : sample.p95_luma;
+    const int upper_luma = target_luma + config_.luma_deadband;
+    const int lower_luma = target_luma - config_.luma_deadband;
+    const int p95_ceiling = config_.target_p95_luma + config_.luma_deadband;
     const bool severe_highlights = sample.p99_luma >= config_.highlight_luma
                                    || sample.highlight_fraction > config_.max_highlight_fraction;
-    const bool overexposed = severe_highlights || sample.p95_luma > upper_luma;
+    const bool overexposed = severe_highlights || measured_luma > upper_luma;
+
+    const auto proportional_exposure_step = [&](bool increase) {
+        const double measured = static_cast<double>(std::max(1, measured_luma));
+        const double ideal_exposure = static_cast<double>(exposure_) * static_cast<double>(target_luma) / measured;
+        const double raw_delta = increase ? ideal_exposure - static_cast<double>(exposure_)
+                                          : static_cast<double>(exposure_) - ideal_exposure;
+        return std::clamp(static_cast<int>(std::lround(std::max(2.0, raw_delta))),
+                          2, config_.max_exposure_step);
+    };
 
     if(overexposed) {
         consecutive_underexposed_ = 0;
@@ -29,9 +43,9 @@ ExposureControlDecision AdaptiveExposureController::evaluate(const ExposureMeter
             return decision;
         }
         if(exposure_ > config_.exposure_min) {
-            const int excess = std::max(1, sample.p95_luma - upper_luma);
-            const int exposure_step = severe_highlights ? std::clamp(excess / 2, 10, 30)
-                                                        : std::clamp((excess + 1) / 2, 4, 10);
+            const int severe_step = std::clamp(
+                config_.max_exposure_step + config_.max_exposure_step / 2, 10, 30);
+            const int exposure_step = severe_highlights ? severe_step : proportional_exposure_step(false);
             decision.exposure = std::max(config_.exposure_min, exposure_ - exposure_step);
             decision.apply = decision.exposure != exposure_;
             decision.reason = severe_highlights ? "severe_highlights_reduce_exposure" : "bright_reduce_exposure";
@@ -41,7 +55,12 @@ ExposureControlDecision AdaptiveExposureController::evaluate(const ExposureMeter
         return decision;
     }
 
-    if(sample.p95_luma < lower_luma) {
+    if(measured_luma < lower_luma) {
+        if(use_midtones && sample.p95_luma >= p95_ceiling) {
+            consecutive_underexposed_ = 0;
+            decision.reason = "highlight_limited";
+            return decision;
+        }
         ++consecutive_underexposed_;
         if(consecutive_underexposed_ < config_.underexposed_samples) {
             decision.reason = "dark_hysteresis";
@@ -49,8 +68,7 @@ ExposureControlDecision AdaptiveExposureController::evaluate(const ExposureMeter
         }
         consecutive_underexposed_ = 0;
         if(exposure_ < config_.exposure_max) {
-            const int deficit = config_.target_p95_luma - sample.p95_luma;
-            const int exposure_step = std::clamp((deficit + 7) / 8, 2, 8);
+            const int exposure_step = proportional_exposure_step(true);
             decision.exposure = std::min(config_.exposure_max, exposure_ + exposure_step);
             decision.apply = decision.exposure != exposure_;
             decision.reason = "dark_increase_exposure";

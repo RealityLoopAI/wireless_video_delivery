@@ -32,6 +32,10 @@ gwv3::ExposureMeteringSample sample(int p95, int p99, double highlight_fraction 
     return {p95 / 2, p95, p99, highlight_fraction};
 }
 
+gwv3::ExposureMeteringSample mixed_sample(int p50, int p95, int p99, double highlight_fraction = 0.0) {
+    return {p50, p95, p99, highlight_fraction};
+}
+
 }  // namespace
 
 int main() {
@@ -84,6 +88,69 @@ int main() {
         AdaptiveExposureController controller(test_config(), 80, 16);
         const auto decision = controller.evaluate(sample(250, 255, 0.5));
         require(!decision.apply && decision.reason == "bright_at_minimum", "minimum limits must be respected");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(105, 220, 230));
+        require(!decision.apply && decision.reason == "stable", "balanced mixed scene must stay stable");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 16);
+        controller.evaluate(mixed_sample(75, 220, 230));
+        controller.evaluate(mixed_sample(75, 220, 230));
+        const auto decision = controller.evaluate(mixed_sample(75, 220, 230));
+        require(decision.apply && decision.exposure > 130,
+                "dark midtones with highlight headroom must increase exposure");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 16);
+        const auto decision = controller.evaluate(mixed_sample(75, 235, 240));
+        require(!decision.apply && decision.reason == "highlight_limited",
+                "bright upper tones must block midtone amplification");
+    }
+
+    {
+        auto config = test_config();
+        config.target_p50_luma = 105;
+        config.target_p95_luma = 225;
+        AdaptiveExposureController controller(config, 130, 20);
+        const auto decision = controller.evaluate(mixed_sample(125, 220, 230));
+        require(decision.apply && decision.gain < 20, "bright midtones must reduce gain");
+    }
+
+    {
+        auto config = test_config();
+        config.underexposed_samples = 1;
+        AdaptiveExposureController small_error(config, 130, 16);
+        AdaptiveExposureController large_error(config, 130, 16);
+        const auto small = small_error.evaluate(sample(190, 200));
+        const auto large = large_error.evaluate(sample(150, 160));
+        require(small.apply && large.apply && large.exposure - 130 > small.exposure - 130,
+                "exposure response must scale with the measured luma error");
+        require(large.exposure - 130 == config.max_exposure_step,
+                "large exposure error must be bounded by the configured linear slew");
+    }
+
+    {
+        auto config = test_config();
+        config.underexposed_samples = 1;
+        config.max_exposure_step = 12;
+        AdaptiveExposureController controller(config, 120, 16);
+        const auto decision = controller.evaluate(sample(100, 110));
+        require(decision.apply && decision.exposure == 132,
+                "dark response must use the configured maximum exposure slew");
     }
 
     std::cout << "adaptive exposure controller test passed\n";

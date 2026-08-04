@@ -69,16 +69,28 @@ def run(args) -> None:
         invalid["cameras"][0]["adaptive_exposure"] = {"enabled": True}
         expect_invalid(args.sender, temporary, "adaptive_exposure_with_native_ae", invalid)
 
-        local_sv1301 = json.loads(
-            (root / "06_configs" / "sender_rk3588-ubuntu_one_camera.json").read_text(encoding="utf-8")
+        adaptive_gemini = json.loads(
+            (root / "06_configs" / "sender_orangepi5pro-d12a4719_gemini305.json").read_text(encoding="utf-8")
         )
-        invalid = copy.deepcopy(local_sv1301)
-        invalid["cameras"][0]["adaptive_exposure"]["exposure_max"] = 326
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["exposure_max"] = 301
         expect_invalid(args.sender, temporary, "adaptive_exposure_unsafe_fps_boundary", invalid)
 
-        invalid = copy.deepcopy(local_sv1301)
+        invalid = copy.deepcopy(adaptive_gemini)
         invalid["cameras"][0]["device_model"] = "unsupported_camera"
         expect_invalid(args.sender, temporary, "adaptive_exposure_unsupported_model", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["target_p50_luma"] = 220
+        expect_invalid(args.sender, temporary, "adaptive_exposure_overlapping_luma_targets", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["settle_ms"] = 99
+        expect_invalid(args.sender, temporary, "adaptive_exposure_unsettled_feedback", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["max_exposure_step"] = 1
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_slew", invalid)
 
         trailing = temporary / "trailing.json"
         trailing.write_text(json.dumps(base) + "{}", encoding="utf-8")

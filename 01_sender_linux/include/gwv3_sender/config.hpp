@@ -47,10 +47,13 @@ struct ColorControlsConfig {
 struct AdaptiveExposureConfig {
     bool enabled = false;
     int interval_ms = 500;
+    int settle_ms = 500;
+    int max_exposure_step = 16;
     int exposure_min = 80;
     int exposure_max = 200;
     int gain_min = 16;
     int gain_max = 32;
+    int target_p50_luma = -1;
     int target_p95_luma = 200;
     int luma_deadband = 8;
     int highlight_luma = 245;
