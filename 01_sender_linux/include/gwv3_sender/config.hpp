@@ -167,5 +167,6 @@ struct AppConfig {
 AppConfig load_config(const std::string &path);
 void validate_config(const AppConfig &config);
 bool is_valid_protocol_id(const std::string &value);
+std::optional<int> adaptive_exposure_max_for_model(const std::string &device_model);
 
 }  // namespace gwv3

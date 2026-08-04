@@ -5186,7 +5186,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const int publish_warmup_ms = camera_publish_warmup_ms(runtime.config, device_model);
     std::unique_ptr<AdaptiveExposureController> adaptive_exposure_controller;
     if(runtime.config.adaptive_exposure.enabled) {
-        if(camera_model_is_gemini305(device_model)) {
+        if(adaptive_exposure_max_for_model(device_model)) {
             adaptive_exposure_controller = std::make_unique<AdaptiveExposureController>(
                 runtime.config.adaptive_exposure, *runtime.config.color_controls.exposure, *runtime.config.color_controls.gain);
         }

@@ -62,12 +62,23 @@ def run(args) -> None:
         expect_invalid(args.sender, temporary, "invalid_rotation", invalid)
 
         invalid = copy.deepcopy(base)
+        invalid["cameras"][0]["color_controls"]["auto_exposure"] = True
+        invalid["cameras"][0]["color_controls"]["exposure"] = 130
+        invalid["cameras"][0]["color_controls"]["gain"] = 16
+        invalid["cameras"][0]["device_model"] = "Orbbec Gemini 305"
         invalid["cameras"][0]["adaptive_exposure"] = {"enabled": True}
         expect_invalid(args.sender, temporary, "adaptive_exposure_with_native_ae", invalid)
 
-        invalid = copy.deepcopy(base)
-        invalid["cameras"][0]["adaptive_exposure"] = {"exposure_max": 326}
+        local_sv1301 = json.loads(
+            (root / "06_configs" / "sender_rk3588-ubuntu_one_camera.json").read_text(encoding="utf-8")
+        )
+        invalid = copy.deepcopy(local_sv1301)
+        invalid["cameras"][0]["adaptive_exposure"]["exposure_max"] = 326
         expect_invalid(args.sender, temporary, "adaptive_exposure_unsafe_fps_boundary", invalid)
+
+        invalid = copy.deepcopy(local_sv1301)
+        invalid["cameras"][0]["device_model"] = "unsupported_camera"
+        expect_invalid(args.sender, temporary, "adaptive_exposure_unsupported_model", invalid)
 
         trailing = temporary / "trailing.json"
         trailing.write_text(json.dumps(base) + "{}", encoding="utf-8")

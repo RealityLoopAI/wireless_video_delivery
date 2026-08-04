@@ -323,6 +323,20 @@ bool is_valid_protocol_id(const std::string &value) {
     return std::regex_match(value, pattern);
 }
 
+std::optional<int> adaptive_exposure_max_for_model(const std::string &device_model) {
+    std::string lower = device_model;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if(lower.find("gemini 305") != std::string::npos) {
+        return 300;
+    }
+    if(lower.find("sv1301s_u3") != std::string::npos) {
+        return 325;
+    }
+    return std::nullopt;
+}
+
 AppConfig load_config(const std::string &path) {
     std::ifstream input(path);
     if(!input) {
@@ -691,8 +705,8 @@ void validate_config(const AppConfig &config) {
         if(adaptive.interval_ms < 100 || adaptive.interval_ms > 5000) {
             throw std::runtime_error("adaptive_exposure.interval_ms must be in range [100, 5000]");
         }
-        if(adaptive.exposure_min < 1 || adaptive.exposure_max < adaptive.exposure_min || adaptive.exposure_max > 300) {
-            throw std::runtime_error("adaptive_exposure exposure range must satisfy 1 <= min <= max <= 300");
+        if(adaptive.exposure_min < 1 || adaptive.exposure_max < adaptive.exposure_min || adaptive.exposure_max > 10000) {
+            throw std::runtime_error("adaptive_exposure exposure range must satisfy 1 <= min <= max <= 10000");
         }
         if(adaptive.gain_min < 0 || adaptive.gain_max < adaptive.gain_min || adaptive.gain_max > 255) {
             throw std::runtime_error("adaptive_exposure gain range must satisfy 0 <= min <= max <= 255");
@@ -716,6 +730,18 @@ void validate_config(const AppConfig &config) {
         if(adaptive.enabled) {
             if(camera.capture_backend != "orbbec_sdk") {
                 throw std::runtime_error("adaptive_exposure requires camera.capture_backend=orbbec_sdk");
+            }
+            if(camera.rgb_profile.format != "mjpg") {
+                throw std::runtime_error("adaptive_exposure requires camera.rgb_profile.format=mjpg");
+            }
+            const auto safe_exposure_max = adaptive_exposure_max_for_model(camera.device_model);
+            if(!safe_exposure_max) {
+                throw std::runtime_error("adaptive_exposure is unsupported for camera.device_model=" + camera.device_model);
+            }
+            if(adaptive.exposure_max > *safe_exposure_max) {
+                throw std::runtime_error("adaptive_exposure.exposure_max exceeds validated 30fps limit "
+                                         + std::to_string(*safe_exposure_max) + " for camera.device_model="
+                                         + camera.device_model);
             }
             if(!camera.color_controls.auto_exposure || *camera.color_controls.auto_exposure) {
                 throw std::runtime_error("adaptive_exposure requires color_controls.auto_exposure=false");

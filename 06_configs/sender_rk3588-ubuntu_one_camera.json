@@ -88,6 +88,20 @@
         "compression": "pq8zlib",
         "quantization_step_mm": 10
       },
+      "adaptive_exposure": {
+        "enabled": true,
+        "interval_ms": 500,
+        "exposure_min": 80,
+        "exposure_max": 325,
+        "gain_min": 0,
+        "gain_max": 20,
+        "target_p95_luma": 190,
+        "luma_deadband": 8,
+        "highlight_luma": 245,
+        "max_highlight_fraction": 0.005,
+        "underexposed_samples": 3,
+        "roi_margin_percent": 10
+      },
       "color_controls": {
         "auto_exposure": false,
         "exposure": 312,
@@ -97,6 +111,7 @@
         "saturation": 64,
         "gamma": 150,
         "backlight_compensation": 0,
+        "power_line_frequency": 1,
         "auto_white_balance": true
       }
     }
