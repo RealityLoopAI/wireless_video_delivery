@@ -36,7 +36,7 @@ ExposureControlDecision AdaptiveExposureController::evaluate(const ExposureMeter
     if(overexposed) {
         consecutive_underexposed_ = 0;
         if(gain_ > config_.gain_min) {
-            const int gain_step = severe_highlights ? gain_ - config_.gain_min : 4;
+            const int gain_step = severe_highlights ? gain_ - config_.gain_min : 2;
             decision.gain = std::max(config_.gain_min, gain_ - gain_step);
             decision.apply = decision.gain != gain_;
             decision.reason = severe_highlights ? "severe_highlights_reduce_gain" : "bright_reduce_gain";

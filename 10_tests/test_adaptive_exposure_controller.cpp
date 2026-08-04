@@ -51,10 +51,10 @@ int main() {
     {
         AdaptiveExposureController controller(test_config(), 130, 32);
         auto decision = controller.evaluate(sample(220, 230));
-        require(decision.apply && decision.exposure == 130 && decision.gain == 28,
+        require(decision.apply && decision.exposure == 130 && decision.gain == 30,
                 "moderate brightness must reduce gain before exposure");
         controller.commit(decision);
-        require(controller.gain() == 28 && controller.adjustment_count() == 1, "committed gain adjustment not tracked");
+        require(controller.gain() == 30 && controller.adjustment_count() == 1, "committed gain adjustment not tracked");
     }
 
     {
@@ -127,7 +127,7 @@ int main() {
         config.target_p95_luma = 225;
         AdaptiveExposureController controller(config, 130, 20);
         const auto decision = controller.evaluate(mixed_sample(125, 220, 230));
-        require(decision.apply && decision.gain < 20, "bright midtones must reduce gain");
+        require(decision.apply && decision.gain == 18, "ordinary gain changes must use a symmetric linear step");
     }
 
     {

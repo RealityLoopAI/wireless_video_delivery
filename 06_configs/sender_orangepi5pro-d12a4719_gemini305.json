@@ -100,7 +100,7 @@
         "gain_max": 32,
         "target_p50_luma": 150,
         "target_p95_luma": 225,
-        "luma_deadband": 5,
+        "luma_deadband": 8,
         "highlight_luma": 245,
         "max_highlight_fraction": 0.0025,
         "underexposed_samples": 1,

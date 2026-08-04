@@ -6298,8 +6298,20 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             }
         }
         if(reapply_gemini305_manual_exposure) {
-            const bool verified =
+            bool verified =
                 ensure_gemini305_manual_exposure(camera.config, reapply_device_model, reapply_device_serial, logger, true);
+            if(verified) {
+                try {
+                    apply_color_controls(camera, logger);
+                    logger.info("Gemini305 SDK color controls reapplied after manual exposure verification camera_id="
+                                + camera.config.camera_id);
+                }
+                catch(const std::exception &e) {
+                    verified = false;
+                    logger.warn("Gemini305 SDK color control reapply failed camera_id=" + camera.config.camera_id
+                                + " error=" + e.what());
+                }
+            }
             std::lock_guard<std::mutex> lock(camera.mutex);
             camera.publish_warmup_exposure_verified = verified;
             camera.gemini305_manual_exposure_reapply_pending = !verified;
