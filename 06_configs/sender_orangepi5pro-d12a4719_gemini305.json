@@ -90,7 +90,7 @@
         "quantization_step_mm": 10
       },
       "adaptive_exposure": {
-        "enabled": true,
+        "enabled": false,
         "interval_ms": 100,
         "settle_ms": 200,
         "max_exposure_step": 16,

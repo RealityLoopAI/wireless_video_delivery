@@ -72,6 +72,7 @@ def run(args) -> None:
         adaptive_gemini = json.loads(
             (root / "06_configs" / "sender_orangepi5pro-d12a4719_gemini305.json").read_text(encoding="utf-8")
         )
+        adaptive_gemini["cameras"][0]["adaptive_exposure"]["enabled"] = True
         invalid = copy.deepcopy(adaptive_gemini)
         invalid["cameras"][0]["adaptive_exposure"]["exposure_max"] = 301
         expect_invalid(args.sender, temporary, "adaptive_exposure_unsafe_fps_boundary", invalid)
