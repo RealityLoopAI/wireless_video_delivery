@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
+from audio_mixer import restore_capture_mixer
 from speech_service import (
     EdgeTtsEngine,
     EspeakTtsEngine,
@@ -933,6 +934,10 @@ def listen(args):
     print("listening for: 你好小环")
     print(f"aliases={aliases}")
     print(f"record_device={args.record_device}, playback_device={args.playback_device}")
+    print(
+        f"record_mixer_level={args.record_mixer_level or 'unchanged'}, "
+        f"record_mixer_agc={args.record_mixer_agc or 'unchanged'}"
+    )
     print(f"mode=gated-vad-asr, vad={vad_mode}")
     print(
         f"tts_http={args.tts_http} bind={args.tts_http_bind}:{args.tts_http_port} "
@@ -1007,6 +1012,17 @@ def listen(args):
             capture_out = None
             capture_procs = []
             try:
+                mixer_ok, mixer_status = restore_capture_mixer(
+                    args.record_device,
+                    args.record_mixer_level,
+                    args.record_mixer_agc,
+                )
+                if mixer_ok and (phase != "startup" or attempt > 1):
+                    print(
+                        f"record mixer restored phase={phase} attempt={attempt} "
+                        f"{mixer_status}",
+                        flush=True,
+                    )
                 capture_out, capture_procs, audio_filter = start_capture(
                     args,
                     stream_target,
@@ -1610,6 +1626,8 @@ def build_parser():
     p_listen = sub.add_parser("listen")
     p_listen.add_argument("--record-device", default="plughw:4,0")
     p_listen.add_argument("--playback-device", default="plughw:3,0")
+    p_listen.add_argument("--record-mixer-level", default="")
+    p_listen.add_argument("--record-mixer-agc", choices=["", "on", "off"], default="")
     p_listen.add_argument(
         "--tts-http",
         action=argparse.BooleanOptionalAction,

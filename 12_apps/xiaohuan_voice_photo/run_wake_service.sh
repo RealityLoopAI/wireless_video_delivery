@@ -238,6 +238,8 @@ configure_playback_mixer() {
   exec python3 -u vosk_wake.py listen \
     --record-device "$RECORD_DEVICE" \
     --playback-device "$PLAYBACK_DEVICE" \
+    --record-mixer-level "$MIC_CAPTURE_LEVEL" \
+    --record-mixer-agc "$MIC_AGC" \
     "${TTS_HTTP_ARGS[@]}" \
     --tts-backend "$TTS_BACKEND" \
     --tts-model-dir "$TTS_MODEL_DIR" \
