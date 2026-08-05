@@ -4,6 +4,7 @@
 #include "gwv3_sender/config.hpp"
 #include "gwv3_sender/gst_h264_encoder.hpp"
 #include "gwv3_sender/logger.hpp"
+#include "gwv3_sender/rgb_transport_recovery.hpp"
 #include "gwv3_sender/transport.hpp"
 
 #include <algorithm>
@@ -94,6 +95,7 @@ constexpr int kRgbSnapshotJpegQuality = 95;
 constexpr auto kRgbSnapshotRequestPollInterval = std::chrono::milliseconds(20);
 constexpr auto kRgbSnapshotRetryInterval = std::chrono::seconds(1);
 constexpr auto kRgbSnapshotRequestTimeout = std::chrono::seconds(30);
+constexpr uint64_t kRgbRecoveryKeyframeRequestIntervalUs = 1'000'000;
 
 const char *stream_type_name(StreamType stream_type) {
     switch(stream_type) {
@@ -297,6 +299,7 @@ struct CameraRuntime {
     std::string device_connection_type;
     std::shared_ptr<ob::Device> device;
     std::unique_ptr<ob::Pipeline> pipeline;
+    std::shared_ptr<ob::Config> pipeline_config;
     std::shared_ptr<V4L2MjpegCapture> v4l2_capture;
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
@@ -320,8 +323,7 @@ struct CameraRuntime {
     std::deque<std::chrono::steady_clock::time_point> recent_disconnects;
     uint64_t rgb_frames = 0;
     uint64_t depth_frames = 0;
-    bool rgb_waiting_for_keyframe_after_transport_loss = false;
-    uint64_t rgb_keyframe_guard_drops = 0;
+    RgbTransportRecovery rgb_transport_recovery;
     uint64_t rgb_transport_retry_drops = 0;
     uint64_t rgb_send_failures_total = 0;
     uint64_t rgb_preview_send_failures_total = 0;
@@ -1614,6 +1616,24 @@ bool profile_dimensions_match(const OBCameraIntrinsic &intrinsic, const std::sha
            && static_cast<uint32_t>(intrinsic.height) == profile->height();
 }
 
+bool camera_param_profiles_match(const OBCameraParam &camera_param,
+                                 const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
+                                 const std::shared_ptr<ob::VideoStreamProfile> &depth_profile) {
+    return camera_param_complete(camera_param) && profile_dimensions_match(camera_param.rgbIntrinsic, color_profile)
+           && profile_dimensions_match(camera_param.depthIntrinsic, depth_profile);
+}
+
+OBCameraParam camera_param_from_calibration(const OBCalibrationParam &calibration) {
+    OBCameraParam camera_param{};
+    camera_param.depthIntrinsic = calibration.intrinsics[OB_SENSOR_DEPTH];
+    camera_param.rgbIntrinsic = calibration.intrinsics[OB_SENSOR_COLOR];
+    camera_param.depthDistortion = calibration.distortion[OB_SENSOR_DEPTH];
+    camera_param.rgbDistortion = calibration.distortion[OB_SENSOR_COLOR];
+    camera_param.transform = calibration.extrinsics[OB_SENSOR_DEPTH][OB_SENSOR_COLOR];
+    camera_param.isMirrored = false;
+    return camera_param;
+}
+
 void fill_missing_profile_calibration(OBCameraParam &camera_param, const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
                                       const std::shared_ptr<ob::VideoStreamProfile> &depth_profile) {
     if(color_profile && !intrinsic_valid(camera_param.rgbIntrinsic)) {
@@ -1648,15 +1668,17 @@ std::optional<OBCameraParam> exact_profile_camera_param_from_device(const std::s
     try {
         auto list = device->getCalibrationCameraParamList();
         const uint32_t count = list ? list->count() : 0;
+        std::optional<OBCameraParam> exact;
         for(uint32_t i = 0; i < count; ++i) {
             const auto param = list->getCameraParam(i);
             Json::Value item = camera_param_data_json(param);
             item["index"] = i;
             raw_list_json.append(item);
-            if(profile_dimensions_match(param.rgbIntrinsic, color_profile) && profile_dimensions_match(param.depthIntrinsic, depth_profile)) {
-                return param;
+            if(!exact && camera_param_profiles_match(param, color_profile, depth_profile)) {
+                exact = param;
             }
         }
+        return exact;
     }
     catch(const std::exception &) {
     }
@@ -1665,7 +1687,8 @@ std::optional<OBCameraParam> exact_profile_camera_param_from_device(const std::s
     return std::nullopt;
 }
 
-Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::Device> &device,
+Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::Config> &pipeline_config,
+                             const std::shared_ptr<ob::Device> &device,
                              const std::shared_ptr<ob::VideoStreamProfile> &color_profile,
                              const std::shared_ptr<ob::VideoStreamProfile> &depth_profile) {
     Json::Value calibration;
@@ -1674,42 +1697,67 @@ Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::D
     calibration["data"] = Json::objectValue;
     Json::Value raw_list(Json::arrayValue);
     try {
-        OBCameraParam camera_param{};
-        bool has_profile_param = false;
-        if(color_profile && depth_profile) {
+        const auto exact_list_param = exact_profile_camera_param_from_device(device, color_profile, depth_profile, raw_list);
+        std::optional<OBCameraParam> selected_param;
+        std::string source_detail;
+        auto select_if_exact = [&](OBCameraParam candidate, const std::string &detail, bool fill_missing) {
+            if(fill_missing) {
+                fill_missing_profile_calibration(candidate, color_profile, depth_profile);
+            }
+            if(!selected_param && camera_param_profiles_match(candidate, color_profile, depth_profile)) {
+                selected_param = candidate;
+                source_detail = detail;
+            }
+        };
+
+        if(pipeline_config && color_profile && depth_profile) {
             try {
-                camera_param = pipeline.getCameraParamWithProfile(color_profile->width(), color_profile->height(), depth_profile->width(),
-                                                                  depth_profile->height());
-                has_profile_param = true;
+                select_if_exact(camera_param_from_calibration(pipeline.getCalibrationParam(pipeline_config)),
+                                "pipeline_config_calibration", false);
             }
             catch(const std::exception &) {
             }
             catch(...) {
             }
         }
-        fill_missing_profile_calibration(camera_param, color_profile, depth_profile);
-        const auto exact_param = exact_profile_camera_param_from_device(device, color_profile, depth_profile, raw_list);
-        if(exact_param && !camera_param_complete(camera_param)) {
-            camera_param = *exact_param;
-            has_profile_param = true;
-            calibration["source_detail"] = "device_calibration_list_exact_profile";
-        }
-        if(!has_profile_param && !camera_param_complete(camera_param)) {
-            camera_param = pipeline.getCameraParam();
-            fill_missing_profile_calibration(camera_param, color_profile, depth_profile);
+
+        if(!selected_param && color_profile && depth_profile) {
+            try {
+                select_if_exact(pipeline.getCameraParamWithProfile(color_profile->width(), color_profile->height(), depth_profile->width(),
+                                                                   depth_profile->height()),
+                                "pipeline_profile_calibration", true);
+            }
+            catch(const std::exception &) {
+            }
+            catch(...) {
+            }
         }
 
-        Json::Value data = camera_param_data_json(camera_param);
+        if(!selected_param && exact_list_param) {
+            select_if_exact(*exact_list_param, "device_calibration_list_exact_profile", false);
+        }
+
+        if(!selected_param) {
+            try {
+                select_if_exact(pipeline.getCameraParam(), "pipeline_default_exact_profile", true);
+            }
+            catch(const std::exception &) {
+            }
+            catch(...) {
+            }
+        }
+
+        Json::Value data = selected_param ? camera_param_data_json(*selected_param) : Json::Value(Json::objectValue);
         if(!raw_list.empty()) {
             data["raw_camera_param_list"] = raw_list;
         }
-        const bool depth_ok = intrinsic_valid(camera_param.depthIntrinsic);
-        const bool rgb_ok = intrinsic_valid(camera_param.rgbIntrinsic);
-        const bool transform_ok = transform_valid(camera_param.transform);
-        calibration["available"] = depth_ok && rgb_ok && transform_ok;
-        calibration["profile_aware"] = has_profile_param;
-        if(!depth_ok || !rgb_ok || !transform_ok) {
-            calibration["warning"] = "incomplete_calibration";
+        calibration["available"] = selected_param.has_value();
+        calibration["profile_aware"] = selected_param.has_value();
+        if(selected_param) {
+            calibration["source_detail"] = source_detail;
+        }
+        else {
+            calibration["warning"] = "no_complete_calibration_for_active_profiles";
         }
         calibration["data"] = data;
     }
@@ -2718,11 +2766,7 @@ void arm_rgb_keyframe_guard(CameraRuntime &camera, Logger &logger, const std::st
     bool should_log = false;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
-        if(!camera.rgb_waiting_for_keyframe_after_transport_loss) {
-            should_log = true;
-            camera.rgb_keyframe_guard_drops = 0;
-        }
-        camera.rgb_waiting_for_keyframe_after_transport_loss = true;
+        should_log = camera.rgb_transport_recovery.arm();
         camera.last_error = reason.empty() ? "rgb transport loss; waiting for next keyframe" : reason;
     }
     if(should_log) {
@@ -2770,47 +2814,66 @@ void report_forced_rgb_keyframe(CameraRuntime &camera, Logger &logger) {
                 + " latency_us=" + std::to_string(latency_us));
 }
 
-enum class RgbKeyframeDecision {
-    send,
-    drop,
-    send_after_drop,
-};
-
-RgbKeyframeDecision decide_rgb_keyframe_send(CameraRuntime &camera, bool is_keyframe, std::chrono::steady_clock::time_point now,
-                                             Logger &logger) {
-    bool drop = false;
-    bool log_drop = false;
-    bool log_recovered = false;
-    uint64_t dropped = 0;
+void maybe_request_rgb_recovery_keyframe(CameraRuntime &camera, Logger &logger,
+                                         std::chrono::steady_clock::time_point now) {
+    const auto since_epoch = now.time_since_epoch();
+    const auto monotonic_now_us =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(since_epoch).count());
+    bool request_due = false;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
-        if(!camera.rgb_waiting_for_keyframe_after_transport_loss) {
-            return RgbKeyframeDecision::send;
-        }
-        if(is_keyframe) {
-            log_recovered = true;
-            dropped = camera.rgb_keyframe_guard_drops;
-            camera.rgb_keyframe_guard_drops = 0;
-            camera.rgb_waiting_for_keyframe_after_transport_loss = false;
-        }
-        else {
-            drop = true;
+        request_due = camera.rgb_transport_recovery.keyframe_request_due(monotonic_now_us,
+                                                                          kRgbRecoveryKeyframeRequestIntervalUs);
+    }
+    if(request_due) {
+        request_rgb_keyframe(camera, logger, "media_transport_recovery");
+    }
+}
+
+RgbTransportRecovery::SendDecision decide_rgb_keyframe_send(CameraRuntime &camera, bool is_keyframe,
+                                                            std::chrono::steady_clock::time_point now, Logger &logger) {
+    bool log_drop = false;
+    bool request_keyframe = false;
+    uint64_t dropped = 0;
+    RgbTransportRecovery::SendDecision decision = RgbTransportRecovery::SendDecision::send;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        decision = camera.rgb_transport_recovery.before_send(is_keyframe);
+        if(decision == RgbTransportRecovery::SendDecision::drop) {
             camera.rgb_dropped++;
-            camera.rgb_keyframe_guard_drops++;
-            dropped = camera.rgb_keyframe_guard_drops;
+            dropped = camera.rgb_transport_recovery.dropped_frames();
             if(now >= camera.next_keyframe_guard_warning) {
                 camera.next_keyframe_guard_warning = now + std::chrono::seconds(1);
                 log_drop = true;
             }
         }
+        if(camera.rgb_transport_recovery.waiting()) {
+            const auto monotonic_now_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                                     now.time_since_epoch())
+                                                                     .count());
+            request_keyframe = camera.rgb_transport_recovery.keyframe_request_due(
+                monotonic_now_us, kRgbRecoveryKeyframeRequestIntervalUs);
+        }
+    }
+    if(request_keyframe) {
+        request_rgb_keyframe(camera, logger, "media_transport_recovery");
     }
     if(log_drop) {
         logger.warn("rgb keyframe guard dropping non-IDR camera_id=" + camera.config.camera_id + " dropped=" + std::to_string(dropped));
     }
-    if(log_recovered) {
-        logger.info("rgb keyframe guard recovered camera_id=" + camera.config.camera_id + " dropped=" + std::to_string(dropped));
+    return decision;
+}
+
+void complete_rgb_keyframe_recovery(CameraRuntime &camera, Logger &logger, bool is_keyframe) {
+    std::optional<uint64_t> dropped;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        dropped = camera.rgb_transport_recovery.complete_successful_send(is_keyframe);
     }
-    return drop ? RgbKeyframeDecision::drop : RgbKeyframeDecision::send_after_drop;
+    if(dropped) {
+        logger.info("rgb keyframe guard recovered camera_id=" + camera.config.camera_id
+                    + " dropped=" + std::to_string(*dropped));
+    }
 }
 
 void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType stream_type, double send_ms,
@@ -3961,7 +4024,8 @@ Json::Value camera_announce(const AppConfig &config, CameraRuntime &camera) {
     web_preview["height"] = Json::UInt(camera.web_preview_height);
     msg["web_rgb_preview"] = web_preview;
     if(camera.pipeline && camera.device) {
-        msg["calibration"] = calibration_json(*camera.pipeline, camera.device, camera.color_profile, camera.depth_profile);
+        msg["calibration"] = calibration_json(*camera.pipeline, camera.pipeline_config, camera.device, camera.color_profile,
+                                                camera.depth_profile);
     }
     else {
         Json::Value calibration;
@@ -5036,6 +5100,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.web_preview_width = 0;
     camera.web_preview_height = 0;
     camera.pipeline.reset();
+    camera.pipeline_config.reset();
     camera.color_profile.reset();
     camera.depth_profile.reset();
     camera.device.reset();
@@ -5049,6 +5114,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.rgb_sent_timing_seen = false;
     camera.rgb_last_sent_frame_id = 0;
     camera.rgb_last_sent_system_timestamp_us = 0;
+    camera.rgb_transport_recovery.reset();
     camera.rgb_encode_timings.clear();
     camera.latest_bgr.release();
     camera.latest_depth_color.release();
@@ -5068,6 +5134,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.device_connection_type = "v4l2";
         runtime.device.reset();
         runtime.pipeline.reset();
+        runtime.pipeline_config.reset();
         runtime.color_profile.reset();
         runtime.depth_profile.reset();
         runtime.encoder.reset();
@@ -5102,6 +5169,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.rgb_sent_timing_seen = false;
         runtime.rgb_last_sent_frame_id = 0;
         runtime.rgb_last_sent_system_timestamp_us = 0;
+        runtime.rgb_transport_recovery.reset();
         runtime.rgb_encode_timings.clear();
         runtime.latest_bgr.release();
         runtime.latest_depth_color.release();
@@ -5155,15 +5223,17 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
             candidate_config->setFrameAggregateOutputMode(aggregate_mode);
         }
         candidate_pipeline->start(candidate_config);
-        return std::make_tuple(std::move(candidate_pipeline), std::move(candidate_color_profile), std::move(candidate_depth_profile));
+        return std::make_tuple(std::move(candidate_pipeline), std::move(candidate_config), std::move(candidate_color_profile),
+                               std::move(candidate_depth_profile));
     };
 
     std::unique_ptr<ob::Pipeline> pipeline;
+    std::shared_ptr<ob::Config> pipeline_config;
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     OBFrameAggregateOutputMode aggregate_mode = frame_aggregate_mode_from_config(runtime.config.frame_aggregate_mode);
     try {
-        std::tie(pipeline, color_profile, depth_profile) = start_pipeline(aggregate_mode);
+        std::tie(pipeline, pipeline_config, color_profile, depth_profile) = start_pipeline(aggregate_mode);
     }
     catch(const ob::Error &e) {
         const auto error = ob_error_text(e);
@@ -5173,7 +5243,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         aggregate_mode = OB_FRAME_AGGREGATE_OUTPUT_DISABLE;
         logger.warn("camera frame aggregate unsupported, retrying with aggregate disabled camera_id=" + runtime.config.camera_id
                     + " error=" + error);
-        std::tie(pipeline, color_profile, depth_profile) = start_pipeline(aggregate_mode);
+        std::tie(pipeline, pipeline_config, color_profile, depth_profile) = start_pipeline(aggregate_mode);
     }
 
     apply_color_controls(control_runtime, logger);
@@ -5209,6 +5279,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.device_uid = device_uid;
         runtime.device_connection_type = device_connection_type;
         runtime.pipeline = std::move(pipeline);
+        runtime.pipeline_config = std::move(pipeline_config);
         runtime.color_profile = std::move(color_profile);
         runtime.depth_profile = std::move(depth_profile);
         runtime.encoder.reset();
@@ -5238,6 +5309,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.next_time_sync_log = now;
         runtime.next_jpeg_warning = now;
         runtime.next_media_warning = now;
+        runtime.next_keyframe_guard_warning = now;
         runtime.next_rgb_timing_warning = now;
         runtime.last_rgb_frame_at = now;
         runtime.last_depth_frame_at = now;
@@ -5262,6 +5334,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.rgb_sent_timing_seen = false;
         runtime.rgb_last_sent_frame_id = 0;
         runtime.rgb_last_sent_system_timestamp_us = 0;
+        runtime.rgb_transport_recovery.reset();
         runtime.rgb_encode_timings.clear();
         runtime.latest_bgr.release();
         runtime.latest_depth_color.release();
@@ -5638,7 +5711,7 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
 
         if(job->stream_type == StreamType::rgb
            && decide_rgb_keyframe_send(*job->camera, job->rgb_keyframe, std::chrono::steady_clock::now(), logger)
-                  == RgbKeyframeDecision::drop) {
+                  == RgbTransportRecovery::SendDecision::drop) {
             continue;
         }
 
@@ -5663,12 +5736,15 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         const double send_ms = elapsed_ms(send_started, send_ended);
         if(sent) {
             record_media_send_success(*job->camera, job->stream_type, job->total_size(), send_ms);
+            if(job->stream_type == StreamType::rgb) {
+                complete_rgb_keyframe_recovery(*job->camera, logger, job->rgb_keyframe);
+            }
         }
         else {
             record_media_send_failure(*job->camera, logger, job->stream_type, send_ms, send_ended, error);
             if(job->stream_type == StreamType::rgb) {
                 arm_rgb_keyframe_guard(*job->camera, logger, error);
-                request_rgb_keyframe(*job->camera, logger, "media_transport_recovery");
+                maybe_request_rgb_recovery_keyframe(*job->camera, logger, send_ended);
                 std::lock_guard<std::mutex> lock(job->camera->mutex);
                 job->camera->rgb_dropped++;
                 job->camera->rgb_transport_retry_drops++;
@@ -5841,7 +5917,7 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
             report_forced_rgb_keyframe(camera, logger);
         }
         const auto send_decision = decide_rgb_keyframe_send(camera, is_key_frame, frame_now, logger);
-        if(send_decision == RgbKeyframeDecision::drop) {
+        if(send_decision == RgbTransportRecovery::SendDecision::drop) {
             continue;
         }
         const auto timing_resolution = resolve_rgb_encode_timing(camera, encoded, submitted_timing, encoded_has_vcl);
@@ -5860,7 +5936,7 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
         MediaFrameMeta meta;
         meta.stream_type = StreamType::rgb;
         meta.flags = has_system_timestamp | has_rgb_diagnostics | (is_key_frame ? key_frame : 0u);
-        if(send_decision == RgbKeyframeDecision::send_after_drop) {
+        if(send_decision == RgbTransportRecovery::SendDecision::send_recovery_keyframe) {
             meta.flags |= dropped_before;
         }
         meta.sender_id = config.sender_id;

@@ -104,7 +104,7 @@ struct TransportConfig {
     bool enabled = true;
     std::string status_protocol = "udp";
     std::string media_protocol = "tcp";
-    int connect_timeout_ms = 250;
+    int connect_timeout_ms = 1500;
     int send_timeout_ms = 80;
     int send_buffer_bytes = 1048576;
     int reconnect_interval_ms = 1000;

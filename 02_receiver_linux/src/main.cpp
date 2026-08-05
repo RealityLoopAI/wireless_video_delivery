@@ -96,6 +96,8 @@ constexpr size_t kDefaultRecordFinalizeMaxPendingSegments = 8;
 constexpr uint64_t kRecordQueueWarnIntervalUs = 5ull * 1000ull * 1000ull;
 constexpr int kMaxActiveMediaClients = 32;
 constexpr int kMaxActiveAdminClients = 32;
+constexpr int kMediaListenBacklog = 128;
+constexpr int kAdminListenBacklog = 64;
 constexpr size_t kMaxTrackedCameras = 32;
 constexpr size_t kMaxTrackedSenders = 32;
 constexpr int kMediaClientSocketTimeoutSec = 2;
@@ -9678,7 +9680,7 @@ private:
             close(fd);
             return;
         }
-        if(listen(fd, 16) != 0) {
+        if(listen(fd, kMediaListenBacklog) != 0) {
             listener_start_failed_ = true;
             logger_.error(std::string("cannot listen media TCP: ") + std::strerror(errno));
             close(fd);
@@ -9782,7 +9784,7 @@ private:
             close(fd);
             return;
         }
-        if(listen(fd, 16) != 0) {
+        if(listen(fd, kAdminListenBacklog) != 0) {
             listener_start_failed_ = true;
             logger_.error(std::string("cannot listen admin HTTP: ") + std::strerror(errno));
             close(fd);

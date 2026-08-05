@@ -43,20 +43,35 @@ gemini_sender_wifi_policy_summary() {
 }
 
 gemini_sender_wifi_disable_powersave() {
-  local iface connection
+  local iface connection configured
   iface="$(gemini_sender_wifi_iface)"
   if [[ "${GEMINI_SENDER_WIFI_DISABLE_POWERSAVE:-1}" == "0" ]]; then
     return 0
   fi
 
   if command -v iw >/dev/null 2>&1; then
+    if iw dev "$iface" get power_save 2>/dev/null | grep -qi 'off'; then
+      return 0
+    fi
     iw dev "$iface" set power_save off >/dev/null 2>&1 || true
+    if iw dev "$iface" get power_save 2>/dev/null | grep -qi 'off'; then
+      return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -n iw dev "$iface" set power_save off >/dev/null 2>&1 || true
+      if iw dev "$iface" get power_save 2>/dev/null | grep -qi 'off'; then
+        return 0
+      fi
+    fi
   fi
 
   if command -v nmcli >/dev/null 2>&1; then
     connection="$(nmcli -g GENERAL.CONNECTION device show "$iface" 2>/dev/null | head -n 1 || true)"
     if [[ -n "$connection" && "$connection" != "--" ]]; then
-      nmcli connection modify "$connection" 802-11-wireless.powersave 2 >/dev/null 2>&1 || true
+      configured="$(nmcli -g 802-11-wireless.powersave connection show "$connection" 2>/dev/null | head -n 1 || true)"
+      if [[ "$configured" != "2" && "$configured" != "disable" ]]; then
+        nmcli connection modify "$connection" 802-11-wireless.powersave 2 >/dev/null 2>&1 || true
+      fi
     fi
   fi
 }

@@ -19,7 +19,7 @@
     "enabled": true,
     "status_protocol": "udp",
     "media_protocol": "tcp",
-    "connect_timeout_ms": 250,
+    "connect_timeout_ms": 1500,
     "send_timeout_ms": 80,
     "send_buffer_bytes": 33554432,
     "reconnect_interval_ms": 1000
