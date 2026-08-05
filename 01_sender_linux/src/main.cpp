@@ -1697,7 +1697,6 @@ Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::C
     calibration["data"] = Json::objectValue;
     Json::Value raw_list(Json::arrayValue);
     try {
-        const auto exact_list_param = exact_profile_camera_param_from_device(device, color_profile, depth_profile, raw_list);
         std::optional<OBCameraParam> selected_param;
         std::string source_detail;
         auto select_if_exact = [&](OBCameraParam candidate, const std::string &detail, bool fill_missing) {
@@ -1733,8 +1732,11 @@ Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::C
             }
         }
 
-        if(!selected_param && exact_list_param) {
-            select_if_exact(*exact_list_param, "device_calibration_list_exact_profile", false);
+        if(!selected_param) {
+            const auto exact_list_param = exact_profile_camera_param_from_device(device, color_profile, depth_profile, raw_list);
+            if(exact_list_param) {
+                select_if_exact(*exact_list_param, "device_calibration_list_exact_profile", false);
+            }
         }
 
         if(!selected_param) {
@@ -1748,8 +1750,16 @@ Json::Value calibration_json(ob::Pipeline &pipeline, const std::shared_ptr<ob::C
         }
 
         Json::Value data = selected_param ? camera_param_data_json(*selected_param) : Json::Value(Json::objectValue);
-        if(!raw_list.empty()) {
-            data["raw_camera_param_list"] = raw_list;
+        if(!selected_param && !raw_list.empty()) {
+            constexpr Json::ArrayIndex kMaxRawCalibrationDiagnostics = 4;
+            Json::Value bounded_raw_list(Json::arrayValue);
+            const auto keep_count = std::min(raw_list.size(), kMaxRawCalibrationDiagnostics);
+            for(Json::ArrayIndex i = 0; i < keep_count; ++i) {
+                bounded_raw_list.append(raw_list[i]);
+            }
+            data["raw_camera_param_count"] = raw_list.size();
+            data["raw_camera_param_list"] = bounded_raw_list;
+            data["raw_camera_param_list_truncated"] = raw_list.size() > keep_count;
         }
         calibration["available"] = selected_param.has_value();
         calibration["profile_aware"] = selected_param.has_value();
