@@ -342,7 +342,9 @@ def test_usb_audio_exclusive_install(source_root: Path):
     assert 'ATTRS{idProduct}=="1024"' in rule_text
     assert 'ATTRS{idVendor}=="08bb"' in rule_text
     assert 'ATTRS{idProduct}=="2902"' in rule_text
-    assert rule_text.count('ENV{PULSE_IGNORE}="1"') == 2
+    assert 'ATTRS{idVendor}=="1237"' in rule_text
+    assert 'ATTRS{idProduct}=="17b8"' in rule_text
+    assert rule_text.count('ENV{PULSE_IGNORE}="1"') == 3
 
     installer = (app_root / "install_wake_service.sh").read_text(encoding="utf-8")
     assert "90-xiaohuan-usb-audio-exclusive.rules" in installer
@@ -358,6 +360,15 @@ def test_usb_audio_exclusive_install(source_root: Path):
     assert "XIAOHUAN_UTTERANCE_FORWARD_ENABLED=1" in profile
     assert "http://192.168.66.113:50020/api/audio" in profile
     assert "XIAOHUAN_COMMAND_MAX_SPEECH_SECONDS=60" in profile
+
+    sm15_profile = (
+        app_root / "systemd" / "xiaohuan-wake-sm15-m1.conf"
+    ).read_text(encoding="utf-8")
+    assert "XIAOHUAN_RECORD_CARD_MATCH=SM15 M1 USB audio" in sm15_profile
+    assert "XIAOHUAN_PLAYBACK_CARD_MATCH=SM15 M1 USB audio" in sm15_profile
+    assert "XIAOHUAN_MIC_CAPTURE_LEVEL=100%" in sm15_profile
+    assert "XIAOHUAN_PCM_PLAYBACK_LEVEL=100%" in sm15_profile
+    assert "XIAOHUAN_ZERO_AUDIO_RESTART_SECONDS=0" in sm15_profile
 
 
 def test_async_capture_does_not_block(module):

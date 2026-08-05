@@ -25,6 +25,7 @@ UTTERANCE_FORWARD_RETRIES="${XIAOHUAN_UTTERANCE_FORWARD_RETRIES:-3}"
 UTTERANCE_FORWARD_RETRY_DELAY_SECONDS="${XIAOHUAN_UTTERANCE_FORWARD_RETRY_DELAY_SECONDS:-0.5}"
 MIC_CAPTURE_LEVEL="${XIAOHUAN_MIC_CAPTURE_LEVEL:-62%}"
 MIC_AGC="${XIAOHUAN_MIC_AGC:-off}"
+PCM_PLAYBACK_LEVEL="${XIAOHUAN_PCM_PLAYBACK_LEVEL:-}"
 WAKE_DECODE_MIN_RMS="${XIAOHUAN_WAKE_DECODE_MIN_RMS:-0.016}"
 DECODE_NOISE_MARGIN="${XIAOHUAN_DECODE_NOISE_MARGIN:-0.006}"
 WAKE_RESPONSE_WAV="${XIAOHUAN_WAKE_RESPONSE_WAV:-$ROOT_DIR/response_wozai_tts_default.wav}"
@@ -52,6 +53,8 @@ TTS_RESUME_DELAY_SECONDS="${XIAOHUAN_TTS_RESUME_DELAY_SECONDS:-0.2}"
 AUDIO_READ_TIMEOUT_SECONDS="${XIAOHUAN_AUDIO_READ_TIMEOUT_SECONDS:-2}"
 AUDIO_RECOVERY_SECONDS="${XIAOHUAN_AUDIO_RECOVERY_SECONDS:-20}"
 AUDIO_RECOVERY_INTERVAL_SECONDS="${XIAOHUAN_AUDIO_RECOVERY_INTERVAL_SECONDS:-0.5}"
+ZERO_AUDIO_RMS="${XIAOHUAN_ZERO_AUDIO_RMS:-0.0005}"
+ZERO_AUDIO_RESTART_SECONDS="${XIAOHUAN_ZERO_AUDIO_RESTART_SECONDS:-12}"
 CAPTURE_PLAYBACK_MODE="${XIAOHUAN_CAPTURE_PLAYBACK_MODE:-keep}"
 
 cd "$ROOT_DIR"
@@ -167,6 +170,34 @@ configure_record_mixer() {
   fi
 }
 
+configure_playback_mixer() {
+  if [[ -z "$PCM_PLAYBACK_LEVEL" ]]; then
+    return
+  fi
+  if ! command -v amixer >/dev/null 2>&1; then
+    echo "amixer unavailable; playback mixer configuration skipped"
+    return
+  fi
+
+  local device_suffix card
+  device_suffix="${PLAYBACK_DEVICE#*:}"
+  if [[ "$device_suffix" == CARD=* ]]; then
+    card="${device_suffix#CARD=}"
+    card="${card%%,*}"
+  else
+    card="${device_suffix%%,*}"
+  fi
+  if [[ -z "$card" ]]; then
+    echo "playback mixer configuration skipped for unresolved device=$PLAYBACK_DEVICE"
+    return
+  fi
+
+  if amixer -c "$card" sget "PCM" >/dev/null 2>&1; then
+    amixer -q -c "$card" sset "PCM" "$PCM_PLAYBACK_LEVEL" unmute
+    echo "playback PCM level applied card=$card level=$PCM_PLAYBACK_LEVEL"
+  fi
+}
+
 {
   echo
   echo "==== xiaohuan wake service start $(date -Is) ===="
@@ -174,6 +205,7 @@ configure_record_mixer() {
   echo "resolved_record_device=$RECORD_DEVICE match=$RECORD_CARD_MATCH"
   echo "resolved_playback_device=$PLAYBACK_DEVICE match=$PLAYBACK_CARD_MATCH"
   configure_record_mixer
+  configure_playback_mixer
   AUDIO_STREAM_ARGS=(--no-audio-stream)
   if [[ "$AUDIO_STREAM_ENABLED" == "1" ]]; then
     AUDIO_STREAM_ARGS=(
@@ -220,6 +252,8 @@ configure_record_mixer() {
     --audio-read-timeout-seconds "$AUDIO_READ_TIMEOUT_SECONDS" \
     --audio-recovery-seconds "$AUDIO_RECOVERY_SECONDS" \
     --audio-recovery-interval-seconds "$AUDIO_RECOVERY_INTERVAL_SECONDS" \
+    --zero-audio-rms "$ZERO_AUDIO_RMS" \
+    --zero-audio-restart-seconds "$ZERO_AUDIO_RESTART_SECONDS" \
     --capture-playback-mode "$CAPTURE_PLAYBACK_MODE" \
     --response-wav "$WAKE_RESPONSE_WAV" \
     --photo-cue-wav "$PHOTO_CUE_WAV" \

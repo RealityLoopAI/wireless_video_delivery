@@ -2,3 +2,4 @@
 # PulseAudio probing after hub re-enumeration otherwise races the capture recovery.
 SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="8087", ATTRS{idProduct}=="1024", ENV{PULSE_IGNORE}="1"
 SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="08bb", ATTRS{idProduct}=="2902", ENV{PULSE_IGNORE}="1"
+SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="1237", ATTRS{idProduct}=="17b8", ENV{PULSE_IGNORE}="1"

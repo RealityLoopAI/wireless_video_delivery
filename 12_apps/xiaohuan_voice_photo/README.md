@@ -149,6 +149,14 @@ tail -f wake_runtime.log
 
 这些限制只作用于常驻唤醒阶段，不改变唤醒后的拍照近音匹配。可通过
 `XIAOHUAN_MIC_CAPTURE_LEVEL` 和 `XIAOHUAN_MIC_AGC` 覆盖麦克风参数。
+`XIAOHUAN_PCM_PLAYBACK_LEVEL` 可选覆盖音箱 `PCM` 音量；留空时不改动原有音量。
+
+133 换用同一张声卡同时录放音的 `SM15 M1 USB audio` 时，将
+`systemd/xiaohuan-wake-sm15-m1.conf` 安装到
+`~/.config/systemd/user/xiaohuan-wake.service.d/sm15-m1.conf`，再执行
+`systemctl --user daemon-reload` 和 `systemctl --user restart xiaohuan-wake.service`。
+该配置禁用低电平重启看门狗，避免声卡 AEC 输出数字静音时被误判为断流；
+`audio_read_timeout_seconds` 仍用于检测真实读取超时。
 
 ## 2. sherpa-onnx KWS 方案
 
