@@ -5,8 +5,8 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/orangepi/Desktop/new_experiment_2026-07-02
-ExecStart=/home/orangepi/Desktop/new_experiment_2026-07-02/run_wake_service.sh
+WorkingDirectory=%h/Desktop/new_experiment_2026-07-02
+ExecStart=%h/Desktop/new_experiment_2026-07-02/run_wake_service.sh
 Restart=always
 RestartSec=2
 KillSignal=SIGTERM

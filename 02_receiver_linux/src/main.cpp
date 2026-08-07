@@ -1177,6 +1177,7 @@ struct Config {
     size_t record_queue_max_bytes = kDefaultRecordQueueMaxBytes;
     size_t record_queue_total_max_bytes = 2ull * 1024ull * 1024ull * 1024ull;
     size_t record_finalize_max_pending_segments = kDefaultRecordFinalizeMaxPendingSegments;
+    size_t record_finalize_workers = 1;
     uint64_t min_free_disk_bytes = 2ull * 1024ull * 1024ull * 1024ull;
 };
 
@@ -1322,9 +1323,12 @@ Config load_config(const std::string &path) {
     const int record_queue_total_max_mb = int_value(root, "record_queue_total_max_mb", 2048);
     const int record_finalize_max_pending_segments =
         int_value(root, "record_finalize_max_pending_segments", static_cast<int>(kDefaultRecordFinalizeMaxPendingSegments));
+    const int record_finalize_workers =
+        int_value(root, "record_finalize_workers", static_cast<int>(cfg.record_finalize_workers));
     if(max_payload_mb <= 0 || max_payload_mb > 128 || record_queue_max_mb <= 0 || record_queue_max_mb > 4096
        || record_queue_total_max_mb <= 0 || record_queue_total_max_mb > 16384
        || record_finalize_max_pending_segments <= 0 || record_finalize_max_pending_segments > 128
+       || record_finalize_workers <= 0 || record_finalize_workers > 32
        || min_free_disk_mb < 0 || min_free_disk_mb > 1024 * 1024) {
         throw std::runtime_error("receiver payload/record queue limits are out of range");
     }
@@ -1332,6 +1336,7 @@ Config load_config(const std::string &path) {
     cfg.record_queue_max_bytes = static_cast<size_t>(record_queue_max_mb) * 1024ull * 1024ull;
     cfg.record_queue_total_max_bytes = static_cast<size_t>(record_queue_total_max_mb) * 1024ull * 1024ull;
     cfg.record_finalize_max_pending_segments = static_cast<size_t>(record_finalize_max_pending_segments);
+    cfg.record_finalize_workers = static_cast<size_t>(record_finalize_workers);
     cfg.min_free_disk_bytes = static_cast<uint64_t>(min_free_disk_mb) * 1024ull * 1024ull;
 
     if(cfg.segment_seconds <= 0) {
@@ -5518,6 +5523,7 @@ struct CameraState {
     std::deque<RecordJob> record_queue;
     bool record_accepting = false;
     bool record_finalizing = false;
+    bool record_storage_capacity_failed = false;
     uint64_t record_generation = 0;
     size_t record_queue_bytes = 0;
     size_t record_queue_peak_bytes = 0;
@@ -5823,6 +5829,7 @@ public:
         out << "\"media_ingress_stale_packets\":" << media_ingress_stale_packets_.load() << ',';
         out << "\"record_queue_total_bytes\":" << total_record_queue_bytes_.load() << ',';
         out << "\"record_finalize_max_pending_segments\":" << config_.record_finalize_max_pending_segments << ',';
+        out << "\"record_finalize_workers\":" << config_.record_finalize_workers << ',';
         out << "\"record_finalize_outstanding_segments\":" << segment_finalize_outstanding_status_.load() << ',';
         out << "\"record_finalize_queued_segments\":" << segment_finalize_queued_status_.load() << ',';
         out << "\"record_finalize_active_segments\":" << segment_finalize_active_status_.load() << ',';
@@ -5940,6 +5947,7 @@ public:
             bool record_worker_started = false;
             bool record_accepting = false;
             bool record_finalizing = false;
+            bool record_storage_capacity_failed = false;
             {
                 std::lock_guard<std::mutex> record_lock(cam.record_mutex);
                 record_queue_packets = cam.record_queue.size();
@@ -5961,6 +5969,7 @@ public:
                 record_worker_started = cam.record_worker_started;
                 record_accepting = cam.record_accepting;
                 record_finalizing = cam.record_finalizing;
+                record_storage_capacity_failed = cam.record_storage_capacity_failed;
             }
             if(!first) {
                 out << ',';
@@ -6033,6 +6042,8 @@ public:
             out << "\"record_worker_started\":" << (record_worker_started ? "true" : "false") << ',';
             out << "\"record_accepting\":" << (record_accepting ? "true" : "false") << ',';
             out << "\"record_finalizing\":" << (record_finalizing ? "true" : "false") << ',';
+            out << "\"record_storage_capacity_failed\":"
+                << (record_storage_capacity_failed ? "true" : "false") << ',';
             out << "\"last_status_us\":" << cam.last_status_us << ',';
             out << "\"last_media_us\":" << cam.last_media_us << ',';
             out << "\"last_seen_us\":" << last_seen << ',';
@@ -6137,6 +6148,7 @@ public:
         out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
         out << ",\"record_queue_total_max_mb\":" << (config_.record_queue_total_max_bytes / (1024ull * 1024ull));
         out << ",\"record_finalize_max_pending_segments\":" << config_.record_finalize_max_pending_segments;
+        out << ",\"record_finalize_workers\":" << config_.record_finalize_workers;
         out << "}";
         return out.str();
     }
@@ -6465,11 +6477,17 @@ public:
             }
         }
         catch(const std::exception &e) {
+            const std::string write_error = e.what();
+            const bool storage_capacity_failure =
+                write_error.find("free space") != std::string::npos
+                || write_error.find("storage previously failed") != std::string::npos;
             bool should_log = false;
             {
                 std::lock_guard<std::mutex> record_lock(cam->record_mutex);
                 cam->record_write_errors++;
                 cam->record_accepting = false;
+                cam->record_storage_capacity_failed =
+                    cam->record_storage_capacity_failed || storage_capacity_failure;
                 cam->record_generation++;
                 const size_t discarded_queue_bytes = cam->record_queue_bytes;
                 cam->record_queue.clear();
@@ -6489,7 +6507,7 @@ public:
             }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                cam->last_error = std::string("recording_write_failed: ") + e.what();
+                cam->last_error = std::string("recording_write_failed: ") + write_error;
             }
             cam->record_cv.notify_all();
             if(should_log) {
@@ -6677,13 +6695,40 @@ public:
     }
 
     void start_segment_finalize_worker() {
-        std::lock_guard<std::mutex> lock(segment_finalize_mutex_);
-        if(segment_finalize_worker_running_) {
-            return;
+        {
+            std::lock_guard<std::mutex> lock(segment_finalize_mutex_);
+            if(segment_finalize_worker_running_) {
+                return;
+            }
+            segment_finalize_worker_stop_ = false;
+            segment_finalize_active_routes_.clear();
+            segment_finalize_active_status_.store(0);
+            segment_finalize_worker_running_ = true;
         }
-        segment_finalize_worker_stop_ = false;
-        segment_finalize_worker_ = std::thread([this] { segment_finalize_worker_loop(); });
-        segment_finalize_worker_running_ = true;
+        try {
+            segment_finalize_workers_.reserve(config_.record_finalize_workers);
+            for(size_t index = 0; index < config_.record_finalize_workers; ++index) {
+                segment_finalize_workers_.emplace_back([this, index] { segment_finalize_worker_loop(index); });
+            }
+        }
+        catch(...) {
+            {
+                std::lock_guard<std::mutex> lock(segment_finalize_mutex_);
+                segment_finalize_worker_stop_ = true;
+            }
+            segment_finalize_cv_.notify_all();
+            for(auto &worker : segment_finalize_workers_) {
+                if(worker.joinable()) {
+                    worker.join();
+                }
+            }
+            segment_finalize_workers_.clear();
+            {
+                std::lock_guard<std::mutex> lock(segment_finalize_mutex_);
+                segment_finalize_worker_running_ = false;
+            }
+            throw;
+        }
     }
 
     bool reserve_segment_finalize_slot(bool wait_for_slot) {
@@ -6772,7 +6817,9 @@ public:
                 --segment_finalize_outstanding_;
             }
             segment_finalize_outstanding_status_.store(segment_finalize_outstanding_);
-            segment_finalize_active_status_.store(0);
+            const std::string route = task.cam ? task.cam->key : camera_key(task.sender_id, task.camera_id);
+            segment_finalize_active_routes_.erase(route);
+            segment_finalize_active_status_.store(segment_finalize_active_routes_.size());
         }
         segment_finalize_cv_.notify_all();
         if(task.cam && pending_after == 0) {
@@ -6780,15 +6827,23 @@ public:
         }
     }
 
-    void segment_finalize_worker_loop() {
-        logger_.info("segment finalizer worker started concurrency=1 max_pending="
-                     + std::to_string(config_.record_finalize_max_pending_segments));
+    void segment_finalize_worker_loop(size_t worker_index) {
+        logger_.info("segment finalizer worker started worker=" + std::to_string(worker_index)
+                     + " concurrency=" + std::to_string(config_.record_finalize_workers)
+                     + " max_pending=" + std::to_string(config_.record_finalize_max_pending_segments));
         for(;;) {
             SegmentFinalizeTask task;
             {
                 std::unique_lock<std::mutex> lock(segment_finalize_mutex_);
                 segment_finalize_cv_.wait(lock, [this] {
-                    return segment_finalize_worker_stop_ || !segment_finalize_queue_.empty();
+                    if(segment_finalize_worker_stop_ && segment_finalize_queue_.empty()) {
+                        return true;
+                    }
+                    return std::any_of(segment_finalize_queue_.begin(), segment_finalize_queue_.end(), [this](const auto &queued) {
+                        const std::string route = queued.cam ? queued.cam->key
+                                                             : camera_key(queued.sender_id, queued.camera_id);
+                        return segment_finalize_active_routes_.count(route) == 0;
+                    });
                 });
                 if(segment_finalize_queue_.empty()) {
                     if(segment_finalize_worker_stop_) {
@@ -6796,10 +6851,23 @@ public:
                     }
                     continue;
                 }
-                task = std::move(segment_finalize_queue_.front());
-                segment_finalize_queue_.pop_front();
+                const auto available = std::find_if(
+                    segment_finalize_queue_.begin(),
+                    segment_finalize_queue_.end(),
+                    [this](const auto &queued) {
+                        const std::string route = queued.cam ? queued.cam->key
+                                                             : camera_key(queued.sender_id, queued.camera_id);
+                        return segment_finalize_active_routes_.count(route) == 0;
+                    });
+                if(available == segment_finalize_queue_.end()) {
+                    continue;
+                }
+                task = std::move(*available);
+                segment_finalize_queue_.erase(available);
                 segment_finalize_queued_status_.store(segment_finalize_queue_.size());
-                segment_finalize_active_status_.store(1);
+                const std::string route = task.cam ? task.cam->key : camera_key(task.sender_id, task.camera_id);
+                segment_finalize_active_routes_.insert(route);
+                segment_finalize_active_status_.store(segment_finalize_active_routes_.size());
                 if(task.cam) {
                     task.cam->segment_finalize_active.store(true);
                 }
@@ -6834,7 +6902,7 @@ public:
             task.segment.reset();
             complete_segment_finalize_task(task, success, duration_ms);
         }
-        logger_.info("segment finalizer worker stopped");
+        logger_.info("segment finalizer worker stopped worker=" + std::to_string(worker_index));
     }
 
     void wait_segment_finalize_idle() {
@@ -6849,11 +6917,16 @@ public:
             segment_finalize_worker_stop_ = true;
         }
         segment_finalize_cv_.notify_all();
-        if(segment_finalize_worker_.joinable()) {
-            segment_finalize_worker_.join();
+        for(auto &worker : segment_finalize_workers_) {
+            if(worker.joinable()) {
+                worker.join();
+            }
         }
+        segment_finalize_workers_.clear();
         std::lock_guard<std::mutex> lock(segment_finalize_mutex_);
         segment_finalize_worker_running_ = false;
+        segment_finalize_active_routes_.clear();
+        segment_finalize_active_status_.store(0);
     }
 
     void refresh_recording_uploader_status() {
@@ -6887,6 +6960,7 @@ public:
             const uint64_t current_us = now_us();
             std::vector<std::shared_ptr<CameraState>> camera_snapshot;
             std::vector<SegmentCloseTask> idle_close_tasks;
+            std::vector<SegmentCloseTask> storage_close_tasks;
             std::vector<std::shared_ptr<CameraState>> rotation_keyframe_cameras;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -6899,7 +6973,21 @@ public:
                     const bool media_idle = cam->segment_active && cam->last_media_us > 0
                                             && current_us > cam->last_media_us
                                             && current_us - cam->last_media_us >= idle_limit_us;
-                    if(media_idle && !cam->segment_finalizing) {
+                    bool storage_capacity_failed = false;
+                    {
+                        std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                        storage_capacity_failed = cam->record_storage_capacity_failed;
+                    }
+                    if(storage_capacity_failed && cam->segment_active && !cam->segment_finalizing) {
+                        cam->segment_finalizing = true;
+                        cam->segment_rotation_requested.store(false);
+                        cam->segment_rotation_keyframe_requested_us.store(0);
+                        set_record_accepting(cam, false);
+                        set_record_finalizing(cam, true);
+                        storage_close_tasks.push_back({cam, cam->sender_id, cam->camera_id,
+                                                       cam->last_announce_live ? cam->last_announce_json : "", 0});
+                    }
+                    else if(media_idle && !cam->segment_finalizing) {
                         cam->segment_finalizing = true;
                         cam->segment_rotation_requested.store(false);
                         cam->segment_rotation_keyframe_requested_us.store(0);
@@ -6953,6 +7041,41 @@ public:
                              + std::to_string(idle_close_tasks.size()));
                 close_segments_async(std::move(idle_close_tasks), "recording media idle timeout");
             }
+            if(!storage_close_tasks.empty()) {
+                logger_.warn("recording storage capacity failure; finalizing segments count="
+                             + std::to_string(storage_close_tasks.size()));
+                close_segments_async(std::move(storage_close_tasks), "recording storage capacity failure");
+            }
+
+            if(recording_storage_recovery_ready()) {
+                RecordingActivation recovery_activation;
+                bool recovery_needed = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for(auto &item : cameras_) {
+                        auto &cam = item.second;
+                        if(!cam || !cam->recording_requested || cam->segment_active || cam->segment_finalizing) {
+                            continue;
+                        }
+                        std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                        if(!cam->record_storage_capacity_failed || cam->record_finalizing) {
+                            continue;
+                        }
+                        cam->record_storage_capacity_failed = false;
+                        cam->last_error.clear();
+                        recovery_needed = true;
+                    }
+                    if(recovery_needed) {
+                        recovery_activation = activate_pending_recordings_locked();
+                    }
+                }
+                if(!recovery_activation.keyframe_targets.empty()) {
+                    send_force_rgb_keyframe_controls(
+                        recovery_activation.keyframe_targets,
+                        "record_restart_after_storage_pressure",
+                        recovery_activation.request_us);
+                }
+            }
 
             const auto steady_now = std::chrono::steady_clock::now();
             if(steady_now >= next_uploader_status_refresh) {
@@ -6967,6 +7090,18 @@ public:
 
     void start_recording_maintenance_worker() {
         recording_maintenance_thread_ = std::thread([this] { recording_maintenance_loop(); });
+    }
+
+    bool recording_storage_recovery_ready() const {
+        constexpr uint64_t kRecoveryHeadroomBytes = 2ull * 1024ull * 1024ull * 1024ull;
+        const std::string &recording_root =
+            config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root;
+        std::error_code ec;
+        const auto space = std::filesystem::space(recording_root, ec);
+        if(ec || config_.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - kRecoveryHeadroomBytes) {
+            return false;
+        }
+        return space.available >= config_.min_free_disk_bytes + kRecoveryHeadroomBytes;
     }
 
     void wait_record_queue_idle(const std::shared_ptr<CameraState> &cam, const std::string &reason) {
@@ -7053,7 +7188,12 @@ public:
                 task.cam->segment_dir.clear();
                 task.cam->segment_start_us = 0;
                 set_record_finalizing(task.cam, false);
-                activation = activate_pending_recordings_locked();
+                if(reason == "recording storage capacity failure") {
+                    task.cam->recording_start_pending = true;
+                }
+                else {
+                    activation = activate_pending_recordings_locked();
+                }
             }
             if(!activation.keyframe_targets.empty()) {
                 send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_restart_after_detach",
@@ -8777,9 +8917,13 @@ private:
             const auto offset_us = json_int64_value(root, "clock_offset_us").value_or(0);
             const auto delay_us = json_int64_value(root, "clock_delay_us").value_or(0);
             const auto drift_ppm = json_double_value(root, "clock_drift_ppm").value_or(0.0);
-            const auto last_sync_us = clock_valid ? json_uint64_value(root, "clock_last_sync_us").value_or(0) : 0;
-            clock_sync_manager_.update_from_sender_report(sender_id, offset_us, delay_us, drift_ppm, last_sync_us,
-                                                          socket_endpoint_ip(peer_endpoint));
+            const auto last_sync_us = json_uint64_value(root, "clock_last_sync_us").value_or(0);
+            // A single missed response must not erase the last accepted model. The
+            // manager's report/probe timeout owns model expiry and bounded holdover.
+            if(clock_valid && last_sync_us > 0) {
+                clock_sync_manager_.update_from_sender_report(sender_id, offset_us, delay_us, drift_ppm, last_sync_us,
+                                                              socket_endpoint_ip(peer_endpoint));
+            }
         }
 
         std::optional<RuntimeState> state_snapshot;
@@ -9984,7 +10128,7 @@ private:
     std::thread tcp_thread_;
     std::thread admin_thread_;
     std::thread recording_maintenance_thread_;
-    std::thread segment_finalize_worker_;
+    std::vector<std::thread> segment_finalize_workers_;
     std::mutex mutex_;
     std::mutex segment_close_futures_mutex_;
     std::mutex segment_finalize_mutex_;
@@ -10018,6 +10162,7 @@ private:
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
     std::vector<std::future<void>> segment_close_futures_;
     std::deque<SegmentFinalizeTask> segment_finalize_queue_;
+    std::set<std::string> segment_finalize_active_routes_;
     std::deque<PhotoCaptureJob> photo_capture_queue_;
     std::set<std::string> photo_reserved_relative_paths_;
     std::set<std::string> photo_reserved_directories_;

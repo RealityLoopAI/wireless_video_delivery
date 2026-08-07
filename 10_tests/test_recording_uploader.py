@@ -790,6 +790,8 @@ def run(args: argparse.Namespace) -> None:
                         "root": str(parallel_staging),
                         "delete_after_upload": True,
                         "retain_local_capture_for_finalize": True,
+                        "capture_workers": 2,
+                        "full_copy_workers": 2,
                         "finalize_workers": 2,
                         "pause_during_receiver_finalize": False,
                     },

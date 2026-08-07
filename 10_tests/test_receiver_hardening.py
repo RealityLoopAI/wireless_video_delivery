@@ -263,6 +263,28 @@ def exercise_clock_sync(clock_port: int, status_port: int, admin_port: int) -> N
         else:
             raise AssertionError("clock sync model was not accepted")
 
+        # One unhealthy sender report can be caused by a lost UDP response. It
+        # must not erase the most recent valid model while probes remain alive.
+        status_message(
+            status_port,
+            {
+                "protocol_version": "3.0",
+                "message_type": "heartbeat",
+                "sender_id": "test-sender",
+                "camera_id": "cam01",
+                "clock_sync_valid": False,
+                "clock_offset_us": 0,
+                "clock_delay_us": 0,
+                "clock_drift_ppm": 0.0,
+                "clock_last_sync_us": 0,
+            },
+        )
+        time.sleep(0.05)
+        current = json.loads(request(admin_port, "GET", "/api/status")[2])
+        model = next(item for item in current["clock_sync"] if item.get("sender_id") == "test-sender")
+        assert model["clock_sync_valid"] is True
+        assert int(model["clock_last_sync_us"]) == t4
+
         # A delayed status/heartbeat report must not invalidate a model while
         # the independent clock probe exchange is still alive.
         keepalive_deadline = time.monotonic() + 0.8
@@ -675,7 +697,9 @@ def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
 
     assert all(len(directories) >= 2 for directories in observed_directories.values()), observed_directories
     assert max_finalize_outstanding >= 2, "slow finalization did not overlap active recording"
-    assert max_finalize_active == 1, "more than one heavyweight segment finalizer ran concurrently"
+    assert 2 <= max_finalize_active <= 3, (
+        f"configured segment finalizers did not run concurrently: {max_finalize_active}"
+    )
     assert max_record_queue_peak < 4 * 1024 * 1024, f"record queue grew during background finalization: {max_record_queue_peak}"
 
     # Wait until media-idle handling has detached each active segment, then
@@ -1000,6 +1024,7 @@ def run(args) -> None:
             "max_payload_mb": 8,
             "record_queue_max_mb": 16,
             "record_finalize_max_pending_segments": 4,
+            "record_finalize_workers": 3,
             "recording_staging": {"enabled": False, "idle_finalize_ms": 1000},
         }
         config_path = temporary / "receiver.json"

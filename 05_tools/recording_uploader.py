@@ -84,6 +84,11 @@ RGB_OUTPUT_MODES = frozenset(
         RGB_OUTPUT_FRAGMENTED_MP4,
     }
 )
+UPLOADER_PROCESS_LOCK_NAME = ".gwv3_uploader.process.lock"
+
+
+class IncrementalMirrorOwnedError(RuntimeError):
+    pass
 
 
 def request_stop(_signum: int, _frame: object) -> None:
@@ -921,6 +926,7 @@ def mirror_complete_file_chunks(
     pause: Callable[[], bool] | None = None,
     cancel: Callable[[], bool] | None = None,
     output_handle: Any | None = None,
+    max_copy_bytes: int = 0,
 ) -> tuple[dict[str, Any], int]:
     source_stat = source.stat()
     source_identity = {
@@ -929,6 +935,7 @@ def mirror_complete_file_chunks(
         "source_ino": int(source_stat.st_ino),
     }
     hashes: list[str] = []
+    durable_chunks = 0
     if isinstance(entry, dict):
         candidate_hashes = entry.get("chunk_hashes")
         if (
@@ -940,10 +947,15 @@ def mirror_complete_file_chunks(
             and all(isinstance(value, str) and len(value) == 64 for value in candidate_hashes)
         ):
             hashes = list(candidate_hashes)
+            durable_chunks = min(
+                len(hashes),
+                max(0, int(entry.get("durable_chunks") or 0)),
+            )
 
     mirrored_bytes = len(hashes) * chunk_size
     if mirrored_bytes > source_stat.st_size:
         hashes = []
+        durable_chunks = 0
         mirrored_bytes = 0
     try:
         destination_size = destination.stat().st_size
@@ -951,10 +963,17 @@ def mirror_complete_file_chunks(
         destination_size = 0
     if destination_size < mirrored_bytes:
         hashes = []
+        durable_chunks = 0
         mirrored_bytes = 0
 
     available = max(0, source_stat.st_size - max(0, lag_bytes))
     target_bytes = available // chunk_size * chunk_size
+    if max_copy_bytes > 0:
+        budget_chunks = max(1, max_copy_bytes // chunk_size)
+        target_bytes = min(
+            target_bytes,
+            mirrored_bytes + budget_chunks * chunk_size,
+        )
     if progress is not None:
         progress(mirrored_bytes, target_bytes)
     if target_bytes <= mirrored_bytes and destination_size == mirrored_bytes:
@@ -1008,6 +1027,7 @@ def mirror_complete_file_chunks(
         **source_identity,
         "chunk_size": chunk_size,
         "chunk_hashes": hashes,
+        "durable_chunks": durable_chunks,
         "mirrored_bytes": len(hashes) * chunk_size,
         "source_size_at_update": int(source_stat.st_size),
         "updated_us": now_us(),
@@ -1023,7 +1043,9 @@ def synchronize_file_from_incremental_mirror(
     progress: Callable[[int, int], None] | None = None,
     pause: Callable[[], bool] | None = None,
     durable: bool = True,
+    stats: dict[str, int | bool] | None = None,
 ) -> int:
+    source_stat = source.stat()
     chunk_size = int(entry.get("chunk_size") or 0)
     chunk_hashes = entry.get("chunk_hashes")
     if (
@@ -1032,11 +1054,89 @@ def synchronize_file_from_incremental_mirror(
         or not isinstance(chunk_hashes, list)
         or not all(isinstance(value, str) and len(value) == 64 for value in chunk_hashes)
         or not destination.is_file()
+        or int(entry.get("source_dev") or -1) != int(source_stat.st_dev)
+        or int(entry.get("source_ino") or -1) != int(source_stat.st_ino)
     ):
         raise ValueError("incremental mirror state cannot be reused")
 
-    total = source.stat().st_size
+    total = source_stat.st_size
     existing_size = destination.stat().st_size
+    mirrored_chunks = len(chunk_hashes)
+    mirrored_bytes = mirrored_chunks * chunk_size
+    if mirrored_bytes > total or existing_size < mirrored_bytes:
+        raise ValueError("incremental mirror is larger than the closed source")
+
+    # Closed fMP4 is append-only in the normal path. MKV may patch its header
+    # when closing, so sample the first and last mirrored chunks. A mismatch
+    # falls back to the original full verification path below.
+    sample_indices = sorted(
+        set(range(min(2, mirrored_chunks)))
+        | set(range(max(0, mirrored_chunks - 2), mirrored_chunks))
+    )
+    fast_path = bool(sample_indices)
+    with source.open("rb") as input_handle:
+        for index in sample_indices:
+            input_handle.seek(index * chunk_size)
+            data = input_handle.read(chunk_size)
+            if (
+                len(data) != chunk_size
+                or hashlib.sha256(data).hexdigest() != chunk_hashes[index]
+            ):
+                fast_path = False
+                break
+
+    if fast_path:
+        written = 0
+        if progress is not None:
+            progress(mirrored_bytes, total)
+        started = time.monotonic()
+        with source.open("rb") as input_handle, destination.open("r+b") as output_handle:
+            input_handle.seek(mirrored_bytes)
+            output_handle.seek(mirrored_bytes)
+            processed = mirrored_bytes
+            while processed < total:
+                wait_while_paused(
+                    pause,
+                    (lambda: progress(processed, total)) if progress is not None else None,
+                )
+                data = input_handle.read(min(4 * 1024 * 1024, total - processed))
+                if not data:
+                    raise RuntimeError(f"source changed during incremental tail sync: {source}")
+                output_handle.write(data)
+                written += len(data)
+                processed += len(data)
+                if progress is not None:
+                    progress(processed, total)
+                if bandwidth_mbps > 0:
+                    expected = written * 8.0 / (bandwidth_mbps * 1_000_000.0)
+                    delay = expected - (time.monotonic() - started)
+                    if delay > 0:
+                        time.sleep(delay)
+            output_handle.truncate(total)
+            output_handle.flush()
+            if durable:
+                os.fsync(output_handle.fileno())
+        try:
+            shutil.copystat(source, destination, follow_symlinks=False)
+        except OSError as error:
+            print(
+                f"recording upload metadata preservation skipped source={source} "
+                f"destination={destination} error={error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if progress is not None:
+            progress(total, total)
+        if stats is not None:
+            stats.update(
+                {
+                    "fast_path": True,
+                    "verified_bytes": len(sample_indices) * chunk_size,
+                    "written_bytes": written,
+                }
+            )
+        return written
+
     full_chunks = total // chunk_size
     written = 0
     processed = 0
@@ -1095,6 +1195,14 @@ def synchronize_file_from_incremental_mirror(
         )
     if progress is not None:
         progress(total, total)
+    if stats is not None:
+        stats.update(
+            {
+                "fast_path": False,
+                "verified_bytes": full_chunks * chunk_size,
+                "written_bytes": written,
+            }
+        )
     return written
 
 
@@ -1172,31 +1280,94 @@ def incremental_mirror_identity_matches(
     )
 
 
+def incremental_mirror_owner_running(instance_id: str) -> bool:
+    try:
+        owner_pid = int(instance_id.split("-", 1)[0])
+    except (TypeError, ValueError):
+        return False
+    if owner_pid <= 0:
+        return False
+    try:
+        os.kill(owner_pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def normalize_incremental_mirror_state(
+    state: dict[str, Any],
+    capture: dict[str, Any],
+    instance_id: str,
+) -> dict[str, Any]:
+    files = state.get("files")
+    if (
+        state.get("schema") != "gwv3_incremental_mirror_v1"
+        or not incremental_mirror_identity_matches(state, capture)
+        or not isinstance(files, dict)
+    ):
+        raise ValueError("invalid incremental mirror state")
+
+    previous_instance = str(state.get("instance_id") or "")
+    if previous_instance != instance_id:
+        if previous_instance and incremental_mirror_owner_running(previous_instance):
+            raise IncrementalMirrorOwnedError(
+                "incremental mirror is owned by a running uploader"
+            )
+        normalized_files: dict[str, Any] = {}
+        for name, candidate in files.items():
+            if not isinstance(name, str) or not isinstance(candidate, dict):
+                continue
+            entry = dict(candidate)
+            hashes = entry.get("chunk_hashes")
+            if not isinstance(hashes, list):
+                continue
+            durable_chunks = min(
+                len(hashes),
+                max(0, int(entry.get("durable_chunks") or 0)),
+            )
+            entry["chunk_hashes"] = list(hashes[:durable_chunks])
+            entry["durable_chunks"] = durable_chunks
+            entry["mirrored_bytes"] = durable_chunks * int(
+                entry.get("chunk_size") or 0
+            )
+            normalized_files[name] = entry
+        files = normalized_files
+
+    normalized = dict(state)
+    normalized["instance_id"] = instance_id
+    normalized["files"] = files
+    return normalized
+
+
 def load_incremental_mirror_state(
     mirror_directory: Path,
     capture: dict[str, Any],
     instance_id: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     state_path = mirror_directory / INCREMENTAL_MIRROR_STATE_NAME
     try:
         state = load_json(state_path)
-        files = state.get("files")
-        if (
-            state.get("schema") != "gwv3_incremental_mirror_v1"
-            or not incremental_mirror_identity_matches(state, capture)
-            or str(state.get("instance_id") or "") != instance_id
-            or not isinstance(files, dict)
-        ):
-            raise ValueError(f"invalid incremental mirror state: {state_path}")
-        return state
+        normalized = normalize_incremental_mirror_state(
+            state,
+            capture,
+            instance_id,
+        )
+        return normalized, normalized != state
+    except IncrementalMirrorOwnedError:
+        raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {
-            "schema": "gwv3_incremental_mirror_v1",
-            "instance_id": instance_id,
-            "identity": incremental_mirror_identity(capture),
-            "updated_us": 0,
-            "files": {},
-        }
+        return (
+            {
+                "schema": "gwv3_incremental_mirror_v1",
+                "instance_id": instance_id,
+                "identity": incremental_mirror_identity(capture),
+                "updated_us": 0,
+                "files": {},
+            },
+            True,
+        )
 
 
 def write_incremental_mirror_state(
@@ -1211,6 +1382,57 @@ def write_incremental_mirror_state(
         handle.write("\n")
         handle.flush()
     os.replace(temporary, state_path)
+
+
+def incremental_mirror_reuse_bytes(
+    source: Path,
+    capture_queue_root: Path,
+    capture: dict[str, Any],
+    instance_id: str,
+) -> tuple[int, int]:
+    source_manifest = manifest(source)
+    total_bytes = sum(source_manifest.values())
+    mirror_directory = incremental_mirror_directory(capture_queue_root, capture)
+    try:
+        state = normalize_incremental_mirror_state(
+            load_json(mirror_directory / INCREMENTAL_MIRROR_STATE_NAME),
+            capture,
+            instance_id,
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return 0, total_bytes
+
+    files = state.get("files")
+    if not isinstance(files, dict):
+        return 0, total_bytes
+    reusable_bytes = 0
+    for relative_text, source_size in source_manifest.items():
+        entry = files.get(relative_text)
+        if not isinstance(entry, dict):
+            continue
+        source_path = source / relative_text
+        destination_path = mirror_directory / relative_text
+        try:
+            source_stat = source_path.stat()
+            destination_size = destination_path.stat().st_size
+            chunk_size = int(entry.get("chunk_size") or 0)
+            chunk_hashes = entry.get("chunk_hashes")
+            if (
+                chunk_size <= 0
+                or not isinstance(chunk_hashes, list)
+                or int(entry.get("source_dev") or -1) != int(source_stat.st_dev)
+                or int(entry.get("source_ino") or -1) != int(source_stat.st_ino)
+            ):
+                continue
+            mirrored = min(
+                source_size,
+                destination_size,
+                len(chunk_hashes) * chunk_size,
+            )
+            reusable_bytes += max(0, mirrored)
+        except (OSError, TypeError, ValueError):
+            continue
+    return reusable_bytes, total_bytes
 
 
 def active_segment_descriptor(
@@ -1354,18 +1576,13 @@ def publish_capture_segment(
             candidate_state = load_json(
                 mirror_directory / INCREMENTAL_MIRROR_STATE_NAME
             )
-            if (
-                candidate_state.get("schema") != "gwv3_incremental_mirror_v1"
-                or not incremental_mirror_identity_matches(
-                    candidate_state,
-                    capture,
-                )
-                or not incremental_mirror_instance_id
-                or str(candidate_state.get("instance_id") or "")
-                != incremental_mirror_instance_id
-                or not isinstance(candidate_state.get("files"), dict)
-            ):
-                raise ValueError("incremental mirror identity mismatch")
+            if not incremental_mirror_instance_id:
+                raise ValueError("incremental mirror instance is unavailable")
+            candidate_state = normalize_incremental_mirror_state(
+                candidate_state,
+                capture,
+                incremental_mirror_instance_id,
+            )
             os.replace(mirror_directory, temporary)
             mirror_state = candidate_state
             mirror_adopted = True
@@ -1412,6 +1629,7 @@ def publish_capture_segment(
             reused_mirror = False
             if isinstance(entry, dict) and (temporary / relative).is_file():
                 try:
+                    sync_stats: dict[str, int | bool] = {}
                     synchronize_file_from_incremental_mirror(
                         source / relative,
                         temporary / relative,
@@ -1420,8 +1638,17 @@ def publish_capture_segment(
                         callback,
                         pause,
                         durable=False,
+                        stats=sync_stats,
                     )
                     reused_mirror = True
+                    print(
+                        "recording incremental finalize "
+                        f"source={source / relative} "
+                        f"fast_path={str(bool(sync_stats.get('fast_path'))).lower()} "
+                        f"verified_bytes={int(sync_stats.get('verified_bytes') or 0)} "
+                        f"written_bytes={int(sync_stats.get('written_bytes') or 0)}",
+                        flush=True,
+                    )
                 except (OSError, TypeError, ValueError, RuntimeError):
                     reused_mirror = False
             if not reused_mirror:
@@ -1796,10 +2023,16 @@ def acquire_file_lock(lock_path: Path) -> int | None:
     return descriptor
 
 
-def release_file_lock(lock_path: Path, descriptor: int | None) -> None:
+def release_file_lock(
+    lock_path: Path,
+    descriptor: int | None,
+    remove: bool = True,
+) -> None:
     if descriptor is not None:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+        if not remove:
+            return
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
@@ -1956,6 +2189,23 @@ class Uploader:
         self.ffmpeg_path = str(config.get("ffmpeg_path") or "ffmpeg")
         self.interval = max(0.25, int(staging.get("upload_interval_ms", 2000)) / 1000.0)
         self.bandwidth_mbps = max(0.0, float(staging.get("upload_bandwidth_limit_mbps", 0)))
+        self.min_free_disk_bytes = max(
+            0,
+            int(config.get("min_free_disk_mb", 0)),
+        ) * 1024 * 1024
+        self.emergency_free_disk_headroom_bytes = max(
+            0,
+            int(staging.get("emergency_free_disk_headroom_mb", 2048)),
+        ) * 1024 * 1024
+        self.full_copy_bandwidth_mbps = max(
+            0.0,
+            float(
+                staging.get(
+                    "full_copy_bandwidth_limit_mbps",
+                    self.bandwidth_mbps,
+                )
+            ),
+        )
         self.delete_after_upload = bool(staging.get("delete_after_upload", True))
         self.retain_local_capture_for_finalize = bool(
             staging.get("retain_local_capture_for_finalize", True)
@@ -1977,13 +2227,30 @@ class Uploader:
             max(0.0, float(staging.get("local_cache_low_watermark_percent", 70))),
         )
         self.finalize_workers = min(
-            4,
+            32,
             max(1, int(staging.get("finalize_workers", 2))),
         )
         self.capture_workers = min(
-            4,
+            32,
             max(1, int(staging.get("capture_workers", 2))),
         )
+        self.full_copy_workers = min(
+            self.capture_workers,
+            max(1, int(staging.get("full_copy_workers", 1))),
+        )
+        self.parallel_capture_min_mirror_reuse_percent = min(
+            100.0,
+            max(
+                0.0,
+                float(
+                    staging.get(
+                        "parallel_capture_min_mirror_reuse_percent",
+                        90,
+                    )
+                ),
+            ),
+        )
+        self.full_copy_semaphore = threading.Semaphore(self.full_copy_workers)
         self.incremental_mirror_enabled = bool(
             staging.get("incremental_mirror_enabled", False)
         )
@@ -2002,6 +2269,22 @@ class Uploader:
             * 1024
             * 1024
         )
+        self.incremental_mirror_max_copy_bytes = (
+            min(
+                256,
+                max(
+                    1,
+                    int(
+                        staging.get(
+                            "incremental_mirror_max_copy_mb_per_file",
+                            16,
+                        )
+                    ),
+                ),
+            )
+            * 1024
+            * 1024
+        )
         self.incremental_mirror_quiet_before_segment_finalize_ms = max(
             0,
             int(
@@ -2010,6 +2293,11 @@ class Uploader:
                     1000,
                 )
             ),
+        )
+        self.incremental_mirror_fsync_interval = max(
+            0.25,
+            int(staging.get("incremental_mirror_fsync_interval_ms", 5000))
+            / 1000.0,
         )
         self.status_write_interval = max(
             0.25,
@@ -2039,6 +2327,8 @@ class Uploader:
         self.active_bytes_done = 0
         self.active_bytes_total = 0
         self.active_started_us = 0
+        self.active_capture_workers = 0
+        self.active_full_copy_workers = 0
         self.next_active_status_at = 0.0
         self.next_receiver_status_at = 0.0
         self.receiver_pause_phase = ""
@@ -2058,9 +2348,29 @@ class Uploader:
         self.incremental_mirror_last_success_us = 0
         self.incremental_mirror_last_error = ""
         self.incremental_mirror_last_warning_us = 0
+        self.incremental_mirror_fsyncs = 0
+        self.incremental_mirror_resumed_bytes = 0
+        self.incremental_mirror_resumed_segments = 0
+        self.incremental_mirror_current_segment = ""
+        self.incremental_mirror_current_bytes_done = 0
+        self.incremental_mirror_current_bytes_total = 0
+        self.next_incremental_mirror_status_at = 0.0
         self.next_incremental_mirror_at = 0.0
         self.incremental_mirror_handles: dict[str, Any] = {}
+        self.incremental_mirror_last_fsync: dict[str, float] = {}
         self.incremental_mirror_handle_lock = threading.Lock()
+        self.incremental_mirror_operation_locks = [
+            threading.RLock() for _ in range(1024)
+        ]
+        self.incremental_mirror_worker_stop = threading.Event()
+        self.incremental_mirror_io_active = threading.Event()
+        self.incremental_mirror_worker_thread: threading.Thread | None = None
+        self.incremental_mirror_worker_running = False
+        self.priority_capture_lock = threading.Lock()
+        self.priority_capture_count = 0
+        self.priority_capture_io_active = threading.Event()
+        self.staging_pressure_lock = threading.Lock()
+        self.staging_pressure_active = False
         self.status_lock = threading.RLock()
         self.receiver_status_lock = threading.Lock()
         self.cached_pending_status: dict[str, int] | None = None
@@ -2159,6 +2469,9 @@ class Uploader:
                         if self.active_started_us > 0
                         else 0
                     ),
+                    "active_capture_workers": self.active_capture_workers,
+                    "active_full_copy_workers": self.active_full_copy_workers,
+                    "active_priority_capture_workers": self.priority_capture_count,
                     "captured_segments": self.captured,
                     "completed_segments": self.completed,
                     "failed_attempts": self.failures,
@@ -2177,6 +2490,18 @@ class Uploader:
                     "incremental_mirror_last_error": self.incremental_mirror_last_error,
                     "incremental_mirror_chunk_bytes": self.incremental_mirror_chunk_bytes,
                     "incremental_mirror_lag_bytes": self.incremental_mirror_lag_bytes,
+                    "incremental_mirror_max_copy_bytes": self.incremental_mirror_max_copy_bytes,
+                    "incremental_mirror_fsync_interval_ms": round(
+                        self.incremental_mirror_fsync_interval * 1000
+                    ),
+                    "incremental_mirror_fsyncs": self.incremental_mirror_fsyncs,
+                    "incremental_mirror_resumed_bytes": self.incremental_mirror_resumed_bytes,
+                    "incremental_mirror_resumed_segments": self.incremental_mirror_resumed_segments,
+                    "incremental_mirror_worker_running": self.incremental_mirror_worker_running,
+                    "incremental_mirror_io_active": self.incremental_mirror_io_active.is_set(),
+                    "incremental_mirror_current_segment": self.incremental_mirror_current_segment,
+                    "incremental_mirror_current_bytes_done": self.incremental_mirror_current_bytes_done,
+                    "incremental_mirror_current_bytes_total": self.incremental_mirror_current_bytes_total,
                     "local_cache_pressure_releases": self.local_cache_pressure_releases,
                     "last_capture_duration_ms": self.last_capture_duration_ms,
                     "last_finalize_duration_ms": self.last_finalize_duration_ms,
@@ -2184,6 +2509,13 @@ class Uploader:
                     "last_remux_source": self.last_remux_source,
                     "finalize_workers": self.finalize_workers,
                     "capture_workers": self.capture_workers,
+                    "full_copy_workers": self.full_copy_workers,
+                    "upload_bandwidth_limit_mbps": self.bandwidth_mbps,
+                    "full_copy_bandwidth_limit_mbps": self.full_copy_bandwidth_mbps,
+                    "staging_available_bytes": self.staging_available_bytes(),
+                    "staging_emergency_mode": self.staging_disk_emergency(),
+                    "staging_pressure_mode": self.staging_disk_pressure(),
+                    "parallel_capture_min_mirror_reuse_percent": self.parallel_capture_min_mirror_reuse_percent,
                     "last_error": self.last_error,
                 },
             )
@@ -2205,13 +2537,46 @@ class Uploader:
                 self.active_bytes_done = max(0, bytes_done)
             if bytes_total is not None:
                 self.active_bytes_total = max(0, bytes_total)
+            # Once shutdown is requested, status durability is lower priority
+            # than releasing the service. Queue discovery and the status-file
+            # fsync can take seconds on a saturated staging disk.
+            if STOP_REQUESTED:
+                return
             current = time.monotonic()
             if not force and current < self.next_active_status_at:
                 return
             self.next_active_status_at = current + self.status_write_interval
             self.write_status()
 
-    def should_pause_for_receiver_io(self, resume_phase: str) -> bool:
+    def update_incremental_mirror_status(
+        self,
+        segment: str | None = None,
+        bytes_done: int | None = None,
+        bytes_total: int | None = None,
+        force: bool = False,
+    ) -> None:
+        with self.status_lock:
+            if segment is not None:
+                self.incremental_mirror_current_segment = segment
+            if bytes_done is not None:
+                self.incremental_mirror_current_bytes_done = max(0, bytes_done)
+            if bytes_total is not None:
+                self.incremental_mirror_current_bytes_total = max(0, bytes_total)
+            if STOP_REQUESTED:
+                return
+            current = time.monotonic()
+            if not force and current < self.next_incremental_mirror_status_at:
+                return
+            self.next_incremental_mirror_status_at = (
+                current + self.status_write_interval
+            )
+            self.write_status()
+
+    def should_pause_for_receiver_io(
+        self,
+        resume_phase: str,
+        publish_status: bool = True,
+    ) -> bool:
         if not self.pause_during_receiver_finalize:
             return False
         with self.receiver_status_lock:
@@ -2241,10 +2606,17 @@ class Uploader:
                     # upload immediately before a segment boundary.
                     pass
             pause_phase = self.receiver_pause_phase
-        if pause_phase:
+            if (
+                pause_phase == "receiver_segment_boundary_wait"
+                and self.staging_disk_pressure()
+            ):
+                self.receiver_pause_phase = ""
+                pause_phase = ""
+        if pause_phase and publish_status:
             self.update_active_status(phase=pause_phase)
+        if pause_phase:
             return True
-        if self.active_phase in {
+        if publish_status and self.active_phase in {
             "receiver_finalize_wait",
             "receiver_record_pressure_wait",
             "receiver_segment_boundary_wait",
@@ -2252,11 +2624,81 @@ class Uploader:
             self.update_active_status(phase=resume_phase, force=True)
         return False
 
-    def wait_for_receiver_io(self, resume_phase: str) -> None:
-        while self.should_pause_for_receiver_io(resume_phase):
-            if STOP_REQUESTED:
+    def wait_for_receiver_io(
+        self,
+        resume_phase: str,
+        publish_status: bool = True,
+        cancel: Callable[[], bool] | None = None,
+    ) -> None:
+        while self.should_pause_for_receiver_io(resume_phase, publish_status):
+            if STOP_REQUESTED or (cancel is not None and cancel()):
                 raise InterruptedError("recording upload interrupted while waiting for receiver I/O")
             time.sleep(0.25)
+
+    def begin_priority_capture(self) -> None:
+        with self.priority_capture_lock:
+            self.priority_capture_count += 1
+            self.priority_capture_io_active.set()
+
+    def end_priority_capture(self) -> None:
+        with self.priority_capture_lock:
+            self.priority_capture_count = max(0, self.priority_capture_count - 1)
+            if self.priority_capture_count == 0:
+                self.priority_capture_io_active.clear()
+
+    def staging_available_bytes(self) -> int:
+        staging_root = getattr(self, "staging_root", None)
+        if staging_root is None:
+            return 0
+        try:
+            return shutil.disk_usage(staging_root).free
+        except OSError:
+            return 0
+
+    def staging_disk_emergency(self) -> bool:
+        min_free_disk_bytes = getattr(self, "min_free_disk_bytes", 0)
+        if min_free_disk_bytes <= 0:
+            return False
+        available = self.staging_available_bytes()
+        return available <= (
+            min_free_disk_bytes
+            + getattr(self, "emergency_free_disk_headroom_bytes", 0)
+        )
+
+    def staging_disk_pressure(self) -> bool:
+        staging_root = getattr(self, "staging_root", None)
+        pressure_lock = getattr(self, "staging_pressure_lock", None)
+        if staging_root is None or pressure_lock is None:
+            return False
+        try:
+            usage = shutil.disk_usage(staging_root)
+        except OSError:
+            with pressure_lock:
+                return getattr(self, "staging_pressure_active", False)
+        used_percent = (
+            usage.used * 100.0 / usage.total if usage.total > 0 else 0.0
+        )
+        emergency = (
+            self.min_free_disk_bytes > 0
+            and usage.free
+            <= self.min_free_disk_bytes
+            + self.emergency_free_disk_headroom_bytes
+        )
+        high_watermark = (
+            self.local_cache_high_watermark_percent > 0
+            and used_percent >= self.local_cache_high_watermark_percent
+        )
+        with pressure_lock:
+            if emergency or high_watermark:
+                self.staging_pressure_active = True
+            elif self.staging_pressure_active:
+                below_low_watermark = (
+                    self.local_cache_high_watermark_percent <= 0
+                    or used_percent <= self.local_cache_low_watermark_percent
+                )
+                if below_low_watermark:
+                    self.staging_pressure_active = False
+            return self.staging_pressure_active
 
     def local_cache_marker(self, segment: Path) -> tuple[Path, dict[str, Any]] | None:
         markers = sorted(segment.glob("*recording_capture_cached.json"))
@@ -2448,6 +2890,38 @@ class Uploader:
                 break
         return progress
 
+    def release_local_cache_under_pressure(self, segment: Path) -> bool:
+        if (
+            not self.delete_after_upload
+            or self.local_cache_high_watermark_percent <= 0
+        ):
+            return False
+        try:
+            usage = shutil.disk_usage(self.staging_root)
+        except OSError:
+            return False
+        used_percent = usage.used * 100.0 / usage.total if usage.total > 0 else 0.0
+        if (
+            used_percent < self.local_cache_high_watermark_percent
+            and not self.staging_disk_pressure()
+        ):
+            return False
+        cached = self.local_cache_marker(segment)
+        if cached is None:
+            return False
+        marker_path, marker = cached
+        if not self.release_local_cache(
+            segment,
+            marker_path,
+            marker,
+            None,
+            "disk_high_watermark",
+        ):
+            return False
+        with self.status_lock:
+            self.local_cache_pressure_releases += 1
+        return True
+
     def incremental_mirror_output_handle(self, path: Path) -> Any:
         key = str(path)
         with self.incremental_mirror_handle_lock:
@@ -2459,6 +2933,35 @@ class Uploader:
             handle = path.open(mode)
             self.incremental_mirror_handles[key] = handle
             return handle
+
+    def incremental_mirror_lock(
+        self,
+        mirror_directory: Path,
+    ) -> threading.RLock:
+        return self.incremental_mirror_operation_locks[
+            hash(str(mirror_directory))
+            % len(self.incremental_mirror_operation_locks)
+        ]
+
+    def fsync_incremental_mirror(
+        self,
+        path: Path,
+        force: bool = False,
+    ) -> bool:
+        key = str(path)
+        with self.incremental_mirror_handle_lock:
+            handle = self.incremental_mirror_handles.get(key)
+            if handle is None or handle.closed:
+                return False
+            current = time.monotonic()
+            last_fsync = self.incremental_mirror_last_fsync.get(key, 0.0)
+            if not force and current - last_fsync < self.incremental_mirror_fsync_interval:
+                return False
+            handle.flush()
+            os.fsync(handle.fileno())
+            self.incremental_mirror_last_fsync[key] = current
+            self.incremental_mirror_fsyncs += 1
+            return True
 
     def close_incremental_mirror_handles(
         self,
@@ -2474,6 +2977,13 @@ class Uploader:
                     continue
                 try:
                     handle.flush()
+                    # Active mirrors are disposable caches. During service
+                    # shutdown, do not let an unavailable NAS delay process
+                    # termination; the local staged recording remains the
+                    # source of truth and a new uploader instance revalidates it.
+                    if not STOP_REQUESTED:
+                        os.fsync(handle.fileno())
+                        self.incremental_mirror_fsyncs += 1
                     handle.close()
                 except OSError:
                     try:
@@ -2481,6 +2991,7 @@ class Uploader:
                     except OSError:
                         pass
                 self.incremental_mirror_handles.pop(key, None)
+                self.incremental_mirror_last_fsync.pop(key, None)
 
     def process_active_mirror(
         self,
@@ -2492,32 +3003,64 @@ class Uploader:
             self.capture_queue_root,
             capture,
         )
+        with self.incremental_mirror_lock(mirror_directory):
+            return self.process_active_mirror_locked(
+                segment,
+                capture,
+                sources,
+                mirror_directory,
+            )
+
+    def process_active_mirror_locked(
+        self,
+        segment: Path,
+        capture: dict[str, Any],
+        sources: dict[str, Path],
+        mirror_directory: Path,
+    ) -> bool:
         if local_segment_is_closed(segment):
             self.close_incremental_mirror_handles(mirror_directory)
             return True
         if (self.capture_queue_root / capture_queue_key(capture)).exists():
             return False
         copied_total = 0
-        self.active_segment = str(segment)
-        self.active_started_us = now_us()
-        self.active_bytes_done = 0
-        self.active_bytes_total = 0
-        self.next_active_status_at = 0.0
-        self.update_active_status(phase="mirroring_active", force=True)
+        self.next_incremental_mirror_status_at = 0.0
+        self.update_incremental_mirror_status(
+            segment=str(segment),
+            bytes_done=0,
+            bytes_total=0,
+            force=True,
+        )
         try:
             self.capture_queue_root.mkdir(parents=True, exist_ok=True)
             mirror_directory.mkdir(parents=False, exist_ok=True)
-            state = load_incremental_mirror_state(
+            state, state_changed = load_incremental_mirror_state(
                 mirror_directory,
                 capture,
                 self.incremental_mirror_instance_id,
             )
+            if state_changed:
+                resumed_bytes = sum(
+                    len(entry.get("chunk_hashes") or [])
+                    * int(entry.get("chunk_size") or 0)
+                    for entry in (state.get("files") or {}).values()
+                    if isinstance(entry, dict)
+                )
+                if resumed_bytes > 0:
+                    self.incremental_mirror_resumed_bytes += resumed_bytes
+                    self.incremental_mirror_resumed_segments += 1
+                    print(
+                        f"recording incremental mirror resumed source={segment} "
+                        f"durable_bytes={resumed_bytes}",
+                        flush=True,
+                    )
+                write_incremental_mirror_state(mirror_directory, state)
             files = state.setdefault("files", {})
             if not isinstance(files, dict):
                 files = {}
                 state["files"] = files
             for destination_name, source in sorted(sources.items()):
-                if STOP_REQUESTED:
+                if STOP_REQUESTED or self.incremental_mirror_worker_stop.is_set():
                     break
                 if local_segment_is_closed(segment):
                     self.close_incremental_mirror_handles(mirror_directory)
@@ -2534,9 +3077,13 @@ class Uploader:
                     continue
                 with self.receiver_status_lock:
                     self.next_receiver_status_at = 0.0
-                self.wait_for_receiver_io("mirroring_active")
-                self.update_active_status(
-                    phase="mirroring_active",
+                self.wait_for_receiver_io(
+                    "mirroring_active",
+                    publish_status=False,
+                    cancel=lambda: local_segment_is_closed(segment)
+                    or self.incremental_mirror_worker_stop.is_set(),
+                )
+                self.update_incremental_mirror_status(
                     bytes_done=0,
                     bytes_total=source_size,
                     force=True,
@@ -2546,26 +3093,50 @@ class Uploader:
                     if isinstance(files.get(destination_name), dict)
                     else None
                 )
-                updated, copied = mirror_complete_file_chunks(
-                    source,
-                    mirror_directory / destination_name,
-                    previous_entry,
-                    self.incremental_mirror_chunk_bytes,
-                    self.incremental_mirror_lag_bytes,
-                    self.bandwidth_mbps,
-                    progress=lambda done, total: self.update_active_status(
-                        phase="mirroring_active",
-                        bytes_done=done,
-                        bytes_total=total,
-                    ),
-                    pause=lambda: self.should_pause_for_receiver_io(
-                        "mirroring_active"
-                    ),
-                    cancel=lambda: local_segment_is_closed(segment),
-                    output_handle=self.incremental_mirror_output_handle(
-                        mirror_directory / destination_name
-                    ),
+                self.incremental_mirror_io_active.set()
+                try:
+                    updated, copied = mirror_complete_file_chunks(
+                        source,
+                        mirror_directory / destination_name,
+                        previous_entry,
+                        self.incremental_mirror_chunk_bytes,
+                        self.incremental_mirror_lag_bytes,
+                        self.bandwidth_mbps,
+                        progress=lambda done, total: self.update_incremental_mirror_status(
+                            bytes_done=done,
+                            bytes_total=total,
+                        ),
+                        pause=lambda: (
+                            self.priority_capture_io_active.is_set()
+                            or
+                            not local_segment_is_closed(segment)
+                            and not self.incremental_mirror_worker_stop.is_set()
+                            and self.should_pause_for_receiver_io(
+                                "mirroring_active",
+                                publish_status=False,
+                            )
+                        ),
+                        cancel=lambda: local_segment_is_closed(segment)
+                        or self.incremental_mirror_worker_stop.is_set(),
+                        output_handle=self.incremental_mirror_output_handle(
+                            mirror_directory / destination_name
+                        ),
+                        max_copy_bytes=self.incremental_mirror_max_copy_bytes,
+                    )
+                finally:
+                    self.incremental_mirror_io_active.clear()
+                durable_chunks = min(
+                    len(updated.get("chunk_hashes") or []),
+                    max(0, int(updated.get("durable_chunks") or 0)),
                 )
+                updated["durable_chunks"] = durable_chunks
+                if durable_chunks < len(updated.get("chunk_hashes") or []):
+                    if self.fsync_incremental_mirror(
+                        mirror_directory / destination_name
+                    ):
+                        updated["durable_chunks"] = len(
+                            updated.get("chunk_hashes") or []
+                        )
                 if updated != previous_entry:
                     files[destination_name] = updated
                     write_incremental_mirror_state(mirror_directory, state)
@@ -2603,15 +3174,19 @@ class Uploader:
                 )
             return False
         finally:
-            self.active_segment = ""
-            self.active_phase = ""
-            self.active_bytes_done = 0
-            self.active_bytes_total = 0
-            self.active_started_us = 0
-            self.update_active_status(force=True)
+            self.update_incremental_mirror_status(
+                segment="",
+                bytes_done=0,
+                bytes_total=0,
+                force=True,
+            )
 
     def process_active_mirrors(self) -> bool:
-        if not self.incremental_mirror_enabled or STOP_REQUESTED:
+        if (
+            not self.incremental_mirror_enabled
+            or STOP_REQUESTED
+            or self.incremental_mirror_worker_stop.is_set()
+        ):
             self.incremental_mirror_active_segments = 0
             return False
         current = time.monotonic()
@@ -2624,11 +3199,79 @@ class Uploader:
         self.incremental_mirror_active_segments = len(active_segments)
         progress = False
         for segment, capture, sources in active_segments:
-            if STOP_REQUESTED:
+            if STOP_REQUESTED or self.incremental_mirror_worker_stop.is_set():
                 break
             if self.process_active_mirror(segment, capture, sources):
                 progress = True
         return progress
+
+    def incremental_mirror_worker_loop(self) -> None:
+        try:
+            while (
+                not STOP_REQUESTED
+                and not self.incremental_mirror_worker_stop.is_set()
+            ):
+                try:
+                    self.process_active_mirrors()
+                except Exception as error:
+                    self.incremental_mirror_failures += 1
+                    self.incremental_mirror_last_error = (
+                        f"{type(error).__name__}: {error}"
+                    )
+                    current_us = now_us()
+                    if (
+                        current_us - self.incremental_mirror_last_warning_us
+                        >= 30_000_000
+                    ):
+                        self.incremental_mirror_last_warning_us = current_us
+                        print(
+                            "recording incremental mirror worker deferred "
+                            f"error={self.incremental_mirror_last_error}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                self.incremental_mirror_worker_stop.wait(0.25)
+        finally:
+            self.incremental_mirror_worker_running = False
+            self.update_incremental_mirror_status(force=True)
+
+    def start_incremental_mirror_worker(self) -> None:
+        if (
+            not self.incremental_mirror_enabled
+            or self.incremental_mirror_worker_thread is not None
+        ):
+            return
+        self.incremental_mirror_worker_stop.clear()
+        self.next_incremental_mirror_at = 0.0
+        self.incremental_mirror_worker_running = True
+        worker = threading.Thread(
+            target=self.incremental_mirror_worker_loop,
+            name="gwv3-active-mirror",
+            daemon=False,
+        )
+        self.incremental_mirror_worker_thread = worker
+        try:
+            worker.start()
+        except Exception:
+            self.incremental_mirror_worker_thread = None
+            self.incremental_mirror_worker_running = False
+            raise
+
+    def stop_incremental_mirror_worker(self) -> None:
+        worker = self.incremental_mirror_worker_thread
+        if worker is None:
+            return
+        self.incremental_mirror_worker_stop.set()
+        worker.join()
+        self.incremental_mirror_worker_thread = None
+        self.incremental_mirror_worker_running = False
+        self.incremental_mirror_active_segments = 0
+        self.update_incremental_mirror_status(
+            segment="",
+            bytes_done=0,
+            bytes_total=0,
+            force=True,
+        )
 
     def process_local_one(
         self,
@@ -2643,6 +3286,7 @@ class Uploader:
         if track_active:
             self.active_segment = str(segment)
             self.active_started_us = now_us()
+            self.active_capture_workers = 1
             self.active_bytes_done = 0
             self.active_bytes_total = 0
             self.next_active_status_at = 0.0
@@ -2652,40 +3296,102 @@ class Uploader:
             )
         try:
             capture, capture_name = prepare_local_capture(segment, self.staging_root)
-            self.close_incremental_mirror_handles(
-                incremental_mirror_directory(
+            mirror_directory = incremental_mirror_directory(
+                self.capture_queue_root,
+                capture,
+            )
+            with self.incremental_mirror_lock(mirror_directory):
+                self.close_incremental_mirror_handles(mirror_directory)
+                reusable_bytes, capture_bytes = incremental_mirror_reuse_bytes(
+                    segment,
                     self.capture_queue_root,
                     capture,
+                    self.incremental_mirror_instance_id,
                 )
+            mirror_reuse_percent = (
+                reusable_bytes * 100.0 / capture_bytes
+                if capture_bytes > 0
+                else 100.0
+            )
+            needs_full_copy_slot = (
+                mirror_reuse_percent
+                < self.parallel_capture_min_mirror_reuse_percent
+            )
+            capture_bandwidth_mbps = (
+                self.full_copy_bandwidth_mbps
+                if needs_full_copy_slot
+                else self.bandwidth_mbps
+            )
+            print(
+                f"recording capture planned source={segment} "
+                f"mirror_reuse_percent={mirror_reuse_percent:.2f} "
+                f"full_copy_slot={str(needs_full_copy_slot).lower()} "
+                f"bandwidth_limit_mbps={capture_bandwidth_mbps:g}",
+                flush=True,
             )
 
             def publish_once() -> tuple[Path, bool]:
                 self.wait_for_receiver_io("capturing_to_nas")
-                if track_active:
-                    self.update_active_status(
-                        phase="capturing_to_nas",
-                        bytes_done=0,
-                        bytes_total=0,
-                        force=True,
-                    )
-                return publish_capture_segment(
-                    segment,
-                    self.capture_queue_root,
-                    capture,
-                    capture_name,
-                    self.bandwidth_mbps,
-                    progress=(
-                        lambda done, total: self.update_active_status(
+                full_copy_slot_acquired = False
+                priority_capture_started = False
+                if needs_full_copy_slot:
+                    while not self.full_copy_semaphore.acquire(timeout=0.25):
+                        if STOP_REQUESTED:
+                            raise InterruptedError(
+                                "recording upload interrupted while waiting for full-copy slot"
+                            )
+                    full_copy_slot_acquired = True
+                    with self.status_lock:
+                        self.active_full_copy_workers += 1
+                        self.update_active_status(force=True)
+                else:
+                    self.begin_priority_capture()
+                    priority_capture_started = True
+                try:
+                    if track_active:
+                        self.update_active_status(
                             phase="capturing_to_nas",
-                            bytes_done=done,
-                            bytes_total=total,
+                            bytes_done=0,
+                            bytes_total=0,
+                            force=True,
                         )
+                    return publish_capture_segment(
+                        segment,
+                        self.capture_queue_root,
+                        capture,
+                        capture_name,
+                        capture_bandwidth_mbps,
+                        progress=(
+                            lambda done, total: self.update_active_status(
+                                phase="capturing_to_nas",
+                                bytes_done=done,
+                                bytes_total=total,
+                            )
+                        )
+                        if track_active
+                        else None,
+                        pause=lambda: (
+                            (
+                                needs_full_copy_slot
+                                and self.incremental_mirror_io_active.is_set()
+                            )
+                            or self.should_pause_for_receiver_io(
+                                "capturing_to_nas"
+                            )
+                        ),
+                        incremental_mirror_instance_id=self.incremental_mirror_instance_id,
                     )
-                    if track_active
-                    else None,
-                    pause=lambda: self.should_pause_for_receiver_io("capturing_to_nas"),
-                    incremental_mirror_instance_id=self.incremental_mirror_instance_id,
-                )
+                finally:
+                    if priority_capture_started:
+                        self.end_priority_capture()
+                    if full_copy_slot_acquired:
+                        with self.status_lock:
+                            self.active_full_copy_workers = max(
+                                0,
+                                self.active_full_copy_workers - 1,
+                            )
+                            self.update_active_status(force=True)
+                        self.full_copy_semaphore.release()
 
             def capture_retry(
                 attempt: int,
@@ -2731,6 +3437,7 @@ class Uploader:
                 )
             release_file_lock(lock_path, descriptor)
             descriptor = None
+            self.release_local_cache_under_pressure(segment)
             capture_duration_ms = round(
                 (time.monotonic() - operation_started) * 1000
             )
@@ -2762,21 +3469,108 @@ class Uploader:
                 self.active_bytes_done = 0
                 self.active_bytes_total = 0
                 self.active_started_us = 0
+                self.active_capture_workers = 0
                 self.update_active_status(force=True)
+
+    def local_segment_mirror_reuse_percent(self, segment: Path) -> float:
+        operation_lock: threading.RLock | None = None
+        try:
+            capture, _capture_name = prepare_local_capture(
+                segment,
+                self.staging_root,
+            )
+            operation_lock = self.incremental_mirror_lock(
+                incremental_mirror_directory(self.capture_queue_root, capture)
+            )
+            # Priority calculation is advisory and must never stall the main
+            # scheduler behind a live mirror operation or a stripe collision.
+            if not operation_lock.acquire(blocking=False):
+                return 0.0
+            try:
+                reusable_bytes, capture_bytes = incremental_mirror_reuse_bytes(
+                    segment,
+                    self.capture_queue_root,
+                    capture,
+                    self.incremental_mirror_instance_id,
+                )
+            finally:
+                operation_lock.release()
+                operation_lock = None
+            if capture_bytes <= 0:
+                return 100.0
+            return reusable_bytes * 100.0 / capture_bytes
+        except Exception:
+            return 0.0
+
+    def local_segment_capture_priority(self, segment: Path) -> tuple[int, int, str]:
+        reuse_percent = self.local_segment_mirror_reuse_percent(segment)
+        try:
+            modified_ns = segment.stat().st_mtime_ns
+        except OSError:
+            modified_ns = 0
+        return (
+            0
+            if reuse_percent >= self.parallel_capture_min_mirror_reuse_percent
+            else 1,
+            modified_ns,
+            str(segment),
+        )
 
     def process_local_batch(self, segments: list[Path]) -> bool:
         if not segments:
             return False
-        if self.capture_workers <= 1 or len(segments) == 1:
-            progress = False
-            for segment in segments:
-                if self.process_local_one(segment):
-                    progress = True
-            return progress
+        priorities = {
+            segment: self.local_segment_capture_priority(segment)
+            for segment in segments
+        }
+        ordered_segments = sorted(segments, key=priorities.__getitem__)
+        route_segments: dict[str, list[Path]] = {}
+        for segment in ordered_segments:
+            try:
+                relative = segment.relative_to(self.staging_root)
+                route = relative.parts[0] if relative.parts else str(segment.parent)
+            except ValueError:
+                route = str(segment.parent)
+            route_segments.setdefault(route, []).append(segment)
+
+        route_heads = [route_batch[0] for route_batch in route_segments.values()]
+        priority_heads = [
+            segment for segment in route_heads if priorities[segment][0] == 0
+        ]
+        full_copy_heads = [
+            segment for segment in route_heads if priorities[segment][0] != 0
+        ][: self.full_copy_workers]
+        selected_segments = (
+            priority_heads + full_copy_heads
+        )[: self.capture_workers]
+        if not selected_segments:
+            return False
+        if len(selected_segments) == 1:
+            return self.process_local_one(selected_segments[0])
+
+        def process_selected(segment: Path) -> bool:
+            with self.status_lock:
+                self.active_capture_workers += 1
+                self.update_active_status(force=True)
+            try:
+                if STOP_REQUESTED:
+                    return False
+                return self.process_local_one(segment, False)
+            finally:
+                with self.status_lock:
+                    self.active_capture_workers = max(
+                        0,
+                        self.active_capture_workers - 1,
+                    )
+                    self.update_active_status(force=True)
 
         progress = False
-        self.active_segment = f"{len(segments)} staged segments"
+        self.active_segment = (
+            f"{len(selected_segments)} selected from {len(ordered_segments)} staged "
+            f"segments across {len(route_segments)} routes"
+        )
         self.active_started_us = now_us()
+        self.active_capture_workers = 0
         self.active_bytes_done = 0
         self.active_bytes_total = 0
         self.next_active_status_at = 0.0
@@ -2786,15 +3580,15 @@ class Uploader:
         )
         try:
             with ThreadPoolExecutor(
-                max_workers=min(self.capture_workers, len(segments))
+                max_workers=len(selected_segments),
+                thread_name_prefix="gwv3-capture",
             ) as executor:
                 futures = {
                     executor.submit(
-                        self.process_local_one,
+                        process_selected,
                         segment,
-                        False,
                     ): segment
-                    for segment in segments
+                    for segment in selected_segments
                 }
                 for future in as_completed(futures):
                     segment = futures[future]
@@ -2807,7 +3601,7 @@ class Uploader:
                             self.failures += 1
                             self.last_error = error_text
                         print(
-                            f"recording parallel capture failed source={segment} "
+                            f"recording route capture failed source={segment} "
                             f"error={error_text}",
                             file=sys.stderr,
                             flush=True,
@@ -2819,6 +3613,7 @@ class Uploader:
             self.active_bytes_done = 0
             self.active_bytes_total = 0
             self.active_started_us = 0
+            self.active_capture_workers = 0
             self.update_active_status(force=True)
         return progress
 
@@ -3245,7 +4040,12 @@ class Uploader:
         # Keep the segment currently being recorded close to NAS before
         # processing older closed segments. Otherwise a backlog can starve the
         # mirror that makes the next stop fast.
-        progress = self.process_active_mirrors() or progress
+        if not self.incremental_mirror_worker_running:
+            progress = self.process_active_mirrors() or progress
+        progress = self.reconcile_local_capture_caches() or progress
+        capture_segments = discover_capture_segments(self.capture_queue_root)
+        if self.process_capture_batch(capture_segments):
+            progress = True
         progress = self.reconcile_local_capture_caches() or progress
         local_segments = discover_local_segments(self.staging_root)
         self.write_status(refresh_metrics=True)
@@ -3265,20 +4065,43 @@ class Uploader:
         if not self.enabled:
             print("recording uploader disabled by receiver config", flush=True)
             return 0
+        process_lock_path = self.staging_root / UPLOADER_PROCESS_LOCK_NAME
+        process_lock = acquire_file_lock(process_lock_path)
+        if process_lock is None:
+            print(
+                f"recording uploader already running lock={process_lock_path}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        try:
+            return self.run_locked(once)
+        finally:
+            # Keep the process lock inode stable. Unlinking after unlock opens a
+            # race where two new processes can lock different inodes.
+            release_file_lock(process_lock_path, process_lock, remove=False)
+
+    def run_locked(self, once: bool) -> int:
         if once:
             self.running = True
+            interrupted = False
             try:
                 self.run_once()
             finally:
                 self.close_incremental_mirror_handles()
                 self.running = False
-                remaining_local = discover_local_segments(self.staging_root)
-                remaining_capture = discover_capture_segments(self.capture_queue_root)
-                remaining_journals = discover_publish_journals(self.capture_queue_root)
-                self.write_status(refresh_metrics=True)
+                interrupted = STOP_REQUESTED
+                if not interrupted:
+                    remaining_local = discover_local_segments(self.staging_root)
+                    remaining_capture = discover_capture_segments(self.capture_queue_root)
+                    remaining_journals = discover_publish_journals(self.capture_queue_root)
+                    self.write_status(refresh_metrics=True)
+            if interrupted:
+                return 2
             return 0 if not remaining_local and not remaining_capture and not remaining_journals else 2
         self.running = True
         try:
+            self.start_incremental_mirror_worker()
             while not STOP_REQUESTED:
                 if self.run_once():
                     continue
@@ -3286,9 +4109,11 @@ class Uploader:
                 while not STOP_REQUESTED and time.monotonic() < deadline:
                     time.sleep(min(0.25, deadline - time.monotonic()))
         finally:
+            self.stop_incremental_mirror_worker()
             self.close_incremental_mirror_handles()
             self.running = False
-            self.write_status(refresh_metrics=True)
+            if not STOP_REQUESTED:
+                self.write_status(refresh_metrics=True)
         return 0
 
 
