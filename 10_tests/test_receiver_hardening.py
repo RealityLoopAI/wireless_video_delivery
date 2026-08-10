@@ -949,6 +949,12 @@ def assert_recording_output(
         assert abs(rgb_record_fps - 30.0) < 0.001, "RGB container FPS did not use the announced profile"
         expected_duration = float(meta.get("rgb_container_expected_duration_sec", 0))
         assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
+        assert int(meta.get("recording_window_valid_rgb_frames", 0)) > 0
+        assert int(meta.get("recording_window_valid_depth_frames", 0)) > 0
+        assert int(meta.get("recording_window_first_valid_rgb_global_us", 0)) > 0
+        assert int(meta.get("recording_window_last_valid_rgb_global_us", 0)) >= int(
+            meta["recording_window_first_valid_rgb_global_us"]
+        )
     ready_files = list(nas_root.rglob("*recording_ready.json"))
     assert ready_files, "recording ready marker missing"
     session_starts = {}
@@ -964,6 +970,8 @@ def assert_recording_output(
         window_start = int(ready.get("recording_window_start_global_us", 0))
         assert session_id > 0
         assert window_start > 0
+        assert int(ready.get("recording_window_valid_rgb_frames", 0)) > 0
+        assert int(ready.get("recording_window_first_valid_global_us", 0)) >= window_start
         assert session_starts.setdefault(session_id, window_start) == window_start
 
     for frames_file in nas_root.rglob("*frames.csv"):
@@ -1080,6 +1088,10 @@ def run(args) -> None:
             admin_status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
             source_hash = str(admin_status.get("build_source_hash", ""))
             assert len(source_hash) == 16 and all(ch in "0123456789abcdef" for ch in source_hash)
+            assert "recording_delivery_pending" in admin_status
+            assert "recording_delivery_ready" in admin_status
+            assert "record_finalize_last_completed_us" in admin_status
+            assert "recording_uploader_pending_metrics_refreshed_us" in admin_status
             assert receiver.poll() is None, "receiver crashed on malformed status JSON"
             assert all(camera.get("sender_id") != "../escape" for camera in admin_status.get("cameras", []))
             exercise_clock_sync(ports["clock"], ports["status"], ports["admin"])

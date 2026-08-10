@@ -34,10 +34,13 @@ def run(uploader_path: Path) -> None:
                         "enabled": True,
                         "root": str(staging),
                         "capture_workers": 16,
+                        "full_copy_workers": 3,
+                        "active_recording_full_copy_workers": 1,
                         "upload_bandwidth_limit_mbps": 240,
                         "full_copy_bandwidth_limit_mbps": 64,
                         "finalize_workers": 8,
                         "incremental_mirror_enabled": True,
+                        "incremental_mirror_workers": 3,
                         "pause_during_receiver_finalize": False,
                     },
                 }
@@ -47,6 +50,27 @@ def run(uploader_path: Path) -> None:
         uploader = uploader_module.Uploader(config_path)
         assert uploader.bandwidth_mbps == 240
         assert uploader.full_copy_bandwidth_mbps == 64
+        assert uploader.full_copy_workers == 3
+        assert uploader.active_recording_full_copy_workers == 1
+        assert uploader.incremental_mirror_workers == 3
+        assert uploader.incremental_mirror_max_copy_bytes == 16 * 1024 * 1024
+        assert uploader.nas_write_limiter.bandwidth_mbps == 240
+
+        limiter = uploader_module.SharedBandwidthLimiter(32)
+        limiter_threads = [
+            threading.Thread(target=limiter.consume, args=(256 * 1024,))
+            for _ in range(4)
+        ]
+        limiter_started = time.monotonic()
+        for thread in limiter_threads:
+            thread.start()
+        for thread in limiter_threads:
+            thread.join()
+        limiter_elapsed = time.monotonic() - limiter_started
+        assert 0.18 <= limiter_elapsed < 1.5
+        limited_bytes, limited_rate = limiter.snapshot()
+        assert limited_bytes == 1024 * 1024
+        assert 1.0 <= limited_rate <= 40.0
         uploader.begin_priority_capture()
         uploader.begin_priority_capture()
         assert uploader.priority_capture_count == 2
@@ -109,6 +133,22 @@ def run(uploader_path: Path) -> None:
             assert uploader.run(True) == 1
         finally:
             uploader_module.release_file_lock(process_lock_path, process_lock)
+        original_discover_local_segments = uploader_module.discover_local_segments
+        scan_observed = {}
+
+        def delayed_discover_local_segments(root: Path):
+            scan_observed["called_us"] = uploader_module.now_us()
+            time.sleep(0.02)
+            return original_discover_local_segments(root)
+
+        uploader_module.discover_local_segments = delayed_discover_local_segments
+        try:
+            uploader.write_status(refresh_metrics=True)
+        finally:
+            uploader_module.discover_local_segments = original_discover_local_segments
+        uploader_status = json.loads(uploader.status_path.read_text(encoding="utf-8"))
+        assert int(uploader_status["pending_metrics_refreshed_us"]) > 0
+        assert int(uploader_status["pending_metrics_refreshed_us"]) <= scan_observed["called_us"]
 
         active = 0
         peak = 0
@@ -140,6 +180,33 @@ def run(uploader_path: Path) -> None:
         assert observed["camera-0"] == ["120000"]
         assert uploader.process_local_batch([segments[-1]]) is True
         assert observed["camera-0"] == ["120000", "121500"]
+
+        observed.clear()
+        active_recording_peak = 0
+
+        def fake_active_recording_capture(
+            segment: Path,
+            _track_active: bool = True,
+        ) -> bool:
+            nonlocal active, active_recording_peak
+            with lock:
+                active += 1
+                active_recording_peak = max(active_recording_peak, active)
+                observed.setdefault(segment.relative_to(staging).parts[0], []).append(
+                    segment.name
+                )
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return True
+
+        uploader.process_local_one = fake_active_recording_capture
+        uploader.local_segment_mirror_reuse_percent = lambda _segment: 0.0
+        uploader.receiver_recording_active = True
+        assert uploader.process_local_batch(segments[:5]) is True
+        assert active_recording_peak == 1
+        uploader.receiver_recording_active = False
+        uploader.process_local_one = fake_capture
 
         observed.clear()
         priority_segments = [
@@ -322,6 +389,50 @@ def run(uploader_path: Path) -> None:
             assert mirror_worker_calls >= 2
         assert uploader.incremental_mirror_worker_running is False
         assert uploader.incremental_mirror_worker_thread is None
+
+        mirror_active = 0
+        mirror_peak = 0
+        mirror_routes: list[str] = []
+        mirror_lock = threading.Lock()
+
+        def fake_process_active_mirror(
+            segment: Path,
+            _capture: dict,
+            _sources: dict,
+        ) -> bool:
+            nonlocal mirror_active, mirror_peak
+            with mirror_lock:
+                mirror_active += 1
+                mirror_peak = max(mirror_peak, mirror_active)
+                mirror_routes.append(segment.name)
+            time.sleep(0.05)
+            with mirror_lock:
+                mirror_active -= 1
+            return True
+
+        active_segments = [
+            (
+                staging / f"mirror-camera-{index}" / "2026-08-10" / f"segment-{index}",
+                {"sender_id": f"sender-{index}", "camera_id": "cam01"},
+                {},
+            )
+            for index in range(5)
+        ]
+        original_discover_active = uploader_module.discover_active_segments
+        uploader_module.discover_active_segments = lambda _root: active_segments
+        uploader.process_active_mirror = fake_process_active_mirror
+        uploader.incremental_mirror_worker_stop.clear()
+        uploader.next_incremental_mirror_at = 0.0
+        try:
+            assert uploader_module.Uploader.process_active_mirrors(uploader) is True
+            uploader.next_incremental_mirror_at = 0.0
+            assert uploader_module.Uploader.process_active_mirrors(uploader) is True
+        finally:
+            uploader_module.discover_active_segments = original_discover_active
+        assert mirror_peak == 3
+        assert set(mirror_routes) == {
+            f"segment-{index}" for index in range(5)
+        }
 
     print("recording uploader concurrency and incremental fast-path test passed")
 

@@ -60,7 +60,7 @@ constexpr size_t kMediaHeaderMaxSize = kMediaHeaderV2Size;
 constexpr size_t kMaxReasonablePayload = 128ull * 1024ull * 1024ull;
 constexpr size_t kMaxRgbPreviewPrefixBytes = 512ull * 1024ull;
 constexpr uint32_t kRgbPreviewWidth = 320;
-constexpr uint32_t kRgbMainPreviewWidth = 640;
+constexpr uint32_t kRgbMainPreviewWidth = 960;
 constexpr uint32_t kRgbPreviewFps = 30;
 constexpr uint32_t kRgbMainPreviewFps = 30;
 constexpr int kRgbPreviewJpegQuality = 10;
@@ -1157,7 +1157,7 @@ struct Config {
     uint16_t media_udp_port = 50013;
     bool preview_udp_enabled = false;
     std::string preview_udp_bind_ip = "0.0.0.0";
-    uint16_t preview_udp_port = 50012;
+    uint16_t preview_udp_port = 50014;
     ClockSyncManagerConfig clock_sync;
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
@@ -1541,14 +1541,25 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         const auto line = timestamp_text() + " [" + level + "] " + message;
         stream_ << line << '\n';
-        stream_.flush();
-        std::cout << line << std::endl;
+        const auto now = std::chrono::steady_clock::now();
+        if(level != "INFO" || now - last_flush_ >= std::chrono::seconds(1)) {
+            stream_.flush();
+            last_flush_ = now;
+        }
+        // receiver.log is the authoritative operational log. Keep stdout free
+        // of the duplicate per-packet stream; only exceptional lines reach the
+        // service stderr log.
+        if(level != "INFO") {
+            std::cerr << line << '\n';
+        }
     }
 
     std::string directory_;
     std::string log_path_;
     std::ofstream stream_;
     std::mutex mutex_;
+    std::chrono::steady_clock::time_point last_flush_ =
+        std::chrono::steady_clock::now();
 };
 
 std::optional<size_t> find_marker(const std::vector<uint8_t> &buffer, uint8_t a, uint8_t b, size_t start) {
@@ -3771,6 +3782,15 @@ public:
         csv_rows_since_flush_ = 0;
         storage_check_packets_ = 0;
         storage_failed_ = false;
+        recording_window_valid_rows_ = 0;
+        recording_window_valid_rgb_frames_ = 0;
+        recording_window_valid_depth_frames_ = 0;
+        recording_window_first_valid_global_us_ = 0;
+        recording_window_last_valid_global_us_ = 0;
+        recording_window_first_valid_rgb_global_us_ = 0;
+        recording_window_last_valid_rgb_global_us_ = 0;
+        recording_window_first_valid_depth_global_us_ = 0;
+        recording_window_last_valid_depth_global_us_ = 0;
         recording_window_ = {};
     }
 
@@ -4083,6 +4103,31 @@ private:
         return frame_id + "\t" + timestamp_us + "\t" + frame_system_timestamp_us;
     }
 
+    void add_recording_window_summary(const std::string &stream_type, uint64_t global_us, bool valid) {
+        if(!valid) {
+            return;
+        }
+        ++recording_window_valid_rows_;
+        if(recording_window_first_valid_global_us_ == 0 || global_us < recording_window_first_valid_global_us_) {
+            recording_window_first_valid_global_us_ = global_us;
+        }
+        recording_window_last_valid_global_us_ = std::max(recording_window_last_valid_global_us_, global_us);
+        if(stream_type == "rgb") {
+            ++recording_window_valid_rgb_frames_;
+            if(recording_window_first_valid_rgb_global_us_ == 0 || global_us < recording_window_first_valid_rgb_global_us_) {
+                recording_window_first_valid_rgb_global_us_ = global_us;
+            }
+            recording_window_last_valid_rgb_global_us_ = std::max(recording_window_last_valid_rgb_global_us_, global_us);
+        }
+        else if(stream_type == "depth" || stream_type == "depth_raw") {
+            ++recording_window_valid_depth_frames_;
+            if(recording_window_first_valid_depth_global_us_ == 0 || global_us < recording_window_first_valid_depth_global_us_) {
+                recording_window_first_valid_depth_global_us_ = global_us;
+            }
+            recording_window_last_valid_depth_global_us_ = std::max(recording_window_last_valid_depth_global_us_, global_us);
+        }
+    }
+
     void merge_rgb_recorded_frames_into_frames(Logger &logger) {
         const auto frames_path = file_path("frames.csv.inprogress");
         const auto finalized_path = file_path("frames.csv.finalizing");
@@ -4154,12 +4199,23 @@ private:
                << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size,recording_session_id,"
                   "recording_window_start_global_us,recording_window_end_global_us,recording_window_valid\n";
 
-        const auto append_recording_window = [this, &index](std::ostream &out, const std::vector<std::string> &row) {
+        recording_window_valid_rows_ = 0;
+        recording_window_valid_rgb_frames_ = 0;
+        recording_window_valid_depth_frames_ = 0;
+        recording_window_first_valid_global_us_ = 0;
+        recording_window_last_valid_global_us_ = 0;
+        recording_window_first_valid_rgb_global_us_ = 0;
+        recording_window_last_valid_rgb_global_us_ = 0;
+        recording_window_first_valid_depth_global_us_ = 0;
+        recording_window_last_valid_depth_global_us_ = 0;
+
+        const auto recording_window_state = [this, &index](const std::vector<std::string> &row) {
             bool valid = recording_window_.start_global_us == 0;
+            uint64_t global_us = 0;
             const auto global_text = csv_value(row, index, "global_timestamp_us");
             if(!global_text.empty()) {
                 try {
-                    const uint64_t global_us = std::stoull(global_text);
+                    global_us = std::stoull(global_text);
                     valid = (recording_window_.start_global_us == 0 || global_us >= recording_window_.start_global_us)
                             && (recording_window_.end_global_us == 0 || global_us <= recording_window_.end_global_us);
                 }
@@ -4167,8 +4223,11 @@ private:
                     valid = false;
                 }
             }
+            return std::make_pair(global_us, valid);
+        };
+        const auto append_recording_window = [this](std::ostream &out, const std::pair<uint64_t, bool> &state) {
             out << ',' << recording_window_.session_id << ',' << recording_window_.start_global_us << ','
-                << recording_window_.end_global_us << ',' << (valid ? 1 : 0);
+                << recording_window_.end_global_us << ',' << (state.second ? 1 : 0);
         };
 
         std::string line;
@@ -4178,7 +4237,9 @@ private:
         std::string first_duplicate_frame_key;
         while(std::getline(frames_in, line)) {
             const auto row = split_csv_line(line);
-            const bool is_rgb = csv_value(row, index, "stream_type") == "rgb";
+            const auto stream_type = csv_value(row, index, "stream_type");
+            const bool is_rgb = stream_type == "rgb";
+            const auto window_state = recording_window_state(row);
             if(is_rgb) {
                 const auto key = rgb_record_key(row, index);
                 const bool duplicate_frame_key = !key.empty() && !merged_rgb_keys.insert(key).second;
@@ -4191,8 +4252,9 @@ private:
                 const auto found = duplicate_frame_key ? recorded_by_key.end() : recorded_by_key.find(key);
                 if(found != recorded_by_key.end()) {
                     merged << line << ",1," << found->second.first << ',' << found->second.second;
-                    append_recording_window(merged, row);
+                    append_recording_window(merged, window_state);
                     merged << '\n';
+                    add_recording_window_summary(stream_type, window_state.first, window_state.second);
                 }
                 else {
                     dropped_unrecorded_rgb_rows++;
@@ -4200,8 +4262,9 @@ private:
             }
             else {
                 merged << line << ",,,";
-                append_recording_window(merged, row);
+                append_recording_window(merged, window_state);
                 merged << '\n';
+                add_recording_window_summary(stream_type, window_state.first, window_state.second);
             }
         }
         if(duplicate_frame_rows > 0) {
@@ -4268,6 +4331,11 @@ private:
         marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
+        marker << "  \"recording_window_first_valid_global_us\": " << recording_window_first_valid_global_us_ << ",\n";
+        marker << "  \"recording_window_last_valid_global_us\": " << recording_window_last_valid_global_us_ << ",\n";
+        marker << "  \"recording_window_valid_rows\": " << recording_window_valid_rows_ << ",\n";
+        marker << "  \"recording_window_valid_rgb_frames\": " << recording_window_valid_rgb_frames_ << ",\n";
+        marker << "  \"recording_window_valid_depth_frames\": " << recording_window_valid_depth_frames_ << ",\n";
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -4305,6 +4373,11 @@ private:
         marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
+        marker << "  \"recording_window_first_valid_global_us\": " << recording_window_first_valid_global_us_ << ",\n";
+        marker << "  \"recording_window_last_valid_global_us\": " << recording_window_last_valid_global_us_ << ",\n";
+        marker << "  \"recording_window_valid_rows\": " << recording_window_valid_rows_ << ",\n";
+        marker << "  \"recording_window_valid_rgb_frames\": " << recording_window_valid_rgb_frames_ << ",\n";
+        marker << "  \"recording_window_valid_depth_frames\": " << recording_window_valid_depth_frames_ << ",\n";
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -5128,6 +5201,21 @@ private:
         meta << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         meta << "  \"recording_window_end_global_us\": "
              << (closed ? recording_window_.end_global_us : 0) << ",\n";
+        meta << "  \"recording_window_first_valid_global_us\": "
+             << (closed ? recording_window_first_valid_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_last_valid_global_us\": "
+             << (closed ? recording_window_last_valid_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_first_valid_rgb_global_us\": "
+             << (closed ? recording_window_first_valid_rgb_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_last_valid_rgb_global_us\": "
+             << (closed ? recording_window_last_valid_rgb_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_first_valid_depth_global_us\": "
+             << (closed ? recording_window_first_valid_depth_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_last_valid_depth_global_us\": "
+             << (closed ? recording_window_last_valid_depth_global_us_ : 0) << ",\n";
+        meta << "  \"recording_window_valid_rows\": " << (closed ? recording_window_valid_rows_ : 0) << ",\n";
+        meta << "  \"recording_window_valid_rgb_frames\": " << (closed ? recording_window_valid_rgb_frames_ : 0) << ",\n";
+        meta << "  \"recording_window_valid_depth_frames\": " << (closed ? recording_window_valid_depth_frames_ : 0) << ",\n";
         meta << "  \"recording_window_mode\": \"global_timestamp_us\",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"frames_publish_state\": \"" << (closed ? "finalized" : "recording") << "\",\n";
@@ -5304,6 +5392,15 @@ private:
     unsigned csv_rows_since_flush_ = 0;
     unsigned storage_check_packets_ = 0;
     bool storage_failed_ = false;
+    uint64_t recording_window_valid_rows_ = 0;
+    uint64_t recording_window_valid_rgb_frames_ = 0;
+    uint64_t recording_window_valid_depth_frames_ = 0;
+    uint64_t recording_window_first_valid_global_us_ = 0;
+    uint64_t recording_window_last_valid_global_us_ = 0;
+    uint64_t recording_window_first_valid_rgb_global_us_ = 0;
+    uint64_t recording_window_last_valid_rgb_global_us_ = 0;
+    uint64_t recording_window_first_valid_depth_global_us_ = 0;
+    uint64_t recording_window_last_valid_depth_global_us_ = 0;
     std::vector<uint8_t> rgb_pending_;
     std::vector<PendingRgbPacketInfo> rgb_pending_infos_;
     bool rgb_pending_has_vcl_ = false;
@@ -5332,6 +5429,8 @@ struct H264StreamPacket {
     bool has_idr = false;
     bool has_vcl = false;
     uint64_t timestamp_us = 0;
+    uint64_t global_timestamp_us = 0;
+    bool clock_sync_valid = false;
     uint32_t width = 0;
     uint32_t height = 0;
     std::vector<uint8_t> payload;
@@ -5395,27 +5494,35 @@ void append_udp_reassembly_stats_json(std::ostringstream &out, const UdpReassemb
 
 constexpr uint32_t kH264PreviewFrameFlagKey = 1u << 0u;
 constexpr uint32_t kH264PreviewFrameFlagConfig = 1u << 1u;
+constexpr uint32_t kH264PreviewFrameFlagClockSyncValid = 1u << 2u;
 
 std::vector<uint8_t> h264_preview_frame_header(uint32_t payload_size,
                                                uint32_t flags,
                                                uint32_t width,
                                                uint32_t height,
                                                uint64_t timestamp_us,
-                                               uint64_t seq) {
+                                               uint64_t seq,
+                                               bool include_global_timestamp,
+                                               uint64_t global_timestamp_us) {
+    const uint16_t version = include_global_timestamp ? 2 : 1;
+    const uint16_t header_size = include_global_timestamp ? 48 : 40;
     std::vector<uint8_t> header;
-    header.reserve(40);
+    header.reserve(header_size);
     header.push_back('G');
     header.push_back('W');
     header.push_back('H');
     header.push_back('P');
-    append_u16_le(header, 1);
-    append_u16_le(header, 40);
+    append_u16_le(header, version);
+    append_u16_le(header, header_size);
     append_u32_le(header, payload_size);
     append_u32_le(header, flags);
     append_u32_le(header, width);
     append_u32_le(header, height);
     append_u64_le(header, timestamp_us);
     append_u64_le(header, seq);
+    if(include_global_timestamp) {
+        append_u64_le(header, global_timestamp_us);
+    }
     return header;
 }
 
@@ -5425,11 +5532,14 @@ bool send_h264_preview_frame(int fd,
                              uint32_t width,
                              uint32_t height,
                              uint64_t timestamp_us,
-                             uint64_t seq) {
+                             uint64_t seq,
+                             bool include_global_timestamp,
+                             uint64_t global_timestamp_us) {
     if(payload.empty() || payload.size() > std::numeric_limits<uint32_t>::max()) {
         return true;
     }
-    const auto header = h264_preview_frame_header(static_cast<uint32_t>(payload.size()), flags, width, height, timestamp_us, seq);
+    const auto header = h264_preview_frame_header(static_cast<uint32_t>(payload.size()), flags, width, height,
+                                                  timestamp_us, seq, include_global_timestamp, global_timestamp_us);
     return send_all(fd, header.data(), header.size()) && send_all(fd, payload.data(), payload.size());
 }
 
@@ -5468,6 +5578,7 @@ struct CameraState {
     uint64_t last_web_rgb_preview_keyframe_us = 0;
     uint64_t last_rgb_preview_packet_us = 0;
     uint64_t rgb_stream_requested_until_us = 0;
+    uint64_t rgb_main_stream_requested_until_us = 0;
     H264StreamBuffer rgb_stream;
     H264StreamBuffer rgb_preview_stream;
     uint64_t main_rgb_preview_us = 0;
@@ -5817,6 +5928,18 @@ public:
             out << "\"recording_uploader\":"
                 << (uploader_status_json_.empty() ? "{\"available\":false}" : uploader_status_json_) << ',';
         }
+        const uint64_t finalize_last_completed_us = segment_finalize_last_completed_us_.load();
+        const uint64_t uploader_metrics_refreshed_us = uploader_pending_metrics_refreshed_us_.load();
+        const bool delivery_pending = segment_finalize_outstanding_status_.load() > 0
+                                      || uploader_pending_segments_status_.load() > 0
+                                      || (config_.recording_staging.enabled && finalize_last_completed_us > 0
+                                          && uploader_metrics_refreshed_us < finalize_last_completed_us);
+        out << "\"record_finalize_last_completed_us\":" << finalize_last_completed_us << ',';
+        out << "\"recording_uploader_pending_metrics_refreshed_us\":"
+            << uploader_metrics_refreshed_us << ',';
+        out << "\"recording_delivery_pending\":" << (delivery_pending ? "true" : "false") << ',';
+        out << "\"recording_delivery_ready\":"
+            << (!recording_all_ && !delivery_pending ? "true" : "false") << ',';
         out << "\"media_port\":" << config_.media_port << ',';
         out << "\"preview_enabled\":" << (config_.preview_enabled ? "true" : "false") << ',';
         out << "\"media_udp_enabled\":" << (config_.media_udp_enabled ? "true" : "false") << ',';
@@ -6279,8 +6402,7 @@ public:
 
     std::optional<SenderControlTarget> maybe_web_rgb_preview_control_target_locked(CameraState &cam, uint64_t now) {
         const bool requested = is_recent_us(now, cam.rgb_stream_requested_until_us, 0)
-                               || is_recent_us(now, cam.rgb_preview_requested_until_us, 0)
-                               || (cam.key == main_preview_key_ && is_recent_us(now, cam.main_rgb_preview_requested_until_us, 0));
+                               || is_recent_us(now, cam.rgb_preview_requested_until_us, 0);
         if(!requested || cam.status_endpoint.empty()) {
             return std::nullopt;
         }
@@ -6801,6 +6923,7 @@ public:
         }
         if(success) {
             segment_finalize_completed_total_.fetch_add(1);
+            segment_finalize_last_completed_us_.store(now_us());
         }
         else {
             segment_finalize_failures_total_.fetch_add(1);
@@ -6940,6 +7063,11 @@ public:
             const std::string raw((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
             Json::Value root;
             if(parse_json_object_strict(raw, root)) {
+                const uint64_t updated_us = json_uint64_value(root, "updated_us").value_or(0);
+                uploader_pending_metrics_refreshed_us_.store(
+                    json_uint64_value(root, "pending_metrics_refreshed_us").value_or(updated_us));
+                uploader_pending_segments_status_.store(
+                    json_uint64_value(root, "pending_segments").value_or(0));
                 Json::StreamWriterBuilder builder;
                 builder["indentation"] = "";
                 status = Json::writeString(builder, root);
@@ -7922,7 +8050,11 @@ public:
         return true;
     }
 
-    bool stream_rgb_h264_preview_frames(int fd, const std::string &sender_id, const std::string &camera_id) {
+    bool stream_rgb_h264_preview_frames(int fd,
+                                        const std::string &sender_id,
+                                        const std::string &camera_id,
+                                        bool force_main_stream,
+                                        bool include_global_timestamp) {
         std::shared_ptr<CameraState> cam;
         std::optional<SenderControlTarget> keyframe_target;
         const auto request_us = now_us();
@@ -7953,7 +8085,12 @@ public:
                 response << body;
                 return send_all(fd, response.str());
             }
-            it->second->rgb_stream_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            if(force_main_stream) {
+                it->second->rgb_main_stream_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            }
+            else {
+                it->second->rgb_stream_requested_until_us = request_us + kPreviewRequestKeepaliveUs;
+            }
             keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
             cam = it->second;
         }
@@ -7961,10 +8098,10 @@ public:
             send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_h264_frames", request_us);
         }
 
-        H264StreamBuffer *stream = &cam->rgb_stream;
+        H264StreamBuffer *stream = force_main_stream ? &cam->rgb_stream : nullptr;
         bool using_preview_stream = false;
-        const auto preview_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-        while(running_ && g_running && std::chrono::steady_clock::now() < preview_deadline) {
+        const auto preview_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+        while(!force_main_stream && running_ && g_running && std::chrono::steady_clock::now() < preview_deadline) {
             {
                 std::unique_lock<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
                 const auto now = now_us();
@@ -7983,12 +8120,25 @@ public:
             cam->rgb_preview_stream.cv.wait_for(wait_lock, std::chrono::milliseconds(50));
         }
 
+        if(!stream) {
+            const std::string body = "{\"ok\":false,\"error\":\"rgb preview stream unavailable\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 503 Service Unavailable\r\n";
+            response << "Content-Type: application/json\r\n";
+            response << "Cache-Control: no-store\r\n";
+            response << "Content-Length: " << body.size() << "\r\n";
+            response << "Connection: close\r\n\r\n";
+            response << body;
+            return send_all(fd, response.str());
+        }
+
         std::ostringstream response;
         response << "HTTP/1.1 200 OK\r\n";
         response << "Content-Type: application/octet-stream\r\n";
         response << "Cache-Control: no-store\r\n";
         response << "Connection: close\r\n";
         response << "X-GWV3-Rgb-Stream: " << (using_preview_stream ? "preview" : "main") << "\r\n";
+        response << "X-GWV3-Frame-Version: " << (include_global_timestamp ? 2 : 1) << "\r\n";
         response << "X-Accel-Buffering: no\r\n\r\n";
         if(!send_all(fd, response.str())) {
             return false;
@@ -7999,7 +8149,12 @@ public:
         while(running_ && g_running) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                cam->rgb_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+                if(force_main_stream) {
+                    cam->rgb_main_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+                }
+                else {
+                    cam->rgb_stream_requested_until_us = now_us() + kPreviewRequestKeepaliveUs;
+                }
             }
             std::vector<uint8_t> header;
             std::vector<H264StreamPacket> packets;
@@ -8045,6 +8200,9 @@ public:
 
             for(const auto &packet : packets) {
                 uint32_t flags = packet.has_idr ? kH264PreviewFrameFlagKey : 0u;
+                if(include_global_timestamp && packet.clock_sync_valid) {
+                    flags |= kH264PreviewFrameFlagClockSyncValid;
+                }
                 const auto timestamp_us = packet.timestamp_us > 0 ? packet.timestamp_us : now_us();
                 if(packet.has_idr && !header.empty()) {
                     std::vector<uint8_t> payload;
@@ -8052,11 +8210,13 @@ public:
                     payload.insert(payload.end(), header.begin(), header.end());
                     payload.insert(payload.end(), packet.payload.begin(), packet.payload.end());
                     flags |= kH264PreviewFrameFlagConfig;
-                    if(!send_h264_preview_frame(fd, payload, flags, packet.width, packet.height, timestamp_us, packet.seq)) {
+                    if(!send_h264_preview_frame(fd, payload, flags, packet.width, packet.height, timestamp_us, packet.seq,
+                                                include_global_timestamp, packet.global_timestamp_us)) {
                         return false;
                     }
                 }
-                else if(!send_h264_preview_frame(fd, packet.payload, flags, packet.width, packet.height, timestamp_us, packet.seq)) {
+                else if(!send_h264_preview_frame(fd, packet.payload, flags, packet.width, packet.height, timestamp_us, packet.seq,
+                                                 include_global_timestamp, packet.global_timestamp_us)) {
                     return false;
                 }
             }
@@ -8765,6 +8925,7 @@ private:
         cam.rgb_preview_stream.cv.notify_all();
         cam.rgb_preview_requested_until_us = 0;
         cam.rgb_stream_requested_until_us = 0;
+        cam.rgb_main_stream_requested_until_us = 0;
         cam.rgb_preview_us = 0;
         cam.rgb_preview_width = 0;
         cam.rgb_preview_height = 0;
@@ -8820,7 +8981,8 @@ private:
                 stream.header_h264.insert(stream.header_h264.end(), packet.payload.begin(), packet.payload.end());
             }
             stream.packets.push_back(
-                H264StreamPacket{stream.next_seq++, has_idr, has_vcl, packet.system_timestamp_us, packet.width, packet.height, packet.payload});
+                H264StreamPacket{stream.next_seq++, has_idr, has_vcl, packet.system_timestamp_us,
+                                 packet.global_timestamp_us, packet.clock_sync_valid, packet.width, packet.height, packet.payload});
             while(stream.packets.size() > kRgbH264StreamMaxPackets) {
                 stream.packets.pop_front();
             }
@@ -9125,6 +9287,7 @@ private:
             cleanup_rgb_decoder_async(std::move(cam.main_rgb_decoder));
             cam.rgb_preview_requested_until_us = 0;
             cam.rgb_stream_requested_until_us = 0;
+            cam.rgb_main_stream_requested_until_us = 0;
             cam.rgb_preview_us = 0;
             cam.rgb_preview_width = 0;
             cam.rgb_preview_height = 0;
@@ -9300,8 +9463,9 @@ private:
                 if(config_.preview_enabled) {
                     const auto media_now = cam->last_media_us;
                     const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
+                    const bool main_stream_requested = is_recent_us(media_now, cam->rgb_main_stream_requested_until_us, 0);
                     const bool thumbnail_requested = is_recent_us(media_now, cam->rgb_preview_requested_until_us, 0);
-                    if(stream_requested) {
+                    if(stream_requested || main_stream_requested) {
                         rgb_stream_update = &cam->rgb_stream;
                     }
                     const bool preview_stream_fresh = is_recent_us(media_now, cam->last_rgb_preview_packet_us, kPreviewFreshUs);
@@ -10083,8 +10247,12 @@ private:
             return;
         }
         else if(method == "GET" && path == "/api/preview/rgb-h264-frames") {
+            const bool force_main_stream = args.count("quality") && args.at("quality") == "main";
+            const bool include_global_timestamp = args.count("metadata") && args.at("metadata") == "global";
             stream_rgb_h264_preview_frames(fd, args.count("sender_id") ? args.at("sender_id") : "",
-                                           args.count("camera_id") ? args.at("camera_id") : "");
+                                           args.count("camera_id") ? args.at("camera_id") : "",
+                                           force_main_stream,
+                                           include_global_timestamp);
             return;
         }
         else {
@@ -10182,6 +10350,9 @@ private:
     std::atomic<size_t> segment_finalize_active_status_{0};
     std::atomic<uint64_t> segment_finalize_completed_total_{0};
     std::atomic<uint64_t> segment_finalize_failures_total_{0};
+    std::atomic<uint64_t> segment_finalize_last_completed_us_{0};
+    std::atomic<uint64_t> uploader_pending_metrics_refreshed_us_{0};
+    std::atomic<uint64_t> uploader_pending_segments_status_{0};
     std::vector<ClientThread> client_threads_;
     std::deque<std::unique_ptr<RgbPreviewDecoder>> decoder_cleanup_queue_;
     std::set<int> client_fds_;

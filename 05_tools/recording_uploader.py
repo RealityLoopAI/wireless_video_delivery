@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import errno
 import fcntl
@@ -89,6 +90,62 @@ UPLOADER_PROCESS_LOCK_NAME = ".gwv3_uploader.process.lock"
 
 class IncrementalMirrorOwnedError(RuntimeError):
     pass
+
+
+class SharedBandwidthLimiter:
+    """Thread-safe aggregate write limiter shared by every NAS copy worker."""
+
+    def __init__(self, bandwidth_mbps: float):
+        self.bandwidth_mbps = max(0.0, float(bandwidth_mbps))
+        self.bytes_per_second = self.bandwidth_mbps * 1_000_000.0 / 8.0
+        self.lock = threading.Lock()
+        self.next_available = time.monotonic()
+        self.total_bytes = 0
+        self.samples: deque[tuple[float, int]] = deque()
+
+    def consume(self, byte_count: int) -> None:
+        if byte_count <= 0:
+            return
+        if self.bytes_per_second <= 0:
+            with self.lock:
+                self.total_bytes += byte_count
+                self._append_sample_locked(time.monotonic())
+            return
+        with self.lock:
+            current = time.monotonic()
+            self.next_available = max(self.next_available, current)
+            ready_at = self.next_available + byte_count / self.bytes_per_second
+            self.next_available = ready_at
+            self.total_bytes += byte_count
+            self._append_sample_locked(current)
+        while True:
+            if STOP_REQUESTED:
+                raise InterruptedError(
+                    "recording upload interrupted while waiting for NAS bandwidth"
+                )
+            delay = ready_at - time.monotonic()
+            if delay <= 0:
+                return
+            time.sleep(min(delay, 0.25))
+
+    def _append_sample_locked(self, current: float) -> None:
+        self.samples.append((current, self.total_bytes))
+        cutoff = current - 30.0
+        while len(self.samples) > 2 and self.samples[1][0] < cutoff:
+            self.samples.popleft()
+
+    def snapshot(self) -> tuple[int, float]:
+        with self.lock:
+            current = time.monotonic()
+            self._append_sample_locked(current)
+            recent = [sample for sample in self.samples if sample[0] >= current - 10.0]
+            if len(recent) < 2:
+                return self.total_bytes, 0.0
+            elapsed = recent[-1][0] - recent[0][0]
+            if elapsed <= 0:
+                return self.total_bytes, 0.0
+            byte_delta = recent[-1][1] - recent[0][1]
+            return self.total_bytes, byte_delta * 8.0 / elapsed / 1_000_000.0
 
 
 def request_stop(_signum: int, _frame: object) -> None:
@@ -858,6 +915,7 @@ def copy_file_limited(
     progress: Callable[[int, int], None] | None = None,
     pause: Callable[[], bool] | None = None,
     durable: bool = True,
+    shared_limiter: SharedBandwidthLimiter | None = None,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -880,11 +938,13 @@ def copy_file_limited(
             chunk = input_handle.read(chunk_size)
             if not chunk:
                 break
+            if shared_limiter is not None:
+                shared_limiter.consume(len(chunk))
             output_handle.write(chunk)
             copied += len(chunk)
             if progress is not None:
                 progress(copied, total)
-            if bandwidth_mbps > 0:
+            if shared_limiter is None and bandwidth_mbps > 0:
                 while True:
                     wait_for_receiver_io()
                     if STOP_REQUESTED:
@@ -927,6 +987,7 @@ def mirror_complete_file_chunks(
     cancel: Callable[[], bool] | None = None,
     output_handle: Any | None = None,
     max_copy_bytes: int = 0,
+    shared_limiter: SharedBandwidthLimiter | None = None,
 ) -> tuple[dict[str, Any], int]:
     source_stat = source.stat()
     source_identity = {
@@ -1004,6 +1065,8 @@ def mirror_complete_file_chunks(
                 data = input_handle.read(chunk_size)
                 if len(data) != chunk_size:
                     break
+                if shared_limiter is not None:
+                    shared_limiter.consume(len(data))
                 output_handle.write(data)
                 digest = hashlib.sha256(data).hexdigest()
                 hashes.append(digest)
@@ -1011,7 +1074,7 @@ def mirror_complete_file_chunks(
                 copied += len(data)
                 if progress is not None:
                     progress(offset, target_bytes)
-                if bandwidth_mbps > 0:
+                if shared_limiter is None and bandwidth_mbps > 0:
                     expected = copied * 8.0 / (bandwidth_mbps * 1_000_000.0)
                     delay = expected - (time.monotonic() - started)
                     if delay > 0:
@@ -1044,6 +1107,7 @@ def synchronize_file_from_incremental_mirror(
     pause: Callable[[], bool] | None = None,
     durable: bool = True,
     stats: dict[str, int | bool] | None = None,
+    shared_limiter: SharedBandwidthLimiter | None = None,
 ) -> int:
     source_stat = source.stat()
     chunk_size = int(entry.get("chunk_size") or 0)
@@ -1102,12 +1166,14 @@ def synchronize_file_from_incremental_mirror(
                 data = input_handle.read(min(4 * 1024 * 1024, total - processed))
                 if not data:
                     raise RuntimeError(f"source changed during incremental tail sync: {source}")
+                if shared_limiter is not None:
+                    shared_limiter.consume(len(data))
                 output_handle.write(data)
                 written += len(data)
                 processed += len(data)
                 if progress is not None:
                     progress(processed, total)
-                if bandwidth_mbps > 0:
+                if shared_limiter is None and bandwidth_mbps > 0:
                     expected = written * 8.0 / (bandwidth_mbps * 1_000_000.0)
                     delay = expected - (time.monotonic() - started)
                     if delay > 0:
@@ -1158,13 +1224,15 @@ def synchronize_file_from_incremental_mirror(
                 and existing_size >= end_offset
             )
             if not reusable:
+                if shared_limiter is not None:
+                    shared_limiter.consume(len(data))
                 output_handle.seek(index * chunk_size)
                 output_handle.write(data)
                 written += len(data)
             processed = end_offset
             if progress is not None:
                 progress(processed, total)
-            if bandwidth_mbps > 0 and written > 0:
+            if shared_limiter is None and bandwidth_mbps > 0 and written > 0:
                 expected = written * 8.0 / (bandwidth_mbps * 1_000_000.0)
                 delay = expected - (time.monotonic() - started)
                 if delay > 0:
@@ -1174,12 +1242,19 @@ def synchronize_file_from_incremental_mirror(
         if len(tail) != total - processed:
             raise RuntimeError(f"source changed during incremental tail sync: {source}")
         if tail:
+            if shared_limiter is not None:
+                shared_limiter.consume(len(tail))
             output_handle.seek(processed)
             output_handle.write(tail)
             written += len(tail)
             processed += len(tail)
             if progress is not None:
                 progress(processed, total)
+            if shared_limiter is None and bandwidth_mbps > 0:
+                expected = written * 8.0 / (bandwidth_mbps * 1_000_000.0)
+                delay = expected - (time.monotonic() - started)
+                if delay > 0:
+                    time.sleep(delay)
         output_handle.truncate(total)
         output_handle.flush()
         if durable:
@@ -1539,6 +1614,7 @@ def publish_capture_segment(
     progress: Callable[[int, int], None] | None = None,
     pause: Callable[[], bool] | None = None,
     incremental_mirror_instance_id: str = "",
+    shared_limiter: SharedBandwidthLimiter | None = None,
 ) -> tuple[Path, bool]:
     capture_name = marker_filename(capture_name, "recording_capture_ready.json", "capture_file")
     key = capture_queue_key(capture)
@@ -1639,6 +1715,7 @@ def publish_capture_segment(
                         pause,
                         durable=False,
                         stats=sync_stats,
+                        shared_limiter=shared_limiter,
                     )
                     reused_mirror = True
                     print(
@@ -1659,6 +1736,7 @@ def publish_capture_segment(
                     callback,
                     pause,
                     durable=False,
+                    shared_limiter=shared_limiter,
                 )
             copied_before_file += file_size
         fsync_regular_files_parallel(
@@ -2189,6 +2267,7 @@ class Uploader:
         self.ffmpeg_path = str(config.get("ffmpeg_path") or "ffmpeg")
         self.interval = max(0.25, int(staging.get("upload_interval_ms", 2000)) / 1000.0)
         self.bandwidth_mbps = max(0.0, float(staging.get("upload_bandwidth_limit_mbps", 0)))
+        self.nas_write_limiter = SharedBandwidthLimiter(self.bandwidth_mbps)
         self.min_free_disk_bytes = max(
             0,
             int(config.get("min_free_disk_mb", 0)),
@@ -2238,6 +2317,10 @@ class Uploader:
             self.capture_workers,
             max(1, int(staging.get("full_copy_workers", 1))),
         )
+        self.active_recording_full_copy_workers = min(
+            self.full_copy_workers,
+            max(0, int(staging.get("active_recording_full_copy_workers", 1))),
+        )
         self.parallel_capture_min_mirror_reuse_percent = min(
             100.0,
             max(
@@ -2253,6 +2336,10 @@ class Uploader:
         self.full_copy_semaphore = threading.Semaphore(self.full_copy_workers)
         self.incremental_mirror_enabled = bool(
             staging.get("incremental_mirror_enabled", False)
+        )
+        self.incremental_mirror_workers = min(
+            self.capture_workers,
+            max(1, int(staging.get("incremental_mirror_workers", 1))),
         )
         self.incremental_mirror_instance_id = f"{os.getpid()}-{now_us()}"
         self.incremental_mirror_interval = max(
@@ -2332,6 +2419,7 @@ class Uploader:
         self.next_active_status_at = 0.0
         self.next_receiver_status_at = 0.0
         self.receiver_pause_phase = ""
+        self.receiver_recording_active = False
         self.running = False
         self.local_remuxes = 0
         self.nas_fallback_remuxes = 0
@@ -2364,6 +2452,9 @@ class Uploader:
         ]
         self.incremental_mirror_worker_stop = threading.Event()
         self.incremental_mirror_io_active = threading.Event()
+        self.incremental_mirror_io_lock = threading.Lock()
+        self.incremental_mirror_io_workers = 0
+        self.incremental_mirror_round_robin_cursor = 0
         self.incremental_mirror_worker_thread: threading.Thread | None = None
         self.incremental_mirror_worker_running = False
         self.priority_capture_lock = threading.Lock()
@@ -2374,6 +2465,7 @@ class Uploader:
         self.status_lock = threading.RLock()
         self.receiver_status_lock = threading.Lock()
         self.cached_pending_status: dict[str, int] | None = None
+        self.pending_metrics_refreshed_us = 0
 
         if not self.enabled:
             return
@@ -2386,6 +2478,11 @@ class Uploader:
     def write_status(self, refresh_metrics: bool = False) -> None:
         with self.status_lock:
             if refresh_metrics or self.cached_pending_status is None:
+                # This timestamp is a safety watermark, so capture it before
+                # walking the trees. A scan that starts before a receiver
+                # finalizer publishes its marker may miss that segment even if
+                # the scan itself completes after finalization.
+                metrics_scan_started_us = now_us()
                 local_segments = discover_local_segments(self.staging_root)
                 local_cache_segments = discover_local_capture_caches(self.staging_root)
                 capture_segments = discover_capture_segments(self.capture_queue_root)
@@ -2410,8 +2507,16 @@ class Uploader:
                     "publish_journal_count": len(publish_journals),
                     "publish_recovery_count": publish_recovery_count,
                 }
+                self.pending_metrics_refreshed_us = metrics_scan_started_us
             metrics = self.cached_pending_status
             assert metrics is not None
+            nas_write_bytes, nas_write_rate_mbps = self.nas_write_limiter.snapshot()
+            pending_bytes = metrics["local_bytes"] + metrics["capture_bytes"]
+            pending_transfer_eta_seconds = (
+                round(pending_bytes * 8.0 / (nas_write_rate_mbps * 1_000_000.0))
+                if pending_bytes > 0 and nas_write_rate_mbps >= 1.0
+                else 0
+            )
             atomic_json_write(
                 self.status_path,
                 {
@@ -2446,7 +2551,9 @@ class Uploader:
                         + metrics["capture_count"]
                         + metrics["publish_recovery_count"]
                     ),
-                    "pending_bytes": metrics["local_bytes"] + metrics["capture_bytes"],
+                    "pending_bytes": pending_bytes,
+                    "pending_metrics_refreshed_us": self.pending_metrics_refreshed_us,
+                    "pending_transfer_eta_seconds": pending_transfer_eta_seconds,
                     "oldest_pending_age_ms": max(
                         metrics["local_oldest_us"],
                         metrics["capture_oldest_us"],
@@ -2499,6 +2606,8 @@ class Uploader:
                     "incremental_mirror_resumed_segments": self.incremental_mirror_resumed_segments,
                     "incremental_mirror_worker_running": self.incremental_mirror_worker_running,
                     "incremental_mirror_io_active": self.incremental_mirror_io_active.is_set(),
+                    "incremental_mirror_workers": self.incremental_mirror_workers,
+                    "incremental_mirror_io_workers": self.incremental_mirror_io_workers,
                     "incremental_mirror_current_segment": self.incremental_mirror_current_segment,
                     "incremental_mirror_current_bytes_done": self.incremental_mirror_current_bytes_done,
                     "incremental_mirror_current_bytes_total": self.incremental_mirror_current_bytes_total,
@@ -2510,8 +2619,13 @@ class Uploader:
                     "finalize_workers": self.finalize_workers,
                     "capture_workers": self.capture_workers,
                     "full_copy_workers": self.full_copy_workers,
+                    "active_recording_full_copy_workers": self.active_recording_full_copy_workers,
+                    "receiver_recording_active": self.receiver_recording_active,
                     "upload_bandwidth_limit_mbps": self.bandwidth_mbps,
                     "full_copy_bandwidth_limit_mbps": self.full_copy_bandwidth_mbps,
+                    "nas_write_shared_limit_mbps": self.bandwidth_mbps,
+                    "nas_write_submitted_bytes": nas_write_bytes,
+                    "nas_write_recent_mbps": round(nas_write_rate_mbps, 2),
                     "staging_available_bytes": self.staging_available_bytes(),
                     "staging_emergency_mode": self.staging_disk_emergency(),
                     "staging_pressure_mode": self.staging_disk_pressure(),
@@ -2588,6 +2702,10 @@ class Uploader:
                         status = json.load(response)
                     if not isinstance(status, dict):
                         raise ValueError("receiver status must be a JSON object")
+                    self.receiver_recording_active = bool(
+                        status.get("recording_all")
+                        or status.get("recording_start_pending")
+                    )
                     self.receiver_pause_phase = receiver_pause_phase(
                         status,
                         now_us(),
@@ -2932,7 +3050,22 @@ class Uploader:
             mode = "r+b" if path.is_file() else "w+b"
             handle = path.open(mode)
             self.incremental_mirror_handles[key] = handle
+            self.incremental_mirror_last_fsync[key] = time.monotonic()
             return handle
+
+    def begin_incremental_mirror_io(self) -> None:
+        with self.incremental_mirror_io_lock:
+            self.incremental_mirror_io_workers += 1
+            self.incremental_mirror_io_active.set()
+
+    def end_incremental_mirror_io(self) -> None:
+        with self.incremental_mirror_io_lock:
+            self.incremental_mirror_io_workers = max(
+                0,
+                self.incremental_mirror_io_workers - 1,
+            )
+            if self.incremental_mirror_io_workers == 0:
+                self.incremental_mirror_io_active.clear()
 
     def incremental_mirror_lock(
         self,
@@ -2966,6 +3099,7 @@ class Uploader:
     def close_incremental_mirror_handles(
         self,
         mirror_directory: Path | None = None,
+        durable: bool = True,
     ) -> None:
         with self.incremental_mirror_handle_lock:
             for key, handle in list(self.incremental_mirror_handles.items()):
@@ -2981,7 +3115,7 @@ class Uploader:
                     # shutdown, do not let an unavailable NAS delay process
                     # termination; the local staged recording remains the
                     # source of truth and a new uploader instance revalidates it.
-                    if not STOP_REQUESTED:
+                    if durable and not STOP_REQUESTED:
                         os.fsync(handle.fileno())
                         self.incremental_mirror_fsyncs += 1
                     handle.close()
@@ -3019,7 +3153,7 @@ class Uploader:
         mirror_directory: Path,
     ) -> bool:
         if local_segment_is_closed(segment):
-            self.close_incremental_mirror_handles(mirror_directory)
+            self.close_incremental_mirror_handles(mirror_directory, durable=False)
             return True
         if (self.capture_queue_root / capture_queue_key(capture)).exists():
             return False
@@ -3063,7 +3197,7 @@ class Uploader:
                 if STOP_REQUESTED or self.incremental_mirror_worker_stop.is_set():
                     break
                 if local_segment_is_closed(segment):
-                    self.close_incremental_mirror_handles(mirror_directory)
+                    self.close_incremental_mirror_handles(mirror_directory, durable=False)
                     return True
                 try:
                     source_size = source.stat().st_size
@@ -3093,7 +3227,7 @@ class Uploader:
                     if isinstance(files.get(destination_name), dict)
                     else None
                 )
-                self.incremental_mirror_io_active.set()
+                self.begin_incremental_mirror_io()
                 try:
                     updated, copied = mirror_complete_file_chunks(
                         source,
@@ -3101,7 +3235,7 @@ class Uploader:
                         previous_entry,
                         self.incremental_mirror_chunk_bytes,
                         self.incremental_mirror_lag_bytes,
-                        self.bandwidth_mbps,
+                        0,
                         progress=lambda done, total: self.update_incremental_mirror_status(
                             bytes_done=done,
                             bytes_total=total,
@@ -3122,9 +3256,10 @@ class Uploader:
                             mirror_directory / destination_name
                         ),
                         max_copy_bytes=self.incremental_mirror_max_copy_bytes,
+                        shared_limiter=self.nas_write_limiter,
                     )
                 finally:
-                    self.incremental_mirror_io_active.clear()
+                    self.end_incremental_mirror_io()
                 durable_chunks = min(
                     len(updated.get("chunk_hashes") or []),
                     max(0, int(updated.get("durable_chunks") or 0)),
@@ -3154,13 +3289,13 @@ class Uploader:
                 )
             return copied_total > 0
         except InterruptedError:
-            self.close_incremental_mirror_handles(mirror_directory)
+            self.close_incremental_mirror_handles(mirror_directory, durable=False)
             return not STOP_REQUESTED
         except FileNotFoundError:
-            self.close_incremental_mirror_handles(mirror_directory)
+            self.close_incremental_mirror_handles(mirror_directory, durable=False)
             return not STOP_REQUESTED
         except Exception as error:
-            self.close_incremental_mirror_handles(mirror_directory)
+            self.close_incremental_mirror_handles(mirror_directory, durable=False)
             self.incremental_mirror_failures += 1
             self.incremental_mirror_last_error = f"{type(error).__name__}: {error}"
             current_us = now_us()
@@ -3197,12 +3332,50 @@ class Uploader:
         )
         active_segments = discover_active_segments(self.staging_root)
         self.incremental_mirror_active_segments = len(active_segments)
+        if not active_segments:
+            return False
+
+        route_heads: dict[str, tuple[Path, dict[str, Any], dict[str, Path]]] = {}
+        for item in active_segments:
+            segment = item[0]
+            try:
+                relative = segment.relative_to(self.staging_root)
+                route = relative.parts[0] if relative.parts else str(segment.parent)
+            except ValueError:
+                route = str(segment.parent)
+            route_heads.setdefault(route, item)
+
+        candidates = list(route_heads.values())
+        start = self.incremental_mirror_round_robin_cursor % len(candidates)
+        ordered = candidates[start:] + candidates[:start]
+        selected = ordered[: self.incremental_mirror_workers]
+        self.incremental_mirror_round_robin_cursor = (
+            start + len(selected)
+        ) % len(candidates)
+
+        if len(selected) == 1:
+            segment, capture, sources = selected[0]
+            return self.process_active_mirror(segment, capture, sources)
+
         progress = False
-        for segment, capture, sources in active_segments:
-            if STOP_REQUESTED or self.incremental_mirror_worker_stop.is_set():
-                break
-            if self.process_active_mirror(segment, capture, sources):
-                progress = True
+        with ThreadPoolExecutor(
+            max_workers=len(selected),
+            thread_name_prefix="gwv3-mirror",
+        ) as executor:
+            futures = [
+                executor.submit(self.process_active_mirror, *item)
+                for item in selected
+            ]
+            for future in futures:
+                if STOP_REQUESTED or self.incremental_mirror_worker_stop.is_set():
+                    break
+                try:
+                    progress = future.result() or progress
+                except Exception as error:
+                    self.incremental_mirror_failures += 1
+                    self.incremental_mirror_last_error = (
+                        f"{type(error).__name__}: {error}"
+                    )
         return progress
 
     def incremental_mirror_worker_loop(self) -> None:
@@ -3301,7 +3474,13 @@ class Uploader:
                 capture,
             )
             with self.incremental_mirror_lock(mirror_directory):
-                self.close_incremental_mirror_handles(mirror_directory)
+                # The final capture below verifies every reused chunk and
+                # fsyncs all files as one durability barrier. Syncing the
+                # disposable mirror here only adds duplicate CIFS latency.
+                self.close_incremental_mirror_handles(
+                    mirror_directory,
+                    durable=False,
+                )
                 reusable_bytes, capture_bytes = incremental_mirror_reuse_bytes(
                     segment,
                     self.capture_queue_root,
@@ -3317,18 +3496,22 @@ class Uploader:
                 mirror_reuse_percent
                 < self.parallel_capture_min_mirror_reuse_percent
             )
-            capture_bandwidth_mbps = (
-                self.full_copy_bandwidth_mbps
-                if needs_full_copy_slot
-                else self.bandwidth_mbps
-            )
             print(
                 f"recording capture planned source={segment} "
                 f"mirror_reuse_percent={mirror_reuse_percent:.2f} "
                 f"full_copy_slot={str(needs_full_copy_slot).lower()} "
-                f"bandwidth_limit_mbps={capture_bandwidth_mbps:g}",
+                f"shared_bandwidth_limit_mbps={self.bandwidth_mbps:g}",
                 flush=True,
             )
+
+            if track_active:
+                progress_callback = lambda done, total: self.update_active_status(
+                    phase="capturing_to_nas",
+                    bytes_done=done,
+                    bytes_total=total,
+                )
+            else:
+                progress_callback = lambda _done, _total: self.update_active_status()
 
             def publish_once() -> tuple[Path, bool]:
                 self.wait_for_receiver_io("capturing_to_nas")
@@ -3360,26 +3543,13 @@ class Uploader:
                         self.capture_queue_root,
                         capture,
                         capture_name,
-                        capture_bandwidth_mbps,
-                        progress=(
-                            lambda done, total: self.update_active_status(
-                                phase="capturing_to_nas",
-                                bytes_done=done,
-                                bytes_total=total,
-                            )
-                        )
-                        if track_active
-                        else None,
-                        pause=lambda: (
-                            (
-                                needs_full_copy_slot
-                                and self.incremental_mirror_io_active.is_set()
-                            )
-                            or self.should_pause_for_receiver_io(
-                                "capturing_to_nas"
-                            )
+                        0,
+                        progress=progress_callback,
+                        pause=lambda: self.should_pause_for_receiver_io(
+                            "capturing_to_nas"
                         ),
                         incremental_mirror_instance_id=self.incremental_mirror_instance_id,
+                        shared_limiter=self.nas_write_limiter,
                     )
                 finally:
                     if priority_capture_started:
@@ -3537,9 +3707,14 @@ class Uploader:
         priority_heads = [
             segment for segment in route_heads if priorities[segment][0] == 0
         ]
+        full_copy_limit = (
+            self.active_recording_full_copy_workers
+            if self.receiver_recording_active
+            else self.full_copy_workers
+        )
         full_copy_heads = [
             segment for segment in route_heads if priorities[segment][0] != 0
-        ][: self.full_copy_workers]
+        ][:full_copy_limit]
         selected_segments = (
             priority_heads + full_copy_heads
         )[: self.capture_workers]
@@ -4047,6 +4222,15 @@ class Uploader:
         if self.process_capture_batch(capture_segments):
             progress = True
         progress = self.reconcile_local_capture_caches() or progress
+        # Refresh recording state before choosing a full-copy batch. Without
+        # this, the first batch after recording starts can use the stale idle
+        # concurrency until a worker performs its first receiver-I/O check.
+        with self.receiver_status_lock:
+            self.next_receiver_status_at = 0.0
+        self.should_pause_for_receiver_io(
+            "capturing_batch_to_nas",
+            publish_status=False,
+        )
         local_segments = discover_local_segments(self.staging_root)
         self.write_status(refresh_metrics=True)
         if not STOP_REQUESTED and self.process_local_batch(local_segments):

@@ -231,7 +231,7 @@ stream_type == "rgb" && rgb_recorded == 1 && recording_window_valid == 1
 下游如果要做 RGB/Depth 配对：
 
 1. RGB 使用 `rgb_recorded=1` 的行。
-2. Depth 使用 `stream_type=depth_raw && recording_window_valid=1` 的行。
+2. Depth 使用 `stream_type=depth && recording_window_valid=1` 的行。
 3. 优先按 `global_timestamp_us` 做最近邻；如果 `clock_sync_valid=0`，再回退到 `frame_system_timestamp_us`。
 4. 输出 pair 时保留 `rgb_frame_id`、`depth_frame_id`、`rgb_timestamp_us`、`depth_timestamp_us` 和时间差。
 
