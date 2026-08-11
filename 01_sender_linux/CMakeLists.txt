@@ -217,6 +217,13 @@ if(BUILD_TESTING)
     target_compile_options(rgb_transport_recovery_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME rgb_transport_recovery COMMAND rgb_transport_recovery_test)
 
+    add_executable(scheduled_keyframe_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_scheduled_keyframe.cpp"
+    )
+    target_include_directories(scheduled_keyframe_test PRIVATE include)
+    target_compile_options(scheduled_keyframe_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME scheduled_keyframe COMMAND scheduled_keyframe_test)
+
     add_test(
         NAME sender_config_validation
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_config.py"

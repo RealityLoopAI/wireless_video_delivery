@@ -49,6 +49,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_sync_input_guard.py
     )
     add_test(
+        NAME rgb_sync_manifest_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_build_rgb_sync_manifest.py
+    )
+    add_test(
         NAME recording_uploader_fault_injection
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_uploader.py
                 --python ${Python3_EXECUTABLE}

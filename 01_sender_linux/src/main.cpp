@@ -5,6 +5,7 @@
 #include "gwv3_sender/gst_h264_encoder.hpp"
 #include "gwv3_sender/logger.hpp"
 #include "gwv3_sender/rgb_transport_recovery.hpp"
+#include "gwv3_sender/scheduled_keyframe.hpp"
 #include "gwv3_sender/transport.hpp"
 
 #include <algorithm>
@@ -332,6 +333,8 @@ struct CameraRuntime {
     uint64_t force_rgb_keyframe_applied = 0;
     uint64_t force_rgb_keyframe_observed = 0;
     uint64_t force_rgb_keyframe_requested_at_us = 0;
+    uint64_t force_rgb_keyframe_target_sender_system_us = 0;
+    uint64_t force_rgb_keyframe_target_global_us = 0;
     uint64_t rgb_corrupt_jpeg = 0;
     uint64_t rgb_dropped = 0;
     uint64_t rgb_timing_mismatch_drops = 0;
@@ -365,7 +368,13 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point web_rgb_preview_suppressed_until = std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point gemini305_manual_exposure_reapply_at = std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point next_adaptive_exposure_sample = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point adaptive_exposure_last_evaluation =
+        std::chrono::steady_clock::time_point::min();
     std::chrono::steady_clock::time_point next_adaptive_exposure_warning = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point adaptive_exposure_metadata_deadline =
+        std::chrono::steady_clock::time_point::min();
+    bool adaptive_exposure_waiting_for_metadata = false;
+    int adaptive_exposure_discard_frames_remaining = 0;
     bool gemini305_manual_exposure_reapply_pending = false;
     bool publish_warmup_active = false;
     bool publish_warmup_exposure_verified = true;
@@ -2785,24 +2794,60 @@ void arm_rgb_keyframe_guard(CameraRuntime &camera, Logger &logger, const std::st
     }
 }
 
-void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::string &reason) {
+void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::string &reason,
+                          uint64_t target_sender_system_us = 0, uint64_t target_global_us = 0) {
     uint64_t request_id = 0;
+    uint64_t effective_target_sender_system_us = target_sender_system_us;
+    uint64_t effective_target_global_us = target_global_us;
+    const bool low_priority_immediate_request = reason.rfind("web_rgb_", 0) == 0;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
+        const bool already_pending = camera.force_rgb_keyframe_applied < camera.force_rgb_keyframe_requests;
         request_id = ++camera.force_rgb_keyframe_requests;
         camera.force_rgb_keyframe_requested_at_us = now_us();
+        if(!already_pending) {
+            camera.force_rgb_keyframe_target_sender_system_us = target_sender_system_us;
+            camera.force_rgb_keyframe_target_global_us = target_global_us;
+        }
+        else {
+            const uint64_t merged_target = merge_keyframe_target(
+                camera.force_rgb_keyframe_target_sender_system_us,
+                target_sender_system_us,
+                low_priority_immediate_request);
+            if(merged_target != camera.force_rgb_keyframe_target_sender_system_us) {
+                camera.force_rgb_keyframe_target_sender_system_us = merged_target;
+                camera.force_rgb_keyframe_target_global_us = merged_target == target_sender_system_us
+                                                                    ? target_global_us
+                                                                    : 0;
+            }
+        }
+        effective_target_sender_system_us = camera.force_rgb_keyframe_target_sender_system_us;
+        effective_target_global_us = camera.force_rgb_keyframe_target_global_us;
     }
     logger.info("rgb keyframe requested camera_id=" + camera.config.camera_id + " request_id=" + std::to_string(request_id)
-                + (reason.empty() ? "" : " reason=" + reason));
+                + (reason.empty() ? "" : " reason=" + reason)
+                + (effective_target_global_us > 0
+                       ? " target_global_us=" + std::to_string(effective_target_global_us)
+                       : "")
+                + (effective_target_sender_system_us > 0
+                       ? " target_sender_system_us=" + std::to_string(effective_target_sender_system_us)
+                       : ""));
 }
 
-bool consume_rgb_keyframe_request(CameraRuntime &camera, uint64_t &request_id) {
+bool consume_rgb_keyframe_request(CameraRuntime &camera, uint64_t frame_system_timestamp_us,
+                                  uint64_t &request_id) {
     std::lock_guard<std::mutex> lock(camera.mutex);
     if(camera.force_rgb_keyframe_applied >= camera.force_rgb_keyframe_requests) {
         return false;
     }
+    const uint64_t target_us = camera.force_rgb_keyframe_target_sender_system_us;
+    if(!scheduled_keyframe_due(target_us, frame_system_timestamp_us, now_us())) {
+        return false;
+    }
     camera.force_rgb_keyframe_applied = camera.force_rgb_keyframe_requests;
     request_id = camera.force_rgb_keyframe_applied;
+    camera.force_rgb_keyframe_target_sender_system_us = 0;
+    camera.force_rgb_keyframe_target_global_us = 0;
     return true;
 }
 
@@ -2811,10 +2856,11 @@ void report_forced_rgb_keyframe(CameraRuntime &camera, Logger &logger) {
     uint64_t requested_at_us = 0;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
-        if(camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_requests) {
+        if(camera.force_rgb_keyframe_applied == 0
+           || camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_applied) {
             return;
         }
-        camera.force_rgb_keyframe_observed = camera.force_rgb_keyframe_requests;
+        camera.force_rgb_keyframe_observed = camera.force_rgb_keyframe_applied;
         request_id = camera.force_rgb_keyframe_observed;
         requested_at_us = camera.force_rgb_keyframe_requested_at_us;
     }
@@ -3313,11 +3359,50 @@ void maybe_update_adaptive_exposure(CameraRuntime &camera, const std::shared_ptr
     }
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
+        if(camera.adaptive_exposure_discard_frames_remaining > 0) {
+            --camera.adaptive_exposure_discard_frames_remaining;
+            camera.live.adaptive_last_reason = "discarding_unsettled_frames";
+            return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
         if(now < camera.next_adaptive_exposure_sample) {
             return;
         }
         camera.next_adaptive_exposure_sample =
             now + std::chrono::milliseconds(camera.config.adaptive_exposure.interval_ms);
+    }
+
+    bool waiting_for_metadata = false;
+    bool metadata_wait_timed_out = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(camera.adaptive_exposure_waiting_for_metadata) {
+            const int expected_exposure = camera.adaptive_exposure_controller->exposure();
+            const int expected_gain = camera.adaptive_exposure_controller->gain();
+            const bool metadata_available = camera.live.color_exposure >= 0 && camera.live.color_gain >= 0;
+            const bool metadata_matches = !metadata_available
+                                          || (camera.live.color_exposure == expected_exposure
+                                              && camera.live.color_gain == expected_gain);
+            if(metadata_matches) {
+                camera.adaptive_exposure_waiting_for_metadata = false;
+            }
+            else if(now < camera.adaptive_exposure_metadata_deadline) {
+                camera.live.adaptive_last_reason = "awaiting_applied_controls";
+                waiting_for_metadata = true;
+            }
+            else {
+                camera.adaptive_exposure_waiting_for_metadata = false;
+                metadata_wait_timed_out = true;
+            }
+        }
+    }
+    if(waiting_for_metadata) {
+        return;
+    }
+    if(metadata_wait_timed_out) {
+        logger.warn("adaptive exposure metadata wait timed out camera_id=" + camera.config.camera_id);
     }
 
     std::string error;
@@ -3339,15 +3424,27 @@ void maybe_update_adaptive_exposure(CameraRuntime &camera, const std::shared_ptr
         return;
     }
 
-    const auto decision = camera.adaptive_exposure_controller->evaluate(*sample);
+    double evaluation_dt_seconds = static_cast<double>(camera.config.adaptive_exposure.interval_ms) / 1000.0;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(camera.adaptive_exposure_last_evaluation != std::chrono::steady_clock::time_point::min()) {
+            evaluation_dt_seconds =
+                std::chrono::duration<double>(now - camera.adaptive_exposure_last_evaluation).count();
+        }
+        camera.adaptive_exposure_last_evaluation = now;
+    }
+    const auto decision = camera.adaptive_exposure_controller->evaluate(*sample, evaluation_dt_seconds);
+    const auto control_sample = camera.adaptive_exposure_controller->metering_ready()
+                                    ? camera.adaptive_exposure_controller->metering_sample()
+                                    : *sample;
     const bool applied = apply_adaptive_exposure_decision(camera, decision, logger, error);
     bool should_log_failure = false;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
-        camera.live.adaptive_luma_p50 = sample->p50_luma;
-        camera.live.adaptive_luma_p95 = sample->p95_luma;
-        camera.live.adaptive_luma_p99 = sample->p99_luma;
-        camera.live.adaptive_highlight_fraction = sample->highlight_fraction;
+        camera.live.adaptive_luma_p50 = control_sample.p50_luma;
+        camera.live.adaptive_luma_p95 = control_sample.p95_luma;
+        camera.live.adaptive_luma_p99 = control_sample.p99_luma;
+        camera.live.adaptive_highlight_fraction = control_sample.highlight_fraction;
         camera.live.adaptive_requested_exposure = camera.adaptive_exposure_controller->exposure();
         camera.live.adaptive_requested_gain = camera.adaptive_exposure_controller->gain();
         camera.live.adaptive_samples = camera.adaptive_exposure_controller->sample_count();
@@ -3363,6 +3460,15 @@ void maybe_update_adaptive_exposure(CameraRuntime &camera, const std::shared_ptr
         else if(decision.apply) {
             camera.next_adaptive_exposure_sample =
                 now + std::chrono::milliseconds(camera.config.adaptive_exposure.settle_ms);
+            camera.adaptive_exposure_discard_frames_remaining =
+                camera.config.adaptive_exposure.discard_frames_after_adjustment;
+            camera.adaptive_exposure_waiting_for_metadata = true;
+            camera.adaptive_exposure_metadata_deadline =
+                now + std::chrono::milliseconds(std::max(2000, camera.config.adaptive_exposure.settle_ms * 4));
+        }
+        else if(decision.reason != "dark_hysteresis" && decision.reason != "metering_warmup") {
+            camera.next_adaptive_exposure_sample =
+                now + std::chrono::milliseconds(camera.config.adaptive_exposure.stable_interval_ms);
         }
     }
     if(should_log_failure) {
@@ -4775,7 +4881,8 @@ void set_web_rgb_preview_active(CameraRuntime &camera, bool active, int lease_ms
 void handle_receiver_control_message(const AppConfig &config,
                                      const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
                                      Logger &logger,
-                                     const std::string &payload) {
+                                     const std::string &payload,
+                                     const ClockSyncClient *clock_sync) {
     const auto root = parse_json_object(trim_copy(payload));
     if(!root) {
         return;
@@ -4856,12 +4963,22 @@ void handle_receiver_control_message(const AppConfig &config,
         return;
     }
 
+    const uint64_t target_global_us = json_uint64_or(*root, "target_global_us", 0);
+    uint64_t target_sender_system_us = target_global_us;
+    if(target_global_us > 0 && clock_sync) {
+        const auto state = clock_sync->state();
+        if(state.valid) {
+            target_sender_system_us = sender_system_time_from_global(target_global_us, state.offset_us);
+        }
+    }
+
     for(const auto &camera : cameras) {
         if(!camera) {
             continue;
         }
         if(all_cameras || camera->config.camera_id == target_camera) {
-            request_rgb_keyframe(*camera, logger, reason.empty() ? "receiver_control" : reason);
+            request_rgb_keyframe(*camera, logger, reason.empty() ? "receiver_control" : reason,
+                                 target_sender_system_us, target_global_us);
             ++matched;
         }
     }
@@ -4875,7 +4992,8 @@ void process_receiver_controls(Sender &transport,
                                const AppConfig &config,
                                const std::vector<std::unique_ptr<CameraRuntime>> &cameras,
                                Logger &logger,
-                               std::mutex &transport_mutex) {
+                               std::mutex &transport_mutex,
+                               const ClockSyncClient *clock_sync) {
     for(int i = 0; i < 16; ++i) {
         std::optional<std::string> payload;
         {
@@ -4885,7 +5003,7 @@ void process_receiver_controls(Sender &transport,
         if(!payload) {
             return;
         }
-        handle_receiver_control_message(config, cameras, logger, *payload);
+        handle_receiver_control_message(config, cameras, logger, *payload, clock_sync);
     }
 }
 
@@ -5104,6 +5222,8 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.web_preview_encoder.reset();
     camera.jpeg_dual_encoder.reset();
     camera.adaptive_exposure_controller.reset();
+    camera.adaptive_exposure_last_evaluation = std::chrono::steady_clock::time_point::min();
+    camera.adaptive_exposure_discard_frames_remaining = 0;
     camera.v4l2_capture.reset();
     camera.jpeg_dual_encoder_disabled = false;
     camera.jpeg_dual_no_main_output = 0;
@@ -5326,7 +5446,11 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.next_capture_stall_reconnect = now;
         runtime.gemini305_manual_exposure_reapply_pending = gemini305_manual_exposure;
         runtime.next_adaptive_exposure_sample = now;
+        runtime.adaptive_exposure_last_evaluation = std::chrono::steady_clock::time_point::min();
         runtime.next_adaptive_exposure_warning = now;
+        runtime.adaptive_exposure_metadata_deadline = std::chrono::steady_clock::time_point::min();
+        runtime.adaptive_exposure_waiting_for_metadata = false;
+        runtime.adaptive_exposure_discard_frames_remaining = 0;
         runtime.gemini305_manual_exposure_reapply_at = runtime.gemini305_manual_exposure_reapply_pending
                                                           ? now + std::chrono::seconds(2)
                                                           : std::chrono::steady_clock::time_point::min();
@@ -6224,7 +6348,8 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                     }
                     else {
                         uint64_t force_keyframe_request_id = 0;
-                        if(consume_rgb_keyframe_request(camera, force_keyframe_request_id)) {
+                        if(consume_rgb_keyframe_request(camera, frame.system_timestamp_us,
+                                                        force_keyframe_request_id)) {
                             camera.encoder->request_keyframe();
                             logger.info("rgb keyframe force event queued camera_id=" + camera.config.camera_id
                                         + " request_id=" + std::to_string(force_keyframe_request_id));
@@ -6652,7 +6777,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                     try {
                         if(camera.jpeg_dual_encoder && camera.jpeg_dual_encoder->ok()) {
                             uint64_t force_keyframe_request_id = 0;
-                            if(consume_rgb_keyframe_request(camera, force_keyframe_request_id)) {
+                            if(consume_rgb_keyframe_request(camera, rgb_system_timestamp_us,
+                                                            force_keyframe_request_id)) {
                                 camera.jpeg_dual_encoder->request_keyframe();
                                 logger.info("rgb keyframe force event queued camera_id=" + camera.config.camera_id
                                             + " request_id=" + std::to_string(force_keyframe_request_id));
@@ -6713,7 +6839,8 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                             }
                             else {
                                 uint64_t force_keyframe_request_id = 0;
-                                if(consume_rgb_keyframe_request(camera, force_keyframe_request_id)) {
+                                if(consume_rgb_keyframe_request(camera, rgb_system_timestamp_us,
+                                                                force_keyframe_request_id)) {
                                     camera.encoder->request_keyframe();
                                     logger.info("rgb keyframe force event queued camera_id=" + camera.config.camera_id
                                                 + " request_id=" + std::to_string(force_keyframe_request_id));
@@ -7413,7 +7540,8 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
 
     while(g_running && std::chrono::steady_clock::now() < stop_at) {
         const auto now = std::chrono::steady_clock::now();
-        process_receiver_controls(status_transport, config, cameras, logger, status_transport_mutex);
+        process_receiver_controls(status_transport, config, cameras, logger, status_transport_mutex,
+                                  clock_sync.get());
         poll_rgb_snapshot_requests(config, cameras, logger, now, next_rgb_snapshot_poll);
         if(now >= next_rgb_snapshot_expiry) {
             expire_rgb_snapshot_requests(config, cameras, logger, now);

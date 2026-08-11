@@ -86,12 +86,52 @@ def run(args) -> None:
         expect_invalid(args.sender, temporary, "adaptive_exposure_overlapping_luma_targets", invalid)
 
         invalid = copy.deepcopy(adaptive_gemini)
-        invalid["cameras"][0]["adaptive_exposure"]["settle_ms"] = 99
+        invalid["cameras"][0]["adaptive_exposure"]["interval_ms"] = 32
+        expect_invalid(args.sender, temporary, "adaptive_exposure_interval_below_one_frame", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["stable_interval_ms"] = 32
+        expect_invalid(args.sender, temporary, "adaptive_exposure_stable_interval_too_short", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["settle_ms"] = 32
         expect_invalid(args.sender, temporary, "adaptive_exposure_unsettled_feedback", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["discard_frames_after_adjustment"] = 31
+        expect_invalid(args.sender, temporary, "adaptive_exposure_excessive_discard_frames", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["direction_reversal_samples"] = 0
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_reversal_samples", invalid)
 
         invalid = copy.deepcopy(adaptive_gemini)
         invalid["cameras"][0]["adaptive_exposure"]["max_exposure_step"] = 1
         expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_slew", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["max_recovery_exposure_step"] = 1000
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_recovery_slew", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["max_gain_step"] = 0
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_gain_slew", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["control_mode"] = "unknown"
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_control_mode", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["metering_window"] = 2
+        expect_invalid(args.sender, temporary, "adaptive_exposure_even_metering_window", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["highlight_recovery_ratio"] = 1.0
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_highlight_hysteresis", invalid)
+
+        invalid = copy.deepcopy(adaptive_gemini)
+        invalid["cameras"][0]["adaptive_exposure"]["highlight_release_samples"] = 0
+        expect_invalid(args.sender, temporary, "adaptive_exposure_invalid_highlight_release", invalid)
 
         trailing = temporary / "trailing.json"
         trailing.write_text(json.dumps(base) + "{}", encoding="utf-8")

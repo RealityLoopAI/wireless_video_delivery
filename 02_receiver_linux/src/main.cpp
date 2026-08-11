@@ -1168,6 +1168,7 @@ struct Config {
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
     int segment_seconds = 300;
+    int segment_keyframe_lead_ms = 500;
     int recording_start_lead_ms = 1000;
     int depth_fps = 30;
     bool write_debug_h264 = false;
@@ -1312,6 +1313,8 @@ Config load_config(const std::string &path) {
     cfg.state_path = string_value(root, "state_path", cfg.state_path);
     cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
     cfg.segment_seconds = int_value(root, "segment_seconds", cfg.segment_seconds);
+    cfg.segment_keyframe_lead_ms =
+        int_value(root, "segment_keyframe_lead_ms", cfg.segment_keyframe_lead_ms);
     cfg.recording_start_lead_ms = int_value(root, "recording_start_lead_ms", cfg.recording_start_lead_ms);
     cfg.depth_fps = int_value(root, "depth_fps", cfg.depth_fps);
     cfg.write_debug_h264 = bool_value(root, "write_debug_h264", cfg.write_debug_h264);
@@ -1341,6 +1344,9 @@ Config load_config(const std::string &path) {
 
     if(cfg.segment_seconds <= 0) {
         throw std::runtime_error("segment_seconds must be positive");
+    }
+    if(cfg.segment_keyframe_lead_ms < 0 || cfg.segment_keyframe_lead_ms > 5000) {
+        throw std::runtime_error("segment_keyframe_lead_ms must be between 0 and 5000");
     }
     if(cfg.recording_start_lead_ms < 0 || cfg.recording_start_lead_ms > 10000) {
         throw std::runtime_error("recording_start_lead_ms must be between 0 and 10000");
@@ -3385,6 +3391,33 @@ struct RecordingWindow {
     uint64_t end_global_us = 0;
 };
 
+struct RecordingSegmentTimeline {
+    uint64_t index = 0;
+    uint64_t start_global_us = 0;
+    uint64_t end_global_us = 0;
+};
+
+RecordingSegmentTimeline recording_segment_timeline(const RecordingWindow &window,
+                                                     int segment_seconds,
+                                                     uint64_t reference_global_us) {
+    RecordingSegmentTimeline timeline;
+    if(window.start_global_us == 0 || segment_seconds <= 0) {
+        timeline.start_global_us = reference_global_us;
+        return timeline;
+    }
+    const uint64_t duration_us = static_cast<uint64_t>(segment_seconds) * 1'000'000ull;
+    if(reference_global_us > window.start_global_us) {
+        timeline.index = (reference_global_us - window.start_global_us) / duration_us;
+    }
+    const uint64_t max_index = (std::numeric_limits<uint64_t>::max() - window.start_global_us) / duration_us;
+    timeline.index = std::min(timeline.index, max_index);
+    timeline.start_global_us = window.start_global_us + timeline.index * duration_us;
+    timeline.end_global_us = timeline.start_global_us <= std::numeric_limits<uint64_t>::max() - duration_us
+                                 ? timeline.start_global_us + duration_us
+                                 : std::numeric_limits<uint64_t>::max();
+    return timeline;
+}
+
 struct RecordJob {
     std::shared_ptr<const MediaPacket> packet;
     std::string sender_id;
@@ -3539,6 +3572,18 @@ public:
         return start_us_;
     }
 
+    uint64_t segment_index() const {
+        return segment_timeline_.index;
+    }
+
+    uint64_t segment_window_start_global_us() const {
+        return segment_timeline_.start_global_us;
+    }
+
+    uint64_t segment_window_end_global_us() const {
+        return segment_timeline_.end_global_us;
+    }
+
     void mark_end_us(uint64_t end_us) {
         if(end_us_ == 0) {
             end_us_ = end_us;
@@ -3553,13 +3598,14 @@ public:
 
     void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &camera_name,
                const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json,
-               const RecordingWindow &recording_window, Logger &logger) {
+               const RecordingWindow &recording_window, uint64_t segment_reference_global_us, Logger &logger) {
         close(cfg, sender_id, camera_id, announce_json, logger);
         ScopeExit rollback_guard([this] { reset_after_close(); });
         start_us_ = now_us();
         end_us_ = 0;
         recording_window_ = recording_window;
-        start_steady_ = std::chrono::steady_clock::now();
+        segment_timeline_ = recording_segment_timeline(recording_window, cfg.segment_seconds,
+                                                       segment_reference_global_us);
         camera_name_ = camera_name;
         storage_key_ = storage_key.empty() ? camera_key(sender_id, camera_id) : storage_key;
         file_prefix_ = file_prefix;
@@ -3582,8 +3628,11 @@ public:
         if(root_ec || space.available < cfg.min_free_disk_bytes) {
             throw std::runtime_error("insufficient free space under recording root: " + recording_root);
         }
-        const auto directory_base =
-            std::filesystem::path(recording_root) / storage_key_ / date_dir_from_us(start_us_) / time_dir_from_us(start_us_);
+        const uint64_t directory_time_us = segment_timeline_.start_global_us > 0
+                                               ? segment_timeline_.start_global_us
+                                               : start_us_;
+        const auto directory_base = std::filesystem::path(recording_root) / storage_key_
+                                    / date_dir_from_us(directory_time_us) / time_dir_from_us(directory_time_us);
         auto directory = directory_base;
         std::error_code ec;
         for(unsigned suffix = 1; std::filesystem::exists(directory, ec); ++suffix) {
@@ -3658,7 +3707,10 @@ public:
         storage_check_packets_ = 0;
         storage_failed_ = false;
         rollback_guard.release();
-        logger.info("recording segment started: " + directory_);
+        logger.info("recording segment started: " + directory_
+                    + " global_segment_index=" + std::to_string(segment_timeline_.index)
+                    + " segment_window_start_global_us=" + std::to_string(segment_timeline_.start_global_us)
+                    + " segment_window_end_global_us=" + std::to_string(segment_timeline_.end_global_us));
     }
 
     void close(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &announce_json, Logger &logger) {
@@ -3792,10 +3844,20 @@ public:
         recording_window_first_valid_depth_global_us_ = 0;
         recording_window_last_valid_depth_global_us_ = 0;
         recording_window_ = {};
+        segment_timeline_ = {};
     }
 
-    bool should_rotate(const Config &cfg) const {
-        return active_ && std::chrono::steady_clock::now() - start_steady_ >= std::chrono::seconds(cfg.segment_seconds);
+    bool should_rotate_for_timestamp(uint64_t global_timestamp_us) const {
+        return active_ && segment_timeline_.end_global_us > 0
+               && global_timestamp_us >= segment_timeline_.end_global_us;
+    }
+
+    bool should_request_rotation_keyframe(uint64_t receiver_time_us, uint64_t lead_us) const {
+        if(!active_ || segment_timeline_.end_global_us == 0) {
+            return false;
+        }
+        return receiver_time_us >= segment_timeline_.end_global_us
+               || segment_timeline_.end_global_us - receiver_time_us <= lead_us;
     }
 
     bool stream_profile_changed(const MediaPacket &packet) const {
@@ -3816,7 +3878,8 @@ public:
                       const std::string &announce_json, const RecordingWindow &recording_window, Logger &logger,
                       bool allow_rotate = true) {
         if(!active_) {
-            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, recording_window, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json,
+                  recording_window, packet.global_timestamp_us, logger);
         }
         if(storage_failed_) {
             throw std::runtime_error("recording storage previously failed: " + directory_);
@@ -3830,12 +3893,13 @@ public:
                 throw std::runtime_error("recording stopped because free space is below the configured reserve: " + directory_);
             }
         }
-        if(allow_rotate && (stream_profile_changed(packet) || should_rotate(cfg))) {
+        if(allow_rotate && (stream_profile_changed(packet) || should_rotate_for_timestamp(packet.global_timestamp_us))) {
             if(stream_profile_changed(packet)) {
                 logger.warn("media profile changed; rotating segment camera=" + camera_key(sender_id, camera_id));
             }
             close(cfg, sender_id, camera_id, announce_json, logger);
-            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json, recording_window, logger);
+            start(cfg, sender_id, camera_id, camera_name, storage_key, file_prefix, announce_json,
+                  recording_window, packet.global_timestamp_us, logger);
         }
 
         const uint64_t packet_local_us = now_us();
@@ -4197,7 +4261,8 @@ private:
         const auto index = csv_header_index(header);
         merged << header_line
                << ",rgb_recorded,rgb_video_frame_index,rgb_recorded_payload_size,recording_session_id,"
-                  "recording_window_start_global_us,recording_window_end_global_us,recording_window_valid\n";
+                  "recording_window_start_global_us,recording_window_end_global_us,recording_window_valid,"
+                  "global_segment_index,segment_window_start_global_us,segment_window_end_global_us,segment_window_valid\n";
 
         recording_window_valid_rows_ = 0;
         recording_window_valid_rgb_frames_ = 0;
@@ -4227,7 +4292,14 @@ private:
         };
         const auto append_recording_window = [this](std::ostream &out, const std::pair<uint64_t, bool> &state) {
             out << ',' << recording_window_.session_id << ',' << recording_window_.start_global_us << ','
-                << recording_window_.end_global_us << ',' << (state.second ? 1 : 0);
+                << recording_window_.end_global_us << ',' << (state.second ? 1 : 0) << ','
+                << segment_timeline_.index << ',' << segment_timeline_.start_global_us << ','
+                << segment_timeline_.end_global_us << ','
+                << (state.first >= segment_timeline_.start_global_us
+                            && (segment_timeline_.end_global_us == 0
+                                || state.first < segment_timeline_.end_global_us)
+                        ? 1
+                        : 0);
         };
 
         std::string line;
@@ -4328,6 +4400,9 @@ private:
         marker << "  \"finalized_at_us\": " << now_us() << ",\n";
         marker << "  \"segment_start_us\": " << start_us_ << ",\n";
         marker << "  \"segment_end_us\": " << end_us_ << ",\n";
+        marker << "  \"global_segment_index\": " << segment_timeline_.index << ",\n";
+        marker << "  \"segment_window_start_global_us\": " << segment_timeline_.start_global_us << ",\n";
+        marker << "  \"segment_window_end_global_us\": " << segment_timeline_.end_global_us << ",\n";
         marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
@@ -4370,6 +4445,9 @@ private:
         marker << "  \"staged_at_us\": " << now_us() << ",\n";
         marker << "  \"segment_start_us\": " << start_us_ << ",\n";
         marker << "  \"segment_end_us\": " << end_us_ << ",\n";
+        marker << "  \"global_segment_index\": " << segment_timeline_.index << ",\n";
+        marker << "  \"segment_window_start_global_us\": " << segment_timeline_.start_global_us << ",\n";
+        marker << "  \"segment_window_end_global_us\": " << segment_timeline_.end_global_us << ",\n";
         marker << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         marker << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         marker << "  \"recording_window_end_global_us\": " << recording_window_.end_global_us << ",\n";
@@ -5197,6 +5275,10 @@ private:
         meta << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
         meta << "  \"segment_start_us\": " << start_us_ << ",\n";
         meta << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
+        meta << "  \"global_segment_index\": " << segment_timeline_.index << ",\n";
+        meta << "  \"segment_window_start_global_us\": " << segment_timeline_.start_global_us << ",\n";
+        meta << "  \"segment_window_end_global_us\": " << segment_timeline_.end_global_us << ",\n";
+        meta << "  \"segment_timeline_mode\": \"recording_session_global_timestamp_us\",\n";
         meta << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         meta << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         meta << "  \"recording_window_end_global_us\": "
@@ -5301,6 +5383,9 @@ private:
         out << "  \"file_prefix\": \"" << json_escape(file_prefix_) << "\",\n";
         out << "  \"segment_start_us\": " << start_us_ << ",\n";
         out << "  \"segment_end_us\": " << (closed ? end_us_ : 0) << ",\n";
+        out << "  \"global_segment_index\": " << segment_timeline_.index << ",\n";
+        out << "  \"segment_window_start_global_us\": " << segment_timeline_.start_global_us << ",\n";
+        out << "  \"segment_window_end_global_us\": " << segment_timeline_.end_global_us << ",\n";
         out << "  \"recording_session_id\": " << recording_window_.session_id << ",\n";
         out << "  \"recording_window_start_global_us\": " << recording_window_.start_global_us << ",\n";
         out << "  \"recording_window_end_global_us\": "
@@ -5353,9 +5438,12 @@ private:
             paths.emplace_back(camera_dir);
         }
 
+        const uint64_t mtime_us = segment_timeline_.start_global_us > 0
+                                      ? segment_timeline_.start_global_us
+                                      : start_us_;
         timespec times[2]{};
-        times[0].tv_sec = static_cast<time_t>(start_us_ / 1'000'000ull);
-        times[0].tv_nsec = static_cast<long>((start_us_ % 1'000'000ull) * 1000ull);
+        times[0].tv_sec = static_cast<time_t>(mtime_us / 1'000'000ull);
+        times[0].tv_nsec = static_cast<long>((mtime_us % 1'000'000ull) * 1000ull);
         times[1] = times[0];
 
         for(const auto &path : paths) {
@@ -5370,7 +5458,7 @@ private:
     uint64_t start_us_ = 0;
     uint64_t end_us_ = 0;
     RecordingWindow recording_window_;
-    std::chrono::steady_clock::time_point start_steady_{};
+    RecordingSegmentTimeline segment_timeline_;
     std::string directory_;
     std::string recording_root_;
     std::string relative_directory_;
@@ -5617,6 +5705,9 @@ struct CameraState {
     bool segment_finalizing = false;
     std::string segment_dir;
     uint64_t segment_start_us = 0;
+    uint64_t global_segment_index = 0;
+    uint64_t segment_window_start_global_us = 0;
+    uint64_t segment_window_end_global_us = 0;
     std::atomic<bool> segment_rotation_requested{false};
     std::atomic<uint64_t> segment_rotation_keyframe_requested_us{0};
     std::atomic<uint64_t> segment_rotation_keyframe_requests{0};
@@ -5701,6 +5792,7 @@ public:
         std::string sender_id;
         std::string camera_id;
         std::string endpoint;
+        uint64_t target_global_us = 0;
     };
 
     struct RecordingActivation {
@@ -6126,6 +6218,9 @@ public:
             out << "\"segment_finalizing\":" << (cam.segment_finalizing ? "true" : "false") << ',';
             out << "\"segment_dir\":\"" << json_escape(cam.segment_dir) << "\",";
             out << "\"segment_start_us\":" << cam.segment_start_us << ',';
+            out << "\"global_segment_index\":" << cam.global_segment_index << ',';
+            out << "\"segment_window_start_global_us\":" << cam.segment_window_start_global_us << ',';
+            out << "\"segment_window_end_global_us\":" << cam.segment_window_end_global_us << ',';
             out << "\"segment_finalize_pending\":" << segment_finalize_pending << ',';
             out << "\"segment_finalize_active\":" << (segment_finalize_active ? "true" : "false") << ',';
             out << "\"segment_finalize_completed\":" << cam.segment_finalize_completed.load() << ',';
@@ -6266,6 +6361,7 @@ public:
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"segment_seconds\":" << config_.segment_seconds << ',';
+        out << "\"segment_keyframe_lead_ms\":" << config_.segment_keyframe_lead_ms << ',';
         out << "\"recording_start_lead_ms\":" << config_.recording_start_lead_ms << ',';
         out << "\"max_payload_mb\":" << (config_.max_payload_bytes / (1024ull * 1024ull)) << ',';
         out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
@@ -6377,7 +6473,8 @@ public:
 
     void send_force_rgb_keyframe_controls(const std::vector<SenderControlTarget> &targets,
                                           const std::string &reason,
-                                          uint64_t request_us) {
+                                          uint64_t request_us,
+                                          uint64_t target_global_us = 0) {
         for(const auto &target : targets) {
             if(target.endpoint.empty()) {
                 continue;
@@ -6388,10 +6485,19 @@ public:
                     << "\"sender_id\":\"" << json_escape(target.sender_id) << "\","
                     << "\"camera_id\":\"" << json_escape(target.camera_id) << "\","
                     << "\"reason\":\"" << json_escape(reason) << "\","
-                    << "\"request_us\":" << request_us << "}";
+                    << "\"request_us\":" << request_us;
+            const uint64_t effective_target_global_us =
+                target.target_global_us > 0 ? target.target_global_us : target_global_us;
+            if(effective_target_global_us > 0) {
+                payload << ",\"target_global_us\":" << effective_target_global_us;
+            }
+            payload << '}';
             if(send_udp_text_to_endpoint(target.endpoint, payload.str())) {
                 logger_.info("force_rgb_keyframe control sent sender=" + target.sender_id + " camera=" + target.camera_id
-                             + " endpoint=" + target.endpoint + " reason=" + reason);
+                             + " endpoint=" + target.endpoint + " reason=" + reason
+                             + (effective_target_global_us > 0
+                                    ? " target_global_us=" + std::to_string(effective_target_global_us)
+                                    : ""));
             }
             else {
                 logger_.warn("force_rgb_keyframe control send failed sender=" + target.sender_id + " camera=" + target.camera_id
@@ -6453,7 +6559,7 @@ public:
         }
         const bool profile_changed = cam->segment->stream_profile_changed(packet);
         const bool timed_rotation = allow_timed_rotation
-                                    && (cam->segment_rotation_requested.load() || cam->segment->should_rotate(config_));
+                                    && cam->segment->should_rotate_for_timestamp(packet.global_timestamp_us);
         if(!profile_changed && !timed_rotation) {
             return false;
         }
@@ -6484,7 +6590,8 @@ public:
         auto next_segment = std::make_unique<SegmentWriter>();
         try {
             next_segment->start(config_, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
-                                job.file_prefix, job.announce_json, job.recording_window, logger_);
+                                job.file_prefix, job.announce_json, job.recording_window,
+                                packet.global_timestamp_us, logger_);
         }
         catch(...) {
             release_segment_finalize_slot();
@@ -6552,12 +6659,16 @@ public:
         {
             std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
             if(cam->segment && !cam->segment->active() && camera_announce_expects_rgb(job.announce_json)) {
+                const bool before_recording_window = job.recording_window.start_global_us > 0
+                                                     && queued_packet.global_timestamp_us
+                                                            < job.recording_window.start_global_us;
                 if(queued_packet.stream_type == StreamType::depth_raw) {
                     prestart_drops = cam->segment_prestart_depth_drops.fetch_add(1) + 1;
                     dropped_before_segment_start = true;
                 }
                 else if(queued_packet.stream_type == StreamType::rgb
-                        && !h264_payload_can_start_segment(queued_packet.payload)) {
+                        && (before_recording_window
+                            || !h264_payload_can_start_segment(queued_packet.payload))) {
                     prestart_drops = cam->segment_prestart_rgb_drops.fetch_add(1) + 1;
                     dropped_before_segment_start = true;
                 }
@@ -6582,6 +6693,9 @@ public:
             bool segment_active = false;
             std::string segment_dir;
             uint64_t segment_start_us = 0;
+            uint64_t global_segment_index = 0;
+            uint64_t segment_window_start_global_us = 0;
+            uint64_t segment_window_end_global_us = 0;
             {
                 std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
                 rotate_record_segment_async(cam, job, *record_packet, allow_segment_rotate);
@@ -6590,12 +6704,18 @@ public:
                 segment_active = cam->segment->active();
                 segment_dir = cam->segment->directory();
                 segment_start_us = cam->segment->start_us();
+                global_segment_index = cam->segment->segment_index();
+                segment_window_start_global_us = cam->segment->segment_window_start_global_us();
+                segment_window_end_global_us = cam->segment->segment_window_end_global_us();
             }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 cam->segment_active = segment_active;
                 cam->segment_dir = std::move(segment_dir);
                 cam->segment_start_us = segment_start_us;
+                cam->global_segment_index = global_segment_index;
+                cam->segment_window_start_global_us = segment_window_start_global_us;
+                cam->segment_window_end_global_us = segment_window_end_global_us;
             }
         }
         catch(const std::exception &e) {
@@ -7089,7 +7209,7 @@ public:
             std::vector<std::shared_ptr<CameraState>> camera_snapshot;
             std::vector<SegmentCloseTask> idle_close_tasks;
             std::vector<SegmentCloseTask> storage_close_tasks;
-            std::vector<std::shared_ptr<CameraState>> rotation_keyframe_cameras;
+            std::vector<std::pair<std::shared_ptr<CameraState>, uint64_t>> rotation_keyframe_cameras;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 refresh_camera_liveness_locked(current_us);
@@ -7133,10 +7253,13 @@ public:
                     continue;
                 }
                 bool request_keyframe = false;
+                uint64_t target_global_us = 0;
                 {
                     std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
-                    if(cam->segment && cam->segment->should_rotate(config_)) {
+                    const uint64_t lead_us = static_cast<uint64_t>(config_.segment_keyframe_lead_ms) * 1000ull;
+                    if(cam->segment && cam->segment->should_request_rotation_keyframe(current_us, lead_us)) {
                         cam->segment_rotation_requested.store(true);
+                        target_global_us = cam->segment->segment_window_end_global_us();
                         const uint64_t previous_request_us = cam->segment_rotation_keyframe_requested_us.load();
                         if(previous_request_us == 0 || current_us >= previous_request_us + kSegmentRotationKeyframeRetryUs) {
                             cam->segment_rotation_keyframe_requested_us.store(current_us);
@@ -7146,7 +7269,7 @@ public:
                     }
                 }
                 if(request_keyframe) {
-                    rotation_keyframe_cameras.push_back(cam);
+                    rotation_keyframe_cameras.emplace_back(cam, target_global_us);
                 }
             }
             if(!rotation_keyframe_cameras.empty()) {
@@ -7154,9 +7277,9 @@ public:
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     targets.reserve(rotation_keyframe_cameras.size());
-                    for(const auto &cam : rotation_keyframe_cameras) {
+                    for(const auto &[cam, target_global_us] : rotation_keyframe_cameras) {
                         if(cam && cam->recording_requested && cam->online && !cam->status_endpoint.empty()) {
-                            targets.push_back({cam->sender_id, cam->camera_id, cam->status_endpoint});
+                            targets.push_back({cam->sender_id, cam->camera_id, cam->status_endpoint, target_global_us});
                         }
                     }
                 }
@@ -7201,6 +7324,7 @@ public:
                     send_force_rgb_keyframe_controls(
                         recovery_activation.keyframe_targets,
                         "record_restart_after_storage_pressure",
+                        recovery_activation.request_us,
                         recovery_activation.request_us);
                 }
             }
@@ -7315,6 +7439,9 @@ public:
                 task.cam->segment_finalizing = false;
                 task.cam->segment_dir.clear();
                 task.cam->segment_start_us = 0;
+                task.cam->global_segment_index = 0;
+                task.cam->segment_window_start_global_us = 0;
+                task.cam->segment_window_end_global_us = 0;
                 set_record_finalizing(task.cam, false);
                 if(reason == "recording storage capacity failure") {
                     task.cam->recording_start_pending = true;
@@ -7325,7 +7452,7 @@ public:
             }
             if(!activation.keyframe_targets.empty()) {
                 send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_restart_after_detach",
-                                                 activation.request_us);
+                                                 activation.request_us, activation.request_us);
             }
             if(!detached) {
                 return;
@@ -7370,7 +7497,7 @@ public:
             }
             if(!activation.keyframe_targets.empty()) {
                 send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_restart_after_detach_error",
-                                                 activation.request_us);
+                                                 activation.request_us, activation.request_us);
             }
         }
     }
@@ -7502,7 +7629,8 @@ public:
                          + " start_global_us=" + std::to_string(response_start_us));
         }
         if(!activation.keyframe_targets.empty()) {
-            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start_all", activation.request_us);
+            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start_all", activation.request_us,
+                                             activation.request_us);
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << response_start_us
@@ -7612,7 +7740,8 @@ public:
                          + " start_global_us=" + std::to_string(response_start_us));
         }
         if(!activation.keyframe_targets.empty()) {
-            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start", activation.request_us);
+            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start", activation.request_us,
+                                             activation.request_us);
         }
         std::ostringstream out;
         out << "{\"ok\":true,\"recording_start_us\":" << response_start_us << ",\"file_prefix\":\""

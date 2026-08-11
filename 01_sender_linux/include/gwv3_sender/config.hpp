@@ -46,9 +46,15 @@ struct ColorControlsConfig {
 
 struct AdaptiveExposureConfig {
     bool enabled = false;
+    std::string control_mode = "proportional";
     int interval_ms = 500;
+    int stable_interval_ms = 500;
     int settle_ms = 500;
+    int discard_frames_after_adjustment = 0;
+    int direction_reversal_samples = 1;
     int max_exposure_step = 16;
+    int max_recovery_exposure_step = 16;
+    int max_gain_step = 2;
     int exposure_min = 80;
     int exposure_max = 200;
     int soft_highlight_exposure_floor = -1;
@@ -60,8 +66,16 @@ struct AdaptiveExposureConfig {
     int soft_highlight_luma = -1;
     int highlight_luma = 245;
     double max_highlight_fraction = 0.0025;
+    double highlight_recovery_ratio = 0.7;
+    int highlight_release_samples = 1;
     int underexposed_samples = 3;
     int roi_margin_percent = 10;
+    int metering_window = 1;
+    double pid_kp = 0.6;
+    double pid_ki = 0.15;
+    double pid_kd = 0.0;
+    double pid_integral_limit = 0.35;
+    double pid_derivative_alpha = 0.2;
 };
 
 struct CameraConfig {

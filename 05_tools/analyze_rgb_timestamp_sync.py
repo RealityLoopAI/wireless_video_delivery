@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare RGB frame_system_timestamp_us across receiver frames.csv files."""
+"""Compare recorded RGB global timestamps across receiver frames.csv files."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def parse_int(value: str | None) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def read_rgb_frames(path: Path) -> list[Frame]:
+def read_rgb_frames(path: Path, timestamp_column: str) -> list[Frame]:
     frames: list[Frame] = []
     seen: set[tuple[str, int]] = set()
     with path.open("r", encoding="utf-8", newline="") as handle:
@@ -63,11 +63,17 @@ def read_rgb_frames(path: Path) -> list[Frame]:
             die(f"empty csv: {path}")
         if "stream_type" not in reader.fieldnames:
             die(f"missing stream_type column: {path}")
+        if timestamp_column != "auto" and timestamp_column not in reader.fieldnames:
+            die(f"missing {timestamp_column} column: {path}")
         for row_number, row in enumerate(reader, start=2):
             if (row.get("stream_type") or "").strip().lower() != "rgb":
                 continue
-            timestamp_us = (
-                parse_int(row.get("frame_system_timestamp_us"))
+            if any(field in row and (row.get(field) or "").strip() == "0"
+                   for field in ("rgb_recorded", "recording_window_valid", "segment_window_valid")):
+                continue
+            timestamp_us = parse_int(row.get(timestamp_column)) if timestamp_column != "auto" else (
+                parse_int(row.get("global_timestamp_us"))
+                or parse_int(row.get("frame_system_timestamp_us"))
                 or parse_int(row.get("packet_system_timestamp_us"))
                 or parse_int(row.get("rgb_system_timestamp_us"))
                 or parse_int(row.get("timestamp_us"))
@@ -159,12 +165,14 @@ def main() -> int:
     parser.add_argument("others", nargs="+", help="other segment directories or frames.csv files")
     parser.add_argument("--target-ms", type=float, default=10.0, help="preferred RGB sync threshold")
     parser.add_argument("--max-ms", type=float, default=33.333, help="hard RGB one-frame threshold")
+    parser.add_argument("--timestamp-column", default="global_timestamp_us",
+                        help="timestamp column to compare; use auto for legacy CSV fallback")
     parser.add_argument("--limit", type=int, default=0, help="limit reference frame count from the end")
     parser.add_argument("--json", action="store_true", help="print JSON instead of text")
     args = parser.parse_args()
 
     reference_path = frames_csv_path(args.reference)
-    reference = read_rgb_frames(reference_path)
+    reference = read_rgb_frames(reference_path, args.timestamp_column)
     if args.limit > 0:
         reference = reference[-args.limit :]
 
@@ -179,7 +187,7 @@ def main() -> int:
 
     for value in args.others:
         other_path = frames_csv_path(value)
-        other = read_rgb_frames(other_path)
+        other = read_rgb_frames(other_path, args.timestamp_column)
         summary = summarize(reference, other, args.target_ms, args.max_ms)
         summary.update(
             {

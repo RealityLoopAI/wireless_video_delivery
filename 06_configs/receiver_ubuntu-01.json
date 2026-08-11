@@ -64,6 +64,7 @@
     "upload_interval_ms": 250
   },
   "segment_seconds": 900,
+  "segment_keyframe_lead_ms": 500,
   "recording_start_lead_ms": 1000,
   "depth_fps": 30,
   "ffmpeg_path": "ffmpeg",

@@ -934,6 +934,10 @@ def assert_recording_output(
         "recording_window_start_global_us",
         "recording_window_end_global_us",
         "recording_window_valid",
+        "global_segment_index",
+        "segment_window_start_global_us",
+        "segment_window_end_global_us",
+        "segment_window_valid",
     ):
         assert field in header, f"missing CSV field {field}"
     assert not list(nas_root.rglob("*frames.csv.inprogress")), "live frames.csv staging file was not removed"
@@ -951,6 +955,10 @@ def assert_recording_output(
         assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
         assert int(meta.get("recording_window_valid_rgb_frames", 0)) > 0
         assert int(meta.get("recording_window_valid_depth_frames", 0)) > 0
+        segment_start = int(meta.get("segment_window_start_global_us", 0))
+        segment_end = int(meta.get("segment_window_end_global_us", 0))
+        assert segment_start > 0
+        assert segment_end - segment_start == 1_000_000
         assert int(meta.get("recording_window_first_valid_rgb_global_us", 0)) > 0
         assert int(meta.get("recording_window_last_valid_rgb_global_us", 0)) >= int(
             meta["recording_window_first_valid_rgb_global_us"]
@@ -958,6 +966,7 @@ def assert_recording_output(
     ready_files = list(nas_root.rglob("*recording_ready.json"))
     assert ready_files, "recording ready marker missing"
     session_starts = {}
+    session_segment_windows = {}
     for ready_file in ready_files:
         ready = json.loads(ready_file.read_text(encoding="utf-8"))
         assert ready.get("ready") is True
@@ -973,6 +982,14 @@ def assert_recording_output(
         assert int(ready.get("recording_window_valid_rgb_frames", 0)) > 0
         assert int(ready.get("recording_window_first_valid_global_us", 0)) >= window_start
         assert session_starts.setdefault(session_id, window_start) == window_start
+        segment_index = int(ready.get("global_segment_index", -1))
+        segment_window = (
+            int(ready.get("segment_window_start_global_us", 0)),
+            int(ready.get("segment_window_end_global_us", 0)),
+        )
+        assert segment_index >= 0
+        assert segment_window[0] > 0 and segment_window[1] - segment_window[0] == 1_000_000
+        assert session_segment_windows.setdefault((session_id, segment_index), segment_window) == segment_window
 
     for frames_file in nas_root.rglob("*frames.csv"):
         last_global_timestamp = None
@@ -985,11 +1002,22 @@ def assert_recording_output(
                 assert int(row["recording_session_id"]) == session_id
                 assert int(row["recording_window_start_global_us"]) == window_start
                 assert int(row["recording_window_end_global_us"]) == window_end
+                assert int(row["segment_window_start_global_us"]) > 0
+                assert int(row["segment_window_end_global_us"]) > int(row["segment_window_start_global_us"])
                 global_timestamp = int(row["global_timestamp_us"])
                 expected_valid = global_timestamp >= window_start and (window_end == 0 or global_timestamp <= window_end)
                 assert (row["recording_window_valid"] == "1") is expected_valid
+                expected_segment_valid = (
+                    global_timestamp >= int(row["segment_window_start_global_us"])
+                    and global_timestamp < int(row["segment_window_end_global_us"])
+                )
+                assert (row["segment_window_valid"] == "1") is expected_segment_valid
                 if row.get("stream_type") != "rgb" or row.get("rgb_recorded") != "1":
                     continue
+                if int(row["global_segment_index"]) == 0:
+                    assert global_timestamp >= int(row["segment_window_start_global_us"]), (
+                        f"recorded RGB pre-roll escaped the logical recording start in {frames_file}"
+                    )
                 if last_global_timestamp is not None:
                     assert global_timestamp > last_global_timestamp, (
                         f"non-monotonic recorded RGB timestamp in {frames_file}: "

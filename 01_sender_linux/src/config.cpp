@@ -293,9 +293,18 @@ AdaptiveExposureConfig load_adaptive_exposure(const Json::Value &node) {
         throw std::runtime_error("invalid object field: adaptive_exposure");
     }
     config.enabled = optional_bool(node, "enabled", config.enabled);
+    config.control_mode = optional_string(node, "control_mode", config.control_mode);
     config.interval_ms = optional_int(node, "interval_ms", config.interval_ms);
+    config.stable_interval_ms = optional_int(node, "stable_interval_ms", config.interval_ms);
     config.settle_ms = optional_int(node, "settle_ms", config.interval_ms);
+    config.discard_frames_after_adjustment = optional_int(
+        node, "discard_frames_after_adjustment", config.discard_frames_after_adjustment);
+    config.direction_reversal_samples = optional_int(
+        node, "direction_reversal_samples", config.direction_reversal_samples);
     config.max_exposure_step = optional_int(node, "max_exposure_step", config.max_exposure_step);
+    config.max_recovery_exposure_step = optional_int(
+        node, "max_recovery_exposure_step", config.max_recovery_exposure_step);
+    config.max_gain_step = optional_int(node, "max_gain_step", config.max_gain_step);
     config.exposure_min = optional_int(node, "exposure_min", config.exposure_min);
     config.exposure_max = optional_int(node, "exposure_max", config.exposure_max);
     config.soft_highlight_exposure_floor =
@@ -309,8 +318,18 @@ AdaptiveExposureConfig load_adaptive_exposure(const Json::Value &node) {
     config.highlight_luma = optional_int(node, "highlight_luma", config.highlight_luma);
     config.max_highlight_fraction =
         optional_double(node, "max_highlight_fraction", config.max_highlight_fraction);
+    config.highlight_recovery_ratio =
+        optional_double(node, "highlight_recovery_ratio", config.highlight_recovery_ratio);
+    config.highlight_release_samples = optional_int(
+        node, "highlight_release_samples", config.highlight_release_samples);
     config.underexposed_samples = optional_int(node, "underexposed_samples", config.underexposed_samples);
     config.roi_margin_percent = optional_int(node, "roi_margin_percent", config.roi_margin_percent);
+    config.metering_window = optional_int(node, "metering_window", config.metering_window);
+    config.pid_kp = optional_double(node, "pid_kp", config.pid_kp);
+    config.pid_ki = optional_double(node, "pid_ki", config.pid_ki);
+    config.pid_kd = optional_double(node, "pid_kd", config.pid_kd);
+    config.pid_integral_limit = optional_double(node, "pid_integral_limit", config.pid_integral_limit);
+    config.pid_derivative_alpha = optional_double(node, "pid_derivative_alpha", config.pid_derivative_alpha);
     return config;
 }
 
@@ -708,14 +727,37 @@ void validate_config(const AppConfig &config) {
         validate_nonnegative(camera.color_controls.backlight_compensation, "color_controls.backlight_compensation");
 
         const auto &adaptive = camera.adaptive_exposure;
-        if(adaptive.interval_ms < 100 || adaptive.interval_ms > 5000) {
-            throw std::runtime_error("adaptive_exposure.interval_ms must be in range [100, 5000]");
+        if(adaptive.control_mode != "proportional" && adaptive.control_mode != "pid") {
+            throw std::runtime_error("adaptive_exposure.control_mode must be proportional or pid");
+        }
+        if(adaptive.interval_ms < 33 || adaptive.interval_ms > 5000) {
+            throw std::runtime_error("adaptive_exposure.interval_ms must be in range [33, 5000]");
+        }
+        if(adaptive.stable_interval_ms < adaptive.interval_ms || adaptive.stable_interval_ms > 5000) {
+            throw std::runtime_error("adaptive_exposure.stable_interval_ms must be in range [interval_ms, 5000]");
         }
         if(adaptive.settle_ms < adaptive.interval_ms || adaptive.settle_ms > 5000) {
             throw std::runtime_error("adaptive_exposure.settle_ms must be in range [interval_ms, 5000]");
         }
+        if(adaptive.discard_frames_after_adjustment < 0
+           || adaptive.discard_frames_after_adjustment > 30) {
+            throw std::runtime_error(
+                "adaptive_exposure.discard_frames_after_adjustment must be in range [0, 30]");
+        }
+        if(adaptive.direction_reversal_samples < 1 || adaptive.direction_reversal_samples > 10) {
+            throw std::runtime_error(
+                "adaptive_exposure.direction_reversal_samples must be in range [1, 10]");
+        }
         if(adaptive.max_exposure_step < 2 || adaptive.max_exposure_step > 1000) {
             throw std::runtime_error("adaptive_exposure.max_exposure_step must be in range [2, 1000]");
+        }
+        if(adaptive.max_recovery_exposure_step < 1
+           || adaptive.max_recovery_exposure_step > adaptive.max_exposure_step) {
+            throw std::runtime_error(
+                "adaptive_exposure.max_recovery_exposure_step must be in range [1, max_exposure_step]");
+        }
+        if(adaptive.max_gain_step < 1 || adaptive.max_gain_step > 255) {
+            throw std::runtime_error("adaptive_exposure.max_gain_step must be in range [1, 255]");
         }
         if(adaptive.exposure_min < 1 || adaptive.exposure_max < adaptive.exposure_min || adaptive.exposure_max > 10000) {
             throw std::runtime_error("adaptive_exposure exposure range must satisfy 1 <= min <= max <= 10000");
@@ -746,11 +788,31 @@ void validate_config(const AppConfig &config) {
            || adaptive.max_highlight_fraction > 1.0) {
             throw std::runtime_error("adaptive_exposure.max_highlight_fraction must be in range [0, 1]");
         }
+        if(!std::isfinite(adaptive.highlight_recovery_ratio) || adaptive.highlight_recovery_ratio < 0.0
+           || adaptive.highlight_recovery_ratio >= 1.0) {
+            throw std::runtime_error("adaptive_exposure.highlight_recovery_ratio must be in range [0, 1)");
+        }
+        if(adaptive.highlight_release_samples < 1 || adaptive.highlight_release_samples > 100) {
+            throw std::runtime_error(
+                "adaptive_exposure.highlight_release_samples must be in range [1, 100]");
+        }
         if(adaptive.underexposed_samples < 1 || adaptive.underexposed_samples > 20) {
             throw std::runtime_error("adaptive_exposure.underexposed_samples must be in range [1, 20]");
         }
         if(adaptive.roi_margin_percent < 0 || adaptive.roi_margin_percent > 40) {
             throw std::runtime_error("adaptive_exposure.roi_margin_percent must be in range [0, 40]");
+        }
+        if(adaptive.metering_window < 1 || adaptive.metering_window > 9 || adaptive.metering_window % 2 == 0) {
+            throw std::runtime_error("adaptive_exposure.metering_window must be an odd value in range [1, 9]");
+        }
+        if(!std::isfinite(adaptive.pid_kp) || adaptive.pid_kp < 0.0 || adaptive.pid_kp > 2.0
+           || !std::isfinite(adaptive.pid_ki) || adaptive.pid_ki < 0.0 || adaptive.pid_ki > 2.0
+           || !std::isfinite(adaptive.pid_kd) || adaptive.pid_kd < 0.0 || adaptive.pid_kd > 1.0
+           || !std::isfinite(adaptive.pid_integral_limit) || adaptive.pid_integral_limit < 0.0
+           || adaptive.pid_integral_limit > 2.0
+           || !std::isfinite(adaptive.pid_derivative_alpha) || adaptive.pid_derivative_alpha <= 0.0
+           || adaptive.pid_derivative_alpha > 1.0) {
+            throw std::runtime_error("adaptive_exposure PID parameters are invalid");
         }
         if(adaptive.enabled) {
             if(camera.capture_backend != "orbbec_sdk") {
