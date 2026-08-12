@@ -199,6 +199,15 @@ def run(args: argparse.Namespace) -> None:
         assert mirror_state["files"][f"{incremental_prefix}depth.mkv"][
             "mirrored_bytes"
         ] == 2 * 1024 * 1024
+        assert incremental_uploader.incremental_mirror_active_source_bytes == (
+            incremental_rgb.stat().st_size + incremental_depth_part.stat().st_size
+        )
+        assert incremental_uploader.incremental_mirror_active_reusable_bytes == (
+            5 * 1024 * 1024
+        )
+        assert incremental_uploader.incremental_mirror_active_lag_bytes == (
+            len(b"rgb-active-tail") + len(b"depth-active-tail")
+        )
 
         with incremental_rgb.open("r+b") as handle:
             handle.write(b"RGB-CLOSED")
@@ -580,7 +589,9 @@ def run(args: argparse.Namespace) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        deadline = time.monotonic() + 10
+        # A busy receiver may spend several seconds finalizing the synthetic
+        # conventional MP4 before it reaches the intentionally throttled copy.
+        deadline = time.monotonic() + 30
         active_status = {}
         while time.monotonic() < deadline:
             status_path = staging_root / ".gwv3_uploader_status.json"

@@ -55,6 +55,12 @@ def run(uploader_path: Path) -> None:
         assert uploader.incremental_mirror_workers == 3
         assert uploader.incremental_mirror_max_copy_bytes == 16 * 1024 * 1024
         assert uploader.nas_write_limiter.bandwidth_mbps == 240
+        uploader.receiver_recording_active = True
+        uploader.active_recording_full_copy_workers = 0
+        assert uploader.current_full_copy_limit() == 0
+        uploader.receiver_recording_active = False
+        assert uploader.current_full_copy_limit() == uploader.full_copy_workers
+        uploader.active_recording_full_copy_workers = 1
 
         limiter = uploader_module.SharedBandwidthLimiter(32)
         limiter_threads = [
@@ -177,6 +183,10 @@ def run(uploader_path: Path) -> None:
 
         uploader.process_local_one = fake_capture
         uploader.local_segment_mirror_reuse_percent = lambda _segment: 95.0
+        original_write_status = uploader.write_status
+        # Status fsync latency must not serialize the worker-concurrency unit
+        # test when it runs on a receiver whose system disk is busy.
+        uploader.write_status = lambda *_args, **_kwargs: None
         segments = [
             staging / f"camera-{index}" / "2026-08-07" / "120000"
             for index in range(5)
@@ -230,12 +240,13 @@ def run(uploader_path: Path) -> None:
             staging / "camera-priority" / "2026-08-07" / "new-mirrored",
         ]
         uploader.local_segment_mirror_reuse_percent = (
-            lambda segment: 95.0 if segment.name == "new-mirrored" else 0.0
+            lambda segment: 50.0 if segment.name == "new-mirrored" else 0.0
         )
         assert uploader.process_local_batch(priority_segments) is True
         assert observed["camera-priority"] == ["new-mirrored"]
         assert uploader.process_local_batch(priority_segments[:1]) is True
         assert observed["camera-priority"] == ["new-mirrored", "old-unmirrored"]
+        uploader.write_status = original_write_status
 
         chunk_size = 1024 * 1024
         budget_source = temporary / "budget-source.bin"
@@ -403,6 +414,41 @@ def run(uploader_path: Path) -> None:
         assert fallback_stats["fast_path"] is False
         assert int(fallback_stats["verified_bytes"]) == 8 * chunk_size
         assert destination.read_bytes() == source.read_bytes()
+
+        depth_source = temporary / "depth.mkv"
+        depth_destination = temporary / "depth-mirror.mkv"
+        depth_chunks = [bytes([index + 16]) * chunk_size for index in range(8)]
+        depth_source.write_bytes(b"".join(depth_chunks))
+        depth_destination.write_bytes(depth_source.read_bytes())
+        depth_stat = depth_source.stat()
+        depth_entry = {
+            "source_name": depth_source.name,
+            "source_dev": int(depth_stat.st_dev),
+            "source_ino": int(depth_stat.st_ino),
+            "chunk_size": chunk_size,
+            "chunk_hashes": [
+                uploader_module.hashlib.sha256(chunk).hexdigest()
+                for chunk in depth_chunks
+            ],
+        }
+        depth_tail = b"depth-closed-tail" * 4096
+        with depth_source.open("r+b") as handle:
+            handle.write(b"matroska-header-updated")
+            handle.seek(0, 2)
+            handle.write(depth_tail)
+        depth_stats: dict[str, int | bool] = {}
+        depth_written = uploader_module.synchronize_file_from_incremental_mirror(
+            depth_source,
+            depth_destination,
+            depth_entry,
+            0,
+            stats=depth_stats,
+        )
+        assert depth_stats["fast_path"] is True
+        assert depth_stats["mutable_header_repaired"] is True
+        assert int(depth_stats["verified_bytes"]) == 4 * chunk_size
+        assert depth_written == chunk_size + len(depth_tail)
+        assert depth_destination.read_bytes() == depth_source.read_bytes()
 
         mirror_worker_calls = 0
         mirror_worker_lock = threading.Lock()
