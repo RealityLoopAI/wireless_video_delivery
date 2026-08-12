@@ -1097,6 +1097,52 @@ def run(args) -> None:
                     duplicate.wait(timeout=3)
                 duplicate_log.close()
 
+            guard_ports = {
+                "status": free_port(socket.SOCK_DGRAM),
+                "media": free_port(socket.SOCK_STREAM),
+                "media_udp": free_port(socket.SOCK_DGRAM),
+                "clock": free_port(socket.SOCK_DGRAM),
+                "admin": free_port(socket.SOCK_STREAM),
+            }
+            guard_config = json.loads(json.dumps(config))
+            guard_config.update(
+                {
+                    "status_port": guard_ports["status"],
+                    "media_port": guard_ports["media"],
+                    "media_udp_port": guard_ports["media_udp"],
+                    "admin_port": guard_ports["admin"],
+                    "nas_root": str(temporary / "storage-guard-nas"),
+                    "log_directory": str(temporary / "storage-guard-logs"),
+                    "state_path": str(temporary / "storage-guard-state.json"),
+                    "min_free_disk_mb": 1024 * 1024,
+                    "preview_enabled": False,
+                }
+            )
+            guard_config["clock_sync"]["port"] = guard_ports["clock"]
+            guard_config_path = temporary / "storage-guard-receiver.json"
+            guard_config_path.write_text(json.dumps(guard_config), encoding="utf-8")
+            guard_receiver = subprocess.Popen(
+                [args.receiver, "--config", str(guard_config_path)],
+                env=receiver_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                wait_http(guard_ports["admin"])
+                start_guard = json.loads(
+                    request(guard_ports["admin"], "POST", "/api/record/start-all")[2]
+                )
+                assert start_guard.get("ok") is False
+                assert "free-space headroom" in str(start_guard.get("error"))
+                guard_status = json.loads(
+                    request(guard_ports["admin"], "GET", "/api/status")[2]
+                )
+                assert guard_status.get("recording_all") is False
+                assert guard_status.get("recording_state") == "idle"
+            finally:
+                guard_receiver.terminate()
+                guard_receiver.wait(timeout=8)
+
             status_message(
                 ports["status"],
                 {"protocol_version": "3.0", "message_type": "camera_announce", "sender_id": "../escape", "camera_id": "cam01"},
@@ -1118,6 +1164,9 @@ def run(args) -> None:
             assert len(source_hash) == 16 and all(ch in "0123456789abcdef" for ch in source_hash)
             assert "recording_delivery_pending" in admin_status
             assert "recording_delivery_ready" in admin_status
+            assert admin_status.get("recording_state") == "idle"
+            assert admin_status.get("recording_faulted") is False
+            assert "recording_fault_reason" in admin_status
             assert "record_finalize_last_completed_us" in admin_status
             assert "recording_uploader_pending_metrics_refreshed_us" in admin_status
             assert receiver.poll() is None, "receiver crashed on malformed status JSON"

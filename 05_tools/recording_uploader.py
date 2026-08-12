@@ -147,6 +147,13 @@ class SharedBandwidthLimiter:
             byte_delta = recent[-1][1] - recent[0][1]
             return self.total_bytes, byte_delta * 8.0 / elapsed / 1_000_000.0
 
+    def observe_external(self, byte_count: int) -> None:
+        if byte_count <= 0:
+            return
+        with self.lock:
+            self.total_bytes += byte_count
+            self._append_sample_locked(time.monotonic())
+
 
 def request_stop(_signum: int, _frame: object) -> None:
     global STOP_REQUESTED
@@ -931,6 +938,39 @@ def copy_file_limited(
     total = source.stat().st_size
     if progress is not None:
         progress(0, total)
+    dd_path = shutil.which("dd")
+    if total >= 64 * 1024 * 1024 and dd_path:
+        try:
+            copy_file_direct_dd(
+                source,
+                destination,
+                dd_path,
+                total,
+                progress,
+                pause,
+                shared_limiter,
+            )
+            try:
+                shutil.copystat(source, destination, follow_symlinks=False)
+            except OSError as error:
+                print(
+                    f"recording upload metadata preservation skipped source={source} "
+                    f"destination={destination} error={error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
+        except InterruptedError:
+            destination.unlink(missing_ok=True)
+            raise
+        except (OSError, RuntimeError) as error:
+            destination.unlink(missing_ok=True)
+            print(
+                f"recording direct copy unavailable; using buffered fallback "
+                f"source={source} error={error}",
+                file=sys.stderr,
+                flush=True,
+            )
     started = time.monotonic()
 
     def wait_for_receiver_io() -> None:
@@ -982,6 +1022,97 @@ def copy_file_limited(
         )
     if progress is not None:
         progress(total, total)
+
+
+def copy_file_direct_dd(
+    source: Path,
+    destination: Path,
+    dd_path: str,
+    total: int,
+    progress: Callable[[int, int], None] | None = None,
+    pause: Callable[[], bool] | None = None,
+    shared_limiter: SharedBandwidthLimiter | None = None,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [
+            dd_path,
+            f"if={source}",
+            f"of={destination}",
+            "bs=4M",
+            "iflag=direct",
+            "conv=fdatasync",
+            "status=none",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stopped = False
+    observed = 0
+    try:
+        while process.poll() is None:
+            if STOP_REQUESTED:
+                process.terminate()
+                raise InterruptedError("recording direct upload interrupted")
+            should_pause = pause is not None and pause()
+            if should_pause and not stopped:
+                try:
+                    process.send_signal(signal.SIGSTOP)
+                    stopped = True
+                except ProcessLookupError:
+                    pass
+            elif not should_pause and stopped:
+                try:
+                    process.send_signal(signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+                stopped = False
+            try:
+                copied = min(total, destination.stat().st_size)
+            except OSError:
+                copied = observed
+            if copied > observed and shared_limiter is not None:
+                shared_limiter.observe_external(copied - observed)
+            observed = max(observed, copied)
+            if progress is not None:
+                progress(observed, total)
+            time.sleep(0.1)
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"dd exited with status {process.returncode}: {stderr.strip()}"
+            )
+        copied = destination.stat().st_size
+        if copied != total:
+            raise RuntimeError(
+                f"direct copy size mismatch expected={total} actual={copied}"
+            )
+        if copied > observed and shared_limiter is not None:
+            shared_limiter.observe_external(copied - observed)
+        if progress is not None:
+            progress(total, total)
+        elapsed = max(0.001, time.monotonic() - started)
+        print(
+            f"recording direct copy completed source={source} bytes={total} "
+            f"elapsed_ms={round(elapsed * 1000)} "
+            f"rate_mbps={total * 8.0 / elapsed / 1_000_000.0:.2f}",
+            flush=True,
+        )
+    finally:
+        if stopped and process.poll() is None:
+            try:
+                process.send_signal(signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
 def mirror_complete_file_chunks(
@@ -2629,6 +2760,12 @@ class Uploader:
                     "capture_workers": self.capture_workers,
                     "full_copy_workers": self.full_copy_workers,
                     "active_recording_full_copy_workers": self.active_recording_full_copy_workers,
+                    "current_full_copy_limit": self.current_full_copy_limit(),
+                    "full_copy_pressure_escalated": (
+                        self.receiver_recording_active
+                        and self.current_full_copy_limit()
+                        > self.active_recording_full_copy_workers
+                    ),
                     "receiver_recording_active": self.receiver_recording_active,
                     "upload_bandwidth_limit_mbps": self.bandwidth_mbps,
                     "full_copy_bandwidth_limit_mbps": self.full_copy_bandwidth_mbps,
@@ -3482,20 +3619,24 @@ class Uploader:
                 self.capture_queue_root,
                 capture,
             )
-            with self.incremental_mirror_lock(mirror_directory):
-                # The final capture below verifies every reused chunk and
-                # fsyncs all files as one durability barrier. Syncing the
-                # disposable mirror here only adds duplicate CIFS latency.
-                self.close_incremental_mirror_handles(
-                    mirror_directory,
-                    durable=False,
-                )
-                reusable_bytes, capture_bytes = incremental_mirror_reuse_bytes(
-                    segment,
-                    self.capture_queue_root,
-                    capture,
-                    self.incremental_mirror_instance_id,
-                )
+            if self.incremental_mirror_enabled:
+                with self.incremental_mirror_lock(mirror_directory):
+                    # The final capture below verifies every reused chunk and
+                    # fsyncs all files as one durability barrier. Syncing the
+                    # disposable mirror here only adds duplicate CIFS latency.
+                    self.close_incremental_mirror_handles(
+                        mirror_directory,
+                        durable=False,
+                    )
+                    reusable_bytes, capture_bytes = incremental_mirror_reuse_bytes(
+                        segment,
+                        self.capture_queue_root,
+                        capture,
+                        self.incremental_mirror_instance_id,
+                    )
+            else:
+                reusable_bytes = 0
+                capture_bytes = sum(manifest(segment).values())
             mirror_reuse_percent = (
                 reusable_bytes * 100.0 / capture_bytes
                 if capture_bytes > 0
@@ -3557,7 +3698,11 @@ class Uploader:
                         pause=lambda: self.should_pause_for_receiver_io(
                             "capturing_to_nas"
                         ),
-                        incremental_mirror_instance_id=self.incremental_mirror_instance_id,
+                        incremental_mirror_instance_id=(
+                            self.incremental_mirror_instance_id
+                            if self.incremental_mirror_enabled
+                            else ""
+                        ),
                         shared_limiter=self.nas_write_limiter,
                     )
                 finally:
@@ -3652,6 +3797,8 @@ class Uploader:
                 self.update_active_status(force=True)
 
     def local_segment_mirror_reuse_percent(self, segment: Path) -> float:
+        if not self.incremental_mirror_enabled:
+            return 0.0
         operation_lock: threading.RLock | None = None
         try:
             capture, _capture_name = prepare_local_capture(
@@ -3695,6 +3842,15 @@ class Uploader:
             str(segment),
         )
 
+    def current_full_copy_limit(self) -> int:
+        if not self.receiver_recording_active:
+            return self.full_copy_workers
+        # Preserve the normal recording-time I/O budget, but use all configured
+        # workers before the local staging disk reaches its hard reserve.
+        if self.staging_disk_pressure():
+            return self.full_copy_workers
+        return self.active_recording_full_copy_workers
+
     def process_local_batch(self, segments: list[Path]) -> bool:
         if not segments:
             return False
@@ -3716,11 +3872,7 @@ class Uploader:
         priority_heads = [
             segment for segment in route_heads if priorities[segment][0] == 0
         ]
-        full_copy_limit = (
-            self.active_recording_full_copy_workers
-            if self.receiver_recording_active
-            else self.full_copy_workers
-        )
+        full_copy_limit = self.current_full_copy_limit()
         full_copy_heads = [
             segment for segment in route_heads if priorities[segment][0] != 0
         ][:full_copy_limit]

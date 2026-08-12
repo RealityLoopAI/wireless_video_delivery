@@ -126,6 +126,13 @@ def run(uploader_path: Path) -> None:
         finally:
             uploader.incremental_mirror_lock = original_mirror_lock
             busy_priority_lock.release()
+        uploader.incremental_mirror_enabled = False
+        uploader.incremental_mirror_lock = lambda _directory: (_ for _ in ()).throw(
+            AssertionError("disabled incremental mirror attempted NAS state access")
+        )
+        assert uploader.local_segment_mirror_reuse_percent(staging) == 0.0
+        uploader.incremental_mirror_lock = original_mirror_lock
+        uploader.incremental_mirror_enabled = True
         process_lock_path = staging / uploader_module.UPLOADER_PROCESS_LOCK_NAME
         process_lock = uploader_module.acquire_file_lock(process_lock_path)
         assert process_lock is not None
@@ -203,8 +210,17 @@ def run(uploader_path: Path) -> None:
         uploader.process_local_one = fake_active_recording_capture
         uploader.local_segment_mirror_reuse_percent = lambda _segment: 0.0
         uploader.receiver_recording_active = True
+        uploader.staging_disk_pressure = lambda: False
+        assert uploader.current_full_copy_limit() == 1
         assert uploader.process_local_batch(segments[:5]) is True
         assert active_recording_peak == 1
+
+        active_recording_peak = 0
+        observed.clear()
+        uploader.staging_disk_pressure = lambda: True
+        assert uploader.current_full_copy_limit() == 3
+        assert uploader.process_local_batch(segments[:5]) is True
+        assert active_recording_peak == 3
         uploader.receiver_recording_active = False
         uploader.process_local_one = fake_capture
 
@@ -225,6 +241,28 @@ def run(uploader_path: Path) -> None:
         budget_source = temporary / "budget-source.bin"
         budget_destination = temporary / "budget-destination.bin"
         budget_source.write_bytes(b"B" * (8 * chunk_size))
+        dd_path = uploader_module.shutil.which("dd")
+        if dd_path:
+            direct_source = temporary / "direct-source.bin"
+            direct_destination = temporary / "direct-destination.bin"
+            direct_source.write_bytes(b"D" * (8 * chunk_size + 123))
+            direct_progress: list[tuple[int, int]] = []
+            direct_limiter = uploader_module.SharedBandwidthLimiter(0)
+            uploader_module.copy_file_direct_dd(
+                direct_source,
+                direct_destination,
+                dd_path,
+                direct_source.stat().st_size,
+                lambda done, total: direct_progress.append((done, total)),
+                lambda: False,
+                direct_limiter,
+            )
+            assert direct_destination.read_bytes() == direct_source.read_bytes()
+            assert direct_progress[-1] == (
+                direct_source.stat().st_size,
+                direct_source.stat().st_size,
+            )
+            assert direct_limiter.snapshot()[0] == direct_source.stat().st_size
         budget_entry, budget_copied = uploader_module.mirror_complete_file_chunks(
             budget_source,
             budget_destination,

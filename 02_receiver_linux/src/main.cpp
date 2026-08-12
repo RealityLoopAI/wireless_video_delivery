@@ -5985,9 +5985,23 @@ public:
         out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
         out << "\"build_source_hash\":\"" << GWV3_RECEIVER_SOURCE_HASH << "\",";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
+        const bool individual_recording_active = std::any_of(
+            cameras_.begin(), cameras_.end(), [](const auto &item) {
+                return item.second && item.second->recording_requested;
+            });
+        const std::string recording_state = recording_all_
+                                                ? (recording_all_start_pending_ ? "starting" : "recording")
+                                                : (individual_recording_active ? "recording"
+                                                                               : (recording_faulted_ ? "faulted" : "idle"));
+        out << "\"recording_state\":\"" << recording_state << "\",";
         out << "\"recording_start_pending\":" << (recording_all_start_pending_ ? "true" : "false") << ',';
         out << "\"recording_session_id\":" << recording_all_session_id_ << ',';
         out << "\"recording_start_us\":" << recording_all_start_us_ << ',';
+        out << "\"recording_faulted\":" << (recording_faulted_ ? "true" : "false") << ',';
+        out << "\"recording_fault_session_id\":" << recording_fault_session_id_ << ',';
+        out << "\"recording_fault_us\":" << recording_fault_us_ << ',';
+        out << "\"recording_fault_camera_key\":\"" << json_escape(recording_fault_camera_key_) << "\",";
+        out << "\"recording_fault_reason\":\"" << json_escape(recording_fault_reason_) << "\",";
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
@@ -6756,6 +6770,9 @@ public:
                 logger_.warn(std::string("record packet write failed; recording input paused camera=") + cam->key
                              + " frame=" + std::to_string(queued_packet.frame_id) + ": " + e.what());
             }
+            if(storage_capacity_failure) {
+                abort_recording_after_storage_failure(cam->key, write_error);
+            }
         }
     }
 
@@ -7298,37 +7315,6 @@ public:
                 close_segments_async(std::move(storage_close_tasks), "recording storage capacity failure");
             }
 
-            if(recording_storage_recovery_ready()) {
-                RecordingActivation recovery_activation;
-                bool recovery_needed = false;
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    for(auto &item : cameras_) {
-                        auto &cam = item.second;
-                        if(!cam || !cam->recording_requested || cam->segment_active || cam->segment_finalizing) {
-                            continue;
-                        }
-                        std::lock_guard<std::mutex> record_lock(cam->record_mutex);
-                        if(!cam->record_storage_capacity_failed || cam->record_finalizing) {
-                            continue;
-                        }
-                        cam->record_storage_capacity_failed = false;
-                        cam->last_error.clear();
-                        recovery_needed = true;
-                    }
-                    if(recovery_needed) {
-                        recovery_activation = activate_pending_recordings_locked();
-                    }
-                }
-                if(!recovery_activation.keyframe_targets.empty()) {
-                    send_force_rgb_keyframe_controls(
-                        recovery_activation.keyframe_targets,
-                        "record_restart_after_storage_pressure",
-                        recovery_activation.request_us,
-                        recovery_activation.request_us);
-                }
-            }
-
             const auto steady_now = std::chrono::steady_clock::now();
             if(steady_now >= next_uploader_status_refresh) {
                 refresh_recording_uploader_status();
@@ -7349,11 +7335,34 @@ public:
         const std::string &recording_root =
             config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root;
         std::error_code ec;
+        std::filesystem::create_directories(recording_root, ec);
+        if(ec) {
+            return false;
+        }
         const auto space = std::filesystem::space(recording_root, ec);
         if(ec || config_.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - kRecoveryHeadroomBytes) {
             return false;
         }
         return space.available >= config_.min_free_disk_bytes + kRecoveryHeadroomBytes;
+    }
+
+    void abort_recording_after_storage_failure(const std::string &camera_key,
+                                                const std::string &reason) {
+        bool expected = false;
+        if(!recording_fault_stop_requested_.compare_exchange_strong(expected, true)) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            recording_faulted_ = true;
+            recording_fault_session_id_ = recording_all_session_id_;
+            recording_fault_us_ = now_us();
+            recording_fault_camera_key_ = camera_key;
+            recording_fault_reason_ = reason;
+        }
+        logger_.warn("recording aborted after storage failure camera=" + camera_key
+                     + " reason=" + reason);
+        stop_all();
     }
 
     void wait_record_queue_idle(const std::shared_ptr<CameraState> &cam, const std::string &reason) {
@@ -7586,6 +7595,7 @@ public:
                 return json_error(*error);
             }
         }
+        const bool storage_ready = recording_storage_recovery_ready();
         RecordingActivation activation;
         uint64_t response_start_us = 0;
         uint64_t response_session_id = 0;
@@ -7595,6 +7605,9 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             refresh_camera_liveness_locked(now_us());
             const bool already_recording = recording_all_;
+            if(!already_recording && !storage_ready) {
+                return json_error("recording storage does not have enough free-space headroom");
+            }
             const bool individual_recording_active = !already_recording
                                                      && std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
                                                             return item.second->recording_requested;
@@ -7603,6 +7616,12 @@ public:
                 return json_error("individual camera recording is active; stop it before start-all");
             }
             if(!already_recording) {
+                recording_faulted_ = false;
+                recording_fault_session_id_ = 0;
+                recording_fault_us_ = 0;
+                recording_fault_camera_key_.clear();
+                recording_fault_reason_.clear();
+                recording_fault_stop_requested_.store(false);
                 recording_all_start_us_ = 0;
                 recording_all_session_id_ = 0;
                 recording_all_start_pending_ = true;
@@ -7611,6 +7630,13 @@ public:
             }
             recording_all_ = true;
             for(auto &item : cameras_) {
+                if(!already_recording) {
+                    std::lock_guard<std::mutex> record_lock(item.second->record_mutex);
+                    item.second->record_storage_capacity_failed = false;
+                    if(item.second->last_error.rfind("recording_write_failed:", 0) == 0) {
+                        item.second->last_error.clear();
+                    }
+                }
                 if(!already_recording && !item.second->recording_requested && !item.second->segment_active) {
                     item.second->recording_start_us = 0;
                     item.second->recording_window = {};
@@ -7709,6 +7735,7 @@ public:
                 return json_error(*error);
             }
         }
+        const bool storage_ready = recording_storage_recovery_ready();
         uint64_t response_start_us = 0;
         uint64_t response_session_id = 0;
         bool response_pending = false;
@@ -7718,6 +7745,23 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             auto cam_ptr = ensure_camera_ptr_locked(sender_id, camera_id);
             auto &cam = *cam_ptr;
+            const bool already_recording = cam.recording_requested || cam.segment_active;
+            if(!already_recording && !storage_ready) {
+                return json_error("recording storage does not have enough free-space headroom");
+            }
+            if(!already_recording && !recording_all_) {
+                recording_faulted_ = false;
+                recording_fault_session_id_ = 0;
+                recording_fault_us_ = 0;
+                recording_fault_camera_key_.clear();
+                recording_fault_reason_.clear();
+                recording_fault_stop_requested_.store(false);
+                std::lock_guard<std::mutex> record_lock(cam.record_mutex);
+                cam.record_storage_capacity_failed = false;
+                if(cam.last_error.rfind("recording_write_failed:", 0) == 0) {
+                    cam.last_error.clear();
+                }
+            }
             if(!recording_all_ && !cam.recording_requested && !cam.segment_active) {
                 cam.recording_start_us = 0;
                 cam.recording_window = {};
@@ -10451,9 +10495,15 @@ private:
     std::string main_preview_key_;
     bool recording_all_ = false;
     bool recording_all_start_pending_ = false;
+    bool recording_faulted_ = false;
     uint64_t recording_all_session_id_ = 0;
     uint64_t recording_all_start_us_ = 0;
+    uint64_t recording_fault_session_id_ = 0;
+    uint64_t recording_fault_us_ = 0;
     uint64_t last_recording_session_id_ = 0;
+    std::string recording_fault_camera_key_;
+    std::string recording_fault_reason_;
+    std::atomic<bool> recording_fault_stop_requested_{false};
     bool recording_all_has_file_prefix_override_ = false;
     std::string recording_all_file_prefix_;
     std::map<std::string, std::shared_ptr<CameraState>> cameras_;
