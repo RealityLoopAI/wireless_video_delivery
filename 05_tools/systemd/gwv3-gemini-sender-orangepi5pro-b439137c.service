@@ -12,7 +12,7 @@ WorkingDirectory=/home/orangepi/Downloads/wireless_video_delivery
 Environment=HOME=/home/orangepi
 Environment=GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES=30
 ExecStartPre=+/home/orangepi/Downloads/wireless_video_delivery/05_tools/prepare_rk3588_usb.sh
-ExecStart=/home/orangepi/Downloads/wireless_video_delivery/05_tools/sender_watchdog.sh /home/orangepi/Downloads/wireless_video_delivery/06_configs/sender_orangepi5pro-01_depth_zlib.json no-local-preview
+ExecStart=/home/orangepi/Downloads/wireless_video_delivery/05_tools/sender_watchdog.sh /home/orangepi/Downloads/wireless_video_delivery/06_configs/sender_orangepi5pro-b439137c.json no-local-preview
 Restart=always
 RestartSec=3
 KillMode=control-group

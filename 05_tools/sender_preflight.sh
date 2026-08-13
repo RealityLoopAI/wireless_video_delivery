@@ -110,18 +110,6 @@ def _read_first_line(path):
     except Exception:
         return ""
 
-def _default_route_interface():
-    try:
-        with open("/proc/net/route", "r", encoding="utf-8") as handle:
-            next(handle, None)
-            for line in handle:
-                fields = line.split()
-                if len(fields) >= 2 and fields[1] == "00000000":
-                    return fields[0]
-    except Exception:
-        pass
-    return ""
-
 def _valid_mac(value):
     return bool(re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", value)) and value.replace(":", "") != "000000000000"
 
@@ -130,21 +118,19 @@ def _mac_for_interface(name):
     return value if _valid_mac(value) else ""
 
 def _first_available_mac():
-    route_iface = _default_route_interface()
-    if route_iface:
-        mac = _mac_for_interface(route_iface)
-        if mac:
-            return mac
     try:
         names = sorted(os.listdir("/sys/class/net"))
     except Exception:
         names = []
-    for name in names:
-        if name == "lo":
-            continue
-        mac = _mac_for_interface(name)
-        if mac:
-            return mac
+    for physical_only in (True, False):
+        for name in names:
+            if name == "lo":
+                continue
+            if physical_only and not os.path.exists(f"/sys/class/net/{name}/device"):
+                continue
+            mac = _mac_for_interface(name)
+            if mac:
+                return mac
     return ""
 
 def _machine_id_suffix():

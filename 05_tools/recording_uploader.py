@@ -86,6 +86,30 @@ RGB_OUTPUT_MODES = frozenset(
     }
 )
 UPLOADER_PROCESS_LOCK_NAME = ".gwv3_uploader.process.lock"
+RECORDING_QUALITY_FIELDS = (
+    "recording_quality_status",
+    "recording_complete",
+    "recording_quality_reason",
+    "recording_quality_window_start_global_us",
+    "recording_quality_window_end_global_us",
+    "recording_quality_window_duration_us",
+    "rgb_stream_expected",
+    "depth_stream_expected",
+    "rgb_coverage_ratio",
+    "depth_coverage_ratio",
+    "rgb_first_frame_lag_us",
+    "rgb_end_frame_lag_us",
+    "depth_first_frame_lag_us",
+    "depth_end_frame_lag_us",
+    "rgb_max_frame_gap_us",
+    "depth_max_frame_gap_us",
+    "rgb_timestamp_out_of_order_count",
+    "depth_timestamp_out_of_order_count",
+)
+
+
+def recording_quality_fields(source: dict[str, Any]) -> dict[str, Any]:
+    return {name: source[name] for name in RECORDING_QUALITY_FIELDS if name in source}
 
 
 class IncrementalMirrorOwnedError(RuntimeError):
@@ -667,6 +691,7 @@ def finalize_staged_segment(
         "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
         "finalized_by": "gwv3_recording_uploader",
     }
+    ready.update(recording_quality_fields(staged))
     atomic_json_write(ready_path, ready)
     staged_path.unlink(missing_ok=True)
     fsync_directory(segment)
@@ -729,7 +754,7 @@ def build_ready_marker(
     rgb_container_format: str,
 ) -> dict[str, Any]:
     ready_name = marker_filename(source.get("ready_file"), "recording_ready.json", "ready_file")
-    return {
+    ready = {
         "schema": "gwv3_recording_ready_v1",
         "ready": True,
         "finalized_at_us": now_us(),
@@ -754,6 +779,8 @@ def build_ready_marker(
         "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
         "finalized_by": "gwv3_recording_uploader_nas_first",
     }
+    ready.update(recording_quality_fields(source))
+    return ready
 
 
 def prepare_local_capture(

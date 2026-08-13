@@ -88,7 +88,16 @@ def depth_packet(sender_id: str, camera_id: str, frame_id: int, width: int, heig
     return header + sender + camera + codec + payload
 
 
-def rgb_packet(sender_id: str, camera_id: str, frame_id: int, width: int, height: int, timestamp_us: int, payload: bytes) -> bytes:
+def rgb_packet(
+    sender_id: str,
+    camera_id: str,
+    frame_id: int,
+    width: int,
+    height: int,
+    timestamp_us: int,
+    payload: bytes,
+    key_frame: bool = True,
+) -> bytes:
     sender = sender_id.encode("ascii")
     camera = camera_id.encode("ascii")
     codec = b"h264"
@@ -99,7 +108,7 @@ def rgb_packet(sender_id: str, camera_id: str, frame_id: int, width: int, height
         HEADER_SIZE,
         STREAM_RGB,
         0,
-        (1 << 0) | (1 << 3),
+        (1 << 3) | ((1 << 0) if key_frame else 0),
         len(sender),
         len(camera),
         len(codec),
@@ -532,6 +541,61 @@ def exercise_media_session_fencing(ports: dict) -> None:
             new_media.close()
 
 
+def exercise_rgb_session_keyframe_gate(ports: dict) -> None:
+    sender_id = "session-keyframe-test"
+    camera_id = "cam01"
+    status_message(
+        ports["status"],
+        {
+            "protocol_version": "3.0",
+            "message_type": "camera_announce",
+            "sender_id": sender_id,
+            "camera_id": camera_id,
+            "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+        },
+    )
+    timestamp = int(time.time() * 1_000_000)
+    p_frame = b"\x00\x00\x00\x01\x41\x9a\x20"
+    idr_frame = b"\x00\x00\x00\x01\x65\x88\x84"
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        media.sendall(rgb_packet(sender_id, camera_id, 1, 64, 48, timestamp, p_frame, key_frame=False))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+            cameras = [
+                camera
+                for camera in current.get("cameras", [])
+                if camera.get("sender_id") == sender_id and camera.get("camera_id") == camera_id
+            ]
+            if (
+                cameras
+                and cameras[0].get("rgb_ingress_waiting_for_idr") is True
+                and int(cameras[0].get("rgb_ingress_keyframe_drops", 0)) >= 1
+            ):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("new RGB session accepted a P frame before an IDR")
+
+        media.sendall(rgb_packet(sender_id, camera_id, 2, 64, 48, timestamp + 33333, idr_frame))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+            cameras = [
+                camera
+                for camera in current.get("cameras", [])
+                if camera.get("sender_id") == sender_id and camera.get("camera_id") == camera_id
+            ]
+            if (
+                cameras
+                and cameras[0].get("rgb_ingress_waiting_for_idr") is False
+                and int(cameras[0].get("rgb_ingress_recoveries", 0)) >= 1
+            ):
+                return
+            time.sleep(0.02)
+    raise AssertionError("RGB ingress did not recover after an IDR")
+
+
 def direct_ffmpeg_children(parent_pid: int) -> list[int]:
     children_path = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
     if not children_path.exists():
@@ -955,6 +1019,10 @@ def assert_recording_output(
         assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
         assert int(meta.get("recording_window_valid_rgb_frames", 0)) > 0
         assert int(meta.get("recording_window_valid_depth_frames", 0)) > 0
+        assert meta.get("recording_quality_status") in {"complete", "partial"}
+        assert "rgb_coverage_ratio" in meta
+        assert "rgb_max_frame_gap_us" in meta
+        assert "rgb_timestamp_out_of_order_count" in meta
         segment_start = int(meta.get("segment_window_start_global_us", 0))
         segment_end = int(meta.get("segment_window_end_global_us", 0))
         assert segment_start > 0
@@ -980,6 +1048,9 @@ def assert_recording_output(
         assert session_id > 0
         assert window_start > 0
         assert int(ready.get("recording_window_valid_rgb_frames", 0)) > 0
+        assert ready.get("recording_quality_status") in {"complete", "partial"}
+        assert "recording_complete" in ready
+        assert "rgb_coverage_ratio" in ready
         assert int(ready.get("recording_window_first_valid_global_us", 0)) >= window_start
         assert session_starts.setdefault(session_id, window_start) == window_start
         segment_index = int(ready.get("global_segment_index", -1))
@@ -1179,6 +1250,7 @@ def run(args) -> None:
             udp_status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
             assert udp_status["media_udp_stats"]["active_assemblies"] <= 256
             exercise_media_session_fencing(ports)
+            exercise_rgb_session_keyframe_gate(ports)
             if shutil.which("ffmpeg"):
                 exercise_preview_decoder_cleanup(ports, receiver.pid)
 

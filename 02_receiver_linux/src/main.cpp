@@ -3617,6 +3617,12 @@ public:
         depth_nominal_fps_ = announced_depth_fps >= kMinRecordFps && announced_depth_fps <= kMaxRecordFps
                                  ? static_cast<double>(announced_depth_fps)
                                  : 0.0;
+        rgb_expected_ = rgb_nominal_fps_ > 0.0
+                        && json_int_in_object(announce_json, "rgb_profile", "width").value_or(0) > 0
+                        && json_int_in_object(announce_json, "rgb_profile", "height").value_or(0) > 0;
+        depth_expected_ = depth_nominal_fps_ > 0.0
+                          && json_int_in_object(announce_json, "depth_profile", "width").value_or(0) > 0
+                          && json_int_in_object(announce_json, "depth_profile", "height").value_or(0) > 0;
         rgb_h264_full_range_ = rgb_h264_full_range_for_camera(cfg, sender_id, camera_id);
         const std::string &recording_root = cfg.recording_staging.enabled ? cfg.recording_staging.root : cfg.nas_root;
         std::error_code root_ec;
@@ -3765,6 +3771,11 @@ public:
         else {
             write_recording_ready_marker(sender_id, camera_id);
         }
+        const auto quality = recording_quality_summary();
+        if(!quality.complete) {
+            logger.warn("recording segment quality=" + quality.status + " directory=" + directory_
+                        + " reason=" + quality.reason);
+        }
         set_segment_mtime_to_start(logger);
         const auto close_finished = std::chrono::steady_clock::now();
         const auto elapsed_ms = [](auto begin, auto end) {
@@ -3824,6 +3835,8 @@ public:
         depth_record_fps_ = 0.0;
         rgb_nominal_fps_ = 0.0;
         depth_nominal_fps_ = 0.0;
+        rgb_expected_ = false;
+        depth_expected_ = false;
         rgb_stats_.reset();
         rgb_recorded_stats_.reset();
         depth_stats_.reset();
@@ -3843,6 +3856,10 @@ public:
         recording_window_last_valid_rgb_global_us_ = 0;
         recording_window_first_valid_depth_global_us_ = 0;
         recording_window_last_valid_depth_global_us_ = 0;
+        recording_window_rgb_max_gap_us_ = 0;
+        recording_window_depth_max_gap_us_ = 0;
+        recording_window_rgb_out_of_order_ = 0;
+        recording_window_depth_out_of_order_ = 0;
         recording_window_ = {};
         segment_timeline_ = {};
     }
@@ -4168,7 +4185,7 @@ private:
     }
 
     void add_recording_window_summary(const std::string &stream_type, uint64_t global_us, bool valid) {
-        if(!valid) {
+        if(!valid || global_us == 0) {
             return;
         }
         ++recording_window_valid_rows_;
@@ -4181,12 +4198,30 @@ private:
             if(recording_window_first_valid_rgb_global_us_ == 0 || global_us < recording_window_first_valid_rgb_global_us_) {
                 recording_window_first_valid_rgb_global_us_ = global_us;
             }
+            if(recording_window_last_valid_rgb_global_us_ > 0) {
+                if(global_us < recording_window_last_valid_rgb_global_us_) {
+                    ++recording_window_rgb_out_of_order_;
+                }
+                else {
+                    recording_window_rgb_max_gap_us_ =
+                        std::max(recording_window_rgb_max_gap_us_, global_us - recording_window_last_valid_rgb_global_us_);
+                }
+            }
             recording_window_last_valid_rgb_global_us_ = std::max(recording_window_last_valid_rgb_global_us_, global_us);
         }
         else if(stream_type == "depth" || stream_type == "depth_raw") {
             ++recording_window_valid_depth_frames_;
             if(recording_window_first_valid_depth_global_us_ == 0 || global_us < recording_window_first_valid_depth_global_us_) {
                 recording_window_first_valid_depth_global_us_ = global_us;
+            }
+            if(recording_window_last_valid_depth_global_us_ > 0) {
+                if(global_us < recording_window_last_valid_depth_global_us_) {
+                    ++recording_window_depth_out_of_order_;
+                }
+                else {
+                    recording_window_depth_max_gap_us_ =
+                        std::max(recording_window_depth_max_gap_us_, global_us - recording_window_last_valid_depth_global_us_);
+                }
             }
             recording_window_last_valid_depth_global_us_ = std::max(recording_window_last_valid_depth_global_us_, global_us);
         }
@@ -4273,6 +4308,10 @@ private:
         recording_window_last_valid_rgb_global_us_ = 0;
         recording_window_first_valid_depth_global_us_ = 0;
         recording_window_last_valid_depth_global_us_ = 0;
+        recording_window_rgb_max_gap_us_ = 0;
+        recording_window_depth_max_gap_us_ = 0;
+        recording_window_rgb_out_of_order_ = 0;
+        recording_window_depth_out_of_order_ = 0;
 
         const auto recording_window_state = [this, &index](const std::vector<std::string> &row) {
             bool valid = recording_window_.start_global_us == 0;
@@ -4387,6 +4426,138 @@ private:
         logger.info("finalized frames.csv published atomically: " + published_path.string());
     }
 
+    struct RecordingQualitySummary {
+        std::string status = "unknown";
+        std::string reason = "recording window is unavailable";
+        bool complete = false;
+        uint64_t window_start_us = 0;
+        uint64_t window_end_us = 0;
+        uint64_t window_duration_us = 0;
+        uint64_t rgb_first_lag_us = 0;
+        uint64_t rgb_end_lag_us = 0;
+        uint64_t depth_first_lag_us = 0;
+        uint64_t depth_end_lag_us = 0;
+        double rgb_coverage_ratio = 0.0;
+        double depth_coverage_ratio = 0.0;
+    };
+
+    RecordingQualitySummary recording_quality_summary() const {
+        RecordingQualitySummary quality;
+        quality.window_start_us = segment_timeline_.start_global_us > 0
+                                      ? segment_timeline_.start_global_us
+                                      : recording_window_.start_global_us;
+        quality.window_start_us = std::max(quality.window_start_us, recording_window_.start_global_us);
+        quality.window_end_us = end_us_;
+        if(segment_timeline_.end_global_us > 0
+           && (quality.window_end_us == 0 || segment_timeline_.end_global_us < quality.window_end_us)) {
+            quality.window_end_us = segment_timeline_.end_global_us;
+        }
+        if(recording_window_.end_global_us > 0
+           && (quality.window_end_us == 0 || recording_window_.end_global_us < quality.window_end_us)) {
+            quality.window_end_us = recording_window_.end_global_us;
+        }
+        if(quality.window_start_us == 0 || quality.window_end_us <= quality.window_start_us) {
+            return quality;
+        }
+        quality.window_duration_us = quality.window_end_us - quality.window_start_us;
+
+        const auto first_lag = [missing = quality.window_duration_us](uint64_t start, uint64_t frame) {
+            return frame == 0 ? missing : (frame > start ? frame - start : 0);
+        };
+        const auto end_lag = [missing = quality.window_duration_us](uint64_t end, uint64_t frame) {
+            return frame == 0 ? missing : (end > frame ? end - frame : 0);
+        };
+        quality.rgb_first_lag_us = first_lag(quality.window_start_us, recording_window_first_valid_rgb_global_us_);
+        quality.rgb_end_lag_us = end_lag(quality.window_end_us, recording_window_last_valid_rgb_global_us_);
+        quality.depth_first_lag_us = first_lag(quality.window_start_us, recording_window_first_valid_depth_global_us_);
+        quality.depth_end_lag_us = end_lag(quality.window_end_us, recording_window_last_valid_depth_global_us_);
+        const auto coverage = [duration = quality.window_duration_us](uint64_t frames, double fps) {
+            if(duration == 0 || fps <= 0.0) {
+                return 0.0;
+            }
+            return static_cast<double>(frames) * 1'000'000.0 / (static_cast<double>(duration) * fps);
+        };
+        quality.rgb_coverage_ratio = coverage(recording_window_valid_rgb_frames_, rgb_nominal_fps_);
+        quality.depth_coverage_ratio = coverage(recording_window_valid_depth_frames_, depth_nominal_fps_);
+
+        constexpr double kMinimumCoverage = 0.98;
+        constexpr uint64_t kMaximumEdgeLagUs = 500'000;
+        constexpr uint64_t kMaximumFrameGapUs = 500'000;
+        std::vector<std::string> failures;
+        const auto inspect_stream = [&](const char *name,
+                                        bool expected,
+                                        uint64_t frames,
+                                        double coverage_ratio,
+                                        uint64_t first_frame_lag_us,
+                                        uint64_t last_frame_lag_us,
+                                        uint64_t max_gap_us,
+                                        uint64_t out_of_order) {
+            if(!expected) {
+                return;
+            }
+            if(frames == 0) {
+                failures.emplace_back(std::string(name) + " has no frames");
+                return;
+            }
+            if(coverage_ratio < kMinimumCoverage) {
+                failures.emplace_back(std::string(name) + " coverage below 98 percent");
+            }
+            if(first_frame_lag_us > kMaximumEdgeLagUs) {
+                failures.emplace_back(std::string(name) + " first frame is late");
+            }
+            if(last_frame_lag_us > kMaximumEdgeLagUs) {
+                failures.emplace_back(std::string(name) + " tail is missing");
+            }
+            if(max_gap_us > kMaximumFrameGapUs) {
+                failures.emplace_back(std::string(name) + " contains a gap over 500 ms");
+            }
+            if(out_of_order > 0) {
+                failures.emplace_back(std::string(name) + " timestamps moved backwards");
+            }
+        };
+        inspect_stream("rgb", rgb_expected_, recording_window_valid_rgb_frames_, quality.rgb_coverage_ratio,
+                       quality.rgb_first_lag_us, quality.rgb_end_lag_us, recording_window_rgb_max_gap_us_,
+                       recording_window_rgb_out_of_order_);
+        inspect_stream("depth", depth_expected_, recording_window_valid_depth_frames_, quality.depth_coverage_ratio,
+                       quality.depth_first_lag_us, quality.depth_end_lag_us, recording_window_depth_max_gap_us_,
+                       recording_window_depth_out_of_order_);
+        if(!rgb_expected_ && !depth_expected_) {
+            return quality;
+        }
+        quality.complete = failures.empty();
+        quality.status = quality.complete ? "complete" : "partial";
+        quality.reason = quality.complete ? "all expected streams passed coverage and continuity checks" : "";
+        for(size_t i = 0; i < failures.size(); ++i) {
+            if(i > 0) {
+                quality.reason += "; ";
+            }
+            quality.reason += failures[i];
+        }
+        return quality;
+    }
+
+    void write_recording_quality_fields(std::ostream &out) const {
+        const auto quality = recording_quality_summary();
+        out << "  \"recording_quality_status\": \"" << quality.status << "\",\n";
+        out << "  \"recording_complete\": " << (quality.complete ? "true" : "false") << ",\n";
+        out << "  \"recording_quality_reason\": \"" << json_escape(quality.reason) << "\",\n";
+        out << "  \"recording_quality_window_start_global_us\": " << quality.window_start_us << ",\n";
+        out << "  \"recording_quality_window_end_global_us\": " << quality.window_end_us << ",\n";
+        out << "  \"recording_quality_window_duration_us\": " << quality.window_duration_us << ",\n";
+        out << "  \"rgb_stream_expected\": " << (rgb_expected_ ? "true" : "false") << ",\n";
+        out << "  \"depth_stream_expected\": " << (depth_expected_ ? "true" : "false") << ",\n";
+        out << "  \"rgb_coverage_ratio\": " << quality.rgb_coverage_ratio << ",\n";
+        out << "  \"depth_coverage_ratio\": " << quality.depth_coverage_ratio << ",\n";
+        out << "  \"rgb_first_frame_lag_us\": " << quality.rgb_first_lag_us << ",\n";
+        out << "  \"rgb_end_frame_lag_us\": " << quality.rgb_end_lag_us << ",\n";
+        out << "  \"depth_first_frame_lag_us\": " << quality.depth_first_lag_us << ",\n";
+        out << "  \"depth_end_frame_lag_us\": " << quality.depth_end_lag_us << ",\n";
+        out << "  \"rgb_max_frame_gap_us\": " << recording_window_rgb_max_gap_us_ << ",\n";
+        out << "  \"depth_max_frame_gap_us\": " << recording_window_depth_max_gap_us_ << ",\n";
+        out << "  \"rgb_timestamp_out_of_order_count\": " << recording_window_rgb_out_of_order_ << ",\n";
+        out << "  \"depth_timestamp_out_of_order_count\": " << recording_window_depth_out_of_order_ << ",\n";
+    }
+
     void write_recording_ready_marker(const std::string &sender_id, const std::string &camera_id) const {
         const auto marker_path = file_path("recording_ready.json");
         const auto temporary_path = file_path("recording_ready.json.tmp");
@@ -4411,6 +4582,7 @@ private:
         marker << "  \"recording_window_valid_rows\": " << recording_window_valid_rows_ << ",\n";
         marker << "  \"recording_window_valid_rgb_frames\": " << recording_window_valid_rgb_frames_ << ",\n";
         marker << "  \"recording_window_valid_depth_frames\": " << recording_window_valid_depth_frames_ << ",\n";
+        write_recording_quality_fields(marker);
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -4456,6 +4628,7 @@ private:
         marker << "  \"recording_window_valid_rows\": " << recording_window_valid_rows_ << ",\n";
         marker << "  \"recording_window_valid_rgb_frames\": " << recording_window_valid_rgb_frames_ << ",\n";
         marker << "  \"recording_window_valid_depth_frames\": " << recording_window_valid_depth_frames_ << ",\n";
+        write_recording_quality_fields(marker);
         marker << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n";
         marker << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n";
         marker << "  \"relative_path\": \"" << json_escape(relative_directory_) << "\",\n";
@@ -5298,6 +5471,13 @@ private:
         meta << "  \"recording_window_valid_rows\": " << (closed ? recording_window_valid_rows_ : 0) << ",\n";
         meta << "  \"recording_window_valid_rgb_frames\": " << (closed ? recording_window_valid_rgb_frames_ : 0) << ",\n";
         meta << "  \"recording_window_valid_depth_frames\": " << (closed ? recording_window_valid_depth_frames_ : 0) << ",\n";
+        if(closed) {
+            write_recording_quality_fields(meta);
+        }
+        else {
+            meta << "  \"recording_quality_status\": \"recording\",\n";
+            meta << "  \"recording_complete\": false,\n";
+        }
         meta << "  \"recording_window_mode\": \"global_timestamp_us\",\n";
         meta << "  \"closed\": " << (closed ? "true" : "false") << ",\n";
         meta << "  \"frames_publish_state\": \"" << (closed ? "finalized" : "recording") << "\",\n";
@@ -5489,6 +5669,10 @@ private:
     uint64_t recording_window_last_valid_rgb_global_us_ = 0;
     uint64_t recording_window_first_valid_depth_global_us_ = 0;
     uint64_t recording_window_last_valid_depth_global_us_ = 0;
+    uint64_t recording_window_rgb_max_gap_us_ = 0;
+    uint64_t recording_window_depth_max_gap_us_ = 0;
+    uint64_t recording_window_rgb_out_of_order_ = 0;
+    uint64_t recording_window_depth_out_of_order_ = 0;
     std::vector<uint8_t> rgb_pending_;
     std::vector<PendingRgbPacketInfo> rgb_pending_infos_;
     bool rgb_pending_has_vcl_ = false;
@@ -5504,6 +5688,8 @@ private:
     double depth_record_fps_ = 0.0;
     double rgb_nominal_fps_ = 0.0;
     double depth_nominal_fps_ = 0.0;
+    bool rgb_expected_ = false;
+    bool depth_expected_ = false;
     StreamRecordStats rgb_stats_;
     StreamRecordStats rgb_recorded_stats_;
     StreamRecordStats depth_stats_;
@@ -5651,6 +5837,11 @@ struct CameraState {
     std::string status_endpoint;
     uint64_t last_media_us = 0;
     uint64_t last_media_session_id = 0;
+    uint64_t rgb_ingress_session_id = 0;
+    bool rgb_ingress_waiting_for_idr = false;
+    uint64_t rgb_ingress_keyframe_drops = 0;
+    uint64_t rgb_ingress_recoveries = 0;
+    uint64_t rgb_ingress_keyframe_requests = 0;
     uint64_t rgb_packets = 0;
     uint64_t depth_packets = 0;
     uint64_t rgb_bytes = 0;
@@ -6025,8 +6216,10 @@ public:
             out << "\"nas_subdirectory\":\"" << json_escape(config_.photo_capture.nas_subdirectory) << "\",";
             out << "\"queue_items\":" << photo_capture_queue_.size() << ',';
             out << "\"queue_bytes\":" << photo_capture_queue_bytes_ << ',';
+            out << "\"pending_request_ids\":" << photo_capture_pending_ids_.size() << ',';
             out << "\"enqueued\":" << photo_capture_enqueued_.load() << ',';
             out << "\"completed\":" << photo_capture_completed_.load() << ',';
+            out << "\"duplicate_requests\":" << photo_capture_duplicate_requests_.load() << ',';
             out << "\"failures\":" << photo_capture_failures_.load() << "},";
         }
         {
@@ -6247,6 +6440,12 @@ public:
             out << "\"segment_prestart_rgb_drops\":" << cam.segment_prestart_rgb_drops.load() << ',';
             out << "\"media_idle_finalizations\":" << cam.media_idle_finalizations.load() << ',';
             out << "\"last_media_session_id\":" << cam.last_media_session_id << ',';
+            out << "\"rgb_ingress_session_id\":" << cam.rgb_ingress_session_id << ',';
+            out << "\"rgb_ingress_waiting_for_idr\":"
+                << (cam.rgb_ingress_waiting_for_idr ? "true" : "false") << ',';
+            out << "\"rgb_ingress_keyframe_drops\":" << cam.rgb_ingress_keyframe_drops << ',';
+            out << "\"rgb_ingress_recoveries\":" << cam.rgb_ingress_recoveries << ',';
+            out << "\"rgb_ingress_keyframe_requests\":" << cam.rgb_ingress_keyframe_requests << ',';
             out << "\"sender_rgb_input_fps\":" << cam.sender_rgb_input_fps << ',';
             out << "\"sender_depth_input_fps\":" << cam.sender_depth_input_fps << ',';
             out << "\"sender_rgb_sent_fps\":" << cam.sender_rgb_sent_fps << ',';
@@ -6857,6 +7056,18 @@ public:
         if(changed) {
             cam->record_cv.notify_all();
         }
+    }
+
+    static void reset_record_session_metrics_locked(CameraState &cam) {
+        cam.record_queue_peak_bytes = cam.record_queue_bytes;
+        cam.record_queue_peak_packets = cam.record_queue.size();
+        cam.record_prequeue_peak_delay_us = 0;
+        cam.record_queue_peak_wait_us = 0;
+        cam.record_enqueued_packets = 0;
+        cam.record_dequeued_packets = 0;
+        cam.record_backpressure_waits = 0;
+        cam.record_oversize_packets = 0;
+        cam.record_write_errors = 0;
     }
 
     static void set_record_finalizing(const std::shared_ptr<CameraState> &cam, bool finalizing) {
@@ -7633,6 +7844,7 @@ public:
                 if(!already_recording) {
                     std::lock_guard<std::mutex> record_lock(item.second->record_mutex);
                     item.second->record_storage_capacity_failed = false;
+                    reset_record_session_metrics_locked(*item.second);
                     if(item.second->last_error.rfind("recording_write_failed:", 0) == 0) {
                         item.second->last_error.clear();
                     }
@@ -7758,6 +7970,7 @@ public:
                 recording_fault_stop_requested_.store(false);
                 std::lock_guard<std::mutex> record_lock(cam.record_mutex);
                 cam.record_storage_capacity_failed = false;
+                reset_record_session_metrics_locked(cam);
                 if(cam.last_error.rfind("recording_write_failed:", 0) == 0) {
                     cam.last_error.clear();
                 }
@@ -8745,11 +8958,19 @@ private:
                              + " jpeg_bytes=" + std::to_string(job.packet.payload.size())
                              + " staging_latency_us=" + std::to_string(latency_us)
                              + " image_path=" + image_path);
+                {
+                    std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+                    photo_capture_pending_ids_.erase(job.request_id);
+                }
                 send_rgb_snapshot_result(job, true, "captured", image_path, "");
             }
             catch(const std::exception &e) {
                 photo_capture_failures_.fetch_add(1);
                 logger_.warn("rgb snapshot staging failed request_id=" + job.request_id + " error=" + e.what());
+                {
+                    std::lock_guard<std::mutex> lock(photo_capture_mutex_);
+                    photo_capture_pending_ids_.erase(job.request_id);
+                }
                 send_rgb_snapshot_result(job, false, "error", "", e.what());
             }
         }
@@ -8781,11 +9002,22 @@ private:
 
         const size_t payload_size = packet.payload.size();
         std::string rejection;
+        std::optional<std::string> completed_path;
+        bool duplicate_pending = false;
         {
             std::lock_guard<std::mutex> lock(photo_capture_mutex_);
             const size_t queue_max_bytes =
                 config_.photo_capture.max_jpeg_bytes * std::min<size_t>(config_.photo_capture.queue_max_items, 32);
-            if(!photo_capture_available_ || photo_capture_stop_) {
+            if(const auto completed = photo_completed_paths_.find(request_id);
+               completed != photo_completed_paths_.end()) {
+                completed_path = completed->second;
+                photo_capture_duplicate_requests_.fetch_add(1);
+            }
+            else if(photo_capture_pending_ids_.count(request_id) != 0) {
+                duplicate_pending = true;
+                photo_capture_duplicate_requests_.fetch_add(1);
+            }
+            else if(!photo_capture_available_ || photo_capture_stop_) {
                 rejection = "receiver photo staging is unavailable";
             }
             else if(photo_capture_queue_.size() >= config_.photo_capture.queue_max_items
@@ -8800,8 +9032,16 @@ private:
                 job.queued_us = now_us();
                 photo_capture_queue_bytes_ += payload_size;
                 photo_capture_queue_.push_back(std::move(job));
+                photo_capture_pending_ids_.insert(request_id);
                 photo_capture_enqueued_.fetch_add(1);
             }
+        }
+        if(completed_path) {
+            send_rgb_snapshot_result(rejected, true, "captured", *completed_path, "");
+            return true;
+        }
+        if(duplicate_pending) {
+            return true;
         }
         if(!rejection.empty()) {
             send_rgb_snapshot_result(rejected, false, "error", "", rejection);
@@ -9607,6 +9847,8 @@ private:
         bool main_preview_expired = false;
         bool is_main_preview_camera = false;
         bool should_record = false;
+        bool drop_rgb_until_idr = false;
+        std::optional<SenderControlTarget> rgb_recovery_keyframe_target;
         std::string record_sender_id;
         std::string record_camera_id;
         std::string record_camera_name;
@@ -9633,7 +9875,29 @@ private:
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
-                if(config_.preview_enabled) {
+                if(media_session_id != 0 && cam->rgb_ingress_session_id != media_session_id) {
+                    cam->rgb_ingress_session_id = media_session_id;
+                    cam->rgb_ingress_waiting_for_idr = !rgb_has_idr;
+                    if(cam->rgb_ingress_waiting_for_idr && !cam->status_endpoint.empty()) {
+                        ++cam->rgb_ingress_keyframe_requests;
+                        rgb_recovery_keyframe_target =
+                            SenderControlTarget{cam->sender_id, cam->camera_id, cam->status_endpoint};
+                    }
+                }
+                if(cam->rgb_ingress_waiting_for_idr) {
+                    if(rgb_has_idr) {
+                        cam->rgb_ingress_waiting_for_idr = false;
+                        ++cam->rgb_ingress_recoveries;
+                        logger_.info("rgb ingress recovered on IDR route=" + cam->key
+                                     + " session=" + std::to_string(media_session_id)
+                                     + " dropped=" + std::to_string(cam->rgb_ingress_keyframe_drops));
+                    }
+                    else {
+                        drop_rgb_until_idr = true;
+                        ++cam->rgb_ingress_keyframe_drops;
+                    }
+                }
+                if(config_.preview_enabled && !drop_rgb_until_idr) {
                     const auto media_now = cam->last_media_us;
                     const bool stream_requested = is_recent_us(media_now, cam->rgb_stream_requested_until_us, 0);
                     const bool main_stream_requested = is_recent_us(media_now, cam->rgb_main_stream_requested_until_us, 0);
@@ -9683,7 +9947,7 @@ private:
                 depth_preview_scale = cam->depth_scale;
             }
 
-            should_record = (recording_all_ || cam->recording_requested)
+            should_record = !drop_rgb_until_idr && (recording_all_ || cam->recording_requested)
                             && (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw);
             if(should_record) {
                 {
@@ -9712,6 +9976,13 @@ private:
                 record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
                 record_window = cam->recording_window;
             }
+        }
+        if(rgb_recovery_keyframe_target) {
+            send_force_rgb_keyframe_controls({*rgb_recovery_keyframe_target},
+                                             "rgb_ingress_session_recovery", packet_receive_us);
+        }
+        if(drop_rgb_until_idr) {
+            return;
         }
         std::shared_ptr<MediaPacket> packet_owner;
         MediaPacket *processing_packet = &packet;
@@ -10511,6 +10782,7 @@ private:
     std::deque<SegmentFinalizeTask> segment_finalize_queue_;
     std::set<std::string> segment_finalize_active_routes_;
     std::deque<PhotoCaptureJob> photo_capture_queue_;
+    std::set<std::string> photo_capture_pending_ids_;
     std::set<std::string> photo_reserved_relative_paths_;
     std::set<std::string> photo_reserved_directories_;
     std::unordered_map<std::string, PhotoBurstPathState> photo_burst_paths_;
@@ -10523,6 +10795,7 @@ private:
     std::atomic<uint64_t> photo_temp_sequence_{0};
     std::atomic<uint64_t> photo_capture_enqueued_{0};
     std::atomic<uint64_t> photo_capture_completed_{0};
+    std::atomic<uint64_t> photo_capture_duplicate_requests_{0};
     std::atomic<uint64_t> photo_capture_failures_{0};
     std::atomic<size_t> segment_finalize_outstanding_status_{0};
     std::atomic<size_t> segment_finalize_queued_status_{0};

@@ -138,31 +138,7 @@ std::string mac_for_interface(const std::string &interface_name) {
     return is_valid_mac_address(address) ? address : "";
 }
 
-std::string default_route_interface() {
-    std::ifstream input("/proc/net/route");
-    std::string line;
-    std::string iface;
-    std::string destination;
-    std::getline(input, line);
-    while(std::getline(input, line)) {
-        std::istringstream row(line);
-        row >> iface >> destination;
-        if(destination == "00000000") {
-            return iface;
-        }
-    }
-    return "";
-}
-
 std::string first_available_mac() {
-    const auto route_iface = default_route_interface();
-    if(!route_iface.empty()) {
-        const auto mac = mac_for_interface(route_iface);
-        if(!mac.empty()) {
-            return mac;
-        }
-    }
-
     std::vector<std::string> names;
     const std::filesystem::path net_dir("/sys/class/net");
     if(std::filesystem::exists(net_dir)) {
@@ -172,13 +148,21 @@ std::string first_available_mac() {
     }
     std::sort(names.begin(), names.end());
 
-    for(const auto &name : names) {
-        if(name == "lo") {
-            continue;
-        }
-        const auto mac = mac_for_interface(name);
-        if(!mac.empty()) {
-            return mac;
+    // The default route can move between Ethernet and Wi-Fi. Prefer the first
+    // physical interface in stable name order so auto IDs do not move with it.
+    for(const bool physical_only : {true, false}) {
+        for(const auto &name : names) {
+            if(name == "lo") {
+                continue;
+            }
+            if(physical_only
+               && !std::filesystem::exists(std::filesystem::path("/sys/class/net") / name / "device")) {
+                continue;
+            }
+            const auto mac = mac_for_interface(name);
+            if(!mac.empty()) {
+                return mac;
+            }
         }
     }
     return "";

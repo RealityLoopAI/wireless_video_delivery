@@ -182,7 +182,7 @@ def run(args: argparse.Namespace) -> None:
                 sdk_padded_jpeg = jpeg + (b"\x00" * 32)
                 packet = snapshot_packet(sender_id, camera_id, request_id, 42, frame_time_us, sdk_padded_jpeg)
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-                    media.sendall(packet)
+                    media.sendall(packet + packet + packet)
                     deadline = time.monotonic() + 5
                     acknowledgement = None
                     while time.monotonic() < deadline:
@@ -280,6 +280,9 @@ def run(args: argparse.Namespace) -> None:
             status_payload = json.loads(response.read())
             connection.close()
             assert status_payload["photo_capture"]["completed"] == 4
+            assert status_payload["photo_capture"]["enqueued"] == 4
+            assert status_payload["photo_capture"]["duplicate_requests"] >= 2
+            assert status_payload["photo_capture"]["pending_request_ids"] == 0
             assert status_payload["photo_capture"]["failures"] == 0
         finally:
             process.send_signal(signal.SIGTERM)

@@ -115,6 +115,19 @@ def run(args: argparse.Namespace) -> None:
         assert spec is not None and spec.loader is not None
         uploader_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(uploader_module)
+        quality_source = {
+            "recording_quality_status": "partial",
+            "recording_complete": False,
+            "recording_quality_reason": "rgb tail is missing",
+            "rgb_coverage_ratio": 0.75,
+        }
+        quality_ready = uploader_module.build_ready_marker(
+            quality_source,
+            uploader_module.RGB_OUTPUT_FRAGMENTED_MP4,
+        )
+        assert quality_ready["recording_quality_status"] == "partial"
+        assert quality_ready["recording_complete"] is False
+        assert quality_ready["rgb_coverage_ratio"] == 0.75
 
         incremental_staging = temporary / "incremental-staging"
         incremental_nas = temporary / "incremental-nas"
