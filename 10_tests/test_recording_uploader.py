@@ -527,6 +527,10 @@ def run(args: argparse.Namespace) -> None:
             "ready_file": f"{prefix}recording_ready.json",
             "rgb_file": f"{prefix}rgb.mp4",
             "depth_file": f"{prefix}depth.mkv",
+            "recording_quality_status": "partial",
+            "recording_complete": False,
+            "recording_quality_reason": "rgb tail is missing",
+            "rgb_coverage_ratio": 0.75,
         }
         (segment / f"{prefix}recording_staged.json").write_text(json.dumps(staged), encoding="ascii")
 
@@ -640,7 +644,12 @@ def run(args: argparse.Namespace) -> None:
         assert second.returncode == 0, (second.stdout, second.stderr)
         destination = nas_root / "camera-a" / "2026-07-21" / "120000"
         assert not segment.exists(), "successfully published local segment was not released"
-        assert json.loads((destination / f"{prefix}recording_ready.json").read_text(encoding="utf-8"))["ready"] is True
+        final_ready = json.loads((destination / f"{prefix}recording_ready.json").read_text(encoding="utf-8"))
+        assert final_ready["ready"] is True
+        assert final_ready["recording_quality_status"] == "partial"
+        assert final_ready["recording_complete"] is False
+        assert final_ready["recording_quality_reason"] == "rgb tail is missing"
+        assert final_ready["rgb_coverage_ratio"] == 0.75
         assert not list(nas_root.rglob(".gwv3-uploading-*")), "stale interrupted upload directory was not cleaned"
         assert b"moov" in atoms(destination / f"{prefix}rgb.mp4") and b"moof" not in atoms(destination / f"{prefix}rgb.mp4")
         probe = subprocess.run(

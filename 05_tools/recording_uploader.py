@@ -826,7 +826,8 @@ def prepare_local_capture(
     if not (segment / meta_name).is_file():
         raise RuntimeError(f"recording metadata missing: {segment / meta_name}")
     try:
-        if load_json(segment / meta_name).get("closed") is not True:
+        meta = load_json(segment / meta_name)
+        if meta.get("closed") is not True:
             raise RuntimeError(f"recording metadata is not closed: {segment / meta_name}")
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError(f"recording metadata is unreadable: {segment / meta_name}") from error
@@ -869,6 +870,8 @@ def prepare_local_capture(
         "capture_file": capture_marker_name(ready_name),
         "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
     }
+    capture.update(recording_quality_fields(meta))
+    capture.update(recording_quality_fields(source))
     return capture, capture["capture_file"]
 
 
