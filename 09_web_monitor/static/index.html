@@ -553,6 +553,7 @@
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
     const PREVIEW_PROBE_INTERVAL_MS = 1500;
+    const H264_PREVIEW_RETRY_MS = 3000;
     const PREVIEW_STALE_MS = 5000;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
@@ -661,7 +662,6 @@
         this.buffer = new Uint8Array(0);
         this.decoder = null;
         this.configured = false;
-        this.waitingForKeyframe = true;
         this.stopped = false;
         this.firstFrameTimer = null;
         this.canvas = root.querySelector('canvas[data-rgb-video]');
@@ -710,6 +710,7 @@
       markFailed(message) {
         this.root.dataset.rgbH264Failed = '1';
         this.root.dataset.rgbH264FailedKey = this.camera.camera_key;
+        this.root.dataset.rgbH264FailedAt = String(Date.now());
         setPlaceholder(this.root, 'rgb', message || 'RGB 视频中断');
         this.canvas.style.display = 'none';
         if (this.decoder) {
@@ -786,17 +787,9 @@
       }
       decode(payload, flags, width, height, timestampUs) {
         const isKey = (flags & 1) !== 0;
-        if (this.decoder && this.decoder.decodeQueueSize > 6) {
-          try { this.decoder.close(); } catch (_) {}
-          this.decoder = null;
-          this.configured = false;
-          this.waitingForKeyframe = true;
-        }
-        if (this.waitingForKeyframe && !isKey) return;
         if (!this.configured) {
           if (!isKey) return;
           this.configure(payload, width, height);
-          this.waitingForKeyframe = false;
         }
         if (!this.decoder || this.decoder.state !== 'configured') return;
         this.decoder.decode(new EncodedVideoChunk({
@@ -820,6 +813,7 @@
         }
         this.root.dataset.rgbH264Failed = '0';
         this.root.dataset.rgbH264FailedKey = '';
+        this.root.dataset.rgbH264FailedAt = '0';
         this.canvas.style.display = 'block';
         setPlaceholder(this.root, 'rgb', '', false);
       }
@@ -1108,8 +1102,12 @@
         return;
       }
       const preferH264 = kind === 'rgb' && (high ? Number(c.rgb_packets || 0) > 0 : rgbH264Fresh(c));
+      const h264FailedForCamera = root.dataset.rgbH264Failed === '1' &&
+        root.dataset.rgbH264FailedKey === c.camera_key;
+      const h264RetryDue = !h264FailedForCamera ||
+        Date.now() - Number(root.dataset.rgbH264FailedAt || '0') >= H264_PREVIEW_RETRY_MS;
       if (preferH264 && rgbH264PreviewSupported() &&
-          !(root.dataset.rgbH264Failed === '1' && root.dataset.rgbH264FailedKey === c.camera_key)) {
+          h264RetryDue) {
         root.dataset[`${kind}Loading`] = '0';
         // The recording stream may intentionally queue during network stalls; UI preview must stay live.
         ensureRgbVideoPreview(root, c, false);
