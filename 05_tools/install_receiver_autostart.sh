@@ -93,6 +93,26 @@ except Exception:
 PY
 }
 
+read_config_path() {
+  python3 - "$CONFIG" "$1" "$2" <<'PY'
+import json
+import sys
+
+config_path, dotted_key, fallback = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(config_path, "r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    for key in dotted_key.split("."):
+        value = value[key]
+    if isinstance(value, bool):
+        print("true" if value else "false")
+    else:
+        print(value)
+except Exception:
+    print(fallback)
+PY
+}
+
 status_is_idle() {
   python3 -c '
 import json
@@ -149,6 +169,13 @@ WEB_BIND_IP="$(read_config_field web_bind_ip 0.0.0.0)"
 WEB_PORT="$(read_config_field web_port 8080)"
 RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
+NAS_ROOT="$(read_config_field nas_root /home/fz/Desktop/nas)"
+RECORDING_STAGING_ENABLED="$(read_config_path recording_staging.enabled false)"
+RECEIVER_MOUNT_GUARD=""
+if [[ "$RECORDING_STAGING_ENABLED" == "false" ]]; then
+  RECEIVER_MOUNT_GUARD="ExecStartPre=/usr/bin/mountpoint -q $NAS_ROOT
+ExecStartPre=/usr/bin/test -w $NAS_ROOT"
+fi
 
 mkdir -p "$BUILD_DIR" "$ROOT_DIR/08_reports/receiver_logs" "$UNIT_DIR"
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DGWV3_BUILD_RECEIVER=ON -DGWV3_BUILD_SENDER=OFF >/dev/null
@@ -183,6 +210,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
+$RECEIVER_MOUNT_GUARD
 ExecStart=$BIN --config $CONFIG
 Restart=on-failure
 RestartSec=2

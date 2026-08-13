@@ -721,6 +721,46 @@ void fsync_directory_best_effort(const std::filesystem::path &path) {
     close(fd);
 }
 
+void fsync_file_strict(const std::filesystem::path &path) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if(fd < 0) {
+        throw std::runtime_error("cannot open file for fsync " + path.string() + ": " + std::strerror(errno));
+    }
+    ScopeExit close_file([&] { close(fd); });
+    while(fsync(fd) != 0) {
+        if(errno == EINTR) {
+            continue;
+        }
+        throw std::runtime_error("cannot fsync file " + path.string() + ": " + std::strerror(errno));
+    }
+}
+
+void fsync_segment_files_strict(const std::filesystem::path &directory) {
+    std::error_code ec;
+    for(const auto &entry : std::filesystem::directory_iterator(directory, ec)) {
+        if(ec) {
+            break;
+        }
+        if(entry.is_regular_file(ec)) {
+            if(ec) {
+                break;
+            }
+            fsync_file_strict(entry.path());
+        }
+    }
+    if(ec) {
+        throw std::runtime_error("cannot enumerate segment for fsync " + directory.string() + ": " + ec.message());
+    }
+    fsync_directory_best_effort(directory);
+}
+
+bool paths_share_device(const std::filesystem::path &left, const std::filesystem::path &right) {
+    struct stat left_stat{};
+    struct stat right_stat{};
+    return stat(left.c_str(), &left_stat) == 0 && stat(right.c_str(), &right_stat) == 0
+           && left_stat.st_dev == right_stat.st_dev;
+}
+
 void write_file_and_fsync(const std::filesystem::path &path, const uint8_t *data, size_t size) {
     const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
     if(fd < 0) {
@@ -1137,6 +1177,7 @@ struct Config {
         bool defer_player_compatible_finalize = true;
         std::string rgb_output_mode = "conventional_mp4";
         int idle_finalize_ms = 5000;
+        std::string direct_publish_hidden_directory = ".gwv3_direct_inprogress";
     };
 
     struct PhotoCaptureConfig {
@@ -1290,6 +1331,9 @@ Config load_config(const std::string &path) {
         string_value(recording_staging, "rgb_output_mode", cfg.recording_staging.rgb_output_mode);
     cfg.recording_staging.idle_finalize_ms =
         int_value(recording_staging, "idle_finalize_ms", cfg.recording_staging.idle_finalize_ms);
+    cfg.recording_staging.direct_publish_hidden_directory =
+        string_value(recording_staging, "direct_publish_hidden_directory",
+                     cfg.recording_staging.direct_publish_hidden_directory);
     Json::Value photo_capture(Json::objectValue);
     if(!root["photo_capture"].isNull()) {
         if(!root["photo_capture"].isObject()) {
@@ -1368,6 +1412,12 @@ Config load_config(const std::string &path) {
         throw std::runtime_error(
             "recording_staging.rgb_output_mode must be conventional_mp4 or fragmented_mp4");
     }
+    if(cfg.recording_staging.direct_publish_hidden_directory.empty()
+       || !is_safe_storage_text(cfg.recording_staging.direct_publish_hidden_directory)
+       || cfg.recording_staging.direct_publish_hidden_directory.front() != '.') {
+        throw std::runtime_error(
+            "recording_staging.direct_publish_hidden_directory must be one hidden safe directory name");
+    }
     if(cfg.photo_capture.enabled && cfg.photo_capture.staging_root.empty()) {
         throw std::runtime_error("photo_capture.staging_root must not be empty when photo capture is enabled");
     }
@@ -1407,6 +1457,15 @@ Config load_config(const std::string &path) {
         throw std::runtime_error("admin_port conflicts with media_port on the same bind address");
     }
     return cfg;
+}
+
+std::filesystem::path direct_recording_root(const Config &cfg) {
+    return std::filesystem::path(cfg.nas_root) / cfg.recording_staging.direct_publish_hidden_directory;
+}
+
+std::filesystem::path recording_write_root(const Config &cfg) {
+    return cfg.recording_staging.enabled ? std::filesystem::path(cfg.recording_staging.root)
+                                         : direct_recording_root(cfg);
 }
 
 bool rgb_h264_full_range_for_camera(const Config &cfg, const std::string &sender_id, const std::string &camera_id) {
@@ -3624,37 +3683,63 @@ public:
                           && json_int_in_object(announce_json, "depth_profile", "width").value_or(0) > 0
                           && json_int_in_object(announce_json, "depth_profile", "height").value_or(0) > 0;
         rgb_h264_full_range_ = rgb_h264_full_range_for_camera(cfg, sender_id, camera_id);
-        const std::string &recording_root = cfg.recording_staging.enabled ? cfg.recording_staging.root : cfg.nas_root;
+        const auto recording_root = recording_write_root(cfg);
+        const auto publish_root = std::filesystem::path(cfg.nas_root);
         std::error_code root_ec;
         std::filesystem::create_directories(recording_root, root_ec);
         if(root_ec) {
-            throw std::runtime_error("cannot create recording root: " + recording_root + ": " + root_ec.message());
+            throw std::runtime_error("cannot create recording root: " + recording_root.string() + ": " + root_ec.message());
+        }
+        std::filesystem::create_directories(publish_root, root_ec);
+        if(root_ec) {
+            throw std::runtime_error("cannot create recording publish root: " + publish_root.string()
+                                     + ": " + root_ec.message());
+        }
+        if(!cfg.recording_staging.enabled && !paths_share_device(recording_root, publish_root)) {
+            throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
         }
         const auto space = std::filesystem::space(recording_root, root_ec);
         if(root_ec || space.available < cfg.min_free_disk_bytes) {
-            throw std::runtime_error("insufficient free space under recording root: " + recording_root);
+            throw std::runtime_error("insufficient free space under recording root: " + recording_root.string());
         }
         const uint64_t directory_time_us = segment_timeline_.start_global_us > 0
                                                ? segment_timeline_.start_global_us
                                                : start_us_;
-        const auto directory_base = std::filesystem::path(recording_root) / storage_key_
-                                    / date_dir_from_us(directory_time_us) / time_dir_from_us(directory_time_us);
+        const auto relative_base = std::filesystem::path(storage_key_) / date_dir_from_us(directory_time_us)
+                                   / time_dir_from_us(directory_time_us);
+        const auto directory_base = recording_root / relative_base;
+        const auto publish_base = publish_root / relative_base;
         auto directory = directory_base;
+        auto publish_directory = publish_base;
         std::error_code ec;
-        for(unsigned suffix = 1; std::filesystem::exists(directory, ec); ++suffix) {
+        for(unsigned suffix = 1;; ++suffix) {
+            ec.clear();
+            const bool hidden_exists = std::filesystem::exists(directory, ec);
             if(ec) {
                 throw std::runtime_error("cannot inspect recording directory: " + directory.string() + ": " + ec.message());
+            }
+            bool published_exists = false;
+            if(!cfg.recording_staging.enabled) {
+                published_exists = std::filesystem::exists(publish_directory, ec);
+                if(ec) {
+                    throw std::runtime_error("cannot inspect recording publish directory: "
+                                             + publish_directory.string() + ": " + ec.message());
+                }
+            }
+            if(!hidden_exists && !published_exists) {
+                break;
             }
             std::ostringstream name;
             name << directory_base.filename().string() << '_' << std::setw(3) << std::setfill('0') << suffix;
             directory = directory_base.parent_path() / name.str();
+            publish_directory = publish_base.parent_path() / name.str();
         }
         if(!std::filesystem::create_directories(directory, ec) || ec) {
             throw std::runtime_error("cannot create recording directory: " + directory.string() + ": " + ec.message());
         }
         directory_ = directory.string();
-        recording_root_ = std::filesystem::path(recording_root).lexically_normal().string();
-        relative_directory_ = directory.lexically_relative(std::filesystem::path(recording_root)).generic_string();
+        recording_root_ = recording_root.lexically_normal().string();
+        relative_directory_ = directory.lexically_relative(recording_root).generic_string();
         if(relative_directory_.empty() || relative_directory_ == ".." || relative_directory_.rfind("../", 0) == 0) {
             throw std::runtime_error("recording directory escaped configured root: " + directory_);
         }
@@ -3777,6 +3862,9 @@ public:
                         + " reason=" + quality.reason);
         }
         set_segment_mtime_to_start(logger);
+        if(!cfg.recording_staging.enabled) {
+            publish_direct_nas_segment(cfg, logger);
+        }
         const auto close_finished = std::chrono::steady_clock::now();
         const auto elapsed_ms = [](auto begin, auto end) {
             return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
@@ -5593,6 +5681,43 @@ private:
         out << "}\n";
     }
 
+    void publish_direct_nas_segment(const Config &cfg, Logger &logger) {
+        const auto source = std::filesystem::path(directory_);
+        const auto hidden_root = direct_recording_root(cfg).lexically_normal();
+        const auto publish_root = std::filesystem::path(cfg.nas_root).lexically_normal();
+        const auto relative = source.lexically_relative(hidden_root);
+        if(relative.empty() || relative == ".." || relative.generic_string().rfind("../", 0) == 0) {
+            throw std::runtime_error("direct NAS segment escaped hidden root: " + source.string());
+        }
+        const auto destination = publish_root / relative;
+        std::error_code ec;
+        if(std::filesystem::exists(destination, ec) || ec) {
+            throw std::runtime_error(
+                ec ? "cannot inspect direct NAS destination " + destination.string() + ": " + ec.message()
+                   : "direct NAS destination already exists: " + destination.string());
+        }
+        std::filesystem::create_directories(destination.parent_path(), ec);
+        if(ec) {
+            throw std::runtime_error("cannot create direct NAS destination parent "
+                                     + destination.parent_path().string() + ": " + ec.message());
+        }
+
+        fsync_segment_files_strict(source);
+        fsync_directory_best_effort(source.parent_path());
+        std::filesystem::rename(source, destination, ec);
+        if(ec) {
+            throw std::runtime_error("cannot atomically publish direct NAS segment " + source.string()
+                                     + " -> " + destination.string() + ": " + ec.message());
+        }
+        directory_ = destination.string();
+        recording_root_ = publish_root.string();
+        set_segment_mtime_to_start(logger);
+        fsync_directory_best_effort(destination);
+        fsync_directory_best_effort(destination.parent_path());
+        fsync_directory_best_effort(source.parent_path());
+        logger.info("direct NAS segment atomically published: " + destination.string());
+    }
+
     void set_segment_mtime_to_start(Logger &logger) const {
         if(directory_.empty() || start_us_ == 0) {
             return;
@@ -6036,6 +6161,7 @@ public:
         preview_udp_ready_ = false;
         admin_ready_ = false;
         try {
+            recover_direct_nas_segments();
             start_photo_capture_worker();
             start_segment_finalize_worker();
             start_decoder_cleanup_worker();
@@ -6203,10 +6329,12 @@ public:
             << (config_.recording_staging.defer_player_compatible_finalize ? "true" : "false") << ',';
         out << "\"rgb_output_mode\":\""
             << json_escape(config_.recording_staging.rgb_output_mode) << "\",";
-        out << "\"idle_finalize_ms\":" << config_.recording_staging.idle_finalize_ms << "},";
+        out << "\"idle_finalize_ms\":" << config_.recording_staging.idle_finalize_ms << ',';
+        out << "\"direct_publish_hidden_directory\":\""
+            << json_escape(config_.recording_staging.direct_publish_hidden_directory) << "\"},";
         out << "\"recording_staging_enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
         out << "\"recording_write_root\":\""
-            << json_escape(config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root) << "\",";
+            << json_escape(recording_write_root(config_).string()) << "\",";
         {
             std::lock_guard<std::mutex> photo_lock(photo_capture_mutex_);
             out << "\"photo_capture\":{";
@@ -7543,8 +7671,7 @@ public:
 
     bool recording_storage_recovery_ready() const {
         constexpr uint64_t kRecoveryHeadroomBytes = 2ull * 1024ull * 1024ull * 1024ull;
-        const std::string &recording_root =
-            config_.recording_staging.enabled ? config_.recording_staging.root : config_.nas_root;
+        const auto recording_root = recording_write_root(config_);
         std::error_code ec;
         std::filesystem::create_directories(recording_root, ec);
         if(ec) {
@@ -8611,6 +8738,102 @@ public:
     }
 
 private:
+    void recover_direct_nas_segments() {
+        if(config_.recording_staging.enabled) {
+            return;
+        }
+        const auto hidden_root = direct_recording_root(config_).lexically_normal();
+        const auto publish_root = std::filesystem::path(config_.nas_root).lexically_normal();
+        std::error_code ec;
+        std::filesystem::create_directories(hidden_root, ec);
+        if(ec) {
+            throw std::runtime_error("cannot create direct NAS hidden root " + hidden_root.string()
+                                     + ": " + ec.message());
+        }
+        if(!paths_share_device(hidden_root, publish_root)) {
+            throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
+        }
+
+        std::set<std::filesystem::path> ready_segments;
+        std::filesystem::recursive_directory_iterator iterator(
+            hidden_root,
+            std::filesystem::directory_options::skip_permission_denied,
+            ec);
+        const std::filesystem::recursive_directory_iterator end;
+        while(!ec && iterator != end) {
+            if(iterator->is_regular_file(ec)) {
+                const auto name = iterator->path().filename().string();
+                constexpr const char *suffix = "recording_ready.json";
+                const size_t suffix_size = std::strlen(suffix);
+                if(name.size() >= suffix_size
+                   && name.compare(name.size() - suffix_size, suffix_size, suffix) == 0) {
+                    std::ifstream marker(iterator->path());
+                    const std::string raw((std::istreambuf_iterator<char>(marker)),
+                                          std::istreambuf_iterator<char>());
+                    Json::Value marker_root;
+                    if(marker && parse_json_object_strict(raw, marker_root)
+                       && marker_root["ready"].isBool() && marker_root["ready"].asBool()) {
+                        ready_segments.insert(iterator->path().parent_path());
+                    }
+                    else {
+                        logger_.warn("direct NAS recovery ignored invalid ready marker: "
+                                     + iterator->path().string());
+                    }
+                }
+            }
+            iterator.increment(ec);
+        }
+        if(ec) {
+            logger_.warn("direct NAS recovery scan incomplete root=" + hidden_root.string()
+                         + " error=" + ec.message());
+        }
+
+        size_t recovered = 0;
+        for(const auto &source : ready_segments) {
+            const auto relative = source.lexically_relative(hidden_root);
+            bool safe = !relative.empty() && relative != "..";
+            for(const auto &part : relative) {
+                safe = safe && is_safe_storage_text(part.string());
+            }
+            if(!safe) {
+                logger_.warn("direct NAS recovery ignored unsafe path: " + source.string());
+                continue;
+            }
+            const auto destination = publish_root / relative;
+            ec.clear();
+            if(std::filesystem::exists(destination, ec) || ec) {
+                logger_.warn("direct NAS recovery retained hidden segment because destination exists: "
+                             + source.string());
+                continue;
+            }
+            std::filesystem::create_directories(destination.parent_path(), ec);
+            if(ec) {
+                logger_.warn("direct NAS recovery cannot create destination parent: " + ec.message());
+                continue;
+            }
+            try {
+                fsync_segment_files_strict(source);
+            }
+            catch(const std::exception &error) {
+                logger_.warn("direct NAS recovery fsync failed source=" + source.string()
+                             + " error=" + error.what());
+                continue;
+            }
+            std::filesystem::rename(source, destination, ec);
+            if(ec) {
+                logger_.warn("direct NAS recovery rename failed source=" + source.string()
+                             + " destination=" + destination.string() + " error=" + ec.message());
+                continue;
+            }
+            fsync_directory_best_effort(destination.parent_path());
+            fsync_directory_best_effort(source.parent_path());
+            ++recovered;
+            logger_.info("direct NAS recovery published segment: " + destination.string());
+        }
+        logger_.info("direct NAS recovery completed hidden_root=" + hidden_root.string()
+                     + " recovered=" + std::to_string(recovered));
+    }
+
     void persist_runtime_state_snapshot(const RuntimeState &snapshot, uint64_t revision) {
         std::lock_guard<std::mutex> save_lock(runtime_state_save_mutex_);
         if(revision <= runtime_state_save_revision_) {

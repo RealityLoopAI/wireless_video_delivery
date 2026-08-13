@@ -74,6 +74,12 @@ if(BUILD_TESTING)
     )
     set_tests_properties(receiver_staging_pipeline_integration PROPERTIES TIMEOUT 90)
     add_test(
+        NAME receiver_direct_nas_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_direct_nas.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+    )
+    set_tests_properties(receiver_direct_nas_integration PROPERTIES TIMEOUT 90)
+    add_test(
         NAME photo_uploader_fault_injection
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_photo_uploader.py
                 --uploader ${CMAKE_SOURCE_DIR}/05_tools/photo_uploader.py
