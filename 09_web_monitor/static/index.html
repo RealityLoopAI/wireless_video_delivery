@@ -661,6 +661,7 @@
         this.buffer = new Uint8Array(0);
         this.decoder = null;
         this.configured = false;
+        this.waitingForKeyframe = true;
         this.stopped = false;
         this.firstFrameTimer = null;
         this.canvas = root.querySelector('canvas[data-rgb-video]');
@@ -785,9 +786,17 @@
       }
       decode(payload, flags, width, height, timestampUs) {
         const isKey = (flags & 1) !== 0;
+        if (this.decoder && this.decoder.decodeQueueSize > 6) {
+          try { this.decoder.close(); } catch (_) {}
+          this.decoder = null;
+          this.configured = false;
+          this.waitingForKeyframe = true;
+        }
+        if (this.waitingForKeyframe && !isKey) return;
         if (!this.configured) {
           if (!isKey) return;
           this.configure(payload, width, height);
+          this.waitingForKeyframe = false;
         }
         if (!this.decoder || this.decoder.state !== 'configured') return;
         this.decoder.decode(new EncodedVideoChunk({
@@ -1102,7 +1111,8 @@
       if (preferH264 && rgbH264PreviewSupported() &&
           !(root.dataset.rgbH264Failed === '1' && root.dataset.rgbH264FailedKey === c.camera_key)) {
         root.dataset[`${kind}Loading`] = '0';
-        ensureRgbVideoPreview(root, c, high);
+        // The recording stream may intentionally queue during network stalls; UI preview must stay live.
+        ensureRgbVideoPreview(root, c, false);
         return;
       }
       if (kind === 'rgb') {

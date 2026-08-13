@@ -21,7 +21,7 @@ STATUS_CACHE_MAX_AGE_S = max(
     1.0, float(os.environ.get("GWV3_WEB_STATUS_CACHE_MAX_AGE_S", "15"))
 )
 MAX_PREVIEW_STREAM_CLIENTS = max(
-    1, int(os.environ.get("GWV3_WEB_MAX_PREVIEW_STREAM_CLIENTS", os.environ.get("GWV3_WEB_MAX_STREAM_CLIENTS", "8")))
+    1, int(os.environ.get("GWV3_WEB_MAX_PREVIEW_STREAM_CLIENTS", os.environ.get("GWV3_WEB_MAX_STREAM_CLIENTS", "16")))
 )
 MAX_MAIN_STREAM_CLIENTS = max(1, int(os.environ.get("GWV3_WEB_MAX_MAIN_STREAM_CLIENTS", "2")))
 PREVIEW_STREAM_SLOTS = threading.BoundedSemaphore(MAX_PREVIEW_STREAM_CLIENTS)
