@@ -33,9 +33,11 @@ def run(uploader_path: Path) -> None:
                     "recording_staging": {
                         "enabled": True,
                         "root": str(staging),
+                        "nas_write_workers": 2,
                         "capture_workers": 16,
                         "full_copy_workers": 3,
                         "active_recording_full_copy_workers": 1,
+                        "pressure_full_copy_workers": 2,
                         "upload_bandwidth_limit_mbps": 240,
                         "full_copy_bandwidth_limit_mbps": 64,
                         "finalize_workers": 8,
@@ -52,6 +54,8 @@ def run(uploader_path: Path) -> None:
         assert uploader.full_copy_bandwidth_mbps == 64
         assert uploader.full_copy_workers == 3
         assert uploader.active_recording_full_copy_workers == 1
+        assert uploader.pressure_full_copy_workers == 2
+        assert uploader.nas_write_workers == 2
         assert uploader.incremental_mirror_workers == 3
         assert uploader.incremental_mirror_max_copy_bytes == 16 * 1024 * 1024
         assert uploader.nas_write_limiter.bandwidth_mbps == 240
@@ -77,6 +81,67 @@ def run(uploader_path: Path) -> None:
         limited_bytes, limited_rate = limiter.snapshot()
         assert limited_bytes == 1024 * 1024
         assert 1.0 <= limited_rate <= 40.0
+
+        priority_gate = uploader_module.PriorityNasWriteGate(1)
+        release_first = threading.Event()
+        first_started = threading.Event()
+        high_started = threading.Event()
+        second_backlog_started = threading.Event()
+        order: list[str] = []
+
+        def hold_first_backlog() -> None:
+            with priority_gate.slot(uploader_module.NAS_WRITE_PRIORITY_BACKLOG):
+                first_started.set()
+                release_first.wait(timeout=2)
+
+        def enter_gate(priority: int, name: str, started: threading.Event) -> None:
+            with priority_gate.slot(priority):
+                order.append(name)
+                started.set()
+                time.sleep(0.02)
+
+        first_thread = threading.Thread(target=hold_first_backlog)
+        first_thread.start()
+        assert first_started.wait(timeout=1)
+        high_thread = threading.Thread(
+            target=enter_gate,
+            args=(
+                uploader_module.NAS_WRITE_PRIORITY_ACTIVE,
+                "active",
+                high_started,
+            ),
+        )
+        second_backlog_thread = threading.Thread(
+            target=enter_gate,
+            args=(
+                uploader_module.NAS_WRITE_PRIORITY_BACKLOG,
+                "backlog",
+                second_backlog_started,
+            ),
+        )
+        high_thread.start()
+        second_backlog_thread.start()
+        time.sleep(0.05)
+        gate_status = priority_gate.snapshot()
+        assert gate_status["active"] == 1
+        assert gate_status["waiting_by_priority"] == [1, 0, 1]
+        release_first.set()
+        assert high_started.wait(timeout=1)
+        assert second_backlog_started.wait(timeout=1)
+        first_thread.join()
+        high_thread.join()
+        second_backlog_thread.join()
+        assert order == ["active", "backlog"]
+
+        coordinated_destination = temporary / "coordinated.bin"
+        coordinated_lane = uploader_module.CoordinatedNasWriteLimiter(
+            uploader_module.SharedBandwidthLimiter(0),
+            uploader_module.PriorityNasWriteGate(1),
+            uploader_module.NAS_WRITE_PRIORITY_ACTIVE,
+        )
+        with coordinated_destination.open("wb") as handle:
+            assert coordinated_lane.write(handle, b"coordinated") == 11
+        assert coordinated_destination.read_bytes() == b"coordinated"
         uploader.begin_priority_capture()
         uploader.begin_priority_capture()
         assert uploader.priority_capture_count == 2
@@ -228,9 +293,9 @@ def run(uploader_path: Path) -> None:
         active_recording_peak = 0
         observed.clear()
         uploader.staging_disk_pressure = lambda: True
-        assert uploader.current_full_copy_limit() == 3
+        assert uploader.current_full_copy_limit() == 2
         assert uploader.process_local_batch(segments[:5]) is True
-        assert active_recording_peak == 3
+        assert active_recording_peak == 2
         uploader.receiver_recording_active = False
         uploader.process_local_one = fake_capture
 

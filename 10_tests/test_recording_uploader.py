@@ -638,7 +638,9 @@ def run(args: argparse.Namespace) -> None:
             [args.python, args.uploader, "--config", str(config_path), "--once"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=30,
+            # Real receiver disks can be busy with active recordings while
+            # this recovery path verifies and fsyncs the synthetic segment.
+            timeout=120,
             check=False,
         )
         assert second.returncode == 0, (second.stdout, second.stderr)

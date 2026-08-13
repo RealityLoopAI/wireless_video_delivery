@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
@@ -177,6 +178,130 @@ class SharedBandwidthLimiter:
         with self.lock:
             self.total_bytes += byte_count
             self._append_sample_locked(time.monotonic())
+
+
+NAS_WRITE_PRIORITY_ACTIVE = 0
+NAS_WRITE_PRIORITY_TAIL = 1
+NAS_WRITE_PRIORITY_BACKLOG = 2
+
+
+class PriorityNasWriteGate:
+    """Bound concurrent NAS writes while allowing active recordings to preempt backlog."""
+
+    def __init__(self, max_workers: int):
+        self.max_workers = max(1, int(max_workers))
+        self.condition = threading.Condition()
+        self.active = 0
+        self.active_by_priority = [0, 0, 0]
+        self.waiting_by_priority = [0, 0, 0]
+        self.total_wait_us_by_priority = [0, 0, 0]
+
+    @staticmethod
+    def normalize_priority(priority: int) -> int:
+        return min(
+            NAS_WRITE_PRIORITY_BACKLOG,
+            max(NAS_WRITE_PRIORITY_ACTIVE, int(priority)),
+        )
+
+    def acquire(self, priority: int) -> None:
+        priority = self.normalize_priority(priority)
+        started = time.monotonic()
+        with self.condition:
+            self.waiting_by_priority[priority] += 1
+            try:
+                while self.active >= self.max_workers or any(
+                    self.waiting_by_priority[index] > 0
+                    for index in range(priority)
+                ):
+                    if STOP_REQUESTED:
+                        raise InterruptedError(
+                            "recording upload interrupted while waiting for NAS write slot"
+                        )
+                    self.condition.wait(timeout=0.25)
+                self.active += 1
+                self.active_by_priority[priority] += 1
+            finally:
+                self.waiting_by_priority[priority] = max(
+                    0,
+                    self.waiting_by_priority[priority] - 1,
+                )
+                self.total_wait_us_by_priority[priority] += round(
+                    (time.monotonic() - started) * 1_000_000
+                )
+
+    def release(self, priority: int) -> None:
+        priority = self.normalize_priority(priority)
+        with self.condition:
+            self.active = max(0, self.active - 1)
+            self.active_by_priority[priority] = max(
+                0,
+                self.active_by_priority[priority] - 1,
+            )
+            self.condition.notify_all()
+
+    @contextmanager
+    def slot(self, priority: int):
+        self.acquire(priority)
+        try:
+            yield
+        finally:
+            self.release(priority)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.condition:
+            return {
+                "max_workers": self.max_workers,
+                "active": self.active,
+                "active_by_priority": list(self.active_by_priority),
+                "waiting_by_priority": list(self.waiting_by_priority),
+                "total_wait_us_by_priority": list(self.total_wait_us_by_priority),
+            }
+
+
+class CoordinatedNasWriteLimiter:
+    """A priority lane sharing one aggregate bandwidth limiter and write gate."""
+
+    def __init__(
+        self,
+        limiter: SharedBandwidthLimiter,
+        gate: PriorityNasWriteGate,
+        priority: int,
+    ):
+        self.limiter = limiter
+        self.gate = gate
+        self.priority = PriorityNasWriteGate.normalize_priority(priority)
+        self.coordinated_write = True
+
+    def write(self, output_handle: Any, data: bytes) -> int:
+        with self.gate.slot(self.priority):
+            self.limiter.consume(len(data))
+            written = output_handle.write(data)
+        if written is None:
+            return len(data)
+        if written != len(data):
+            raise OSError(
+                f"short NAS write expected={len(data)} actual={written}"
+            )
+        return written
+
+
+def write_with_shared_limiter(
+    output_handle: Any,
+    data: bytes,
+    shared_limiter: Any | None,
+) -> int:
+    if shared_limiter is not None and callable(
+        getattr(shared_limiter, "write", None)
+    ):
+        return int(shared_limiter.write(output_handle, data))
+    if shared_limiter is not None:
+        shared_limiter.consume(len(data))
+    written = output_handle.write(data)
+    if written is None:
+        return len(data)
+    if written != len(data):
+        raise OSError(f"short write expected={len(data)} actual={written}")
+    return written
 
 
 def request_stop(_signum: int, _frame: object) -> None:
@@ -969,7 +1094,11 @@ def copy_file_limited(
     if progress is not None:
         progress(0, total)
     dd_path = shutil.which("dd")
-    if total >= 64 * 1024 * 1024 and dd_path:
+    if (
+        total >= 64 * 1024 * 1024
+        and dd_path
+        and not bool(getattr(shared_limiter, "coordinated_write", False))
+    ):
         try:
             copy_file_direct_dd(
                 source,
@@ -1017,9 +1146,7 @@ def copy_file_limited(
             chunk = input_handle.read(chunk_size)
             if not chunk:
                 break
-            if shared_limiter is not None:
-                shared_limiter.consume(len(chunk))
-            output_handle.write(chunk)
+            write_with_shared_limiter(output_handle, chunk, shared_limiter)
             copied += len(chunk)
             if progress is not None:
                 progress(copied, total)
@@ -1235,9 +1362,7 @@ def mirror_complete_file_chunks(
                 data = input_handle.read(chunk_size)
                 if len(data) != chunk_size:
                     break
-                if shared_limiter is not None:
-                    shared_limiter.consume(len(data))
-                output_handle.write(data)
+                write_with_shared_limiter(output_handle, data, shared_limiter)
                 digest = hashlib.sha256(data).hexdigest()
                 hashes.append(digest)
                 offset += len(data)
@@ -1343,10 +1468,8 @@ def synchronize_file_from_incremental_mirror(
                     raise RuntimeError(
                         f"source changed during Matroska header repair: {source}"
                     )
-                if shared_limiter is not None:
-                    shared_limiter.consume(len(header))
                 output_handle.seek(0)
-                output_handle.write(header)
+                write_with_shared_limiter(output_handle, header, shared_limiter)
                 written += len(header)
             input_handle.seek(mirrored_bytes)
             output_handle.seek(mirrored_bytes)
@@ -1359,9 +1482,7 @@ def synchronize_file_from_incremental_mirror(
                 data = input_handle.read(min(4 * 1024 * 1024, total - processed))
                 if not data:
                     raise RuntimeError(f"source changed during incremental tail sync: {source}")
-                if shared_limiter is not None:
-                    shared_limiter.consume(len(data))
-                output_handle.write(data)
+                write_with_shared_limiter(output_handle, data, shared_limiter)
                 written += len(data)
                 processed += len(data)
                 if progress is not None:
@@ -1418,10 +1539,8 @@ def synchronize_file_from_incremental_mirror(
                 and existing_size >= end_offset
             )
             if not reusable:
-                if shared_limiter is not None:
-                    shared_limiter.consume(len(data))
                 output_handle.seek(index * chunk_size)
-                output_handle.write(data)
+                write_with_shared_limiter(output_handle, data, shared_limiter)
                 written += len(data)
             processed = end_offset
             if progress is not None:
@@ -1436,10 +1555,8 @@ def synchronize_file_from_incremental_mirror(
         if len(tail) != total - processed:
             raise RuntimeError(f"source changed during incremental tail sync: {source}")
         if tail:
-            if shared_limiter is not None:
-                shared_limiter.consume(len(tail))
             output_handle.seek(processed)
-            output_handle.write(tail)
+            write_with_shared_limiter(output_handle, tail, shared_limiter)
             written += len(tail)
             processed += len(tail)
             if progress is not None:
@@ -2462,6 +2579,26 @@ class Uploader:
         self.interval = max(0.25, int(staging.get("upload_interval_ms", 2000)) / 1000.0)
         self.bandwidth_mbps = max(0.0, float(staging.get("upload_bandwidth_limit_mbps", 0)))
         self.nas_write_limiter = SharedBandwidthLimiter(self.bandwidth_mbps)
+        self.nas_write_workers = min(
+            16,
+            max(1, int(staging.get("nas_write_workers", 4))),
+        )
+        self.nas_write_gate = PriorityNasWriteGate(self.nas_write_workers)
+        self.active_mirror_write_limiter = CoordinatedNasWriteLimiter(
+            self.nas_write_limiter,
+            self.nas_write_gate,
+            NAS_WRITE_PRIORITY_ACTIVE,
+        )
+        self.tail_write_limiter = CoordinatedNasWriteLimiter(
+            self.nas_write_limiter,
+            self.nas_write_gate,
+            NAS_WRITE_PRIORITY_TAIL,
+        )
+        self.backlog_write_limiter = CoordinatedNasWriteLimiter(
+            self.nas_write_limiter,
+            self.nas_write_gate,
+            NAS_WRITE_PRIORITY_BACKLOG,
+        )
         self.min_free_disk_bytes = max(
             0,
             int(config.get("min_free_disk_mb", 0)),
@@ -2514,6 +2651,13 @@ class Uploader:
         self.active_recording_full_copy_workers = min(
             self.full_copy_workers,
             max(0, int(staging.get("active_recording_full_copy_workers", 1))),
+        )
+        self.pressure_full_copy_workers = min(
+            self.full_copy_workers,
+            max(
+                self.active_recording_full_copy_workers,
+                int(staging.get("pressure_full_copy_workers", 2)),
+            ),
         )
         self.parallel_capture_min_mirror_reuse_percent = min(
             100.0,
@@ -2708,6 +2852,7 @@ class Uploader:
             metrics = self.cached_pending_status
             assert metrics is not None
             nas_write_bytes, nas_write_rate_mbps = self.nas_write_limiter.snapshot()
+            nas_write_gate = self.nas_write_gate.snapshot()
             pending_bytes = metrics["local_bytes"] + metrics["capture_bytes"]
             pending_transfer_eta_seconds = (
                 round(pending_bytes * 8.0 / (nas_write_rate_mbps * 1_000_000.0))
@@ -2833,6 +2978,7 @@ class Uploader:
                     "capture_workers": self.capture_workers,
                     "full_copy_workers": self.full_copy_workers,
                     "active_recording_full_copy_workers": self.active_recording_full_copy_workers,
+                    "pressure_full_copy_workers": self.pressure_full_copy_workers,
                     "current_full_copy_limit": self.current_full_copy_limit(),
                     "full_copy_pressure_escalated": (
                         self.receiver_recording_active
@@ -2843,6 +2989,22 @@ class Uploader:
                     "upload_bandwidth_limit_mbps": self.bandwidth_mbps,
                     "full_copy_bandwidth_limit_mbps": self.full_copy_bandwidth_mbps,
                     "nas_write_shared_limit_mbps": self.bandwidth_mbps,
+                    "nas_write_workers": self.nas_write_workers,
+                    "nas_write_active_workers": nas_write_gate["active"],
+                    "nas_write_active_by_priority": nas_write_gate[
+                        "active_by_priority"
+                    ],
+                    "nas_write_waiting_by_priority": nas_write_gate[
+                        "waiting_by_priority"
+                    ],
+                    "nas_write_wait_us_by_priority": nas_write_gate[
+                        "total_wait_us_by_priority"
+                    ],
+                    "nas_write_priority_names": [
+                        "active_recording",
+                        "closed_segment_tail",
+                        "backlog_full_copy",
+                    ],
                     "nas_write_submitted_bytes": nas_write_bytes,
                     "nas_write_recent_mbps": round(nas_write_rate_mbps, 2),
                     "staging_available_bytes": self.staging_available_bytes(),
@@ -3518,8 +3680,6 @@ class Uploader:
                             bytes_total=total,
                         ),
                         pause=lambda: (
-                            self.priority_capture_io_active.is_set()
-                            or
                             not local_segment_is_closed(segment)
                             and not self.incremental_mirror_worker_stop.is_set()
                             and self.should_pause_for_receiver_io(
@@ -3533,7 +3693,7 @@ class Uploader:
                             mirror_directory / destination_name
                         ),
                         max_copy_bytes=self.incremental_mirror_max_copy_bytes,
-                        shared_limiter=self.nas_write_limiter,
+                        shared_limiter=self.active_mirror_write_limiter,
                     )
                 finally:
                     self.end_incremental_mirror_io()
@@ -3782,6 +3942,11 @@ class Uploader:
                 mirror_reuse_percent
                 < self.parallel_capture_min_mirror_reuse_percent
             )
+            capture_write_limiter = (
+                self.backlog_write_limiter
+                if needs_full_copy_slot
+                else self.tail_write_limiter
+            )
             print(
                 f"recording capture planned source={segment} "
                 f"mirror_reuse_percent={mirror_reuse_percent:.2f} "
@@ -3839,7 +4004,7 @@ class Uploader:
                             if self.incremental_mirror_enabled
                             else ""
                         ),
-                        shared_limiter=self.nas_write_limiter,
+                        shared_limiter=capture_write_limiter,
                     )
                 finally:
                     if priority_capture_started:
@@ -3987,10 +4152,10 @@ class Uploader:
     def current_full_copy_limit(self) -> int:
         if not self.receiver_recording_active:
             return self.full_copy_workers
-        # Preserve the normal recording-time I/O budget, but use all configured
-        # workers before the local staging disk reaches its hard reserve.
+        # Pressure may spend one extra backlog slot, but never unleash every
+        # full-copy worker while active mirrors are protecting a live recording.
         if self.staging_disk_pressure():
-            return self.full_copy_workers
+            return self.pressure_full_copy_workers
         return self.active_recording_full_copy_workers
 
     def process_local_batch(self, segments: list[Path]) -> bool:
