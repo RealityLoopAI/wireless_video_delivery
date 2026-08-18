@@ -1094,13 +1094,13 @@ RgbFrameDiagnostics rgb_frame_diagnostics(CameraRuntime &camera, const std::shar
 int media_outage_restart_samples() {
     const char *value = std::getenv("GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES");
     if(value == nullptr || value[0] == '\0') {
-        return 5;
+        return 60;
     }
     try {
         return std::max(1, std::stoi(value));
     }
     catch(const std::exception &) {
-        return 5;
+        return 60;
     }
 }
 
@@ -5803,7 +5803,7 @@ void retry_camera_reconnect(const AppConfig &config, CameraRuntime &camera, Send
 
 template <typename Sender>
 void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger &logger, std::mutex &transport_mutex,
-                       const std::atomic<bool> *path_running = nullptr) {
+                       const std::atomic<bool> *path_running = nullptr, bool reliable_retry = false) {
     auto next_idle_close_log = std::chrono::steady_clock::now();
     std::optional<MediaPacketJob> retry_job;
     std::optional<std::chrono::steady_clock::time_point> drain_deadline;
@@ -5879,13 +5879,23 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             if(job->stream_type == StreamType::rgb) {
                 arm_rgb_keyframe_guard(*job->camera, logger, error);
                 maybe_request_rgb_recovery_keyframe(*job->camera, logger, send_ended);
-                std::lock_guard<std::mutex> lock(job->camera->mutex);
-                job->camera->rgb_dropped++;
-                job->camera->rgb_transport_retry_drops++;
+                const bool retain_keyframe = reliable_retry && job->rgb_keyframe
+                                             && (!drain_deadline
+                                                 || std::chrono::steady_clock::now() < *drain_deadline);
+                if(retain_keyframe) {
+                    retry_job = std::move(*job);
+                }
+                else {
+                    std::lock_guard<std::mutex> lock(job->camera->mutex);
+                    job->camera->rgb_dropped++;
+                    job->camera->rgb_transport_retry_drops++;
+                }
             }
             if(job->stream_type == StreamType::depth_raw
                && (!drain_deadline || std::chrono::steady_clock::now() < *drain_deadline)) {
                 retry_job = std::move(*job);
+            }
+            if(retry_job) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
         }
@@ -7166,9 +7176,13 @@ struct MediaSenderPath {
     std::mutex mutex;
     std::thread thread;
     std::atomic<bool> running{true};
+    bool reliable_retry = false;
 
-    MediaSenderPath(size_t slot_count, size_t rgb_frames_per_slot, size_t depth_frames_per_slot, std::unique_ptr<Sender> sender)
-        : queue(slot_count, rgb_frames_per_slot, depth_frames_per_slot), transport(std::move(sender)) {}
+    MediaSenderPath(size_t slot_count, size_t rgb_frames_per_slot, size_t depth_frames_per_slot,
+                    bool reliable_retry_enabled, std::unique_ptr<Sender> sender)
+        : queue(slot_count, rgb_frames_per_slot, depth_frames_per_slot),
+          transport(std::move(sender)),
+          reliable_retry(reliable_retry_enabled) {}
 
     ~MediaSenderPath() {
         running = false;
@@ -7222,12 +7236,15 @@ private:
 
 template <typename Sender, typename MakeSender>
 std::unique_ptr<MediaSenderPath<Sender>> start_media_sender_path(size_t slot_count, size_t rgb_frames_per_slot,
-                                                                 size_t depth_frames_per_slot, MakeSender &make_sender, Logger &logger) {
-    auto path = std::make_unique<MediaSenderPath<Sender>>(slot_count, rgb_frames_per_slot, depth_frames_per_slot, make_sender());
+                                                                 size_t depth_frames_per_slot, bool reliable_retry,
+                                                                 MakeSender &make_sender, Logger &logger) {
+    auto path = std::make_unique<MediaSenderPath<Sender>>(
+        slot_count, rgb_frames_per_slot, depth_frames_per_slot, reliable_retry, make_sender());
     auto *path_ptr = path.get();
     path_ptr->thread = std::thread([path_ptr, &logger] {
         try {
-            media_sender_loop(path_ptr->queue, *path_ptr->transport, logger, path_ptr->mutex, &path_ptr->running);
+            media_sender_loop(path_ptr->queue, *path_ptr->transport, logger, path_ptr->mutex,
+                              &path_ptr->running, path_ptr->reliable_retry);
         }
         catch(const std::exception &e) {
             logger.error(std::string("media sender path stopped unexpectedly: ") + e.what());
@@ -7327,9 +7344,11 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
                                                  ? static_cast<size_t>(config.recording_buffer.depth_frames_per_slot)
                                                  : kDepthMediaQueuePerSlot;
         auto rgb_path =
-            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger);
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot,
+                                                 config.recording_buffer.enabled, make_media_sender, logger);
         auto depth_path =
-            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger);
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot,
+                                                 config.recording_buffer.enabled, make_media_sender, logger);
         auto *rgb_path_ptr = rgb_path.get();
         auto *depth_path_ptr = depth_path.get();
         rgb_media_paths.push_back(std::move(rgb_path));
@@ -7462,9 +7481,11 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
 
     for(size_t i = 0; i < cameras.size(); ++i) {
         rgb_media_paths.push_back(
-            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger));
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot,
+                                                 config.recording_buffer.enabled, make_media_sender, logger));
         depth_media_paths.push_back(
-            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot, make_media_sender, logger));
+            start_media_sender_path<MediaSender>(kMediaSlotsPerCamera, rgb_frames_per_slot, depth_frames_per_slot,
+                                                 config.recording_buffer.enabled, make_media_sender, logger));
     }
     std::thread preview_media_thread([&] {
         try {

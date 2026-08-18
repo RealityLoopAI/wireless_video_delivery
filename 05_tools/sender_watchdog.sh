@@ -14,7 +14,11 @@ USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 ZERO_FPS_GRACE_SECONDS="${GEMINI_SENDER_ZERO_FPS_GRACE_SECONDS:-20}"
 ZERO_FPS_RESTART_SAMPLES="${GEMINI_SENDER_ZERO_FPS_RESTART_SAMPLES:-15}"
 STARTUP_PENDING_GRACE_SECONDS="${GEMINI_SENDER_STARTUP_PENDING_GRACE_SECONDS:-25}"
+WIFI_OUTAGE_GRACE_SECONDS="${GEMINI_SENDER_WIFI_OUTAGE_GRACE_SECONDS:-45}"
 DISPLAY_VALUE="${GEMINI_SENDER_DISPLAY:-${DISPLAY:-:1}}"
+if ! [[ "$WIFI_OUTAGE_GRACE_SECONDS" =~ ^[0-9]+$ ]] || [[ "$WIFI_OUTAGE_GRACE_SECONDS" -lt 5 ]]; then
+  WIFI_OUTAGE_GRACE_SECONDS=45
+fi
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 source "$ROOT_DIR/05_tools/orbbec_runtime_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
@@ -84,6 +88,9 @@ monitor_child_health() {
   local log_offset="$initial_log_offset"
   local current_size=0
   local new_bytes=0
+  local wifi_outage_started_at=0
+  local wifi_outage_last_log_at=0
+  local wifi_outage_elapsed=0
   child_started_at="$(date +%s)"
   declare -A camera_started=()
   declare -A startup_attempt_at=()
@@ -174,21 +181,49 @@ monitor_child_health() {
         return
       fi
     fi
-    if gemini_sender_wifi_required && ! gemini_sender_wifi_check_policy; then
-      local reason="$GEMINI_SENDER_WIFI_LAST_ERROR"
-      log_watchdog "wifi guard failed while sender child pid=$pid: $reason; attempting repair"
-      if gemini_sender_wifi_connect_if_configured; then
-        sleep 2
-        if gemini_sender_wifi_check_policy; then
-          log_watchdog "wifi guard repaired link; killing sender child pid=$pid to rebuild media TCP"
-        else
-          log_watchdog "wifi guard still failing after repair: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+    if gemini_sender_wifi_required; then
+      if gemini_sender_wifi_check_policy; then
+        if [[ "$wifi_outage_started_at" -gt 0 ]]; then
+          wifi_outage_elapsed=$(( $(date +%s) - wifi_outage_started_at ))
+          log_watchdog "wifi link recovered after ${wifi_outage_elapsed}s; preserving sender child pid=$pid for media queue replay"
+          wifi_outage_started_at=0
+          wifi_outage_last_log_at=0
         fi
       else
-        log_watchdog "wifi guard repair command failed: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+        local reason="$GEMINI_SENDER_WIFI_LAST_ERROR"
+        local now
+        now="$(date +%s)"
+        if [[ "$wifi_outage_started_at" -eq 0 ]]; then
+          wifi_outage_started_at="$now"
+          wifi_outage_last_log_at="$now"
+          log_watchdog "wifi guard detected transient outage while sender child pid=$pid: $reason; preserving capture and media queues for ${WIFI_OUTAGE_GRACE_SECONDS}s"
+        fi
+        wifi_outage_elapsed=$((now - wifi_outage_started_at))
+        if [[ "$wifi_outage_elapsed" -lt "$WIFI_OUTAGE_GRACE_SECONDS" ]]; then
+          if [[ $((now - wifi_outage_last_log_at)) -ge 10 ]]; then
+            log_watchdog "wifi outage still within grace child_pid=$pid elapsed_s=$wifi_outage_elapsed reason=$reason"
+            wifi_outage_last_log_at="$now"
+          fi
+          sleep 2
+          continue
+        fi
+
+        log_watchdog "wifi outage grace expired child_pid=$pid elapsed_s=$wifi_outage_elapsed reason=$reason; attempting repair"
+        if gemini_sender_wifi_connect_if_configured; then
+          sleep 2
+          if gemini_sender_wifi_check_policy; then
+            log_watchdog "wifi guard repaired link; preserving sender child pid=$pid for media TCP reconnect"
+            wifi_outage_started_at=0
+            wifi_outage_last_log_at=0
+            continue
+          fi
+          log_watchdog "wifi guard still failing after repair: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+        else
+          log_watchdog "wifi guard repair command failed: $GEMINI_SENDER_WIFI_LAST_ERROR; killing sender child pid=$pid"
+        fi
+        kill "$pid" 2>/dev/null || true
+        return
       fi
-      kill "$pid" 2>/dev/null || true
-      return
     fi
     sleep 2
   done
