@@ -1,4 +1,6 @@
 12_build*/
+/build/
+/13_backups/
 08_reports/*_logs/
 08_reports/frontend_snapshot_*/
 Log/
