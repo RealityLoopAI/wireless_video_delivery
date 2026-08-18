@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 
 STREAM_END = object()
@@ -642,6 +643,7 @@ class UnifiedSpeechService:
         max_request_id_chars: int = 128,
         max_body_bytes: int = 8192,
         speaker_retry_seconds: float = 5.0,
+        cue_paths: Optional[dict] = None,
     ):
         self.tts_engine = tts_engine
         self.http_bind = http_bind
@@ -651,6 +653,11 @@ class UnifiedSpeechService:
         self.max_request_id_chars = max_request_id_chars
         self.max_body_bytes = max_body_bytes
         self.speaker_retry_seconds = speaker_retry_seconds
+        self.cue_paths = {
+            str(name): Path(path)
+            for name, path in (cue_paths or {}).items()
+            if str(name) and path is not None
+        }
 
         self._input_queue = queue.Queue()
         self._local_playback_queue = queue.Queue()
@@ -729,6 +736,55 @@ class UnifiedSpeechService:
             }
             position = self._append_task_locked(task)
         self._input_queue.put(task)
+        return EnqueueResult(
+            task_id=task.task_id,
+            request_id=request_id,
+            queue_position=position,
+            duplicate=False,
+        )
+
+    def enqueue_cue(self, request_id: str, cue_name: str):
+        request_id = self._validate_request_id(request_id)
+        if not isinstance(cue_name, str) or not cue_name.strip():
+            raise SpeechValidationError("cue must be a non-empty string")
+        cue_name = cue_name.strip()
+        wav_path = self.cue_paths.get(cue_name)
+        if wav_path is None:
+            raise SpeechValidationError(f"unknown cue: {cue_name}")
+        if not wav_path.is_file():
+            raise SpeechValidationError(f"cue file is unavailable: {cue_name}")
+
+        with self._state_lock:
+            existing = self._request_records.get(request_id)
+            if existing is not None:
+                return EnqueueResult(
+                    task_id=existing["task_id"],
+                    request_id=request_id,
+                    queue_position=self._position_locked(existing["task_id"]),
+                    duplicate=True,
+                )
+            if self._outstanding >= self.max_queue:
+                raise SpeechQueueFull("speech queue is full")
+            task = SpeechTask(
+                task_id=uuid.uuid4().hex,
+                request_id=request_id,
+                source=f"http-cue:{cue_name}",
+                wav_path=wav_path,
+            )
+            self._request_records[request_id] = {
+                "task_id": task.task_id,
+                "state": "queued",
+            }
+            position = self._append_task_locked(task)
+
+        task.segments.put_nowait(WavSegment(wav_path))
+        task.segments.put_nowait(STREAM_END)
+        self._local_playback_queue.put(task)
+        print(
+            f"speech cue queued cue={cue_name} task_id={task.task_id} "
+            f"queue_position={position}",
+            flush=True,
+        )
         return EnqueueResult(
             task_id=task.task_id,
             request_id=request_id,
@@ -838,9 +894,25 @@ class UnifiedSpeechService:
             "tts_backend": getattr(self.tts_engine, "backend_name", "unknown"),
             "queue_depth": self.outstanding,
             "queue_capacity": self.max_queue,
+            "cue_names": sorted(
+                name for name, path in self.cue_paths.items() if path.is_file()
+            ),
         }
 
-    def _validate_text_request(self, request_id, text):
+    def request_status(self, request_id: str):
+        request_id = self._validate_request_id(request_id)
+        with self._state_lock:
+            record = self._request_records.get(request_id)
+            if record is None:
+                return None
+            return {
+                "request_id": request_id,
+                "task_id": record["task_id"],
+                "state": record["state"],
+                "queue_position": self._position_locked(record["task_id"]),
+            }
+
+    def _validate_request_id(self, request_id):
         if not isinstance(request_id, str) or not request_id.strip():
             raise SpeechValidationError("request_id must be a non-empty string")
         request_id = request_id.strip()
@@ -848,6 +920,10 @@ class UnifiedSpeechService:
             raise SpeechValidationError(
                 f"request_id exceeds {self.max_request_id_chars} characters"
             )
+        return request_id
+
+    def _validate_text_request(self, request_id, text):
+        request_id = self._validate_request_id(request_id)
         if not isinstance(text, str) or not text.strip():
             raise SpeechValidationError("text must be a non-empty string")
         text = text.strip()
@@ -1024,10 +1100,18 @@ class UnifiedSpeechService:
 
             def do_POST(self):
                 self.connection.settimeout(2.0)
-                if self.path != "/api/tts/speak":
+                is_text_request = self.path == "/api/tts/speak"
+                is_cue_request = self.path == "/api/audio/cue"
+                if not is_text_request and not is_cue_request:
                     self._send_json(404, {"accepted": False, "error": "not_found"})
                     return
-                if not service.tts_ready:
+                if is_cue_request and self.client_address[0] not in {
+                    "127.0.0.1",
+                    "::1",
+                }:
+                    self._send_json(403, {"accepted": False, "error": "forbidden"})
+                    return
+                if is_text_request and not service.tts_ready:
                     self._send_json(
                         503,
                         {
@@ -1059,10 +1143,16 @@ class UnifiedSpeechService:
                     payload = json.loads(body.decode("utf-8"))
                     if not isinstance(payload, dict):
                         raise SpeechValidationError("JSON body must be an object")
-                    result = service.enqueue_text(
-                        payload.get("request_id"),
-                        payload.get("text"),
-                    )
+                    if is_text_request:
+                        result = service.enqueue_text(
+                            payload.get("request_id"),
+                            payload.get("text"),
+                        )
+                    else:
+                        result = service.enqueue_cue(
+                            payload.get("request_id"),
+                            payload.get("cue"),
+                        )
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     self._send_json(
                         400,
@@ -1104,8 +1194,27 @@ class UnifiedSpeechService:
                 )
 
             def do_GET(self):
-                if self.path == "/healthz":
+                parsed = urlparse(self.path)
+                if parsed.path == "/healthz":
                     self._send_json(200, service.health_payload())
+                elif parsed.path == "/api/audio/status":
+                    if self.client_address[0] not in {"127.0.0.1", "::1"}:
+                        self._send_json(403, {"error": "forbidden"})
+                        return
+                    request_ids = parse_qs(parsed.query).get("request_id", [])
+                    try:
+                        request_id = request_ids[0] if request_ids else ""
+                        status = service.request_status(request_id)
+                    except SpeechValidationError as exc:
+                        self._send_json(
+                            400,
+                            {"error": "invalid_request", "detail": str(exc)},
+                        )
+                        return
+                    if status is None:
+                        self._send_json(404, {"error": "not_found"})
+                        return
+                    self._send_json(200, status)
                 else:
                     self._send_json(404, {"error": "not_found"})
 
@@ -1136,6 +1245,7 @@ class UnifiedSpeechService:
         self._http_thread.start()
         print(
             f"speech HTTP listening http://{self.http_bind}:{self.http_port} "
-            f"endpoint=/api/tts/speak queue_capacity={self.max_queue}",
+            f"endpoints=/api/tts/speak,/api/audio/cue,/api/audio/status "
+            f"queue_capacity={self.max_queue}",
             flush=True,
         )

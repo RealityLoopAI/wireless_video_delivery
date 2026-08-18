@@ -108,6 +108,8 @@ def test_fixed_xiaoyi_prompts_are_trimmed(source_root: Path):
         "response_photo_done.wav": 1.4,
         "cue_photo_ding.wav": 0.5,
         "cue_forward_deng.wav": 0.5,
+        "cue_power_startup.wav": 0.8,
+        "cue_power_shutdown.wav": 0.8,
     }
     prompt_dir = source_root / "12_apps" / "xiaohuan_voice_photo"
     threshold = int(32767 * (10 ** (-45 / 20)))
@@ -292,6 +294,84 @@ def test_http_queue_and_idempotency(module):
         service.stop()
 
 
+def test_http_local_cue_queue(module):
+    with tempfile.TemporaryDirectory(prefix="gwv3_tts_cue_") as temporary:
+        ding = Path(temporary) / "ding.wav"
+        deng = Path(temporary) / "deng.wav"
+        ding.write_bytes(b"RIFF")
+        deng.write_bytes(b"RIFF")
+        engine = FakeTtsEngine(module)
+        service = module.UnifiedSpeechService(
+            tts_engine=engine,
+            http_bind="127.0.0.1",
+            http_port=0,
+            cue_paths={"ding": ding, "deng": deng},
+        )
+        service.start(enable_http=True)
+        service._play_segment_once = lambda _segment, _device: (0, "")
+        try:
+            status, health = request_json(service.http_port, "/healthz")
+            assert status == 200
+            assert health["cue_names"] == ["deng", "ding"]
+
+            status, cue = request_json(
+                service.http_port,
+                "/api/audio/cue",
+                {"request_id": "cue-1", "cue": "ding"},
+            )
+            assert status == 202
+            assert cue["accepted"] is True
+            assert cue["duplicate"] is False
+
+            status, queued = request_json(
+                service.http_port,
+                "/api/audio/status?request_id=cue-1",
+            )
+            assert status == 200
+            assert queued["state"] == "queued"
+            assert queued["queue_position"] == 1
+
+            cue_task = wait_ready_task(service)
+            assert cue_task.source == "http-cue:ding"
+            assert cue_task.wav_path == ding
+            assert service.play_task(cue_task, "test-device") is True
+            service.complete_task(cue_task, True)
+
+            status, completed = request_json(
+                service.http_port,
+                "/api/audio/status?request_id=cue-1",
+            )
+            assert status == 200
+            assert completed["state"] == "completed"
+            assert completed["queue_position"] == 0
+
+            status, duplicate = request_json(
+                service.http_port,
+                "/api/audio/cue",
+                {"request_id": "cue-1", "cue": "deng"},
+            )
+            assert status == 202
+            assert duplicate["duplicate"] is True
+            assert duplicate["task_id"] == cue["task_id"]
+
+            status, unknown = request_json(
+                service.http_port,
+                "/api/audio/cue",
+                {"request_id": "cue-2", "cue": "unknown"},
+            )
+            assert status == 400
+            assert unknown["accepted"] is False
+
+            status, missing = request_json(
+                service.http_port,
+                "/api/audio/status?request_id=missing",
+            )
+            assert status == 404
+            assert missing["error"] == "not_found"
+        finally:
+            service.stop()
+
+
 def test_local_wav_uses_same_queue(module):
     engine = FakeTtsEngine(module)
     service = module.UnifiedSpeechService(
@@ -466,6 +546,7 @@ def main():
     test_fixed_xiaoyi_prompts_are_trimmed(source_root)
     test_edge_tts_persistent_cache_and_failure(module)
     test_http_queue_and_idempotency(module)
+    test_http_local_cue_queue(module)
     test_local_wav_uses_same_queue(module)
     test_local_prompt_priority_and_http_deferral(module)
     test_speaker_retry_deadline(module)

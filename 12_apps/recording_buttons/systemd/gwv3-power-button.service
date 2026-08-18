@@ -1,0 +1,25 @@
+[Unit]
+Description=GWV3 RK805 power button controller
+After=network-online.target systemd-logind.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/cat/wireless_video_delivery/12_apps/recording_buttons
+ExecStart=/usr/bin/python3 -u /home/cat/wireless_video_delivery/12_apps/recording_buttons/power_button_service.py --config /home/cat/wireless_video_delivery/12_apps/recording_buttons/config_lubancat-52d2ef0c_power.json
+Restart=always
+RestartSec=2
+TimeoutStopSec=5
+RuntimeDirectory=gwv3-recording-buttons
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/gwv3-recording-buttons
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

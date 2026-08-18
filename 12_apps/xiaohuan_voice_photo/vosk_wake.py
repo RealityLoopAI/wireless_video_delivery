@@ -37,6 +37,8 @@ DEFAULT_RESPONSE = BASE_DIR / "response_wozai_tts_default.wav"
 DEFAULT_PHOTO_RESPONSE = BASE_DIR / "response_photo_done.wav"
 DEFAULT_PHOTO_CUE = BASE_DIR / "cue_photo_ding.wav"
 DEFAULT_FORWARD_CUE = BASE_DIR / "cue_forward_deng.wav"
+DEFAULT_STARTUP_CUE = BASE_DIR / "cue_power_startup.wav"
+DEFAULT_SHUTDOWN_CUE = BASE_DIR / "cue_power_shutdown.wav"
 DEFAULT_PHOTO_REQUEST_DIR = Path("/tmp/gemini_rgb_snapshot_requests")
 DEFAULT_PHOTO_RESULT_DIR = Path("/tmp/gemini_rgb_snapshot_results")
 DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
@@ -891,6 +893,12 @@ def listen(args):
         max_queue=args.tts_max_queue,
         max_text_chars=args.tts_max_text_chars,
         speaker_retry_seconds=args.tts_speaker_retry_seconds,
+        cue_paths={
+            "ding": args.photo_cue_wav,
+            "deng": args.forward_cue_wav,
+            "startup": DEFAULT_STARTUP_CUE,
+            "shutdown": DEFAULT_SHUTDOWN_CUE,
+        },
     )
     speech_service.start(enable_http=args.tts_http)
     utterance_forwarder = None
