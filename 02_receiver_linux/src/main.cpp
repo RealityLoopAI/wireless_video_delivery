@@ -84,6 +84,8 @@ constexpr uint64_t kWebRgbPreviewKeyframeIntervalUs = 1ull * 1000ull * 1000ull;
 constexpr int kWebRgbPreviewControlLeaseMs = 2500;
 constexpr uint64_t kRgbDepthPairValidMaxDeltaUs = 20ull * 1000ull;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
+constexpr size_t kRgbH264ClientMaxLagPackets = 12;
+constexpr int kRgbH264ClientSendTimeoutMs = 150;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
 constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
@@ -636,6 +638,32 @@ bool send_all(int fd, const void *data, size_t size) {
 
 bool send_all(int fd, const std::string &text) {
     return send_all(fd, text.data(), text.size());
+}
+
+bool send_all_with_timeout(int fd, const void *data, size_t size, int timeout_ms) {
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    size_t offset = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while(offset < size) {
+        const ssize_t sent = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if(sent > 0) {
+            offset += static_cast<size_t>(sent);
+            continue;
+        }
+        if(sent < 0 && errno == EINTR) {
+            continue;
+        }
+        if(sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if(remaining.count() <= 0 || !wait_fd_writable(fd, static_cast<int>(remaining.count()))) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
 }
 
 sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
@@ -5939,7 +5967,8 @@ bool send_h264_preview_frame(int fd,
     }
     const auto header = h264_preview_frame_header(static_cast<uint32_t>(payload.size()), flags, width, height,
                                                   timestamp_us, seq, include_global_timestamp, global_timestamp_us);
-    return send_all(fd, header.data(), header.size()) && send_all(fd, payload.data(), payload.size());
+    return send_all_with_timeout(fd, header.data(), header.size(), kRgbH264ClientSendTimeoutMs)
+           && send_all_with_timeout(fd, payload.data(), payload.size(), kRgbH264ClientSendTimeoutMs);
 }
 
 struct CameraState {
@@ -8607,6 +8636,16 @@ public:
             keyframe_target = maybe_web_rgb_preview_keyframe_target_locked(*it->second, request_us);
             cam = it->second;
         }
+        uint64_t main_request_seq = 1;
+        uint64_t preview_request_seq = 1;
+        {
+            std::lock_guard<std::mutex> stream_lock(cam->rgb_stream.mutex);
+            main_request_seq = cam->rgb_stream.next_seq;
+        }
+        {
+            std::lock_guard<std::mutex> stream_lock(cam->rgb_preview_stream.mutex);
+            preview_request_seq = cam->rgb_preview_stream.next_seq;
+        }
         if(keyframe_target) {
             send_force_rgb_keyframe_controls({*keyframe_target}, "web_rgb_h264_frames", request_us);
         }
@@ -8657,8 +8696,8 @@ public:
             return false;
         }
 
-        bool started = false;
-        uint64_t next_seq = 0;
+        uint64_t next_seq = using_preview_stream ? preview_request_seq : main_request_seq;
+        bool waiting_for_keyframe = true;
         while(running_ && g_running) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -8679,35 +8718,44 @@ public:
                 }
 
                 header = stream->header_h264;
-                if(!started) {
-                    size_t start_index = stream->packets.size();
+                const uint64_t newest_next_seq = stream->next_seq;
+                if(next_seq + kRgbH264ClientMaxLagPackets < newest_next_seq) {
+                    next_seq = newest_next_seq;
+                    waiting_for_keyframe = true;
+                }
+                if(next_seq < stream->packets.front().seq) {
+                    next_seq = stream->packets.front().seq;
+                    waiting_for_keyframe = true;
+                }
+
+                size_t start_index = stream->packets.size();
+                if(waiting_for_keyframe) {
                     for(size_t i = stream->packets.size(); i > 0; --i) {
-                        if(stream->packets[i - 1].has_idr) {
+                        const auto &candidate = stream->packets[i - 1];
+                        if(candidate.seq >= next_seq && candidate.has_idr) {
                             start_index = i - 1;
                             break;
                         }
                     }
                     if(start_index == stream->packets.size()) {
+                        next_seq = newest_next_seq;
                         continue;
                     }
-                    for(size_t i = start_index; i < stream->packets.size(); ++i) {
-                        packets.push_back(stream->packets[i]);
-                    }
-                    next_seq = packets.empty() ? stream->next_seq : packets.back().seq + 1;
-                    started = true;
+                    waiting_for_keyframe = false;
                 }
                 else {
-                    if(next_seq < stream->packets.front().seq) {
-                        next_seq = stream->packets.front().seq;
-                    }
-                    for(const auto &packet : stream->packets) {
-                        if(packet.seq >= next_seq) {
-                            packets.push_back(packet);
+                    for(size_t i = 0; i < stream->packets.size(); ++i) {
+                        if(stream->packets[i].seq >= next_seq) {
+                            start_index = i;
+                            break;
                         }
                     }
-                    if(!packets.empty()) {
-                        next_seq = packets.back().seq + 1;
-                    }
+                }
+                for(size_t i = start_index; i < stream->packets.size(); ++i) {
+                    packets.push_back(stream->packets[i]);
+                }
+                if(!packets.empty()) {
+                    next_seq = packets.back().seq + 1;
                 }
             }
 

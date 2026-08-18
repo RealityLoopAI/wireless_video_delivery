@@ -96,4 +96,9 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_photo_burst.py
     )
     set_tests_properties(voice_photo_burst_unit PROPERTIES TIMEOUT 10)
+    add_test(
+        NAME web_preview_low_latency_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_web_preview_low_latency.py
+    )
+    set_tests_properties(web_preview_low_latency_unit PROPERTIES TIMEOUT 10)
 endif()

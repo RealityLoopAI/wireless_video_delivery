@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+from pathlib import Path
+
+
+def main():
+    root = Path(__file__).resolve().parents[1]
+    receiver = (root / "02_receiver_linux" / "src" / "main.cpp").read_text(encoding="utf-8")
+    frontend = (root / "09_web_monitor" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "kRgbH264ClientMaxLagPackets = 12" in receiver
+    assert "send_all_with_timeout" in receiver
+    assert "waiting_for_keyframe = true" in receiver
+    assert "next_seq + kRgbH264ClientMaxLagPackets < newest_next_seq" in receiver
+    assert "next_seq = newest_next_seq" in receiver
+    assert "main_request_seq = cam->rgb_stream.next_seq" in receiver
+    assert "preview_request_seq = cam->rgb_preview_stream.next_seq" in receiver
+    assert "H264_MAX_DECODE_QUEUE = 2" in frontend
+    assert "this.decoder.decodeQueueSize > H264_MAX_DECODE_QUEUE" in frontend
+    assert "this.decoder = null" in frontend
+    assert "this.configured = false" in frontend
+    assert "this.awaitingKeyframe && !isKey" in frontend
+    assert "H264_MAX_INPUT_BUFFER_BYTES" in frontend
+    print("web preview low-latency guard test passed")
+
+
+if __name__ == "__main__":
+    main()

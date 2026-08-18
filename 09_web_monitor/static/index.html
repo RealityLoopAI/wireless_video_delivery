@@ -555,6 +555,8 @@
     const PREVIEW_PROBE_INTERVAL_MS = 1500;
     const H264_PREVIEW_RETRY_MS = 3000;
     const PREVIEW_STALE_MS = 5000;
+    const H264_MAX_DECODE_QUEUE = 2;
+    const H264_MAX_INPUT_BUFFER_BYTES = 4 * 1024 * 1024;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
@@ -662,6 +664,8 @@
         this.buffer = new Uint8Array(0);
         this.decoder = null;
         this.configured = false;
+        this.awaitingKeyframe = true;
+        this.droppedForLatency = 0;
         this.stopped = false;
         this.firstFrameTimer = null;
         this.canvas = root.querySelector('canvas[data-rgb-video]');
@@ -722,6 +726,11 @@
         this.abort.abort();
       }
       append(chunk) {
+        if (this.buffer.length + chunk.length > H264_MAX_INPUT_BUFFER_BYTES) {
+          this.buffer = new Uint8Array(0);
+          this.resetDecoderForLatency();
+          return;
+        }
         const merged = new Uint8Array(this.buffer.length + chunk.length);
         merged.set(this.buffer, 0);
         merged.set(chunk, this.buffer.length);
@@ -792,11 +801,31 @@
           this.configure(payload, width, height);
         }
         if (!this.decoder || this.decoder.state !== 'configured') return;
-        this.decoder.decode(new EncodedVideoChunk({
-          type: isKey ? 'key' : 'delta',
-          timestamp: timestampUs || Math.floor(performance.now() * 1000),
-          data: payload
-        }));
+        if (this.decoder.decodeQueueSize > H264_MAX_DECODE_QUEUE) {
+          this.resetDecoderForLatency();
+        }
+        if (this.awaitingKeyframe && !isKey) return;
+        if (isKey) this.awaitingKeyframe = false;
+        try {
+          this.decoder.decode(new EncodedVideoChunk({
+            type: isKey ? 'key' : 'delta',
+            timestamp: timestampUs || Math.floor(performance.now() * 1000),
+            data: payload
+          }));
+        }
+        catch (_) {
+          this.resetDecoderForLatency();
+        }
+      }
+      resetDecoderForLatency() {
+        if (this.decoder) {
+          try { this.decoder.close(); } catch (_) {}
+          this.decoder = null;
+        }
+        this.configured = false;
+        this.awaitingKeyframe = true;
+        this.droppedForLatency += 1;
+        this.root.dataset.rgbLatencyDrops = String(this.droppedForLatency);
       }
       draw(frame) {
         const width = frame.displayWidth || frame.codedWidth || this.camera.rgb_preview_width || 640;
