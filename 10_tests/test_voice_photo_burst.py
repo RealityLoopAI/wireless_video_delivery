@@ -187,7 +187,9 @@ def test_audio_stream_command(module):
         audio_stream_host="192.168.66.32",
         audio_stream_port=50020,
         audio_stream_sample_rate=48000,
-        audio_stream_bitrate=64000,
+        audio_stream_bitrate=32000,
+        audio_stream_payload_type=111,
+        audio_stream_ssrc=0x52D2EF0C,
     )
     command = module.make_streaming_capture_cmd(args)
     command_text = " ".join(command)
@@ -196,8 +198,10 @@ def test_audio_stream_command(module):
     assert "rate=48000" in command_text
     assert "rate=16000" in command_text
     assert "leaky=downstream" in command
-    assert "bitrate=64000" in command
+    assert "bitrate=32000" in command
     assert "complexity=5" in command
+    assert "pt=111" in command
+    assert "ssrc=1389555468" in command
     assert "host=192.168.66.32" in command
     assert "port=50020" in command
     gated_command = module.make_streaming_capture_cmd(
@@ -207,7 +211,36 @@ def test_audio_stream_command(module):
     assert "host=127.0.0.1" in gated_command
     assert "port=43123" in gated_command
     assert module.udp_port("50020") == 50020
-    assert module.opus_bitrate("64000") == 64000
+    assert module.opus_bitrate("32000") == 32000
+    assert module.rtp_payload_type("111") == 111
+    assert module.uint32("0x52D2EF0C") == 1389555468
+
+
+def test_audio_stream_direct_capture_still_uses_gstreamer(module):
+    args = types.SimpleNamespace(
+        audio_stream=True,
+        audio_stream_pause_during_playback=False,
+        audio_filter_graph="",
+        audio_filter="none",
+    )
+    sentinel_stdout = io.BytesIO()
+    fake_process = types.SimpleNamespace(stdout=sentinel_stdout, stderr=io.BytesIO())
+    original_popen = module.subprocess.Popen
+    original_command = module.make_streaming_capture_cmd
+    calls = []
+    module.make_streaming_capture_cmd = lambda _args, _target: ["gst-launch-1.0"]
+    module.subprocess.Popen = lambda command, **_kwargs: (
+        calls.append(command) or fake_process
+    )
+    try:
+        output, processes, filter_name = module.start_capture(args)
+    finally:
+        module.subprocess.Popen = original_popen
+        module.make_streaming_capture_cmd = original_command
+    assert calls == [["gst-launch-1.0"]]
+    assert output is sentinel_stdout
+    assert processes == [("gstreamer-audio-tee", fake_process)]
+    assert filter_name == "none"
 
 
 def test_audio_stream_gate(module):
@@ -255,6 +288,58 @@ def test_playback_capture_drain(module):
         drain.stop()
         read_stream.close()
         os.close(write_fd)
+
+
+def test_continuous_playback_worker(module):
+    task = types.SimpleNamespace(
+        source="wake-response",
+        opens_command_window=True,
+    )
+
+    class FakeSpeechService:
+        def __init__(self):
+            self.tasks = [task]
+            self.played = []
+            self.completed = []
+
+        def next_ready_task(self, timeout, allow_http):
+            del timeout
+            assert allow_http is True
+            if self.tasks:
+                return self.tasks.pop(0)
+            time.sleep(0.005)
+            return None
+
+        def play_task(self, ready_task, playback_device):
+            self.played.append((ready_task, playback_device))
+            return True
+
+        def complete_task(self, ready_task, success):
+            self.completed.append((ready_task, success))
+
+    service = FakeSpeechService()
+    worker = module.ContinuousPlaybackWorker(
+        service,
+        "plughw:test",
+        allow_http=lambda: True,
+        resume_delay_seconds=0,
+    )
+    worker.start()
+    try:
+        deadline = time.monotonic() + 0.5
+        completed = None
+        while completed is None and time.monotonic() < deadline:
+            completed = worker.pop_completed()
+            time.sleep(0.005)
+        assert completed == {
+            "source": "wake-response",
+            "opens_command_window": True,
+            "success": True,
+        }
+        assert service.played == [(task, "plughw:test")]
+        assert service.completed == [(task, True)]
+    finally:
+        worker.stop()
 
 
 def test_audio_capture_read_timeout(module):
@@ -361,6 +446,28 @@ def test_usb_audio_exclusive_install(source_root: Path):
     assert "http://192.168.66.113:50020/api/audio" in profile
     assert "XIAOHUAN_COMMAND_MAX_SPEECH_SECONDS=60" in profile
 
+    rtp_profiles = {
+        "xiaohuan-wake-rtp-lubancat-52d2ef0c.conf": (
+            "50030",
+            "1389555468",
+        ),
+        "xiaohuan-wake-rtp-orangepi5pro-d12a4719.conf": (
+            "50031",
+            "3509208857",
+        ),
+    }
+    for filename, (port, ssrc) in rtp_profiles.items():
+        rtp_profile = (app_root / "systemd" / filename).read_text(encoding="utf-8")
+        assert "XIAOHUAN_AUDIO_STREAM_ENABLED=1" in rtp_profile
+        assert "XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.32" in rtp_profile
+        assert f"XIAOHUAN_AUDIO_STREAM_PORT={port}" in rtp_profile
+        assert "XIAOHUAN_AUDIO_STREAM_BITRATE=32000" in rtp_profile
+        assert "XIAOHUAN_AUDIO_STREAM_PAYLOAD_TYPE=111" in rtp_profile
+        assert f"XIAOHUAN_AUDIO_STREAM_SSRC={ssrc}" in rtp_profile
+        assert "XIAOHUAN_AUDIO_STREAM_PAUSE_DURING_PLAYBACK=0" in rtp_profile
+        assert "XIAOHUAN_CONTINUOUS_LISTEN_DURING_PLAYBACK=1" in rtp_profile
+        assert "XIAOHUAN_UTTERANCE_FORWARD_ENABLED=0" in rtp_profile
+
     sm15_profile = (
         app_root / "systemd" / "xiaohuan-wake-sm15-m1.conf"
     ).read_text(encoding="utf-8")
@@ -435,6 +542,11 @@ def main():
     assert defaults.photo_end_silence_seconds == 0.25
     assert defaults.barge_in is False
     assert defaults.audio_stream is False
+    assert defaults.audio_stream_bitrate == 32000
+    assert defaults.audio_stream_payload_type == 111
+    assert defaults.audio_stream_ssrc == 0
+    assert defaults.audio_stream_pause_during_playback is True
+    assert defaults.continuous_listen_during_playback is False
     assert defaults.tts_http is True
     assert defaults.tts_http_port == 18082
     assert defaults.tts_backend == "edge"
@@ -464,8 +576,10 @@ def main():
     test_capture_termination_reaps_killed_process(module)
     test_capture_streams_are_closed(module)
     test_audio_stream_command(module)
+    test_audio_stream_direct_capture_still_uses_gstreamer(module)
     test_audio_stream_gate(module)
     test_playback_capture_drain(module)
+    test_continuous_playback_worker(module)
     test_usb_audio_exclusive_install(source_root)
     test_async_capture_does_not_block(module)
     with tempfile.TemporaryDirectory(prefix="gwv3_voice_burst_") as temporary:

@@ -4,6 +4,7 @@ import collections
 from datetime import datetime
 import json
 import os
+import queue
 import select
 import signal
 import socket
@@ -615,6 +616,63 @@ class CapturePlaybackDrain:
                 self.error = str(exc)
 
 
+class ContinuousPlaybackWorker:
+    def __init__(
+        self,
+        speech_service,
+        playback_device: str,
+        allow_http,
+        resume_delay_seconds: float,
+    ):
+        self.speech_service = speech_service
+        self.playback_device = playback_device
+        self.allow_http = allow_http
+        self.resume_delay_seconds = resume_delay_seconds
+        self._completed = queue.Queue()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="xiaohuan-speech-playback",
+            daemon=True,
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=3.0)
+
+    def pop_completed(self):
+        try:
+            return self._completed.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self):
+        while not self._stop.is_set():
+            task = self.speech_service.next_ready_task(
+                timeout=0.05,
+                allow_http=self.allow_http(),
+            )
+            if task is None:
+                continue
+            success = self.speech_service.play_task(task, self.playback_device)
+            self.speech_service.complete_task(task, success)
+            self._completed.put(
+                {
+                    "source": task.source,
+                    "opens_command_window": task.opens_command_window,
+                    "success": success,
+                }
+            )
+            if not self.allow_http() or self.resume_delay_seconds <= 0:
+                continue
+            deadline = time.monotonic() + self.resume_delay_seconds
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                time.sleep(min(0.01, deadline - time.monotonic()))
+
+
 def make_streaming_capture_cmd(args, stream_target=None):
     stream_host, stream_port = stream_target or (
         args.audio_stream_host,
@@ -629,7 +687,7 @@ def make_streaming_capture_cmd(args, stream_target=None):
         "!",
         (
             "audio/x-raw,"
-            f"format=S16LE,rate={args.audio_stream_sample_rate},"
+            f"format=S16LE,rate={args.sample_rate},"
             "channels=1,layout=interleaved"
         ),
         "!",
@@ -663,6 +721,16 @@ def make_streaming_capture_cmd(args, stream_target=None):
         "max-size-bytes=0",
         "max-size-buffers=0",
         "!",
+        "audioconvert",
+        "!",
+        "audioresample",
+        "!",
+        (
+            "audio/x-raw,"
+            f"format=S16LE,rate={args.audio_stream_sample_rate},"
+            "channels=1,layout=interleaved"
+        ),
+        "!",
         "opusenc",
         f"bitrate={args.audio_stream_bitrate}",
         "bitrate-type=cbr",
@@ -674,7 +742,8 @@ def make_streaming_capture_cmd(args, stream_target=None):
         "perfect-timestamp=true",
         "!",
         "rtpopuspay",
-        "pt=96",
+        f"pt={args.audio_stream_payload_type}",
+        f"ssrc={args.audio_stream_ssrc}",
         "mtu=1200",
         "!",
         "udpsink",
@@ -914,7 +983,7 @@ def listen(args):
     stop = False
     stream_gate = None
     stream_target = None
-    if args.audio_stream:
+    if args.audio_stream and args.audio_stream_pause_during_playback:
         try:
             stream_gate = UdpPacketGate(
                 args.audio_stream_host,
@@ -957,8 +1026,10 @@ def listen(args):
     if args.audio_stream:
         print(
             f"audio_stream_target={args.audio_stream_host}:{args.audio_stream_port} "
-            f"codec=opus rate={args.audio_stream_sample_rate} channels=1 "
-            f"bitrate={args.audio_stream_bitrate} transport=rtp/udp"
+            f"codec=opus source_rate={args.sample_rate} "
+            f"rtp_clock_rate={args.audio_stream_sample_rate} channels=1 "
+            f"bitrate={args.audio_stream_bitrate} pt={args.audio_stream_payload_type} "
+            f"ssrc={args.audio_stream_ssrc} transport=rtp/udp"
         )
         if stream_gate is not None:
             print(
@@ -966,6 +1037,8 @@ def listen(args):
                 "playback_policy=drop",
                 flush=True,
             )
+        else:
+            print("audio_stream_playback_policy=continuous", flush=True)
     print(f"utterance_forward={args.utterance_forward}")
     if args.utterance_forward:
         print(
@@ -1180,6 +1253,17 @@ def listen(args):
             flush=True,
         )
 
+    playback_worker = None
+    if args.continuous_listen_during_playback:
+        playback_worker = ContinuousPlaybackWorker(
+            speech_service,
+            args.playback_device,
+            allow_http=lambda: not interaction_busy(),
+            resume_delay_seconds=args.tts_resume_delay_seconds,
+        )
+        playback_worker.start()
+        print("speech_playback_mode=asynchronous continuous_capture=true", flush=True)
+
     try:
         while not stop:
             photo_capture_threads[:] = [thread for thread in photo_capture_threads if thread.is_alive()]
@@ -1190,9 +1274,42 @@ def listen(args):
                 print("photo command action completed; external TTS released", flush=True)
                 active_photo_action_thread = None
 
-            playback_task = speech_service.next_ready_task(
-                allow_http=not interaction_busy(),
-            )
+            if playback_worker is not None:
+                while True:
+                    completed = playback_worker.pop_completed()
+                    if completed is None:
+                        break
+                    if completed["opens_command_window"]:
+                        wake_response_pending = False
+                        command_session_active = True
+                        command_listen_until = (
+                            time.time() + args.post_wake_command_seconds
+                        )
+                        matcher.reset()
+                        pre_roll.clear()
+                        speech_chunks = []
+                        speech_voice_ratios = []
+                        in_speech = False
+                        speech_is_command = False
+                        silence_chunks = 0
+                        print(
+                            "utterance command window opened after asynchronous "
+                            f"wake response: timeout={args.post_wake_command_seconds:.2f}s",
+                            flush=True,
+                        )
+                    elif (
+                        completed["source"] in {"photo-cue", "forward-cue"}
+                        and pending_command_action is not None
+                    ):
+                        action = pending_command_action
+                        pending_command_action = None
+                        execute_command_action(action)
+
+            playback_task = None
+            if playback_worker is None:
+                playback_task = speech_service.next_ready_task(
+                    allow_http=not interaction_busy(),
+                )
             if playback_task is not None:
                 playback_started = time.monotonic()
                 if stream_gate is not None:
@@ -1531,7 +1648,7 @@ def listen(args):
                     }
                     cue_path = args.photo_cue_wav
                     cue_source = "photo-cue"
-                else:
+                elif args.utterance_forward:
                     wav_data = pcm_to_wav_bytes(segment, args.sample_rate)
                     pending_command_action = {
                         "kind": "forward",
@@ -1540,20 +1657,28 @@ def listen(args):
                     }
                     cue_path = args.forward_cue_wav
                     cue_source = "forward-cue"
-                cue_task = speech_service.enqueue_wav(
-                    cue_path,
-                    source=cue_source,
-                )
-                print(
-                    f"utterance classified action={pending_command_action['kind']} "
-                    f"cue={cue_path.name} text={text or '<empty>'} "
-                    f"duration={speech_seconds:.2f}s",
-                    flush=True,
-                )
-                if cue_task is None:
-                    action = pending_command_action
+                else:
                     pending_command_action = None
-                    execute_command_action(action)
+                    print(
+                        f"utterance ignored action=none text={text or '<empty>'} "
+                        f"duration={speech_seconds:.2f}s",
+                        flush=True,
+                    )
+                if pending_command_action is not None:
+                    cue_task = speech_service.enqueue_wav(
+                        cue_path,
+                        source=cue_source,
+                    )
+                    print(
+                        f"utterance classified action={pending_command_action['kind']} "
+                        f"cue={cue_path.name} text={text or '<empty>'} "
+                        f"duration={speech_seconds:.2f}s",
+                        flush=True,
+                    )
+                    if cue_task is None:
+                        action = pending_command_action
+                        pending_command_action = None
+                        execute_command_action(action)
                 matcher.reset()
             elif ok and now - last_trigger >= args.cooldown_seconds:
                 print(f"wake matched: {text} ({match_reason or 'full'}) -> 我在", flush=True)
@@ -1578,6 +1703,9 @@ def listen(args):
             speech_is_command = False
             silence_chunks = 0
     finally:
+        speech_service.request_stop()
+        if playback_worker is not None:
+            playback_worker.stop()
         for thread in photo_capture_threads:
             thread.join(timeout=0.2)
         shutdown_capture(capture_out, capture_procs)
@@ -1613,6 +1741,20 @@ def opus_bitrate(value):
     parsed = int(value)
     if not 6000 <= parsed <= 510000:
         raise argparse.ArgumentTypeError("Opus bitrate must be between 6000 and 510000")
+    return parsed
+
+
+def rtp_payload_type(value):
+    parsed = int(value)
+    if not 96 <= parsed <= 127:
+        raise argparse.ArgumentTypeError("dynamic RTP payload type must be between 96 and 127")
+    return parsed
+
+
+def uint32(value):
+    parsed = int(value, 0)
+    if not 0 <= parsed <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError("value must fit in an unsigned 32-bit integer")
     return parsed
 
 
@@ -1722,7 +1864,22 @@ def build_parser():
     p_listen.add_argument(
         "--audio-stream-bitrate",
         type=opus_bitrate,
-        default=64000,
+        default=32000,
+    )
+    p_listen.add_argument(
+        "--audio-stream-payload-type",
+        type=rtp_payload_type,
+        default=111,
+    )
+    p_listen.add_argument(
+        "--audio-stream-ssrc",
+        type=uint32,
+        default=0,
+    )
+    p_listen.add_argument(
+        "--audio-stream-pause-during-playback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
     )
     p_listen.add_argument(
         "--utterance-forward",
@@ -1759,6 +1916,11 @@ def build_parser():
     p_listen.add_argument("--cooldown-seconds", type=float, default=2.5)
     p_listen.add_argument("--playback-ignore-seconds", type=float, default=0.3)
     p_listen.add_argument("--echo-tail-seconds", type=nonnegative_float, default=0.03)
+    p_listen.add_argument(
+        "--continuous-listen-during-playback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     p_listen.add_argument("--vad-calibration-seconds", type=float, default=1.5)
     p_listen.add_argument("--vad-noise-scale", type=float, default=1.25)
     p_listen.add_argument("--vad-noise-margin", type=float, default=0.003)
