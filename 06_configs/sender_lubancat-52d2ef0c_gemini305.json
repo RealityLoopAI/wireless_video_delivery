@@ -67,7 +67,7 @@
       "device_model": "Orbbec Gemini 305",
       "validate_rgb_mjpeg": true,
       "publish_warmup_ms": 3000,
-      "rotation_degrees": 180,
+      "rotation_degrees": 0,
       "rgb_profile": {
         "width": 1280,
         "height": 800,
