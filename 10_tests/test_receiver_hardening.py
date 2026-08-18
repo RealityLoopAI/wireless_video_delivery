@@ -929,6 +929,93 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
     assert len(ready_files) >= 2, "idle finalization/reconnect did not create separate finalized sessions"
 
 
+def exercise_sender_scoped_recording_control(ports: dict) -> None:
+    sender_id = "button-sender"
+    other_sender_id = "button-other"
+    camera_ids = ("cam01", "cam02")
+    for current_sender, current_camera in (
+        (sender_id, camera_ids[0]),
+        (sender_id, camera_ids[1]),
+        (other_sender_id, "cam01"),
+    ):
+        status_message(
+            ports["status"],
+            {
+                "protocol_version": "3.0",
+                "message_type": "camera_announce",
+                "sender_id": current_sender,
+                "camera_id": current_camera,
+                "rgb_profile": {"width": 64, "height": 48, "fps": 30},
+                "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+            },
+        )
+    timestamp = int(time.time() * 1_000_000)
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        for index, (current_sender, current_camera) in enumerate(
+            (
+                (sender_id, camera_ids[0]),
+                (sender_id, camera_ids[1]),
+                (other_sender_id, "cam01"),
+            )
+        ):
+            media.sendall(depth_packet(current_sender, current_camera, index, 64, 48, timestamp + index))
+    time.sleep(0.1)
+
+    start_status, _, start_body = request(
+        ports["admin"], "POST", f"/api/record/start-sender?sender_id={sender_id}"
+    )
+    assert start_status == 200
+    start_response = json.loads(start_body)
+    assert start_response.get("ok") is True
+    assert int(start_response.get("camera_count", 0)) == 2
+    assert int(start_response.get("started_count", 0)) == 2
+
+    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+    sender_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == sender_id]
+    other_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == other_sender_id]
+    assert len(sender_cameras) == 2 and all(camera.get("recording") for camera in sender_cameras)
+    assert len({int(camera.get("recording_start_us", 0)) for camera in sender_cameras}) == 1
+    assert len({int(camera.get("recording_session_id", 0)) for camera in sender_cameras}) == 1
+    assert other_cameras and not any(camera.get("recording") for camera in other_cameras)
+
+    duplicate_response = json.loads(
+        request(ports["admin"], "POST", f"/api/record/start-sender?sender_id={sender_id}")[2]
+    )
+    assert duplicate_response.get("already_recording") is True
+    assert int(duplicate_response.get("started_count", -1)) == 0
+
+    stop_response = json.loads(
+        request(ports["admin"], "POST", f"/api/record/stop-sender?sender_id={sender_id}", timeout=10)[2]
+    )
+    assert stop_response.get("ok") is True
+    assert int(stop_response.get("stopped_count", 0)) == 2
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        sender_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == sender_id]
+        if sender_cameras and all(
+            not camera.get("recording") and not camera.get("segment_finalizing")
+            for camera in sender_cameras
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("sender-scoped recording did not stop cleanly")
+
+    assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+    scoped_stop = json.loads(
+        request(ports["admin"], "POST", f"/api/record/stop-sender?sender_id={sender_id}", timeout=10)[2]
+    )
+    assert scoped_stop.get("ok") is True
+    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+    sender_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == sender_id]
+    other_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == other_sender_id]
+    assert sender_cameras and not any(camera.get("recording") for camera in sender_cameras)
+    assert other_cameras and all(camera.get("recording") for camera in other_cameras)
+    assert current.get("recording_all") is False
+    assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
+
+
 def assert_recording_output(
     nas_root: Path,
     minimum_rgb_duration: float = 1.0,
@@ -1254,6 +1341,7 @@ def run(args) -> None:
             if shutil.which("ffmpeg"):
                 exercise_preview_decoder_cleanup(ports, receiver.pid)
 
+            exercise_sender_scoped_recording_control(ports)
             assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
             stop_one = json.loads(
                 request(

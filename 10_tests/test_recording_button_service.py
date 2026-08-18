@@ -111,12 +111,19 @@ def test_held_during_startup_requires_release(module):
 def test_controller_success_duplicate_and_retry_confirmation(module):
     http = ScriptedHttpClient(
         [
-            {"recording_state": "idle", "recording_all": False},
-            {"ok": True, "recording_all": True},
+            {
+                "cameras": [
+                    {"sender_id": "sender-a", "camera_id": "cam01", "live": True, "recording": False},
+                    {"sender_id": "sender-a", "camera_id": "cam02", "live": True, "recording": False},
+                    {"sender_id": "sender-b", "camera_id": "cam01", "live": True, "recording": True},
+                ]
+            },
             {"accepted": True, "duplicate": False},
+            {"ok": True, "sender_id": "sender-a", "started_count": 2},
         ]
     )
     controller = module.RecordingController(
+        "sender-a",
         "http://receiver",
         "http://speech",
         http,
@@ -126,12 +133,14 @@ def test_controller_success_duplicate_and_retry_confirmation(module):
     )
     assert controller.perform("start", "ding") == "success"
     assert [call[0] for call in http.calls] == ["GET", "POST", "POST"]
-    assert http.calls[-1][2]["cue"] == "ding"
+    assert http.calls[1][2]["cue"] == "ding"
+    assert http.calls[2][1].endswith("/api/record/start-sender?sender_id=sender-a")
 
     duplicate_http = ScriptedHttpClient(
-        [{"recording_state": "recording", "recording_all": True}]
+        [{"cameras": [{"sender_id": "sender-a", "live": True, "recording": True}]}]
     )
     duplicate_controller = module.RecordingController(
+        "sender-a",
         "http://receiver",
         "http://speech",
         duplicate_http,
@@ -144,13 +153,14 @@ def test_controller_success_duplicate_and_retry_confirmation(module):
 
     retry_http = ScriptedHttpClient(
         [
-            {"recording_state": "idle", "recording_all": False},
-            RuntimeError("response lost"),
-            {"recording_state": "recording", "recording_all": True},
+            {"cameras": [{"sender_id": "sender-a", "live": True, "recording": False}]},
             {"accepted": True, "duplicate": False},
+            RuntimeError("response lost"),
+            {"cameras": [{"sender_id": "sender-a", "live": True, "recording": True}]},
         ]
     )
     retry_controller = module.RecordingController(
+        "sender-a",
         "http://receiver",
         "http://speech",
         retry_http,
@@ -162,6 +172,46 @@ def test_controller_success_duplicate_and_retry_confirmation(module):
     assert len(retry_http.calls) == 4
 
 
+def test_controller_sender_scope_stop_and_status_failure(module):
+    stop_http = ScriptedHttpClient(
+        [
+            {
+                "recording_all": True,
+                "cameras": [
+                    {"sender_id": "sender-a", "live": True, "recording": True},
+                    {"sender_id": "sender-b", "live": True, "recording": True},
+                ],
+            },
+            {"accepted": True},
+            {"ok": True, "sender_id": "sender-a", "stopped_count": 1},
+        ]
+    )
+    controller = module.RecordingController(
+        "sender-a",
+        "http://receiver",
+        "http://speech",
+        stop_http,
+        retry_count=2,
+        retry_delay_seconds=0.0,
+        sleep=lambda _seconds: None,
+    )
+    assert controller.perform("stop", "deng") == "success"
+    assert stop_http.calls[1][2]["cue"] == "deng"
+    assert stop_http.calls[2][1].endswith("/api/record/stop-sender?sender_id=sender-a")
+
+    failed_http = ScriptedHttpClient([{"receiver_admin_stale": True, "cameras": []}])
+    failed_controller = module.RecordingController(
+        "sender-a",
+        "http://receiver",
+        "http://speech",
+        failed_http,
+        retry_count=2,
+        retry_delay_seconds=0.0,
+    )
+    assert failed_controller.perform("start", "ding") == "failed"
+    assert len(failed_http.calls) == 1
+
+
 def test_simultaneous_hold_is_ignored(module):
     now = [0.0]
     start_path = Path("/tmp/start-adc")
@@ -171,6 +221,7 @@ def test_simultaneous_hold_is_ignored(module):
         stop_path: FakeReader(),
     }
     config = module.ServiceConfig(
+        sender_id="sender-a",
         receiver_base_url="http://receiver",
         speech_base_url="http://speech",
         hold_seconds=2.0,
@@ -187,6 +238,7 @@ def test_simultaneous_hold_is_ignored(module):
         ),
     )
     controller = module.RecordingController(
+        "sender-a",
         "http://receiver",
         "http://speech",
         ScriptedHttpClient([]),
@@ -240,6 +292,7 @@ def main():
     test_long_press_state_machine(module)
     test_held_during_startup_requires_release(module)
     test_controller_success_duplicate_and_retry_confirmation(module)
+    test_controller_sender_scope_stop_and_status_failure(module)
     test_simultaneous_hold_is_ignored(module)
     print("recording button service tests passed")
 

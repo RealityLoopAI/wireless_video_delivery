@@ -106,6 +106,22 @@ def stop_all() -> Any:
     return _request("POST", "/api/record/stop-all", timeout_s=ADMIN_RECORD_STOP_TIMEOUT_S)
 
 
+@app.post("/api/record/start-sender")
+def start_sender(sender_id: str = Query(...)) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id})
+    return _request("POST", f"/api/record/start-sender?{query}")
+
+
+@app.post("/api/record/stop-sender")
+def stop_sender(sender_id: str = Query(...)) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id})
+    return _request(
+        "POST",
+        f"/api/record/stop-sender?{query}",
+        timeout_s=ADMIN_RECORD_STOP_TIMEOUT_S,
+    )
+
+
 @app.post("/api/record/start")
 def start_camera(sender_id: str = Query(...), camera_id: str = Query(...), file_prefix: str | None = Query(None)) -> Any:
     params = {"sender_id": sender_id, "camera_id": camera_id}

@@ -1,10 +1,12 @@
 # Recording control buttons
 
-This service maps the two non-power buttons on the LubanCat RK3576 carrier to
-receiver-wide recording controls after Linux has booted:
+This service maps the two non-power buttons on supported sender carriers to
+sender-local recording controls after Linux has booted:
 
-- `RECOVERY` / SARADC channel 1: hold for 1 second to start all cameras.
-- `MASKROM` / SARADC channel 0: hold for 1 second to stop all cameras.
+- `RECOVERY` / SARADC channel 1: hold for 1 second to start every live camera
+  owned by the configured `sender_id`.
+- `MASKROM` / SARADC channel 0: hold for 1 second to stop every camera owned by
+  the configured `sender_id` without affecting other senders.
 - Start queues the existing `ding` prompt; stop queues the existing `deng`
   prompt through the local Xiaohuan speech service.
 - `ON/OFF` / RK805 `KEY_POWER`: hold for 5 seconds to stop active recording,
@@ -14,8 +16,11 @@ receiver-wide recording controls after Linux has booted:
   becomes available. It gives up after 30 seconds and never delays boot.
 
 Short presses and simultaneous holds are ignored. A held button fires once and
-must be released before it can fire again. Receiver requests are retried up to
-three times and the prompt is only queued after a successful receiver response.
+must be released before it can fire again. The service first checks the
+receiver's per-camera state. An action already in the requested state is
+ignored without a cue. A valid action queues its cue immediately, then sends
+the sender-scoped command with one retry. A status-query failure is rejected
+without a cue or a deferred command.
 The service calls the receiver's LAN-facing Web proxy on port `8080`; the
 loopback-only receiver admin port `18080` must remain private.
 

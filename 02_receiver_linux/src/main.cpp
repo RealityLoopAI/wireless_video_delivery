@@ -8094,6 +8094,169 @@ public:
         return out.str();
     }
 
+    std::string start_sender(const std::string &sender_id) {
+        if(sender_id.empty()) {
+            return json_error("sender_id is required");
+        }
+        const bool storage_ready = recording_storage_recovery_ready();
+        RecordingActivation activation;
+        size_t camera_count = 0;
+        size_t started_count = 0;
+        uint64_t recording_start_us = 0;
+        uint64_t recording_session_id = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const uint64_t request_us = now_us();
+            refresh_camera_liveness_locked(request_us);
+            std::vector<std::shared_ptr<CameraState>> sender_cameras;
+            for(auto &item : cameras_) {
+                auto &cam = item.second;
+                if(cam->sender_id == sender_id && cam->online
+                   && is_recent_us(request_us, cam->last_media_us, kCameraOnlineTimeoutUs)) {
+                    sender_cameras.push_back(cam);
+                }
+            }
+            if(sender_cameras.empty()) {
+                return json_error("no live cameras found for sender_id");
+            }
+            camera_count = sender_cameras.size();
+            const bool needs_start = std::any_of(sender_cameras.begin(), sender_cameras.end(), [](const auto &cam) {
+                return !cam->recording_requested;
+            });
+            if(needs_start && !storage_ready) {
+                return json_error("recording storage does not have enough free-space headroom");
+            }
+            if(needs_start) {
+                recording_faulted_ = false;
+                recording_fault_session_id_ = 0;
+                recording_fault_us_ = 0;
+                recording_fault_camera_key_.clear();
+                recording_fault_reason_.clear();
+                recording_fault_stop_requested_.store(false);
+                recording_start_us = request_us
+                                     + static_cast<uint64_t>(config_.recording_start_lead_ms) * 1000ull;
+                recording_session_id = next_recording_session_id_locked();
+            }
+            const uint64_t new_recording_start_us = recording_start_us;
+            const uint64_t new_recording_session_id = recording_session_id;
+            for(const auto &cam : sender_cameras) {
+                if(cam->recording_requested) {
+                    if(!needs_start
+                       && (recording_start_us == 0
+                           || (cam->recording_start_us > 0 && cam->recording_start_us < recording_start_us))) {
+                        recording_start_us = cam->recording_start_us;
+                        recording_session_id = cam->recording_window.session_id;
+                    }
+                    continue;
+                }
+                {
+                    std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                    cam->record_storage_capacity_failed = false;
+                    reset_record_session_metrics_locked(*cam);
+                }
+                if(cam->last_error.rfind("recording_write_failed:", 0) == 0) {
+                    cam->last_error.clear();
+                }
+                cam->recording_start_us = new_recording_start_us;
+                cam->recording_window = {new_recording_session_id, new_recording_start_us, 0};
+                cam->recording_file_prefix = cam->camera_file_prefix;
+                cam->recording_start_pending = true;
+                cam->recording_requested = true;
+                ++started_count;
+            }
+            activation = activate_pending_recordings_locked();
+            logger_.info("recording start-sender requested sender=" + sender_id
+                         + " cameras=" + std::to_string(camera_count)
+                         + " started=" + std::to_string(started_count)
+                         + " session_id=" + std::to_string(recording_session_id)
+                         + " start_global_us=" + std::to_string(recording_start_us));
+        }
+        if(!activation.keyframe_targets.empty()) {
+            send_force_rgb_keyframe_controls(activation.keyframe_targets, "record_start_sender",
+                                             activation.request_us, activation.request_us);
+        }
+        std::ostringstream out;
+        out << "{\"ok\":true,\"sender_id\":\"" << json_escape(sender_id)
+            << "\",\"camera_count\":" << camera_count
+            << ",\"started_count\":" << started_count
+            << ",\"already_recording\":" << (started_count == 0 ? "true" : "false")
+            << ",\"recording_start_us\":" << recording_start_us
+            << ",\"recording_session_id\":" << recording_session_id << "}";
+        return out.str();
+    }
+
+    std::string stop_sender(const std::string &sender_id) {
+        if(sender_id.empty()) {
+            return json_error("sender_id is required");
+        }
+        std::vector<SegmentCloseTask> close_tasks;
+        const uint64_t recording_end_global_us = now_us();
+        size_t camera_count = 0;
+        size_t stopped_count = 0;
+        bool finalizing = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            refresh_camera_liveness_locked(recording_end_global_us);
+            std::vector<std::shared_ptr<CameraState>> sender_cameras;
+            for(auto &item : cameras_) {
+                if(item.second->sender_id == sender_id) {
+                    sender_cameras.push_back(item.second);
+                }
+            }
+            if(sender_cameras.empty()) {
+                return json_error("sender_id not found");
+            }
+            camera_count = sender_cameras.size();
+
+            // start-all materializes recording_requested on every camera. Leaving
+            // global mode preserves all non-target cameras as individual recordings.
+            if(recording_all_) {
+                recording_all_ = false;
+                recording_all_start_pending_ = false;
+                recording_all_session_id_ = 0;
+                recording_all_start_us_ = 0;
+                recording_all_has_file_prefix_override_ = false;
+                recording_all_file_prefix_.clear();
+            }
+            for(const auto &cam : sender_cameras) {
+                const bool already_finalizing = cam->segment_finalizing || cam->record_finalizing;
+                const bool needs_close = cam->recording_requested || cam->segment_active;
+                if(!needs_close && !already_finalizing) {
+                    continue;
+                }
+                ++stopped_count;
+                finalizing = true;
+                cam->recording_requested = false;
+                cam->recording_start_pending = false;
+                cam->recording_window.end_global_us = recording_end_global_us;
+                cam->recording_start_us = 0;
+                cam->recording_file_prefix.clear();
+                set_record_accepting(cam, false);
+                if(needs_close && !already_finalizing) {
+                    cam->segment_finalizing = true;
+                    set_record_finalizing(cam, true);
+                    close_tasks.push_back({cam, cam->sender_id, cam->camera_id,
+                                           cam->last_announce_live ? cam->last_announce_json : "",
+                                           recording_end_global_us});
+                }
+            }
+            logger_.info("recording stop-sender requested sender=" + sender_id
+                         + " cameras=" + std::to_string(camera_count)
+                         + " stopped=" + std::to_string(stopped_count));
+        }
+        if(!close_tasks.empty()) {
+            close_segments_async(std::move(close_tasks), "recording stop-sender: " + sender_id);
+        }
+        std::ostringstream out;
+        out << "{\"ok\":true,\"sender_id\":\"" << json_escape(sender_id)
+            << "\",\"camera_count\":" << camera_count
+            << ",\"stopped_count\":" << stopped_count
+            << ",\"recording_end_global_us\":" << recording_end_global_us
+            << ",\"finalizing\":" << (finalizing ? "true" : "false")
+            << ",\"finalized\":" << (finalizing ? "false" : "true") << "}";
+        return out.str();
+    }
+
     std::string start_camera(const std::string &sender_id, const std::string &camera_id, const std::optional<std::string> &file_prefix_override) {
         if(sender_id.empty() || camera_id.empty()) {
             return "{\"ok\":false,\"error\":\"sender_id and camera_id are required\"}";
@@ -10897,6 +11060,12 @@ private:
         }
         else if(method == "POST" && path == "/api/record/stop-all") {
             body = stop_all();
+        }
+        else if(method == "POST" && path == "/api/record/start-sender") {
+            body = start_sender(args.count("sender_id") ? args.at("sender_id") : "");
+        }
+        else if(method == "POST" && path == "/api/record/stop-sender") {
+            body = stop_sender(args.count("sender_id") ? args.at("sender_id") : "");
         }
         else if(method == "POST" && path == "/api/record/start") {
             body = start_camera(args.count("sender_id") ? args.at("sender_id") : "", args.count("camera_id") ? args.at("camera_id") : "",

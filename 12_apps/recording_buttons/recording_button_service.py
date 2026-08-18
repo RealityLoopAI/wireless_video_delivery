@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -28,6 +29,7 @@ class ButtonConfig:
 
 @dataclass(frozen=True)
 class ServiceConfig:
+    sender_id: str
     receiver_base_url: str
     speech_base_url: str
     hold_seconds: float
@@ -58,6 +60,7 @@ def load_config(path: Path) -> ServiceConfig:
         raise ValueError("buttons must define exactly one start and one stop action")
 
     config = ServiceConfig(
+        sender_id=str(raw["sender_id"]).strip(),
         receiver_base_url=str(raw["receiver_base_url"]).rstrip("/"),
         speech_base_url=str(raw["speech_base_url"]).rstrip("/"),
         hold_seconds=float(raw.get("hold_seconds", 2.0)),
@@ -78,6 +81,8 @@ def load_config(path: Path) -> ServiceConfig:
         raise ValueError("pressed_below must be lower than released_above")
     if config.retry_count < 1:
         raise ValueError("retry_count must be at least one")
+    if not config.sender_id:
+        raise ValueError("sender_id must not be empty")
     return config
 
 
@@ -221,6 +226,7 @@ class JsonHttpClient:
 class RecordingController:
     def __init__(
         self,
+        sender_id: str,
         receiver_base_url: str,
         speech_base_url: str,
         http_client: JsonHttpClient,
@@ -228,6 +234,7 @@ class RecordingController:
         retry_delay_seconds: float,
         sleep: Callable[[float], None] = time.sleep,
     ):
+        self.sender_id = sender_id
         self.receiver_base_url = receiver_base_url
         self.speech_base_url = speech_base_url
         self.http_client = http_client
@@ -236,59 +243,52 @@ class RecordingController:
         self.sleep = sleep
 
     def perform(self, action: str, cue: str) -> str:
-        command_attempted = False
+        try:
+            status = self.http_client.request(
+                "GET", f"{self.receiver_base_url}/api/status"
+            )
+            if self._desired_state(status, action):
+                LOG.info(
+                    "recording action ignored sender=%s action=%s; already in desired state",
+                    self.sender_id,
+                    action,
+                )
+                return "ignored"
+        except Exception as exc:
+            LOG.error(
+                "recording action rejected before cue sender=%s action=%s error=%s",
+                self.sender_id,
+                action,
+                exc,
+            )
+            return "failed"
+
+        # The cue acknowledges the completed long press, not the remote command.
+        # Audio failure is deliberately independent from recording control.
+        self._queue_cue(cue, action)
         last_error = ""
         for attempt in range(1, self.retry_count + 1):
             try:
-                status = self.http_client.request(
-                    "GET", f"{self.receiver_base_url}/api/status"
-                )
-                state = str(status.get("recording_state", ""))
-                recording_all = bool(status.get("recording_all", False))
-                desired_state = (
-                    action == "start"
-                    and (recording_all or state in {"starting", "recording"})
-                ) or (
-                    action == "stop"
-                    and not recording_all
-                    and state in {"idle", "faulted"}
-                )
-                if desired_state:
-                    if not command_attempted:
-                        LOG.info(
-                            "recording action ignored action=%s state=%s recording_all=%s",
-                            action,
-                            state,
-                            recording_all,
-                        )
-                        return "ignored"
-                    LOG.info(
-                        "recording action confirmed after retry action=%s state=%s",
-                        action,
-                        state,
-                    )
-                    self._queue_cue(cue, action)
-                    return "success"
-
-                command_attempted = True
-                endpoint = "start-all" if action == "start" else "stop-all"
+                endpoint = "start-sender" if action == "start" else "stop-sender"
+                query = urlencode({"sender_id": self.sender_id})
                 response = self.http_client.request(
-                    "POST", f"{self.receiver_base_url}/api/record/{endpoint}"
+                    "POST", f"{self.receiver_base_url}/api/record/{endpoint}?{query}"
                 )
                 if response.get("ok") is not True:
                     raise RuntimeError(str(response.get("error", "request rejected")))
                 LOG.info(
-                    "recording action accepted action=%s attempt=%d response=%s",
+                    "recording action accepted sender=%s action=%s attempt=%d response=%s",
+                    self.sender_id,
                     action,
                     attempt,
                     json.dumps(response, ensure_ascii=False, separators=(",", ":")),
                 )
-                self._queue_cue(cue, action)
                 return "success"
             except Exception as exc:
                 last_error = str(exc)
                 LOG.warning(
-                    "recording action failed action=%s attempt=%d/%d error=%s",
+                    "recording action failed sender=%s action=%s attempt=%d/%d error=%s",
+                    self.sender_id,
                     action,
                     attempt,
                     self.retry_count,
@@ -296,8 +296,50 @@ class RecordingController:
                 )
                 if attempt < self.retry_count:
                     self.sleep(self.retry_delay_seconds)
-        LOG.error("recording action abandoned action=%s error=%s", action, last_error)
+                    try:
+                        status = self.http_client.request(
+                            "GET", f"{self.receiver_base_url}/api/status"
+                        )
+                        if self._desired_state(status, action):
+                            LOG.info(
+                                "recording action confirmed after response loss sender=%s action=%s",
+                                self.sender_id,
+                                action,
+                            )
+                            return "success"
+                    except Exception as status_exc:
+                        LOG.warning(
+                            "recording retry confirmation failed sender=%s action=%s error=%s",
+                            self.sender_id,
+                            action,
+                            status_exc,
+                        )
+        LOG.error(
+            "recording action abandoned sender=%s action=%s error=%s",
+            self.sender_id,
+            action,
+            last_error,
+        )
         return "failed"
+
+    def _desired_state(self, status: dict, action: str) -> bool:
+        if status.get("receiver_admin_stale") is True:
+            raise RuntimeError("receiver status is stale")
+        cameras = [
+            camera
+            for camera in status.get("cameras", [])
+            if isinstance(camera, dict) and camera.get("sender_id") == self.sender_id
+        ]
+        if not cameras:
+            raise RuntimeError(f"sender not present in receiver status: {self.sender_id}")
+        if action == "start":
+            live_cameras = [camera for camera in cameras if camera.get("live") is not False]
+            if not live_cameras:
+                raise RuntimeError(f"sender has no live cameras: {self.sender_id}")
+            return all(bool(camera.get("recording")) for camera in live_cameras)
+        if action == "stop":
+            return not any(bool(camera.get("recording")) for camera in cameras)
+        raise ValueError(f"unsupported recording action: {action}")
 
     def _queue_cue(self, cue: str, action: str):
         request_id = f"recording-button-{action}-{uuid.uuid4().hex}"
@@ -323,7 +365,7 @@ class RecordingController:
                 if attempt < self.retry_count:
                     self.sleep(self.retry_delay_seconds)
         LOG.error(
-            "recording succeeded but cue failed action=%s cue=%s error=%s",
+            "recording button cue failed action=%s cue=%s error=%s",
             action,
             cue,
             last_error,
@@ -511,6 +553,7 @@ def main():
 
     http_client = JsonHttpClient(config.request_timeout_seconds)
     controller = RecordingController(
+        config.sender_id,
         config.receiver_base_url,
         config.speech_base_url,
         http_client,
