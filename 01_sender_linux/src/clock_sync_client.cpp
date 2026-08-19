@@ -1,4 +1,5 @@
 #include "gwv3_sender/clock_sync_client.hpp"
+#include "gwv3_sender/network_utils.hpp"
 
 #include "gwv3_common/protocol.hpp"
 
@@ -66,16 +67,6 @@ int make_udp_socket() {
         fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     }
     return fd;
-}
-
-sockaddr_in receiver_addr(const std::string &ip, uint16_t port) {
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if(inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        throw std::runtime_error("invalid clock sync receiver IPv4 address: " + ip);
-    }
-    return addr;
 }
 
 bool json_uint64(const Json::Value &root, const char *key, uint64_t &out) {
@@ -210,7 +201,7 @@ void ClockSyncClient::run_loop() {
 bool ClockSyncClient::send_probe_and_wait_response(int fd, uint64_t sequence) {
     sockaddr_in addr{};
     try {
-        addr = receiver_addr(config_.receiver_ip, config_.port);
+        addr = resolve_ipv4_endpoint(config_.receiver_ip, config_.port);
     }
     catch(const std::exception &e) {
         log_warn(e.what());

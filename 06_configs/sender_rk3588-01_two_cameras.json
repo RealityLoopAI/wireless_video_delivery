@@ -2,13 +2,13 @@
   "sender_id": "rk3588-ubuntu",
   "sender_version": "3.0.0",
   "receiver": {
-    "ip": "192.168.66.196",
+    "ip": "fz-Standard-PC-i440FX-PIIX-1996.lan",
     "media_port": 50010,
     "status_port": 50011
   },
   "clock_sync": {
     "enabled": true,
-    "receiver_ip": "192.168.66.196",
+    "receiver_ip": "fz-Standard-PC-i440FX-PIIX-1996.lan",
     "port": 50012,
     "interval_ms": 2000,
     "timeout_ms": 100,

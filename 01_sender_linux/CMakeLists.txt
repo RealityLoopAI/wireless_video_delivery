@@ -64,6 +64,7 @@ add_executable(gemini_sender
     src/gst_h264_encoder.cpp
     src/logger.cpp
     src/main.cpp
+    src/network_utils.cpp
     src/transport.cpp
 )
 

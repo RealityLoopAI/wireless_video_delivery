@@ -1,4 +1,5 @@
 #include "gwv3_sender/config.hpp"
+#include "gwv3_sender/network_utils.hpp"
 
 #include "gwv3_common/protocol.hpp"
 
@@ -524,17 +525,15 @@ void validate_config(const AppConfig &config) {
     if(!is_valid_protocol_id(config.sender_id)) {
         throw std::runtime_error("sender_id must be 1-64 ASCII letters/digits/_/-");
     }
-    in_addr receiver_addr{};
-    if(inet_pton(AF_INET, config.receiver.ip.c_str(), &receiver_addr) != 1) {
-        throw std::runtime_error("receiver.ip must be a valid IPv4 address");
+    if(!is_valid_ipv4_or_hostname(config.receiver.ip)) {
+        throw std::runtime_error("receiver.ip must be a valid IPv4 address or hostname");
     }
     if(config.heartbeat_interval_ms <= 0 || config.heartbeat_interval_ms > 60000) {
         throw std::runtime_error("heartbeat_interval_ms must be in range [1, 60000]");
     }
     if(config.clock_sync.enabled) {
-        in_addr clock_receiver_addr{};
-        if(inet_pton(AF_INET, config.clock_sync.receiver_ip.c_str(), &clock_receiver_addr) != 1) {
-            throw std::runtime_error("clock_sync.receiver_ip must be a valid IPv4 address");
+        if(!is_valid_ipv4_or_hostname(config.clock_sync.receiver_ip)) {
+            throw std::runtime_error("clock_sync.receiver_ip must be a valid IPv4 address or hostname");
         }
         if(config.clock_sync.interval_ms <= 0 || config.clock_sync.interval_ms > 60000) {
             throw std::runtime_error("clock_sync.interval_ms must be in range [1, 60000]");

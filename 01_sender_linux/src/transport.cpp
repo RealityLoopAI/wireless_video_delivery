@@ -1,4 +1,5 @@
 #include "gwv3_sender/transport.hpp"
+#include "gwv3_sender/network_utils.hpp"
 
 #include "gwv3_common/protocol.hpp"
 
@@ -25,16 +26,6 @@
 namespace gwv3 {
 
 namespace {
-
-sockaddr_in endpoint(const std::string &ip, uint16_t port) {
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if(inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        throw std::runtime_error("invalid receiver IPv4 address: " + ip);
-    }
-    return addr;
-}
 
 void set_nonblock(int fd, bool nonblock) {
     const int flags = fcntl(fd, F_GETFL, 0);
@@ -212,7 +203,14 @@ std::optional<std::string> Transport::receive_status_control(int timeout_ms) {
     if(got <= 0 || static_cast<size_t>(got) == buffer.size()) {
         return std::nullopt;
     }
-    const auto expected_peer = endpoint(config_.receiver.ip, config_.receiver.status_port);
+    sockaddr_in expected_peer{};
+    try {
+        expected_peer = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.status_port);
+    }
+    catch(const std::exception &e) {
+        set_error(e.what());
+        return std::nullopt;
+    }
     if(peer.sin_family != AF_INET || peer.sin_addr.s_addr != expected_peer.sin_addr.s_addr) {
         return std::nullopt;
     }
@@ -282,7 +280,14 @@ bool Transport::close_if_media_peer_closed() {
 }
 
 bool Transport::send_udp_status(const std::string &json_message) {
-    auto addr = endpoint(config_.receiver.ip, config_.receiver.status_port);
+    sockaddr_in addr{};
+    try {
+        addr = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.status_port);
+    }
+    catch(const std::exception &e) {
+        set_error(e.what());
+        return false;
+    }
     std::string payload = json_message;
     payload.push_back('\n');
     const auto sent = sendto(status_udp_fd_, payload.data(), payload.size(), 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
@@ -369,7 +374,14 @@ bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes,
     uint32_t &sequence_counter = std::strcmp(label, "preview UDP") == 0 ? preview_udp_sequence_ : media_udp_sequence_;
     const uint32_t sequence = ++sequence_counter == 0 ? ++sequence_counter : sequence_counter;
     const uint16_t chunk_count = static_cast<uint16_t>(chunk_count_size);
-    const auto addr = endpoint(config_.receiver.ip, port);
+    sockaddr_in addr{};
+    try {
+        addr = resolve_ipv4_endpoint(config_.receiver.ip, port);
+    }
+    catch(const std::exception &e) {
+        set_error(std::string(label) + " send failed: " + e.what());
+        return false;
+    }
 
     for(uint16_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
         const size_t chunk_offset = static_cast<size_t>(chunk_index) * chunk_payload_size;
@@ -433,7 +445,15 @@ bool Transport::ensure_media_tcp_connected() {
     if(fd < 0) {
         return false;
     }
-    auto addr = endpoint(config_.receiver.ip, config_.receiver.media_port);
+    sockaddr_in addr{};
+    try {
+        addr = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.media_port);
+    }
+    catch(const std::exception &e) {
+        set_error(std::string("media TCP connect failed: ") + e.what());
+        close(fd);
+        return false;
+    }
     set_nonblock(fd, true);
     int rc = connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
     if(rc < 0 && errno != EINPROGRESS) {

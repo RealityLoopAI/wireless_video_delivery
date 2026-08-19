@@ -1,6 +1,6 @@
 {
   "sender_id": "lubancat-52d2ef0c",
-  "receiver_base_url": "http://192.168.66.196:8080",
+  "receiver_base_url": "http://fz-Standard-PC-i440FX-PIIX-1996.lan:8080",
   "speech_base_url": "http://127.0.0.1:18082",
   "hold_seconds": 1.0,
   "poll_interval_ms": 20,

@@ -42,8 +42,16 @@ def run(args) -> None:
         expect_invalid(args.sender, temporary, "unsafe_sender_id", invalid)
 
         invalid = copy.deepcopy(base)
-        invalid["receiver"]["ip"] = "not-an-ip"
+        invalid["receiver"]["ip"] = "bad host!"
         expect_invalid(args.sender, temporary, "invalid_receiver_ip", invalid)
+
+        hostname = copy.deepcopy(base)
+        hostname["receiver"]["ip"] = "receiver.example.lan"
+        hostname["clock_sync"]["receiver_ip"] = "receiver.example.lan"
+        hostname_path = temporary / "valid_receiver_hostname.json"
+        hostname_path.write_text(json.dumps(hostname), encoding="utf-8")
+        result = validate(args.sender, hostname_path)
+        assert result.returncode == 0, f"valid receiver hostname was rejected: {result.stdout}"
 
         invalid = copy.deepcopy(base)
         invalid["recording_buffer"] = {"enabled": True, "rgb_frames_per_slot": 10**9}
