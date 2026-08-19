@@ -76,17 +76,17 @@ class RecordingLedServiceTest(unittest.TestCase):
         service._last_status_success = 0.25
         now[0] = 0.25
         service.poll_once()
-        self.assertEqual(led.values, [True])
+        self.assertEqual(led.values, [])
 
         now[0] = 0.75
         service.poll_once()
-        self.assertEqual(led.values, [True, False])
+        self.assertEqual(led.values, [False])
 
         service._reported_recording = False
         service._last_status_success = 1.0
         now[0] = 1.0
         service.poll_once()
-        self.assertEqual(led.values, [True, False])
+        self.assertEqual(led.values, [False, True])
 
     def test_stale_status_forces_led_off(self):
         now = [0.0]
@@ -97,9 +97,11 @@ class RecordingLedServiceTest(unittest.TestCase):
         service._reported_recording = True
         service._last_status_success = 0.0
         service.poll_once()
+        now[0] = 0.5
+        service.poll_once()
         now[0] = 1.01
         service.poll_once()
-        self.assertEqual(led.values, [True, False])
+        self.assertEqual(led.values, [False, True])
 
 
 if __name__ == "__main__":

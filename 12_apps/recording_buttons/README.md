@@ -34,8 +34,8 @@ service `gwv3-recording-buttons.service`. `systemd-logind` must use
 
 On `lubancat-52d2ef0c`, `GPIO4_C3_D` (`gpiochip4`, line `19`) is an
 active-high recording LED. The root service `gwv3-recording-led.service`
-holds it low while idle or when receiver status is unavailable, and toggles it
-every 500 ms while this sender is recording. HTTP status polling runs in a
+holds it high while the sender is idle or receiver status is unavailable, and
+toggles it every 500 ms while this sender is recording. HTTP status polling runs in a
 separate thread, so a slow receiver response cannot pause the blink cadence;
 the last valid state is retained for at most 5 seconds during a brief timeout.
 

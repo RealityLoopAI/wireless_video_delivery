@@ -70,9 +70,9 @@ class GpioLed:
         self._line.request(
             consumer="gwv3-recording-led",
             type=gpiod.LINE_REQ_DIR_OUT,
-            default_vals=[self._physical_value(False)],
+            default_vals=[self._physical_value(True)],
         )
-        self._on = False
+        self._on = True
 
     def _physical_value(self, on: bool) -> int:
         return int(on if self._active_high else not on)
@@ -128,7 +128,7 @@ class RecordingLedService:
         self.sleep = sleep
         self.stop_event = threading.Event()
         self.indicating_recording = False
-        self.led_on = False
+        self.led_on = True
         self.next_toggle = 0.0
         self.last_error_log = 0.0
         self._state_lock = threading.Lock()
@@ -172,24 +172,25 @@ class RecordingLedService:
         recording = self._recording_state_is_fresh(now)
         if recording and not self.indicating_recording:
             self.indicating_recording = True
-            self.led_on = True
-            self.led.set(True)
+            if not self.led_on:
+                self.led.set(True)
+                self.led_on = True
             self.next_toggle = now + self.config.blink_interval_seconds
             LOG.info("recording detected; LED blinking")
         elif not recording and self.indicating_recording:
             self.indicating_recording = False
-            if self.led_on:
-                self.led.set(False)
-            self.led_on = False
-            LOG.info("recording stopped or status stale; LED off")
+            if not self.led_on:
+                self.led.set(True)
+            self.led_on = True
+            LOG.info("recording stopped or status stale; LED steady on")
 
         if recording and now >= self.next_toggle:
             self.led_on = not self.led_on
             self.led.set(self.led_on)
             self.next_toggle = now + self.config.blink_interval_seconds
-        elif not recording and self.led_on:
-            self.led_on = False
-            self.led.set(False)
+        elif not recording and not self.led_on:
+            self.led_on = True
+            self.led.set(True)
 
     def run(self):
         LOG.info(
