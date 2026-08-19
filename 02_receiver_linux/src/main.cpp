@@ -6774,7 +6774,14 @@ public:
             if(detach_pending) {
                 recording_all_start_pending_ = true;
                 for(auto &item : cameras_) {
-                    if(item.second->recording_requested) {
+                    bool accepting = false;
+                    {
+                        std::lock_guard<std::mutex> record_lock(item.second->record_mutex);
+                        accepting = item.second->record_accepting;
+                    }
+                    if(item.second->recording_requested
+                       && (!accepting || item.second->recording_start_us == 0
+                           || item.second->recording_window.session_id == 0)) {
                         item.second->recording_start_pending = true;
                     }
                 }
@@ -6796,6 +6803,13 @@ public:
                 {
                     std::lock_guard<std::mutex> record_lock(cam.record_mutex);
                     accepting = cam.record_accepting;
+                }
+                // A start-all request may promote one or more sender-scoped
+                // recordings. Keep their existing segment timeline intact and
+                // only activate cameras which were not already recording.
+                if(accepting && !cam.recording_start_pending && cam.recording_start_us != 0
+                   && cam.recording_window.session_id != 0) {
+                    continue;
                 }
                 const bool newly_activated = !accepting || cam.recording_start_pending || cam.recording_start_us == 0;
                 cam.recording_start_us = recording_all_start_us_;
@@ -7968,6 +7982,7 @@ public:
         uint64_t response_session_id = 0;
         bool response_pending = false;
         bool response_has_override = false;
+        bool response_promoted = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             refresh_camera_liveness_locked(now_us());
@@ -7979,9 +7994,6 @@ public:
                                                      && std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
                                                             return item.second->recording_requested;
                                                         });
-            if(individual_recording_active) {
-                return json_error("individual camera recording is active; stop it before start-all");
-            }
             if(!already_recording) {
                 recording_faulted_ = false;
                 recording_fault_session_id_ = 0;
@@ -7997,7 +8009,9 @@ public:
             }
             recording_all_ = true;
             for(auto &item : cameras_) {
-                if(!already_recording) {
+                const bool preserve_active_recording = individual_recording_active
+                                                       && item.second->recording_requested;
+                if(!already_recording && !preserve_active_recording) {
                     std::lock_guard<std::mutex> record_lock(item.second->record_mutex);
                     item.second->record_storage_capacity_failed = false;
                     reset_record_session_metrics_locked(*item.second);
@@ -8018,7 +8032,9 @@ public:
             response_session_id = recording_all_session_id_;
             response_pending = recording_all_start_pending_;
             response_has_override = recording_all_has_file_prefix_override_;
+            response_promoted = individual_recording_active;
             logger_.info(std::string("recording start-all requested pending=") + (response_pending ? "true" : "false")
+                         + " promoted_individual=" + (individual_recording_active ? "true" : "false")
                          + " session_id=" + std::to_string(response_session_id)
                          + " start_global_us=" + std::to_string(response_start_us));
         }
@@ -8030,6 +8046,7 @@ public:
         out << "{\"ok\":true,\"recording_all\":true,\"recording_start_us\":" << response_start_us
             << ",\"recording_session_id\":" << response_session_id
             << ",\"start_pending\":" << (response_pending ? "true" : "false")
+            << ",\"promoted_individual\":" << (response_promoted ? "true" : "false")
             << ",\"file_prefix_scope\":\"" << (response_has_override ? "override_all" : "per_camera") << "\"}";
         return out.str();
     }

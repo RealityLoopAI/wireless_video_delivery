@@ -964,7 +964,7 @@ def exercise_sender_scoped_recording_control(ports: dict) -> None:
     start_status, _, start_body = request(
         ports["admin"], "POST", f"/api/record/start-sender?sender_id={sender_id}"
     )
-    assert start_status == 200
+    assert start_status == 200, start_body.decode(errors="replace")
     start_response = json.loads(start_body)
     assert start_response.get("ok") is True
     assert int(start_response.get("camera_count", 0)) == 2
@@ -977,12 +977,46 @@ def exercise_sender_scoped_recording_control(ports: dict) -> None:
     assert len({int(camera.get("recording_start_us", 0)) for camera in sender_cameras}) == 1
     assert len({int(camera.get("recording_session_id", 0)) for camera in sender_cameras}) == 1
     assert other_cameras and not any(camera.get("recording") for camera in other_cameras)
+    original_start_us = int(sender_cameras[0]["recording_start_us"])
+    original_session_id = int(sender_cameras[0]["recording_session_id"])
 
     duplicate_response = json.loads(
         request(ports["admin"], "POST", f"/api/record/start-sender?sender_id={sender_id}")[2]
     )
     assert duplicate_response.get("already_recording") is True
     assert int(duplicate_response.get("started_count", -1)) == 0
+
+    promote_response = json.loads(
+        request(ports["admin"], "POST", "/api/record/start-all")[2]
+    )
+    assert promote_response.get("ok") is True
+    assert promote_response.get("promoted_individual") is True
+    current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+    sender_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == sender_id]
+    other_cameras = [camera for camera in current["cameras"] if camera.get("sender_id") == other_sender_id]
+    assert current.get("recording_all") is True
+    assert all(int(camera["recording_start_us"]) == original_start_us for camera in sender_cameras)
+    assert all(int(camera["recording_session_id"]) == original_session_id for camera in sender_cameras)
+    assert other_cameras and all(camera.get("recording") for camera in other_cameras)
+    assert all(int(camera["recording_session_id"]) != original_session_id for camera in other_cameras)
+
+    assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+        if all(
+            not camera.get("recording") and not camera.get("segment_finalizing")
+            for camera in current["cameras"]
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("promoted start-all recording did not stop cleanly")
+
+    restart_response = json.loads(
+        request(ports["admin"], "POST", f"/api/record/start-sender?sender_id={sender_id}")[2]
+    )
+    assert int(restart_response.get("started_count", 0)) == 2
 
     stop_response = json.loads(
         request(ports["admin"], "POST", f"/api/record/stop-sender?sender_id={sender_id}", timeout=10)[2]
