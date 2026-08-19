@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="gwv3-recording-buttons.service"
 POWER_UNIT_NAME="gwv3-power-button.service"
+LED_UNIT_NAME="gwv3-recording-led.service"
 USER_UNIT_DIR="$HOME/.config/systemd/user"
 
 mkdir -p "$USER_UNIT_DIR"
@@ -24,8 +25,14 @@ sudo install -m 0644 \
   "$ROOT_DIR/systemd/90-gwv3-power-key.conf" \
   /etc/systemd/logind.conf.d/90-gwv3-power-key.conf
 chmod +x "$ROOT_DIR/power_button_service.py"
+chmod +x "$ROOT_DIR/recording_led_service.py"
+sudo install -m 0644 \
+  "$ROOT_DIR/systemd/$LED_UNIT_NAME" \
+  "/etc/systemd/system/$LED_UNIT_NAME"
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$POWER_UNIT_NAME"
+sudo systemctl enable --now "$LED_UNIT_NAME"
 sudo systemctl --no-pager status "$POWER_UNIT_NAME"
+sudo systemctl --no-pager status "$LED_UNIT_NAME"
 
 echo "HandlePowerKey=ignore is installed; reboot once if logind did not already use it."

@@ -10,6 +10,15 @@
   "request_timeout_seconds": 2.0,
   "retry_count": 2,
   "retry_delay_ms": 500,
+  "recording_led": {
+    "chip": "gpiochip4",
+    "line_offset": 19,
+    "active_high": true,
+    "blink_interval_ms": 500,
+    "status_poll_interval_ms": 500,
+    "request_timeout_seconds": 2.0,
+    "status_stale_ms": 5000
+  },
   "buttons": [
     {
       "name": "recovery",

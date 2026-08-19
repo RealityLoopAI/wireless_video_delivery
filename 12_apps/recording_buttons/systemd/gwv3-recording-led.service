@@ -1,0 +1,21 @@
+[Unit]
+Description=GWV3 sender recording status LED
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/cat/wireless_video_delivery/12_apps/recording_buttons
+ExecStart=/usr/bin/python3 -u /home/cat/wireless_video_delivery/12_apps/recording_buttons/recording_led_service.py --config /home/cat/wireless_video_delivery/12_apps/recording_buttons/config_lubancat-52d2ef0c.json
+Restart=always
+RestartSec=2
+TimeoutStopSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+DevicePolicy=closed
+DeviceAllow=/dev/gpiochip4 rw
+
+[Install]
+WantedBy=multi-user.target
