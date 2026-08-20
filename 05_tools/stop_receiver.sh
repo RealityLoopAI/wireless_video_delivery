@@ -6,6 +6,7 @@ BUILD_DIR="$ROOT_DIR/12_build"
 CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
+AUDIO_ARCHIVE_UNIT="gwv3-audio-archive.service"
 
 systemd_user_available() {
   command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
@@ -184,6 +185,9 @@ request_receiver_record_stop() {
 
 stop_unit_if_active "Web 监控" "$WEB_UNIT" "$BUILD_DIR/web_monitor.pid" || stop_pid_file "Web 监控" "$BUILD_DIR/web_monitor.pid"
 stop_matching_processes "Web 监控" "$ROOT_DIR/09_web_monitor/.venv/bin/python -m uvicorn server:app"
+stop_unit_if_active "音频归档" "$AUDIO_ARCHIVE_UNIT" "$BUILD_DIR/audio_archive.pid" \
+  || stop_pid_file "音频归档" "$BUILD_DIR/audio_archive.pid" 1 0
+stop_matching_processes "音频归档" "audio_archive_receiver.py .*--config" 0
 request_receiver_record_stop
 stop_unit_if_active "C++ 接收端" "$RECEIVER_UNIT" "$BUILD_DIR/receiver.pid" || stop_pid_file "C++ 接收端" "$BUILD_DIR/receiver.pid" 1 0
 stop_matching_processes "C++ 接收端" "gemini_receiver .*--config" 0

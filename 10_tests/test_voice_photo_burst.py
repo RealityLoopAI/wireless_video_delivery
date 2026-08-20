@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -272,6 +273,47 @@ def test_audio_stream_gate(module):
         receiver.close()
 
 
+def test_audio_stream_gate_fanout_and_timing(module):
+    primary = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    secondary = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    timing = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for sock in (primary, secondary, timing):
+        sock.bind(("127.0.0.1", 0))
+        sock.settimeout(0.5)
+    gate = module.UdpPacketGate(
+        "127.0.0.1",
+        primary.getsockname()[1],
+        secondary_remote=("127.0.0.1", secondary.getsockname()[1]),
+        timing_remote=("127.0.0.1", timing.getsockname()[1]),
+        sender_id="sender-test",
+        sample_rate=48000,
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    packet = struct.pack("!BBHII", 0x80, 111, 42, 96000, 12345) + b"opus"
+    gate.start()
+    try:
+        before_us = time.time_ns() // 1000
+        sender.sendto(packet, ("127.0.0.1", gate.local_port))
+        assert primary.recvfrom(1024)[0] == packet
+        assert secondary.recvfrom(1024)[0] == packet
+        report = json.loads(timing.recvfrom(4096)[0].decode("utf-8"))
+        assert report["message_type"] == "audio_timing_anchor"
+        assert report["sender_id"] == "sender-test"
+        assert report["sequence"] == 42
+        assert report["rtp_timestamp"] == 96000
+        assert report["ssrc"] == 12345
+        assert report["payload_type"] == 111
+        assert report["sample_rate"] == 48000
+        assert report["frame_duration_us"] == 20000
+        assert report["sender_system_timestamp_us"] >= before_us - 20000
+    finally:
+        gate.stop()
+        sender.close()
+        primary.close()
+        secondary.close()
+        timing.close()
+
+
 def test_playback_capture_drain(module):
     read_fd, write_fd = os.pipe()
     read_stream = os.fdopen(read_fd, "rb", buffering=0)
@@ -450,13 +492,20 @@ def test_usb_audio_exclusive_install(source_root: Path):
         "xiaohuan-wake-rtp-lubancat-52d2ef0c.conf": (
             "50030",
             "1389555468",
+            "lubancat-52d2ef0c",
         ),
         "xiaohuan-wake-rtp-orangepi5pro-d12a4719.conf": (
             "50031",
             "3509208857",
+            "orangepi5pro-d12a4719",
+        ),
+        "xiaohuan-wake-rtp-lubancat-e8cc0cb3.conf": (
+            "50032",
+            "3322710864",
+            "lubancat-e8cc0cb3",
         ),
     }
-    for filename, (port, ssrc) in rtp_profiles.items():
+    for filename, (port, ssrc, sender_id) in rtp_profiles.items():
         rtp_profile = (app_root / "systemd" / filename).read_text(encoding="utf-8")
         assert "XIAOHUAN_AUDIO_STREAM_ENABLED=1" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.32" in rtp_profile
@@ -464,6 +513,11 @@ def test_usb_audio_exclusive_install(source_root: Path):
         assert "XIAOHUAN_AUDIO_STREAM_BITRATE=32000" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_PAYLOAD_TYPE=111" in rtp_profile
         assert f"XIAOHUAN_AUDIO_STREAM_SSRC={ssrc}" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_STREAM_ENABLED=1" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=192.168.66.196" in rtp_profile
+        assert f"XIAOHUAN_AUDIO_ARCHIVE_PORT={port}" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_TIMING_PORT=50130" in rtp_profile
+        assert f"XIAOHUAN_AUDIO_ARCHIVE_SENDER_ID={sender_id}" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_PAUSE_DURING_PLAYBACK=0" in rtp_profile
         assert "XIAOHUAN_CONTINUOUS_LISTEN_DURING_PLAYBACK=1" in rtp_profile
         assert "XIAOHUAN_UTTERANCE_FORWARD_ENABLED=0" in rtp_profile
@@ -546,6 +600,9 @@ def main():
     assert defaults.audio_stream_payload_type == 111
     assert defaults.audio_stream_ssrc == 0
     assert defaults.audio_stream_pause_during_playback is True
+    assert defaults.audio_archive_stream is False
+    assert defaults.audio_archive_host == "192.168.66.196"
+    assert defaults.audio_archive_timing_port == 50130
     assert defaults.continuous_listen_during_playback is False
     assert defaults.tts_http is True
     assert defaults.tts_http_port == 18082
@@ -578,6 +635,7 @@ def main():
     test_audio_stream_command(module)
     test_audio_stream_direct_capture_still_uses_gstreamer(module)
     test_audio_stream_gate(module)
+    test_audio_stream_gate_fanout_and_timing(module)
     test_playback_capture_drain(module)
     test_continuous_playback_worker(module)
     test_usb_audio_exclusive_install(source_root)

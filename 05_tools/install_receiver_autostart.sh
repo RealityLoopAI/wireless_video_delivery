@@ -12,12 +12,15 @@ RECEIVER_UNIT="$UNIT_DIR/gwv3-gemini-receiver.service"
 WEB_UNIT="$UNIT_DIR/gwv3-web-monitor.service"
 UPLOADER_UNIT="$UNIT_DIR/gwv3-recording-uploader.service"
 PHOTO_UPLOADER_UNIT="$UNIT_DIR/gwv3-photo-uploader.service"
+AUDIO_ARCHIVE_UNIT="$UNIT_DIR/gwv3-audio-archive.service"
 LOG_ROTATE_SERVICE="$UNIT_DIR/gwv3-receiver-log-rotate.service"
 LOG_ROTATE_TIMER="$UNIT_DIR/gwv3-receiver-log-rotate.timer"
 RECEIVER_PID="$BUILD_DIR/receiver.pid"
 WEB_PID="$BUILD_DIR/web_monitor.pid"
 UPLOADER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/recording_uploader.log"
 PHOTO_UPLOADER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/photo_uploader.log"
+AUDIO_ARCHIVE_STDOUT="$ROOT_DIR/08_reports/receiver_logs/audio_archive.log"
+AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$ROOT_DIR/06_configs/audio_archive_receiver.json}"
 
 fail() {
   echo "接收端自启动安装失败：$1" >&2
@@ -157,6 +160,7 @@ request_receiver_record_stop() {
 }
 
 [[ -f "$CONFIG" ]] || fail "配置文件不存在 $CONFIG"
+[[ -f "$AUDIO_ARCHIVE_CONFIG" ]] || fail "音频归档配置不存在 $AUDIO_ARCHIVE_CONFIG"
 command -v systemctl >/dev/null 2>&1 || fail "未找到 systemctl"
 systemctl --user status >/dev/null 2>&1 || fail "当前用户 systemd 不可用"
 command -v cmake >/dev/null 2>&1 || fail "未找到 cmake"
@@ -195,8 +199,8 @@ fi
 systemctl --user stop gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 request_receiver_record_stop
 systemctl --user stop gwv3-gemini-receiver.service >/dev/null 2>&1 || true
-systemctl --user stop gwv3-recording-uploader.service gwv3-photo-uploader.service >/dev/null 2>&1 || true
-systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-photo-uploader.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
+systemctl --user stop gwv3-recording-uploader.service gwv3-photo-uploader.service gwv3-audio-archive.service >/dev/null 2>&1 || true
+systemctl --user reset-failed gwv3-web-monitor.service gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-photo-uploader.service gwv3-audio-archive.service gwv3-receiver-log-rotate.timer >/dev/null 2>&1 || true
 stop_matching_processes "Web 监控" "$VENV/bin/python -m uvicorn server:app"
 stop_matching_processes "C++ 接收端" "gemini_receiver .*--config" 0
 rm -f "$RECEIVER_PID" "$WEB_PID"
@@ -283,6 +287,32 @@ StandardError=append:$PHOTO_UPLOADER_STDOUT
 WantedBy=default.target
 EOF
 
+cat > "$AUDIO_ARCHIVE_UNIT" <<EOF
+[Unit]
+Description=GWV3 Continuous Opus Audio Archive
+After=network-online.target gwv3-gemini-receiver.service
+Wants=network-online.target gwv3-gemini-receiver.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT_DIR
+ExecStart=/usr/bin/python3 $ROOT_DIR/05_tools/audio_archive_receiver.py --config $AUDIO_ARCHIVE_CONFIG
+Restart=always
+RestartSec=2
+Nice=3
+CPUWeight=70
+IOWeight=60
+MemoryHigh=512M
+MemoryMax=768M
+KillMode=mixed
+TimeoutStopSec=30s
+StandardOutput=append:$AUDIO_ARCHIVE_STDOUT
+StandardError=append:$AUDIO_ARCHIVE_STDOUT
+
+[Install]
+WantedBy=default.target
+EOF
+
 cat > "$WEB_UNIT" <<EOF
 [Unit]
 Description=Gemini Wireless Video v3 Web Monitor
@@ -293,6 +323,7 @@ Wants=gwv3-gemini-receiver.service
 Type=simple
 WorkingDirectory=$WEB_DIR
 Environment=GWV3_RECEIVER_ADMIN=http://127.0.0.1:$ADMIN_PORT
+Environment=GWV3_AUDIO_ARCHIVE_ADMIN=http://127.0.0.1:18083
 ExecStart=$VENV/bin/python -m uvicorn server:app --host $WEB_BIND_IP --port $WEB_PORT --no-access-log
 Restart=on-failure
 RestartSec=2
@@ -332,10 +363,11 @@ WantedBy=timers.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-photo-uploader.service gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null
+systemctl --user enable gwv3-gemini-receiver.service gwv3-recording-uploader.service gwv3-photo-uploader.service gwv3-audio-archive.service gwv3-web-monitor.service gwv3-receiver-log-rotate.timer >/dev/null
 systemctl --user restart gwv3-gemini-receiver.service
 systemctl --user restart gwv3-recording-uploader.service
 systemctl --user restart gwv3-photo-uploader.service
+systemctl --user restart gwv3-audio-archive.service
 systemctl --user restart gwv3-web-monitor.service
 systemctl --user start gwv3-receiver-log-rotate.timer
 

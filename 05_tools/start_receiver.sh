@@ -8,6 +8,7 @@ BIN="$BUILD_DIR/bin/gemini_receiver"
 RECEIVER_PID="$BUILD_DIR/receiver.pid"
 WEB_PID="$BUILD_DIR/web_monitor.pid"
 UPLOADER_PID="$BUILD_DIR/recording_uploader.pid"
+AUDIO_ARCHIVE_PID="$BUILD_DIR/audio_archive.pid"
 RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
 WEB_DIR="$ROOT_DIR/09_web_monitor"
@@ -15,6 +16,8 @@ VENV="$WEB_DIR/.venv"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
 UPLOADER_UNIT="gwv3-recording-uploader.service"
+AUDIO_ARCHIVE_UNIT="gwv3-audio-archive.service"
+AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$ROOT_DIR/06_configs/audio_archive_receiver.json}"
 MAX_LOG_BYTES=$((256 * 1024 * 1024))
 
 fail() {
@@ -23,6 +26,7 @@ fail() {
 }
 
 [[ -f "$CONFIG" ]] || fail "配置文件不存在 $CONFIG"
+[[ -f "$AUDIO_ARCHIVE_CONFIG" ]] || fail "音频归档配置不存在 $AUDIO_ARCHIVE_CONFIG"
 command -v cmake >/dev/null 2>&1 || fail "未找到 cmake，请先安装 cmake"
 command -v g++ >/dev/null 2>&1 || fail "未找到 g++，请先安装编译器"
 command -v ffmpeg >/dev/null 2>&1 || fail "未找到 ffmpeg，无法封装 rgb.mp4/depth.mkv"
@@ -200,6 +204,26 @@ else
   fi
 fi
 
+if systemd_user_available && unit_active "$AUDIO_ARCHIVE_UNIT"; then
+  write_unit_pid "$AUDIO_ARCHIVE_UNIT" "$AUDIO_ARCHIVE_PID" || true
+  echo "音频归档已经运行，PID=$(cat "$AUDIO_ARCHIVE_PID" 2>/dev/null || echo unknown)"
+elif [[ -f "$AUDIO_ARCHIVE_PID" ]] && kill -0 "$(cat "$AUDIO_ARCHIVE_PID")" 2>/dev/null; then
+  echo "音频归档已经运行，PID=$(cat "$AUDIO_ARCHIVE_PID")"
+else
+  if systemd_user_available; then
+    if unit_installed "$AUDIO_ARCHIVE_UNIT"; then
+      start_installed_unit "音频归档" "$AUDIO_ARCHIVE_UNIT" "$AUDIO_ARCHIVE_PID"
+    else
+      start_systemd_unit "音频归档" "$AUDIO_ARCHIVE_UNIT" "$AUDIO_ARCHIVE_PID" "$ROOT_DIR" \
+        "exec /usr/bin/python3 $(shell_quote "$ROOT_DIR/05_tools/audio_archive_receiver.py") --config $(shell_quote "$AUDIO_ARCHIVE_CONFIG") >>$(shell_quote "$ROOT_DIR/08_reports/receiver_logs/audio_archive.log") 2>&1"
+    fi
+  else
+    start_legacy_background "音频归档" "$AUDIO_ARCHIVE_PID" "$ROOT_DIR" /usr/bin/python3 \
+      "$ROOT_DIR/05_tools/audio_archive_receiver.py" --config "$AUDIO_ARCHIVE_CONFIG" \
+      >>"$ROOT_DIR/08_reports/receiver_logs/audio_archive.log" 2>&1
+  fi
+fi
+
 if systemd_user_available && unit_active "$WEB_UNIT"; then
   write_unit_pid "$WEB_UNIT" "$WEB_PID" || true
   echo "Web 监控已经运行，PID=$(cat "$WEB_PID" 2>/dev/null || echo unknown)"
@@ -211,11 +235,11 @@ else
       start_installed_unit "Web 监控" "$WEB_UNIT" "$WEB_PID"
     else
       start_systemd_unit "Web 监控" "$WEB_UNIT" "$WEB_PID" "$WEB_DIR" \
-        "export GWV3_RECEIVER_ADMIN=$(shell_quote "http://127.0.0.1:$ADMIN_PORT"); exec $(shell_quote "$VENV/bin/python") -m uvicorn server:app --host $(shell_quote "$WEB_BIND_IP") --port $(shell_quote "$WEB_PORT") --no-access-log >>$(shell_quote "$WEB_STDOUT") 2>&1"
+        "export GWV3_RECEIVER_ADMIN=$(shell_quote "http://127.0.0.1:$ADMIN_PORT") GWV3_AUDIO_ARCHIVE_ADMIN=http://127.0.0.1:18083; exec $(shell_quote "$VENV/bin/python") -m uvicorn server:app --host $(shell_quote "$WEB_BIND_IP") --port $(shell_quote "$WEB_PORT") --no-access-log >>$(shell_quote "$WEB_STDOUT") 2>&1"
     fi
   else
     cd "$WEB_DIR"
-    GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" --no-access-log >>"$WEB_STDOUT" 2>&1 &
+    GWV3_RECEIVER_ADMIN="http://127.0.0.1:$ADMIN_PORT" GWV3_AUDIO_ARCHIVE_ADMIN="http://127.0.0.1:18083" setsid nohup "$VENV/bin/python" -m uvicorn server:app --host "$WEB_BIND_IP" --port "$WEB_PORT" --no-access-log >>"$WEB_STDOUT" 2>&1 &
     echo "$!" > "$WEB_PID"
   fi
   echo "Web 监控已启动，PID=$(cat "$WEB_PID")，地址：http://$WEB_DISPLAY_HOST:$WEB_PORT"

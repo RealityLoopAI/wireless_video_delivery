@@ -20,6 +20,9 @@ def main():
     assert "this.configured = false" in frontend
     assert "this.awaitingKeyframe && !isKey" in frontend
     assert "H264_MAX_INPUT_BUFFER_BYTES" in frontend
+    assert "/api/audio/status" in frontend
+    assert "/api/audio/start-all" in frontend
+    assert "/api/audio/stop-sender" in frontend
     print("web preview low-latency guard test passed")
 
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=GWV3 continuous Opus audio archive
+After=network-online.target gwv3-gemini-receiver.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/wireless_video_delivery
+ExecStart=/usr/bin/python3 %h/Desktop/wireless_video_delivery/05_tools/audio_archive_receiver.py --config %h/Desktop/wireless_video_delivery/06_configs/audio_archive_receiver.json
+Restart=always
+RestartSec=2
+StandardOutput=append:%h/Desktop/wireless_video_delivery/08_reports/receiver_logs/audio_archive.log
+StandardError=append:%h/Desktop/wireless_video_delivery/08_reports/receiver_logs/audio_archive.log
+
+[Install]
+WantedBy=default.target

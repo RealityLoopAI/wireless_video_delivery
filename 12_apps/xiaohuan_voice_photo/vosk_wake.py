@@ -8,10 +8,12 @@ import queue
 import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -519,8 +521,38 @@ def make_arecord_cmd(args):
 
 
 class UdpPacketGate:
-    def __init__(self, remote_host: str, remote_port: int):
-        self._remote_address = (socket.gethostbyname(remote_host), remote_port)
+    def __init__(
+        self,
+        remote_host: str,
+        remote_port: int,
+        secondary_remote=None,
+        timing_remote=None,
+        sender_id: str = "",
+        sample_rate: int = 48000,
+        frame_duration_ms: int = 20,
+        timing_interval_seconds: float = 1.0,
+    ):
+        self._remote_addresses = [
+            (socket.gethostbyname(remote_host), remote_port),
+        ]
+        if secondary_remote:
+            secondary_host, secondary_port = secondary_remote
+            self._remote_addresses.append(
+                (socket.gethostbyname(secondary_host), secondary_port)
+            )
+        self._timing_address = None
+        if timing_remote:
+            timing_host, timing_port = timing_remote
+            self._timing_address = (
+                socket.gethostbyname(timing_host),
+                timing_port,
+            )
+        self._sender_id = sender_id
+        self._sample_rate = sample_rate
+        self._frame_duration_us = frame_duration_ms * 1000
+        self._timing_interval_seconds = max(0.1, timing_interval_seconds)
+        self._stream_instance_id = uuid.uuid4().hex
+        self._last_timing_monotonic = 0.0
         self._input = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._input.bind(("127.0.0.1", 0))
         self._input.settimeout(0.1)
@@ -565,10 +597,59 @@ class UdpPacketGate:
                 break
             if not self._enabled.is_set():
                 continue
-            try:
-                self._output.sendto(packet, self._remote_address)
-            except OSError:
-                continue
+            sender_send_us = time.time_ns() // 1000
+            sender_monotonic_us = time.monotonic_ns() // 1000
+            for remote_address in self._remote_addresses:
+                try:
+                    self._output.sendto(packet, remote_address)
+                except OSError:
+                    continue
+            self._maybe_send_timing(
+                packet,
+                sender_send_us,
+                sender_monotonic_us,
+            )
+
+    def _maybe_send_timing(
+        self,
+        packet: bytes,
+        sender_send_us: int,
+        sender_monotonic_us: int,
+    ):
+        if self._timing_address is None or len(packet) < 12:
+            return
+        now = time.monotonic()
+        if now - self._last_timing_monotonic < self._timing_interval_seconds:
+            return
+        first, payload_type, sequence, rtp_timestamp, ssrc = struct.unpack(
+            "!BBHII",
+            packet[:12],
+        )
+        if first >> 6 != 2:
+            return
+        self._last_timing_monotonic = now
+        report = {
+            "protocol_version": "3.0",
+            "message_type": "audio_timing_anchor",
+            "sender_id": self._sender_id,
+            "stream_instance_id": self._stream_instance_id,
+            "sequence": sequence,
+            "rtp_timestamp": rtp_timestamp,
+            "ssrc": ssrc,
+            "payload_type": payload_type & 0x7F,
+            "sample_rate": self._sample_rate,
+            "frame_duration_us": self._frame_duration_us,
+            "sender_system_timestamp_us": sender_send_us - self._frame_duration_us,
+            "sender_send_timestamp_us": sender_send_us,
+            "sender_monotonic_timestamp_us": sender_monotonic_us,
+        }
+        try:
+            self._output.sendto(
+                json.dumps(report, separators=(",", ":")).encode("utf-8"),
+                self._timing_address,
+            )
+        except OSError:
+            pass
 
 
 class CapturePlaybackDrain:
@@ -983,11 +1064,33 @@ def listen(args):
     stop = False
     stream_gate = None
     stream_target = None
-    if args.audio_stream and args.audio_stream_pause_during_playback:
+    needs_stream_gate = (
+        args.audio_stream
+        and (
+            args.audio_stream_pause_during_playback
+            or args.audio_archive_stream
+        )
+    )
+    if needs_stream_gate:
         try:
+            archive_remote = None
+            timing_remote = None
+            if args.audio_archive_stream:
+                archive_remote = (
+                    args.audio_archive_host,
+                    args.audio_archive_port,
+                )
+                timing_remote = (
+                    args.audio_archive_host,
+                    args.audio_archive_timing_port,
+                )
             stream_gate = UdpPacketGate(
                 args.audio_stream_host,
                 args.audio_stream_port,
+                secondary_remote=archive_remote,
+                timing_remote=timing_remote,
+                sender_id=args.audio_archive_sender_id,
+                sample_rate=args.audio_stream_sample_rate,
             )
             stream_gate.start()
             stream_target = ("127.0.0.1", stream_gate.local_port)
@@ -1034,9 +1137,17 @@ def listen(args):
         if stream_gate is not None:
             print(
                 f"audio_stream_gate=127.0.0.1:{stream_gate.local_port} "
-                "playback_policy=drop",
+                f"playback_policy={'drop' if args.audio_stream_pause_during_playback else 'continuous'}",
                 flush=True,
             )
+            if args.audio_archive_stream:
+                print(
+                    f"audio_archive_target={args.audio_archive_host}:"
+                    f"{args.audio_archive_port} timing_port="
+                    f"{args.audio_archive_timing_port} sender_id="
+                    f"{args.audio_archive_sender_id}",
+                    flush=True,
+                )
         else:
             print("audio_stream_playback_policy=continuous", flush=True)
     print(f"utterance_forward={args.utterance_forward}")
@@ -1881,6 +1992,19 @@ def build_parser():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    p_listen.add_argument(
+        "--audio-archive-stream",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p_listen.add_argument("--audio-archive-host", default="192.168.66.196")
+    p_listen.add_argument("--audio-archive-port", type=udp_port, default=50030)
+    p_listen.add_argument(
+        "--audio-archive-timing-port",
+        type=udp_port,
+        default=50130,
+    )
+    p_listen.add_argument("--audio-archive-sender-id", default=socket.gethostname())
     p_listen.add_argument(
         "--utterance-forward",
         action=argparse.BooleanOptionalAction,

@@ -442,6 +442,35 @@
       padding-top: 8px;
       border-top: 1px solid var(--line);
     }
+    .audio-toolbar,
+    .audio-stream-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .audio-stream-row {
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .audio-stream-name {
+      min-width: 0;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 850;
+      word-break: break-all;
+    }
+    .audio-stream-meta {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 750;
+    }
+    .audio-actions {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 6px;
+    }
     .empty {
       height: 100%;
       display: grid;
@@ -482,6 +511,7 @@
       <button onclick="post('/api/record/start-all')">开始</button>
       <button class="stop" onclick="post('/api/record/stop-all')">停止</button>
       <button class="secondary" onclick="load()">刷新</button>
+      <button class="secondary" onclick="openAudioSettings()">音频</button>
       <button class="ghost" onclick="openSettings()">设置</button>
     </div>
   </header>
@@ -526,6 +556,17 @@
       <button class="ghost" onclick="closeSettings()">关闭</button>
     </div>
     <div class="settings-body">
+      <details id="audioArchiveDetails" open>
+        <summary>全天音频归档</summary>
+        <div class="audio-toolbar">
+          <div id="audioArchiveSummary" class="audio-stream-meta">状态读取中...</div>
+          <div class="audio-actions">
+            <button onclick="postAudio('/api/audio/start-all')">全部开始</button>
+            <button class="stop" onclick="postAudio('/api/audio/stop-all')">全部暂停</button>
+          </div>
+        </div>
+        <div id="audioArchiveStreams"></div>
+      </details>
       <section id="settingsList"></section>
       <details>
         <summary>系统状态</summary>
@@ -542,6 +583,7 @@
     let mainTargetSyncKey = '';
     let loopsStarted = false;
     let receiverPreviewEnabled = true;
+    let audioArchiveStatus = null;
     let previewSlotCounter = 0;
     const rgbPreviewPlayers = new Map();
 
@@ -613,6 +655,53 @@
       if (!res.ok || data.ok === false) alert(data.error || data.detail || text);
       await load();
       return data;
+    }
+    async function postAudio(url) {
+      const res = await fetch(url, {method: 'POST'});
+      const text = await res.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {raw: text}; }
+      if (!res.ok || data.ok === false) alert(data.error || data.detail || text);
+      await loadAudioStatus();
+      return data;
+    }
+    function openAudioSettings() {
+      openSettings();
+      document.getElementById('audioArchiveDetails').open = true;
+      loadAudioStatus();
+    }
+    async function loadAudioStatus() {
+      const summary = document.getElementById('audioArchiveSummary');
+      const container = document.getElementById('audioArchiveStreams');
+      try {
+        const res = await fetch('/api/audio/status', {cache: 'no-store'});
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        audioArchiveStatus = await res.json();
+        const pending = Number(audioArchiveStatus.pending_segments || 0);
+        const blocked = Boolean(audioArchiveStatus.storage_blocked);
+        summary.textContent = blocked
+          ? `已保护性暂停 · ${audioArchiveStatus.storage_block_reason || '存储异常'}`
+          : `${pending} 个待上传 · ${fmtBytes(Number(audioArchiveStatus.pending_bytes || 0))}`;
+        container.innerHTML = (audioArchiveStatus.streams || []).map((stream) => {
+          const liveAgeMs = stream.last_packet_receiver_us
+            ? Math.max(0, Date.now() * 1000 - Number(stream.last_packet_receiver_us)) / 1000
+            : -1;
+          const state = !stream.enabled ? '已暂停' : (stream.recording ? '归档中' : '等待分片');
+          const live = liveAgeMs >= 0 && liveAgeMs < 3000 ? 'RTP 正常' : 'RTP 无数据';
+          const action = stream.enabled
+            ? `/api/audio/stop-sender?sender_id=${encodeURIComponent(stream.sender_id)}`
+            : `/api/audio/start-sender?sender_id=${encodeURIComponent(stream.sender_id)}`;
+          return `<div class="audio-stream-row">
+            <div><div class="audio-stream-name">${escapeHtml(stream.sender_id)}</div>
+            <div class="audio-stream-meta">${state} · ${live} · UDP ${stream.port}</div></div>
+            <div class="audio-actions"><button class="${stream.enabled ? 'stop' : ''}" onclick="postAudio('${action}')">${stream.enabled ? '暂停' : '开始'}</button></div>
+          </div>`;
+        }).join('') || '<div class="empty">暂无音频源</div>';
+      } catch (error) {
+        audioArchiveStatus = null;
+        summary.textContent = '音频归档服务不可用';
+        container.innerHTML = '';
+      }
     }
     function rootSlot(root) {
       if (!root.dataset.previewSlot) {
@@ -1323,6 +1412,7 @@
       const data = await res.json();
       receiverPreviewEnabled = data.preview_enabled !== false;
       cameras = data.cameras || [];
+      loadAudioStatus();
       visibleCameras = cameras.filter(hasAnyPreview);
       chooseMainCamera(data.main_preview_camera_key || '');
 

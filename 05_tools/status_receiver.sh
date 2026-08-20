@@ -7,6 +7,7 @@ CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
 UPLOADER_UNIT="gwv3-recording-uploader.service"
+AUDIO_ARCHIVE_UNIT="gwv3-audio-archive.service"
 
 read_config_field() {
   python3 - "$CONFIG" "$1" "$2" <<'PY'
@@ -56,6 +57,7 @@ if systemd_user_available && systemctl --user is-active --quiet "$UPLOADER_UNIT"
 else
   echo "录制上传器未运行"
 fi
+show_pid "音频归档" "$BUILD_DIR/audio_archive.pid" "$AUDIO_ARCHIVE_UNIT"
 
 ADMIN_PORT="$ADMIN_PORT" python3 - <<'PY'
 import json
@@ -70,6 +72,19 @@ try:
     print(json.dumps(data, ensure_ascii=False, indent=2))
 except Exception as exc:
     print(f"接收端管理接口不可用：{exc}")
+PY
+
+python3 - <<'PY'
+import json
+import urllib.request
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:18083/api/status", timeout=2) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    print("音频归档状态：")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+except Exception as exc:
+    print(f"音频归档管理接口不可用：{exc}")
 PY
 
 LOG="$ROOT_DIR/08_reports/receiver_logs/receiver.log"

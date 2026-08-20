@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 ADMIN_BASE = os.environ.get("GWV3_RECEIVER_ADMIN", "http://127.0.0.1:18080")
 ADMIN_TIMEOUT_S = float(os.environ.get("GWV3_RECEIVER_ADMIN_TIMEOUT_S", "3"))
 ADMIN_RECORD_STOP_TIMEOUT_S = float(os.environ.get("GWV3_RECEIVER_RECORD_STOP_TIMEOUT_S", "60"))
+AUDIO_ADMIN_BASE = os.environ.get("GWV3_AUDIO_ARCHIVE_ADMIN", "http://127.0.0.1:18083")
+AUDIO_ADMIN_TIMEOUT_S = float(os.environ.get("GWV3_AUDIO_ARCHIVE_TIMEOUT_S", "3"))
 STATUS_CACHE_MAX_AGE_S = max(
     1.0, float(os.environ.get("GWV3_WEB_STATUS_CACHE_MAX_AGE_S", "15"))
 )
@@ -49,6 +51,19 @@ def _request(method: str, path: str, timeout_s: float = ADMIN_TIMEOUT_S) -> Any:
         raise HTTPException(status_code=502, detail=f"receiver admin unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"receiver admin unavailable: {exc}") from exc
+
+
+def _audio_request(method: str, path: str) -> Any:
+    url = AUDIO_ADMIN_BASE.rstrip("/") + path
+    req = urllib.request.Request(url, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=AUDIO_ADMIN_TIMEOUT_S) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail=detail or "audio archive request failed") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"audio archive unavailable: {exc}") from exc
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -91,6 +106,33 @@ def status(response: FastAPIResponse) -> Any:
 @app.get("/api/config")
 def config() -> Any:
     return _request("GET", "/api/config")
+
+
+@app.get("/api/audio/status")
+def audio_status() -> Any:
+    return _audio_request("GET", "/api/status")
+
+
+@app.post("/api/audio/start-all")
+def audio_start_all() -> Any:
+    return _audio_request("POST", "/api/start-all")
+
+
+@app.post("/api/audio/stop-all")
+def audio_stop_all() -> Any:
+    return _audio_request("POST", "/api/stop-all")
+
+
+@app.post("/api/audio/start-sender")
+def audio_start_sender(sender_id: str = Query(...)) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id})
+    return _audio_request("POST", f"/api/start-sender?{query}")
+
+
+@app.post("/api/audio/stop-sender")
+def audio_stop_sender(sender_id: str = Query(...)) -> Any:
+    query = urllib.parse.urlencode({"sender_id": sender_id})
+    return _audio_request("POST", f"/api/stop-sender?{query}")
 
 
 @app.post("/api/record/start-all")

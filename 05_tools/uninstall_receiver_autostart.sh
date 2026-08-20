@@ -6,6 +6,7 @@ UNITS=(
   gwv3-web-monitor.service
   gwv3-gemini-receiver.service
   gwv3-recording-uploader.service
+  gwv3-audio-archive.service
   gwv3-receiver-log-rotate.timer
   gwv3-receiver-log-rotate.service
 )
