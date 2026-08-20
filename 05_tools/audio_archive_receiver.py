@@ -877,14 +877,33 @@ class AudioUploader:
         sender_id = staged.parents[1].name
         date_text = staged.parent.name
         time_text = staged.name.split(".", 1)[0]
-        final = self.app.nas_root / self.app.config["nas_subdirectory"] / sender_id / date_text / time_text
+        final_parent = self.app.nas_root / self.app.config["nas_subdirectory"] / sender_id / date_text
+        final = final_parent / time_text
         marker = json.loads((staged / "audio_staged.json").read_text(encoding="utf-8"))
+        incoming_meta = json.loads((staged / "audio_meta.json").read_text(encoding="utf-8"))
+        replace_existing = False
+        displaced_target: Path | None = None
         if (final / "audio_ready.json").exists():
             ready = json.loads((final / "audio_ready.json").read_text(encoding="utf-8"))
             if ready.get("files") == marker.get("files"):
                 shutil.rmtree(staged)
                 return
-            raise RuntimeError(f"NAS target conflict: {final}")
+            existing_meta = json.loads((final / "audio_meta.json").read_text(encoding="utf-8"))
+            existing_duration = int(existing_meta.get("audio_duration_us", 0))
+            incoming_duration = int(incoming_meta.get("audio_duration_us", 0))
+            if incoming_duration > existing_duration:
+                replace_existing = True
+                displaced_target = self._unique_partial_target(
+                    final_parent,
+                    time_text,
+                    str(ready.get("segment_id", "existing")),
+                )
+            else:
+                final = self._unique_partial_target(
+                    final_parent,
+                    time_text,
+                    str(marker["segment_id"]),
+                )
         hidden = (
             self.app.nas_root
             / ".gwv3_audio_uploading"
@@ -911,9 +930,22 @@ class AudioUploader:
         atomic_json(hidden / "audio_ready.json", ready)
         final.parent.mkdir(parents=True, exist_ok=True)
         fsync_dir(hidden)
+        if replace_existing:
+            assert displaced_target is not None
+            os.replace(final, displaced_target)
         os.replace(hidden, final)
         fsync_dir(final.parent)
         shutil.rmtree(staged)
+
+    @staticmethod
+    def _unique_partial_target(parent: Path, time_text: str, segment_id: str) -> Path:
+        prefix = f"{time_text}-partial-{segment_id[:8]}"
+        candidate = parent / prefix
+        suffix = 1
+        while candidate.exists():
+            candidate = parent / f"{prefix}-{suffix}"
+            suffix += 1
+        return candidate
 
     def status(self) -> dict[str, Any]:
         return {

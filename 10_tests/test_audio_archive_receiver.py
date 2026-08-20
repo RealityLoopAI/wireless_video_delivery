@@ -163,6 +163,64 @@ def test_local_finalize_is_separate_from_publish(module):
         assert set(marker["files"]) == {"audio.opus", "audio_timing.csv", "audio_meta.json"}
 
 
+def test_restart_fragments_keep_longest_at_canonical_path(module):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        staging_root = root / "staging"
+        nas_root = root / "nas"
+        nas_root.mkdir()
+        staging_path = staging_root
+        nas_path = nas_root
+
+        class FakeApp:
+            staging_root = staging_path
+            nas_root = nas_path
+            uploader_wakeup = __import__("threading").Event()
+            config = {
+                "nas_require_mount": False,
+                "nas_low_space_warning_mb": 0,
+                "nas_subdirectory": "audio",
+                "upload_interval_seconds": 1,
+            }
+
+        def make_staged(segment_id, duration_us, content):
+            directory = (
+                staging_root
+                / "segments"
+                / "sender-a"
+                / "2026-08-20"
+                / f"120000.{segment_id}.staged"
+            )
+            directory.mkdir(parents=True)
+            (directory / "audio.opus").write_bytes(content)
+            (directory / "audio_timing.csv").write_text("global_timestamp_us\n1\n", encoding="utf-8")
+            (directory / "audio_meta.json").write_text(
+                json.dumps({"segment_id": segment_id, "audio_duration_us": duration_us}),
+                encoding="utf-8",
+            )
+            files = {}
+            for name in ("audio.opus", "audio_timing.csv", "audio_meta.json"):
+                path = directory / name
+                files[name] = {"size": path.stat().st_size, "sha256": module.sha256_file(path)}
+            (directory / "audio_staged.json").write_text(
+                json.dumps({"segment_id": segment_id, "files": files}),
+                encoding="utf-8",
+            )
+            return directory
+
+        uploader = module.AudioUploader(FakeApp())
+        uploader._publish(make_staged("shortseg", 1_000_000, b"short"))
+        uploader._publish(make_staged("longseg", 4_000_000, b"long"))
+        canonical = nas_root / "audio" / "sender-a" / "2026-08-20" / "120000"
+        assert (canonical / "audio.opus").read_bytes() == b"long"
+        partials = list(canonical.parent.glob("120000-partial-shortseg*"))
+        assert len(partials) == 1
+        assert (partials[0] / "audio.opus").read_bytes() == b"short"
+        uploader._publish(make_staged("tinyseg", 500_000, b"tiny"))
+        assert (canonical / "audio.opus").read_bytes() == b"long"
+        assert len(list(canonical.parent.glob("120000-partial-tinyseg*"))) == 1
+
+
 def test_config_defaults_and_uniqueness(module):
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / "audio.json"
@@ -199,6 +257,7 @@ def main():
     test_native_ogg_opus_muxer(module)
     test_verified_atomic_nas_publish(module)
     test_local_finalize_is_separate_from_publish(module)
+    test_restart_fragments_keep_longest_at_canonical_path(module)
     test_config_defaults_and_uniqueness(module)
     print("audio archive receiver tests passed")
 
