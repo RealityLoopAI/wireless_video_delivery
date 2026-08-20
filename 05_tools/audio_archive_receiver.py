@@ -800,6 +800,12 @@ class AudioUploader:
     def _run(self) -> None:
         while not self._stop.is_set():
             self.app.refresh_storage_state()
+            try:
+                self._nas_ready()
+                if not list(self.app.staging_root.glob("segments/*/*/*.staged")):
+                    self.last_error = ""
+            except Exception as exc:
+                self.last_error = str(exc)
             for pending in sorted(self.app.staging_root.glob("segments/*/*/*.finalize")):
                 if self._stop.is_set():
                     break
