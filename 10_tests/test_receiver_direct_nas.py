@@ -22,6 +22,38 @@ from test_receiver_hardening import (
 )
 
 
+def assert_preview_child_did_not_inherit_recording_files(receiver_pid: int, hidden_root: Path) -> None:
+    deadline = time.monotonic() + 5
+    preview_pids = []
+    while time.monotonic() < deadline:
+        children_path = Path(f"/proc/{receiver_pid}/task/{receiver_pid}/children")
+        child_ids = children_path.read_text(encoding="ascii").split() if children_path.exists() else []
+        preview_pids = []
+        for child_id in child_ids:
+            try:
+                command = Path(f"/proc/{child_id}/cmdline").read_bytes().replace(b"\0", b" ")
+            except OSError:
+                continue
+            if b"image2pipe" in command and b"mjpeg" in command:
+                preview_pids.append(int(child_id))
+        if preview_pids:
+            break
+        time.sleep(0.05)
+    assert preview_pids, "RGB preview decoder did not start during direct NAS recording"
+
+    hidden_text = str(hidden_root.resolve())
+    inherited = []
+    for pid in preview_pids:
+        for descriptor in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            if target.startswith(hidden_text):
+                inherited.append((pid, descriptor.name, target))
+    assert not inherited, f"preview decoder inherited recording descriptors: {inherited}"
+
+
 def run(args: argparse.Namespace) -> None:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -62,7 +94,7 @@ def run(args: argparse.Namespace) -> None:
             "status_port": ports["status"],
             "media_bind_ip": "127.0.0.1",
             "media_port": ports["media"],
-            "preview_enabled": False,
+            "preview_enabled": True,
             "media_udp_enabled": False,
             "media_udp_bind_ip": "127.0.0.1",
             "media_udp_port": ports["media_udp"],
@@ -81,7 +113,7 @@ def run(args: argparse.Namespace) -> None:
                 "root": str(temporary / "unused-staging"),
                 "defer_player_compatible_finalize": True,
                 "rgb_output_mode": "fragmented_mp4",
-                "idle_finalize_ms": 1000,
+                "idle_finalize_ms": 10000,
                 "direct_publish_hidden_directory": hidden_name,
             },
             "log_directory": str(temporary / "logs"),
@@ -126,6 +158,11 @@ def run(args: argparse.Namespace) -> None:
             )
             time.sleep(0.1)
             assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+            assert request(
+                ports["admin"],
+                "POST",
+                "/api/preview/main-target?sender_id=direct-test&camera_id=cam01",
+            )[0] == 200
             fixture = generate_h264_fixture(1)
             timestamp = int(time.time() * 1_000_000)
             with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
@@ -175,6 +212,8 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     raise AssertionError("receiver did not drain direct NAS test media")
 
+                assert_preview_child_did_not_inherit_recording_files(receiver.pid, hidden_root)
+
             assert list(hidden_root.rglob("rgb.mp4")), "active direct recording was not hidden"
             assert not (nas_root / "direct-test_cam01").exists(), "active direct recording leaked into final path"
             assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
@@ -195,6 +234,7 @@ def run(args: argparse.Namespace) -> None:
                 nas_root / "direct-test_cam01",
                 minimum_rgb_duration=2.0,
                 expected_rgb_container="fragmented_mp4",
+                expected_segment_seconds=30.0,
             )
             assert not list(hidden_root.rglob("recording_ready.json"))
             status = json.loads(request(ports["admin"], "GET", "/api/status")[2])

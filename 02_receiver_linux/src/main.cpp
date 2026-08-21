@@ -763,11 +763,21 @@ void fsync_file_strict(const std::filesystem::path &path) {
     }
 }
 
+bool is_cifs_delete_pending_file(const std::filesystem::path &path) {
+    return path.filename().string().rfind(".__smb", 0) == 0;
+}
+
 void fsync_segment_files_strict(const std::filesystem::path &directory) {
     std::error_code ec;
     for(const auto &entry : std::filesystem::directory_iterator(directory, ec)) {
         if(ec) {
             break;
+        }
+        // CIFS creates .__smb* placeholders when a deleted file is still open
+        // by another process. They can disappear between enumeration and open
+        // and are not part of the recording artifact set.
+        if(is_cifs_delete_pending_file(entry.path())) {
+            continue;
         }
         if(entry.is_regular_file(ec)) {
             if(ec) {
@@ -1667,6 +1677,8 @@ std::optional<size_t> find_marker(const std::vector<uint8_t> &buffer, uint8_t a,
     return std::nullopt;
 }
 
+int add_spawn_closefrom(posix_spawn_file_actions_t *actions);
+
 class RgbPreviewDecoder {
 public:
     RgbPreviewDecoder() = default;
@@ -1748,6 +1760,12 @@ public:
         if(spawn_rc == 0 && stdout_pipe[1] != STDOUT_FILENO) {
             spawn_rc = posix_spawn_file_actions_addclose(&actions, stdout_pipe[1]);
         }
+        if(spawn_rc == 0) {
+            // Do not let a long-lived preview decoder retain recording files.
+            // On CIFS, inherited deleted descriptors become .__smb* files and
+            // prevent the segment directory from being atomically published.
+            spawn_rc = add_spawn_closefrom(&actions);
+        }
 
         pid_t pid = -1;
         if(spawn_rc == 0) {
@@ -1815,13 +1833,15 @@ public:
         }
         if(pid > 0) {
             int status = 0;
-            for(int i = 0; i < 10; ++i) {
+            // Preview decoders are disposable. Keep the graceful-exit window
+            // short so rapid target changes cannot build a long cleanup queue.
+            for(int i = 0; i < 4; ++i) {
                 const pid_t done = waitpid(pid, &status, WNOHANG);
                 if(done == pid || (done < 0 && errno == ECHILD)) {
                     pid = -1;
                     break;
                 }
-                usleep(50 * 1000);
+                usleep(10 * 1000);
             }
             if(pid > 0) {
                 kill(pid, SIGKILL);
@@ -5732,7 +5752,21 @@ private:
 
         fsync_segment_files_strict(source);
         fsync_directory_best_effort(source.parent_path());
-        std::filesystem::rename(source, destination, ec);
+        constexpr unsigned kDirectPublishRenameAttempts = 20;
+        for(unsigned attempt = 0; attempt < kDirectPublishRenameAttempts; ++attempt) {
+            ec.clear();
+            std::filesystem::rename(source, destination, ec);
+            if(!ec) {
+                break;
+            }
+            const bool transient = ec == std::errc::permission_denied
+                                   || ec == std::errc::device_or_resource_busy
+                                   || ec == std::errc::resource_unavailable_try_again;
+            if(!transient || attempt + 1 == kDirectPublishRenameAttempts) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         if(ec) {
             throw std::runtime_error("cannot atomically publish direct NAS segment " + source.string()
                                      + " -> " + destination.string() + ": " + ec.message());

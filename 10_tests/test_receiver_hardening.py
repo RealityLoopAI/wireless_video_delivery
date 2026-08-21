@@ -1054,6 +1054,7 @@ def assert_recording_output(
     nas_root: Path,
     minimum_rgb_duration: float = 1.0,
     expected_rgb_container: str = "conventional_mp4",
+    expected_segment_seconds: float = 1.0,
 ) -> None:
     rgb_files = list(nas_root.rglob("rgb.mp4"))
     assert rgb_files, "rgb.mp4 was not finalized"
@@ -1147,7 +1148,7 @@ def assert_recording_output(
         segment_start = int(meta.get("segment_window_start_global_us", 0))
         segment_end = int(meta.get("segment_window_end_global_us", 0))
         assert segment_start > 0
-        assert segment_end - segment_start == 1_000_000
+        assert segment_end - segment_start == int(expected_segment_seconds * 1_000_000)
         assert int(meta.get("recording_window_first_valid_rgb_global_us", 0)) > 0
         assert int(meta.get("recording_window_last_valid_rgb_global_us", 0)) >= int(
             meta["recording_window_first_valid_rgb_global_us"]
@@ -1180,7 +1181,8 @@ def assert_recording_output(
             int(ready.get("segment_window_end_global_us", 0)),
         )
         assert segment_index >= 0
-        assert segment_window[0] > 0 and segment_window[1] - segment_window[0] == 1_000_000
+        assert segment_window[0] > 0
+        assert segment_window[1] - segment_window[0] == int(expected_segment_seconds * 1_000_000)
         assert session_segment_windows.setdefault((session_id, segment_index), segment_window) == segment_window
 
     for frames_file in nas_root.rglob("*frames.csv"):

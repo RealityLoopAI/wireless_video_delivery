@@ -177,6 +177,7 @@ def run(args: argparse.Namespace) -> None:
                 nas_root,
                 minimum_rgb_duration=2.0,
                 expected_rgb_container="fragmented_mp4",
+                expected_segment_seconds=30.0,
             )
             # The NAS ready marker is published before the uploader releases
             # its optional local remux cache. Allow that small cleanup window.
