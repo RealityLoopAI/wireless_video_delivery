@@ -1226,6 +1226,15 @@ struct Config {
         size_t queue_max_items = 128;
     };
 
+    struct TaskAudioConfig {
+        bool enabled = true;
+        int finalize_wait_ms = 3000;
+        int poll_interval_ms = 25;
+        std::string notify_host = "127.0.0.1";
+        uint16_t notify_port = 50130;
+        std::set<std::string> sender_ids;
+    };
+
     std::string status_bind_ip = "0.0.0.0";
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
@@ -1243,6 +1252,7 @@ struct Config {
     std::string nas_root = "/home/fz/Desktop/nas";
     RecordingStagingConfig recording_staging;
     PhotoCaptureConfig photo_capture;
+    TaskAudioConfig task_audio;
     std::string log_directory = "08_reports/receiver_logs";
     std::string state_path = "06_configs/receiver_runtime_state.json";
     std::string ffmpeg_path = "ffmpeg";
@@ -1391,6 +1401,19 @@ Config load_config(const std::string &path) {
     }
     cfg.photo_capture.max_jpeg_bytes = static_cast<size_t>(photo_max_jpeg_mb) * 1024ull * 1024ull;
     cfg.photo_capture.queue_max_items = static_cast<size_t>(photo_queue_max_items);
+    Json::Value task_audio(Json::objectValue);
+    if(!root["task_audio"].isNull()) {
+        if(!root["task_audio"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: task_audio");
+        }
+        task_audio = root["task_audio"];
+    }
+    cfg.task_audio.enabled = bool_value(task_audio, "enabled", cfg.task_audio.enabled);
+    cfg.task_audio.finalize_wait_ms = int_value(task_audio, "finalize_wait_ms", cfg.task_audio.finalize_wait_ms);
+    cfg.task_audio.poll_interval_ms = int_value(task_audio, "poll_interval_ms", cfg.task_audio.poll_interval_ms);
+    cfg.task_audio.notify_host = string_value(task_audio, "notify_host", cfg.task_audio.notify_host);
+    cfg.task_audio.notify_port = port_value(task_audio, "notify_port", cfg.task_audio.notify_port);
+    cfg.task_audio.sender_ids = string_set_value(task_audio, "sender_ids");
     cfg.log_directory = string_value(root, "log_directory", cfg.log_directory);
     cfg.state_path = string_value(root, "state_path", cfg.state_path);
     cfg.ffmpeg_path = string_value(root, "ffmpeg_path", cfg.ffmpeg_path);
@@ -1461,6 +1484,13 @@ Config load_config(const std::string &path) {
     }
     if(cfg.photo_capture.nas_subdirectory.empty() || !is_safe_storage_text(cfg.photo_capture.nas_subdirectory)) {
         throw std::runtime_error("photo_capture.nas_subdirectory must be one safe directory name");
+    }
+    if(cfg.task_audio.finalize_wait_ms < 0 || cfg.task_audio.finalize_wait_ms > 10000
+       || cfg.task_audio.poll_interval_ms < 5 || cfg.task_audio.poll_interval_ms > 1000) {
+        throw std::runtime_error("task_audio finalize timing is out of range");
+    }
+    if(cfg.task_audio.notify_host.empty()) {
+        throw std::runtime_error("task_audio.notify_host must not be empty");
     }
     if(cfg.admin_bind_ip != "127.0.0.1") {
         throw std::runtime_error("admin_bind_ip must remain 127.0.0.1; expose only the authenticated Web proxy");
@@ -3837,6 +3867,12 @@ public:
         }
 
         write_meta(cfg, sender_id, camera_id, announce_json, false);
+        try {
+            write_task_audio_manifest(cfg, sender_id, camera_id);
+        }
+        catch(const std::exception &e) {
+            logger.warn(std::string("task audio manifest unavailable; video recording continues: ") + e.what());
+        }
         active_ = true;
         rgb_pipe_failed_ = false;
         depth_pipe_failed_ = false;
@@ -3858,6 +3894,12 @@ public:
         }
         const auto close_started = std::chrono::steady_clock::now();
         ScopeExit reset_guard([this] { reset_after_close(); });
+        try {
+            request_task_audio_finalize(cfg, sender_id, camera_id);
+        }
+        catch(const std::exception &e) {
+            logger.warn(std::string("task audio finalize request failed; video finalization continues: ") + e.what());
+        }
         std::exception_ptr flush_error;
         try {
             flush_pending_media(cfg, logger);
@@ -3897,6 +3939,12 @@ public:
         finalize_completed_media(cfg, logger);
         const auto media_validated = std::chrono::steady_clock::now();
         publish_finalized_frames(logger);
+        try {
+            wait_for_task_audio(cfg, sender_id, camera_id, logger);
+        }
+        catch(const std::exception &e) {
+            logger.warn(std::string("task audio join failed; video finalization continues: ") + e.what());
+        }
         write_meta(cfg, sender_id, camera_id, announce_json, true);
         if(cfg.recording_staging.enabled && cfg.recording_staging.defer_player_compatible_finalize) {
             write_recording_staged_marker(sender_id, camera_id);
@@ -4169,6 +4217,194 @@ public:
 private:
     std::filesystem::path file_path(const std::string &basename) const {
         return std::filesystem::path(directory_) / prefixed_filename(file_prefix_, basename);
+    }
+
+    std::filesystem::path task_audio_path(const std::string &basename) const {
+        return std::filesystem::path(directory_) / basename;
+    }
+
+    void write_atomic_text(const std::filesystem::path &path, const std::string &content) const {
+        const auto temporary = path.string() + ".receiver.tmp";
+        {
+            std::ofstream out(temporary, std::ios::out | std::ios::trunc);
+            if(!out) {
+                throw std::runtime_error("cannot create task audio marker: " + temporary);
+            }
+            out << content;
+            out.flush();
+            out.close();
+            if(!out) {
+                throw std::runtime_error("cannot finish task audio marker: " + temporary);
+            }
+        }
+        std::error_code ec;
+        std::filesystem::rename(temporary, path, ec);
+        if(ec) {
+            std::filesystem::remove(temporary);
+            throw std::runtime_error("cannot publish task audio marker " + path.string() + ": " + ec.message());
+        }
+    }
+
+    uint64_t effective_segment_end_global_us() const {
+        uint64_t end = end_us_;
+        if(segment_timeline_.end_global_us > 0 && (end == 0 || segment_timeline_.end_global_us < end)) {
+            end = segment_timeline_.end_global_us;
+        }
+        if(recording_window_.end_global_us > 0 && (end == 0 || recording_window_.end_global_us < end)) {
+            end = recording_window_.end_global_us;
+        }
+        return end;
+    }
+
+    void write_task_audio_manifest(const Config &cfg, const std::string &sender_id,
+                                   const std::string &camera_id) const {
+        if(!cfg.task_audio.enabled || directory_.empty()
+           || (!cfg.task_audio.sender_ids.empty() && cfg.task_audio.sender_ids.count(sender_id) == 0)) {
+            return;
+        }
+        std::ostringstream out;
+        out << "{\n"
+            << "  \"schema_version\": 1,\n"
+            << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n"
+            << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n"
+            << "  \"recording_session_id\": " << recording_window_.session_id << ",\n"
+            << "  \"segment_window_start_global_us\": " << segment_timeline_.start_global_us << ",\n"
+            << "  \"segment_window_end_global_us\": " << segment_timeline_.end_global_us << "\n"
+            << "}\n";
+        write_atomic_text(task_audio_path(".audio_task.json"), out.str());
+        notify_task_audio(cfg, "video_task_audio_start", sender_id, camera_id,
+                          segment_timeline_.end_global_us);
+    }
+
+    void request_task_audio_finalize(const Config &cfg, const std::string &sender_id,
+                                     const std::string &camera_id) const {
+        if(!cfg.task_audio.enabled || directory_.empty()
+           || (!cfg.task_audio.sender_ids.empty() && cfg.task_audio.sender_ids.count(sender_id) == 0)) {
+            return;
+        }
+        std::ostringstream out;
+        out << "{\n"
+            << "  \"schema_version\": 1,\n"
+            << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n"
+            << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n"
+            << "  \"recording_session_id\": " << recording_window_.session_id << ",\n"
+            << "  \"segment_end_global_us\": " << effective_segment_end_global_us() << ",\n"
+            << "  \"requested_receiver_us\": " << now_us() << "\n"
+            << "}\n";
+        write_atomic_text(task_audio_path(".audio_finalize_request.json"), out.str());
+        notify_task_audio(cfg, "video_task_audio_finalize", sender_id, camera_id,
+                          effective_segment_end_global_us());
+    }
+
+    void notify_task_audio(const Config &cfg, const std::string &message_type,
+                           const std::string &sender_id, const std::string &camera_id,
+                           uint64_t end_global_us) const {
+        const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if(fd < 0) {
+            return;
+        }
+        ScopeExit close_socket([fd] { ::close(fd); });
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(cfg.task_audio.notify_port);
+        if(inet_pton(AF_INET, cfg.task_audio.notify_host.c_str(), &address.sin_addr) != 1) {
+            return;
+        }
+        std::ostringstream payload;
+        payload << '{'
+                << "\"protocol_version\":\"3.0\","
+                << "\"message_type\":\"" << json_escape(message_type) << "\","
+                << "\"sender_id\":\"" << json_escape(sender_id) << "\","
+                << "\"camera_id\":\"" << json_escape(camera_id) << "\","
+                << "\"recording_session_id\":" << recording_window_.session_id << ','
+                << "\"segment_dir\":\"" << json_escape(directory_) << "\","
+                << "\"segment_window_start_global_us\":" << segment_timeline_.start_global_us << ','
+                << "\"segment_window_end_global_us\":" << segment_timeline_.end_global_us << ','
+                << "\"segment_end_global_us\":" << end_global_us
+                << '}';
+        const auto text = payload.str();
+        sendto(fd, text.data(), text.size(), MSG_DONTWAIT,
+               reinterpret_cast<const sockaddr *>(&address), sizeof(address));
+    }
+
+    void write_no_input_task_audio(const std::string &sender_id, const std::string &camera_id,
+                                   const std::string &reason) const {
+        const uint64_t window_start_us = segment_timeline_.start_global_us;
+        const uint64_t window_end_us = effective_segment_end_global_us();
+        const uint64_t duration_us = window_end_us > window_start_us ? window_end_us - window_start_us : 0;
+        const uint64_t expected_packets = (duration_us + 19'999) / 20'000;
+        const auto timing = task_audio_path("audio_timing.csv");
+        if(!std::filesystem::exists(timing)) {
+            std::ofstream csv(timing, std::ios::out | std::ios::trunc);
+            csv << "global_timestamp_us,window_start_global_us,window_end_global_us,expected_packets,"
+                   "received_packets,silence_packets,quality_status\n";
+            csv << window_start_us << ',' << window_start_us << ',' << window_end_us << ','
+                << expected_packets << ",0," << expected_packets << ",no_input\n";
+        }
+        std::ostringstream meta;
+        meta << "{\n"
+             << "  \"schema_version\": 2,\n"
+             << "  \"task_audio\": true,\n"
+             << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n"
+             << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n"
+             << "  \"recording_session_id\": " << recording_window_.session_id << ",\n"
+             << "  \"segment_window_start_global_us\": " << window_start_us << ",\n"
+             << "  \"segment_window_end_global_us\": " << window_end_us << ",\n"
+             << "  \"audio_valid\": false,\n"
+             << "  \"quality_status\": \"no_input\",\n"
+             << "  \"quality_reason\": \"" << json_escape(reason) << "\",\n"
+             << "  \"expected_packets\": " << expected_packets << ",\n"
+             << "  \"received_packets\": 0,\n"
+             << "  \"silence_packets\": " << expected_packets << ",\n"
+             << "  \"received_ratio\": 0.0,\n"
+             << "  \"longest_no_input_ms\": " << (duration_us / 1000) << ",\n"
+             << "  \"created_receiver_us\": " << now_us() << "\n"
+             << "}\n";
+        write_atomic_text(task_audio_path("audio_meta.json"), meta.str());
+        std::ostringstream ready;
+        ready << "{\n"
+              << "  \"schema_version\": 2,\n"
+              << "  \"ready\": true,\n"
+              << "  \"task_audio\": true,\n"
+              << "  \"sender_id\": \"" << json_escape(sender_id) << "\",\n"
+              << "  \"camera_id\": \"" << json_escape(camera_id) << "\",\n"
+              << "  \"recording_session_id\": " << recording_window_.session_id << ",\n"
+              << "  \"audio_valid\": false,\n"
+              << "  \"quality_status\": \"no_input\",\n"
+              << "  \"quality_reason\": \"" << json_escape(reason) << "\",\n"
+              << "  \"finalized_receiver_us\": " << now_us() << "\n"
+              << "}\n";
+        write_atomic_text(task_audio_path("audio_ready.json"), ready.str());
+        std::error_code ec;
+        std::filesystem::remove(task_audio_path(".audio_task.json"), ec);
+        std::filesystem::remove(task_audio_path(".audio_finalize_request.json"), ec);
+        std::filesystem::remove(task_audio_path(".audio.opus.inprogress"), ec);
+        std::filesystem::remove(task_audio_path(".audio_timing.csv.inprogress"), ec);
+    }
+
+    void wait_for_task_audio(const Config &cfg, const std::string &sender_id,
+                             const std::string &camera_id, Logger &logger) const {
+        if(!cfg.task_audio.enabled || directory_.empty()) {
+            return;
+        }
+        if(!cfg.task_audio.sender_ids.empty() && cfg.task_audio.sender_ids.count(sender_id) == 0) {
+            write_no_input_task_audio(sender_id, camera_id, "sender has no configured audio input");
+            logger.info("task audio marked no_input for sender without configured microphone directory=" + directory_);
+            return;
+        }
+        const auto ready = task_audio_path("audio_ready.json");
+        const auto deadline = std::chrono::steady_clock::now()
+                              + std::chrono::milliseconds(cfg.task_audio.finalize_wait_ms);
+        while(!std::filesystem::exists(ready) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(cfg.task_audio.poll_interval_ms));
+        }
+        if(std::filesystem::exists(ready)) {
+            logger.info("task audio joined recording segment directory=" + directory_);
+            return;
+        }
+        write_no_input_task_audio(sender_id, camera_id, "audio finalize timeout or sender has no configured input");
+        logger.warn("task audio unavailable after " + std::to_string(cfg.task_audio.finalize_wait_ms)
+                    + " ms; video published with no_input marker directory=" + directory_);
     }
 
     static void write_pipeline_diagnostics_columns(std::ostream &csv, const MediaPacket &packet, uint64_t packet_local_us) {
@@ -4575,6 +4811,9 @@ private:
         uint64_t depth_end_lag_us = 0;
         double rgb_coverage_ratio = 0.0;
         double depth_coverage_ratio = 0.0;
+        uint64_t rgb_media_duration_us = 0;
+        uint64_t depth_media_duration_us = 0;
+        uint64_t rgb_depth_duration_delta_us = 0;
     };
 
     RecordingQualitySummary recording_quality_summary() const {
@@ -4615,6 +4854,14 @@ private:
         };
         quality.rgb_coverage_ratio = coverage(recording_window_valid_rgb_frames_, rgb_nominal_fps_);
         quality.depth_coverage_ratio = coverage(recording_window_valid_depth_frames_, depth_nominal_fps_);
+        quality.rgb_media_duration_us = static_cast<uint64_t>(
+            std::max(0.0, media_duration_seconds(rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_))
+            * 1'000'000.0);
+        quality.depth_media_duration_us = static_cast<uint64_t>(
+            std::max(0.0, media_duration_seconds(depth_stats_)) * 1'000'000.0);
+        quality.rgb_depth_duration_delta_us = quality.rgb_media_duration_us >= quality.depth_media_duration_us
+                                                  ? quality.rgb_media_duration_us - quality.depth_media_duration_us
+                                                  : quality.depth_media_duration_us - quality.rgb_media_duration_us;
 
         constexpr double kMinimumCoverage = 0.98;
         constexpr uint64_t kMaximumEdgeLagUs = 500'000;
@@ -4657,6 +4904,10 @@ private:
         inspect_stream("depth", depth_expected_, recording_window_valid_depth_frames_, quality.depth_coverage_ratio,
                        quality.depth_first_lag_us, quality.depth_end_lag_us, recording_window_depth_max_gap_us_,
                        recording_window_depth_out_of_order_);
+        constexpr uint64_t kMaximumRgbDepthDurationDeltaUs = 500'000;
+        if(rgb_expected_ && depth_expected_ && quality.rgb_depth_duration_delta_us > kMaximumRgbDepthDurationDeltaUs) {
+            failures.emplace_back("RGB/depth duration drift exceeds 500 ms");
+        }
         if(!rgb_expected_ && !depth_expected_) {
             return quality;
         }
@@ -4684,6 +4935,9 @@ private:
         out << "  \"depth_stream_expected\": " << (depth_expected_ ? "true" : "false") << ",\n";
         out << "  \"rgb_coverage_ratio\": " << quality.rgb_coverage_ratio << ",\n";
         out << "  \"depth_coverage_ratio\": " << quality.depth_coverage_ratio << ",\n";
+        out << "  \"rgb_media_duration_us\": " << quality.rgb_media_duration_us << ",\n";
+        out << "  \"depth_media_duration_us\": " << quality.depth_media_duration_us << ",\n";
+        out << "  \"rgb_depth_duration_delta_us\": " << quality.rgb_depth_duration_delta_us << ",\n";
         out << "  \"rgb_first_frame_lag_us\": " << quality.rgb_first_lag_us << ",\n";
         out << "  \"rgb_end_frame_lag_us\": " << quality.rgb_end_lag_us << ",\n";
         out << "  \"depth_first_frame_lag_us\": " << quality.depth_first_lag_us << ",\n";
@@ -4727,6 +4981,10 @@ private:
         marker << "  \"ready_file\": \"" << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
         marker << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
         marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
+        marker << "  \"task_audio_ready_file\": \"audio_ready.json\",\n";
+        marker << "  \"task_audio_meta_file\": \"audio_meta.json\",\n";
+        marker << "  \"task_audio_timing_file\": \"audio_timing.csv\",\n";
+        marker << "  \"task_audio_file\": \"audio.opus\",\n";
         marker << "  \"rgb_frame_index_mode\": \"frames_csv_rgb_recorded_columns\"\n";
         marker << "}\n";
         marker.close();
@@ -4773,7 +5031,11 @@ private:
         marker << "  \"meta_file\": \"" << json_escape(prefixed_filename(file_prefix_, "meta.json")) << "\",\n";
         marker << "  \"ready_file\": \"" << json_escape(prefixed_filename(file_prefix_, "recording_ready.json")) << "\",\n";
         marker << "  \"rgb_file\": \"" << json_escape(prefixed_filename(file_prefix_, "rgb.mp4")) << "\",\n";
-        marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\"\n";
+        marker << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
+        marker << "  \"task_audio_ready_file\": \"audio_ready.json\",\n";
+        marker << "  \"task_audio_meta_file\": \"audio_meta.json\",\n";
+        marker << "  \"task_audio_timing_file\": \"audio_timing.csv\",\n";
+        marker << "  \"task_audio_file\": \"audio.opus\"\n";
         marker << "}\n";
         marker.close();
         if(!marker) {
@@ -5636,6 +5898,10 @@ private:
         meta << "  \"rgb_frame_index_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
         meta << "  \"rgb_frame_index_mode\": \"frames_csv_rgb_recorded_columns\",\n";
         meta << "  \"depth_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth.mkv")) << "\",\n";
+        meta << "  \"task_audio_ready_file\": \"audio_ready.json\",\n";
+        meta << "  \"task_audio_meta_file\": \"audio_meta.json\",\n";
+        meta << "  \"task_audio_timing_file\": \"audio_timing.csv\",\n";
+        meta << "  \"task_audio_file\": \"audio.opus\",\n";
         meta << "  \"depth_debug_file\": \"" << json_escape(prefixed_filename(file_prefix_, "depth_debug.raw")) << "\",\n";
         meta << "  \"frames_file\": \"" << json_escape(prefixed_filename(file_prefix_, "frames.csv")) << "\",\n";
         meta << "  \"calibration_file\": \"" << json_escape(prefixed_filename(file_prefix_, "calibration.json")) << "\",\n";
@@ -6601,6 +6867,7 @@ public:
             out << "\"camera_name\":\"" << json_escape(cam.camera_name) << "\",";
             out << "\"storage_key\":\"" << json_escape(cam.storage_key()) << "\",";
             out << "\"camera_file_prefix\":\"" << json_escape(cam.camera_file_prefix) << "\",";
+            out << "\"sender_source_ip\":\"" << json_escape(socket_endpoint_ip(cam.status_endpoint)) << "\",";
             out << "\"online\":" << (cam.online ? "true" : "false") << ',';
             out << "\"status_live\":" << (status_live ? "true" : "false") << ',';
             out << "\"media_live\":" << (media_live ? "true" : "false") << ',';
@@ -6767,6 +7034,19 @@ public:
         out << "\"segment_seconds\":" << config_.segment_seconds << ',';
         out << "\"segment_keyframe_lead_ms\":" << config_.segment_keyframe_lead_ms << ',';
         out << "\"recording_start_lead_ms\":" << config_.recording_start_lead_ms << ',';
+        out << "\"task_audio_enabled\":" << (config_.task_audio.enabled ? "true" : "false") << ',';
+        out << "\"task_audio_finalize_wait_ms\":" << config_.task_audio.finalize_wait_ms << ',';
+        out << "\"task_audio_notify_port\":" << config_.task_audio.notify_port << ',';
+        out << "\"task_audio_sender_ids\":[";
+        bool first_task_audio_sender = true;
+        for(const auto &sender_id : config_.task_audio.sender_ids) {
+            if(!first_task_audio_sender) {
+                out << ',';
+            }
+            first_task_audio_sender = false;
+            out << '"' << json_escape(sender_id) << '"';
+        }
+        out << "],";
         out << "\"max_payload_mb\":" << (config_.max_payload_bytes / (1024ull * 1024ull)) << ',';
         out << "\"record_queue_max_mb\":" << (config_.record_queue_max_bytes / (1024ull * 1024ull));
         out << ",\"record_queue_total_max_mb\":" << (config_.record_queue_total_max_bytes / (1024ull * 1024ull));

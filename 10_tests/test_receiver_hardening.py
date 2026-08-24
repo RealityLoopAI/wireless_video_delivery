@@ -1184,10 +1184,26 @@ def assert_recording_output(
         assert segment_window[0] > 0
         assert segment_window[1] - segment_window[0] == int(expected_segment_seconds * 1_000_000)
         assert session_segment_windows.setdefault((session_id, segment_index), segment_window) == segment_window
+        audio_ready_path = ready_file.parent / "audio_ready.json"
+        audio_meta_path = ready_file.parent / "audio_meta.json"
+        audio_timing_path = ready_file.parent / "audio_timing.csv"
+        assert audio_ready_path.exists(), "task audio ready marker missing"
+        assert audio_meta_path.exists(), "task audio metadata missing"
+        assert audio_timing_path.exists(), "task audio timing index missing"
+        audio_ready = json.loads(audio_ready_path.read_text(encoding="utf-8"))
+        assert audio_ready.get("quality_status") in {"complete", "partial", "no_input"}
+        assert audio_ready.get("task_audio") is True
+        if audio_ready.get("quality_status") == "no_input":
+            assert not (ready_file.parent / "audio.opus").exists(), "no-input task published false silence audio"
 
     for frames_file in nas_root.rglob("*frames.csv"):
         last_global_timestamp = None
-        meta = json.loads(next(frames_file.parent.glob("*meta.json")).read_text(encoding="utf-8"))
+        video_meta_files = [
+            path for path in frames_file.parent.glob("*meta.json")
+            if path.name != "audio_meta.json"
+        ]
+        assert len(video_meta_files) == 1, "expected exactly one video metadata file"
+        meta = json.loads(video_meta_files[0].read_text(encoding="utf-8"))
         session_id = int(meta["recording_session_id"])
         window_start = int(meta["recording_window_start_global_us"])
         window_end = int(meta["recording_window_end_global_us"])

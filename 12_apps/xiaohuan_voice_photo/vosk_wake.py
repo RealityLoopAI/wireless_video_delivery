@@ -531,6 +531,7 @@ class UdpPacketGate:
         sample_rate: int = 48000,
         frame_duration_ms: int = 20,
         timing_interval_seconds: float = 1.0,
+        control_port: int = 50131,
     ):
         self._remote_addresses = [
             (socket.gethostbyname(remote_host), remote_port),
@@ -561,6 +562,13 @@ class UdpPacketGate:
         self._enabled.set()
         self._stop = threading.Event()
         self._thread = None
+        self._control_port = control_port
+        self._control_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._control_socket.bind(("0.0.0.0", control_port))
+        self._control_socket.settimeout(0.2)
+        self._control_thread = None
+        self._rebuild_requested = threading.Event()
 
     @property
     def local_port(self):
@@ -573,6 +581,12 @@ class UdpPacketGate:
             daemon=True,
         )
         self._thread.start()
+        self._control_thread = threading.Thread(
+            target=self._run_control,
+            name="xiaohuan-audio-stream-control",
+            daemon=True,
+        )
+        self._control_thread.start()
 
     def pause(self):
         self._enabled.clear()
@@ -583,9 +597,63 @@ class UdpPacketGate:
     def stop(self):
         self._stop.set()
         self._input.close()
+        self._control_socket.close()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
+        if self._control_thread is not None:
+            self._control_thread.join(timeout=1.0)
         self._output.close()
+
+    def consume_rebuild_request(self):
+        if not self._rebuild_requested.is_set():
+            return False
+        self._rebuild_requested.clear()
+        return True
+
+    def report_playback_event(self, event_type: str, source: str, text: str = ""):
+        if self._timing_address is None:
+            return
+        report = {
+            "protocol_version": "3.0",
+            "message_type": "audio_playback_event",
+            "sender_id": self._sender_id,
+            "stream_instance_id": self._stream_instance_id,
+            "event_type": event_type,
+            "source": source,
+            "text": text[:200],
+            "sender_system_timestamp_us": time.time_ns() // 1000,
+            "sender_monotonic_timestamp_us": time.monotonic_ns() // 1000,
+        }
+        try:
+            self._output.sendto(
+                json.dumps(report, separators=(",", ":")).encode("utf-8"),
+                self._timing_address,
+            )
+        except OSError:
+            pass
+
+    def _run_control(self):
+        while not self._stop.is_set():
+            try:
+                payload, source = self._control_socket.recvfrom(8192)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if self._timing_address is not None and source[0] != self._timing_address[0]:
+                continue
+            try:
+                message = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if (
+                message.get("message_type") == "audio_stream_control"
+                and message.get("control") == "rebuild_capture"
+                and message.get("sender_id") in (self._sender_id, "*")
+            ):
+                self._stream_instance_id = uuid.uuid4().hex
+                self._last_timing_monotonic = 0.0
+                self._rebuild_requested.set()
 
     def _run(self):
         while not self._stop.is_set():
@@ -704,11 +772,13 @@ class ContinuousPlaybackWorker:
         playback_device: str,
         allow_http,
         resume_delay_seconds: float,
+        playback_event=None,
     ):
         self.speech_service = speech_service
         self.playback_device = playback_device
         self.allow_http = allow_http
         self.resume_delay_seconds = resume_delay_seconds
+        self.playback_event = playback_event
         self._completed = queue.Queue()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -738,7 +808,11 @@ class ContinuousPlaybackWorker:
             )
             if task is None:
                 continue
+            if self.playback_event is not None:
+                self.playback_event("start", task.source, task.text)
             success = self.speech_service.play_task(task, self.playback_device)
+            if self.playback_event is not None:
+                self.playback_event("end", task.source, task.text)
             self.speech_service.complete_task(task, success)
             self._completed.put(
                 {
@@ -1091,6 +1165,7 @@ def listen(args):
                 timing_remote=timing_remote,
                 sender_id=args.audio_archive_sender_id,
                 sample_rate=args.audio_stream_sample_rate,
+                control_port=args.audio_archive_control_port,
             )
             stream_gate.start()
             stream_target = ("127.0.0.1", stream_gate.local_port)
@@ -1371,6 +1446,7 @@ def listen(args):
             args.playback_device,
             allow_http=lambda: not interaction_busy(),
             resume_delay_seconds=args.tts_resume_delay_seconds,
+            playback_event=(stream_gate.report_playback_event if stream_gate is not None else None),
         )
         playback_worker.start()
         print("speech_playback_mode=asynchronous continuous_capture=true", flush=True)
@@ -1384,6 +1460,28 @@ def listen(args):
             ):
                 print("photo command action completed; external TTS released", flush=True)
                 active_photo_action_thread = None
+
+            if stream_gate is not None and stream_gate.consume_rebuild_request():
+                err = shutdown_capture(capture_out, capture_procs, collect_errors=True)
+                print(
+                    "audio capture rebuild requested by archive receiver"
+                    + (f" error={err.strip()}" if err.strip() else ""),
+                    flush=True,
+                )
+                capture_state = open_capture("archive-rebuild", calibrate=True)
+                if capture_state is None:
+                    return 12
+                capture_out, capture_procs, audio_filter, noise_rms = capture_state
+                vad_threshold = compute_vad_threshold(args, noise_rms)
+                matcher.reset()
+                pre_roll.clear()
+                speech_chunks = []
+                speech_voice_ratios = []
+                in_speech = False
+                speech_is_command = False
+                silence_chunks = 0
+                zero_audio_since = None
+                continue
 
             if playback_worker is not None:
                 while True:
@@ -1423,7 +1521,7 @@ def listen(args):
                 )
             if playback_task is not None:
                 playback_started = time.monotonic()
-                if stream_gate is not None:
+                if stream_gate is not None and args.audio_stream_pause_during_playback:
                     stream_gate.pause()
                 capture_drain = None
                 if args.capture_playback_mode == "keep":
@@ -1438,10 +1536,18 @@ def listen(args):
                         flush=True,
                     )
                 while playback_task is not None and not stop:
+                    if stream_gate is not None:
+                        stream_gate.report_playback_event(
+                            "start", playback_task.source, playback_task.text
+                        )
                     playback_ok = speech_service.play_task(
                         playback_task,
                         args.playback_device,
                     )
+                    if stream_gate is not None:
+                        stream_gate.report_playback_event(
+                            "end", playback_task.source, playback_task.text
+                        )
                     task_source = playback_task.source
                     opens_command_window = playback_task.opens_command_window
                     speech_service.complete_task(playback_task, playback_ok)
@@ -2004,6 +2110,7 @@ def build_parser():
         type=udp_port,
         default=50130,
     )
+    p_listen.add_argument("--audio-archive-control-port", type=udp_port, default=50131)
     p_listen.add_argument("--audio-archive-sender-id", default=socket.gethostname())
     p_listen.add_argument(
         "--utterance-forward",

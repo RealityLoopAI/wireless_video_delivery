@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import socket
 import struct
 import sys
 import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -91,6 +95,160 @@ def test_native_ogg_opus_muxer(module):
             page_count += 1
         assert page_count >= 6
         assert last_header_type & 0x04
+
+
+def test_audio_quality_gate(module):
+    assert module.classify_audio_quality(1000, 995, 10)[:2] == ("complete", True)
+    assert module.classify_audio_quality(1000, 980, 10)[:2] == ("partial", False)
+    assert module.classify_audio_quality(1000, 999, 51)[:2] == ("partial", False)
+    assert module.classify_audio_quality(1000, 0, 1000)[:2] == ("no_input", False)
+
+
+def test_task_audio_no_input_has_no_false_audio_file(module):
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp) / "video-segment"
+        spec = module.TaskAudioSpec("sender-a", "cam01", directory, 7, 1_000_000, 1_100_000)
+        segment = module.TaskAudioSegment(spec, 48000, 111, 9)
+        for slot in range(segment.start_slot, segment.end_slot):
+            segment.write_slot(slot * 20_000, 0, 0, None)
+        ready = segment.close_to_video_directory("test")
+        assert ready["quality_status"] == "no_input"
+        assert ready["audio_valid"] is False
+        assert not (directory / "audio.opus").exists()
+        assert (directory / "audio_timing.csv").exists()
+        assert (directory / "audio_meta.json").exists()
+        assert (directory / "audio_ready.json").exists()
+
+
+def test_task_audio_reuses_opus_and_reports_quality(module):
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp) / "video-segment"
+        spec = module.TaskAudioSpec("sender-a", "cam01", directory, 8, 2_000_000, 4_000_000)
+        segment = module.TaskAudioSegment(spec, 48000, 111, 9)
+        for index, slot in enumerate(range(segment.start_slot, segment.end_slot)):
+            packet = None if index == 25 else module.RtpPacket(
+                index,
+                index * 960,
+                9,
+                111,
+                False,
+                module.OPUS_SILENCE_20_MS,
+                slot * 20_000,
+                global_us=slot * 20_000,
+                clock_valid=True,
+            )
+            segment.write_slot(slot * 20_000, index, index * 960, packet)
+        ready = segment.close_to_video_directory("test")
+        assert ready["quality_status"] == "complete"
+        assert ready["received_packets"] == 99
+        assert ready["expected_packets"] == 100
+        assert (directory / "audio.opus").exists()
+        meta = json.loads((directory / "audio_meta.json").read_text(encoding="utf-8"))
+        assert meta["encoded_packet_reuse"] is True
+        assert meta["silence_packets"] == 1
+
+
+def free_port(socket_type):
+    with socket.socket(socket.AF_INET, socket_type) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_task_audio_udp_integration(module):
+    class StatusHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"clock_sync": [], "cameras": []}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        receiver = ThreadingHTTPServer(("127.0.0.1", 0), StatusHandler)
+        receiver_thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+        receiver_thread.start()
+        rtp_port = free_port(socket.SOCK_DGRAM)
+        timing_port = free_port(socket.SOCK_DGRAM)
+        admin_port = free_port(socket.SOCK_STREAM)
+        config_path = root / "audio.json"
+        video_root = root / "video"
+        (root / "nas").mkdir()
+        config_path.write_text(
+            json.dumps(
+                {
+                    "bind_ip": "127.0.0.1",
+                    "timing_port": timing_port,
+                    "admin_bind_ip": "127.0.0.1",
+                    "admin_port": admin_port,
+                    "receiver_admin_url": f"http://127.0.0.1:{receiver.server_port}",
+                    "staging_root": str(root / "staging"),
+                    "nas_root": str(root / "nas"),
+                    "nas_require_mount": False,
+                    "nas_low_space_warning_mb": 0,
+                    "min_free_disk_mb": 0,
+                    "task_poll_interval_ms": 50,
+                    "task_status_fallback_seconds": 0.5,
+                    "task_allowed_roots": [str(video_root)],
+                    "streams": [{"sender_id": "sender-a", "port": rtp_port, "ssrc": 9}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        service = module.AudioArchiveService(module.load_config(config_path))
+        service.start()
+        service.set_all_enabled(False)
+        try:
+            start_us = ((module.now_us() + 500_000 + 19_999) // 20_000) * 20_000
+            end_us = start_us + 1_000_000
+            directory = video_root / "sender-a_cam01" / "segment"
+            directory.mkdir(parents=True)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                anchor = {
+                    "message_type": "audio_timing_anchor",
+                    "sender_id": "sender-a",
+                    "stream_instance_id": "test-stream",
+                    "rtp_timestamp": 0,
+                    "sender_system_timestamp_us": start_us,
+                    "sender_send_timestamp_us": start_us + 20_000,
+                    "sample_rate": 48000,
+                    "ssrc": 9,
+                }
+                sender.sendto(json.dumps(anchor).encode(), ("127.0.0.1", timing_port))
+                task = {
+                    "message_type": "video_task_audio_start",
+                    "sender_id": "sender-a",
+                    "camera_id": "cam01",
+                    "recording_session_id": 99,
+                    "segment_dir": str(directory),
+                    "segment_window_start_global_us": start_us,
+                    "segment_window_end_global_us": end_us,
+                }
+                sender.sendto(json.dumps(task).encode(), ("127.0.0.1", timing_port))
+                time.sleep(0.1)
+                for index in range(50):
+                    sender.sendto(
+                        module.make_rtp(index, index * 960, 9, 111, module.OPUS_SILENCE_20_MS),
+                        ("127.0.0.1", rtp_port),
+                    )
+                task["message_type"] = "video_task_audio_finalize"
+                task["segment_end_global_us"] = end_us
+                sender.sendto(json.dumps(task).encode(), ("127.0.0.1", timing_port))
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline and not (directory / "audio_ready.json").exists():
+                time.sleep(0.05)
+            ready = json.loads((directory / "audio_ready.json").read_text(encoding="utf-8"))
+            assert ready["quality_status"] == "complete"
+            assert ready["received_packets"] == 50
+            assert (directory / "audio.opus").exists()
+        finally:
+            service.stop()
+            receiver.shutdown()
+            receiver.server_close()
+            receiver_thread.join(timeout=1.0)
 
 
 def test_verified_atomic_nas_publish(module):
@@ -255,6 +413,10 @@ def main():
     test_rtp_parser(module)
     test_global_timestamp_mapping(module)
     test_native_ogg_opus_muxer(module)
+    test_audio_quality_gate(module)
+    test_task_audio_no_input_has_no_false_audio_file(module)
+    test_task_audio_reuses_opus_and_reports_quality(module)
+    test_task_audio_udp_integration(module)
     test_verified_atomic_nas_publish(module)
     test_local_finalize_is_separate_from_publish(module)
     test_restart_fragments_keep_longest_at_canonical_path(module)

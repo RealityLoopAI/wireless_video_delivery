@@ -66,6 +66,18 @@
     "queue_max_items": 128,
     "upload_interval_ms": 250
   },
+  "task_audio": {
+    "enabled": true,
+    "finalize_wait_ms": 3000,
+    "poll_interval_ms": 25,
+    "notify_host": "127.0.0.1",
+    "notify_port": 50130,
+    "sender_ids": [
+      "lubancat-52d2ef0c",
+      "orangepi5pro-d12a4719",
+      "lubancat-e8cc0cb3"
+    ]
+  },
   "segment_seconds": 900,
   "segment_keyframe_lead_ms": 500,
   "recording_start_lead_ms": 1000,

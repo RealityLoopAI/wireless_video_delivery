@@ -17,27 +17,39 @@
   "local_retention_days": 7,
   "min_free_disk_mb": 5120,
   "upload_interval_seconds": 2.0,
+  "task_poll_interval_ms": 100,
+  "task_status_fallback_seconds": 1.0,
+  "task_allowed_roots": [
+    "/home/fz/Desktop/nas/.gwv3_direct_inprogress",
+    "/home/fz/recording_staging"
+  ],
+  "input_warning_seconds": 3,
+  "input_rebuild_seconds": 5,
+  "input_rebuild_interval_seconds": 10,
   "streams": [
     {
       "sender_id": "lubancat-52d2ef0c",
       "port": 50030,
       "ssrc": 1389555468,
       "payload_type": 111,
-      "sample_rate": 48000
+      "sample_rate": 48000,
+      "control_port": 50131
     },
     {
       "sender_id": "orangepi5pro-d12a4719",
       "port": 50031,
       "ssrc": 3509208857,
       "payload_type": 111,
-      "sample_rate": 48000
+      "sample_rate": 48000,
+      "control_port": 50131
     },
     {
       "sender_id": "lubancat-e8cc0cb3",
       "port": 50032,
       "ssrc": 3322710864,
       "payload_type": 111,
-      "sample_rate": 48000
+      "sample_rate": 48000,
+      "control_port": 50131
     }
   ]
 }

@@ -507,16 +507,17 @@ def test_usb_audio_exclusive_install(source_root: Path):
     }
     for filename, (port, ssrc, sender_id) in rtp_profiles.items():
         rtp_profile = (app_root / "systemd" / filename).read_text(encoding="utf-8")
-        assert "XIAOHUAN_AUDIO_STREAM_ENABLED=0" in rtp_profile
+        assert "XIAOHUAN_AUDIO_STREAM_ENABLED=1" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_HOST=192.168.66.32" in rtp_profile
         assert f"XIAOHUAN_AUDIO_STREAM_PORT={port}" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_BITRATE=32000" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_PAYLOAD_TYPE=111" in rtp_profile
         assert f"XIAOHUAN_AUDIO_STREAM_SSRC={ssrc}" in rtp_profile
-        assert "XIAOHUAN_AUDIO_ARCHIVE_STREAM_ENABLED=0" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_STREAM_ENABLED=1" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=192.168.66.196" in rtp_profile
         assert f"XIAOHUAN_AUDIO_ARCHIVE_PORT={port}" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_TIMING_PORT=50130" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_CONTROL_PORT=50131" in rtp_profile
         assert f"XIAOHUAN_AUDIO_ARCHIVE_SENDER_ID={sender_id}" in rtp_profile
         assert "XIAOHUAN_AUDIO_STREAM_PAUSE_DURING_PLAYBACK=0" in rtp_profile
         assert "XIAOHUAN_CONTINUOUS_LISTEN_DURING_PLAYBACK=1" in rtp_profile

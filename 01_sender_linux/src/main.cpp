@@ -333,6 +333,8 @@ struct CameraRuntime {
     uint64_t force_rgb_keyframe_applied = 0;
     uint64_t force_rgb_keyframe_observed = 0;
     uint64_t force_rgb_keyframe_requested_at_us = 0;
+    uint64_t force_rgb_keyframe_last_event_us = 0;
+    uint64_t force_rgb_keyframe_events = 0;
     uint64_t force_rgb_keyframe_target_sender_system_us = 0;
     uint64_t force_rgb_keyframe_target_global_us = 0;
     uint64_t rgb_corrupt_jpeg = 0;
@@ -2802,12 +2804,13 @@ void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::stri
     const bool low_priority_immediate_request = reason.rfind("web_rgb_", 0) == 0;
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
-        const bool already_pending = camera.force_rgb_keyframe_applied < camera.force_rgb_keyframe_requests;
+        const bool already_pending = camera.force_rgb_keyframe_observed < camera.force_rgb_keyframe_requests;
         request_id = ++camera.force_rgb_keyframe_requests;
         camera.force_rgb_keyframe_requested_at_us = now_us();
         if(!already_pending) {
             camera.force_rgb_keyframe_target_sender_system_us = target_sender_system_us;
             camera.force_rgb_keyframe_target_global_us = target_global_us;
+            camera.force_rgb_keyframe_last_event_us = 0;
         }
         else {
             const uint64_t merged_target = merge_keyframe_target(
@@ -2837,17 +2840,23 @@ void request_rgb_keyframe(CameraRuntime &camera, Logger &logger, const std::stri
 bool consume_rgb_keyframe_request(CameraRuntime &camera, uint64_t frame_system_timestamp_us,
                                   uint64_t &request_id) {
     std::lock_guard<std::mutex> lock(camera.mutex);
-    if(camera.force_rgb_keyframe_applied >= camera.force_rgb_keyframe_requests) {
+    if(camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_requests) {
         return false;
     }
     const uint64_t target_us = camera.force_rgb_keyframe_target_sender_system_us;
-    if(!scheduled_keyframe_due(target_us, frame_system_timestamp_us, now_us())) {
+    const uint64_t current_us = now_us();
+    if(!scheduled_keyframe_due(target_us, frame_system_timestamp_us, current_us)) {
+        return false;
+    }
+    constexpr uint64_t kForceKeyframeRetryIntervalUs = 50'000;
+    if(camera.force_rgb_keyframe_last_event_us > 0
+       && current_us - camera.force_rgb_keyframe_last_event_us < kForceKeyframeRetryIntervalUs) {
         return false;
     }
     camera.force_rgb_keyframe_applied = camera.force_rgb_keyframe_requests;
     request_id = camera.force_rgb_keyframe_applied;
-    camera.force_rgb_keyframe_target_sender_system_us = 0;
-    camera.force_rgb_keyframe_target_global_us = 0;
+    camera.force_rgb_keyframe_last_event_us = current_us;
+    ++camera.force_rgb_keyframe_events;
     return true;
 }
 
@@ -2857,12 +2866,18 @@ void report_forced_rgb_keyframe(CameraRuntime &camera, Logger &logger) {
     {
         std::lock_guard<std::mutex> lock(camera.mutex);
         if(camera.force_rgb_keyframe_applied == 0
-           || camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_applied) {
+           || camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_applied
+           || camera.force_rgb_keyframe_last_event_us == 0) {
             return;
         }
         camera.force_rgb_keyframe_observed = camera.force_rgb_keyframe_applied;
         request_id = camera.force_rgb_keyframe_observed;
         requested_at_us = camera.force_rgb_keyframe_requested_at_us;
+        if(camera.force_rgb_keyframe_observed >= camera.force_rgb_keyframe_requests) {
+            camera.force_rgb_keyframe_target_sender_system_us = 0;
+            camera.force_rgb_keyframe_target_global_us = 0;
+            camera.force_rgb_keyframe_last_event_us = 0;
+        }
     }
     const uint64_t observed_at_us = now_us();
     const uint64_t latency_us = requested_at_us != 0 && observed_at_us >= requested_at_us ? observed_at_us - requested_at_us : 0;

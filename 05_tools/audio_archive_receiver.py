@@ -48,6 +48,7 @@ TIMING_CSV_HEADER = [
     "late_packets",
     "duplicate_packets",
 ]
+TASK_AUDIO_FILENAMES = ("audio.opus", "audio_timing.csv", "audio_meta.json")
 
 
 def now_us() -> int:
@@ -101,6 +102,22 @@ def sha256_file(path: Path) -> str:
 def signed_rtp_delta(value: int, reference: int) -> int:
     delta = (value - reference) & 0xFFFFFFFF
     return delta - 0x100000000 if delta & 0x80000000 else delta
+
+
+def classify_audio_quality(
+    expected_packets: int,
+    received_packets: int,
+    longest_missing_packets: int,
+    frame_duration_ms: int = 20,
+    minimum_received_ratio: float = 0.99,
+    maximum_no_input_ms: int = 1000,
+) -> tuple[str, bool, float, int]:
+    ratio = received_packets / expected_packets if expected_packets > 0 else 0.0
+    longest_no_input_ms = longest_missing_packets * frame_duration_ms
+    if received_packets <= 0:
+        return "no_input", False, ratio, longest_no_input_ms
+    complete = ratio >= minimum_received_ratio and longest_no_input_ms <= maximum_no_input_ms
+    return ("complete" if complete else "partial"), complete, ratio, longest_no_input_ms
 
 
 @dataclass
@@ -309,26 +326,29 @@ class TimingRegistry:
                 timeout=1.0,
             ) as response:
                 status = json.loads(response.read().decode("utf-8"))
-            models: dict[str, ClockModel] = {}
-            update_us = now_us()
-            for item in status.get("clock_sync", []):
-                sender_id = str(item.get("sender_id", ""))
-                if not sender_id:
-                    continue
-                models[sender_id] = ClockModel(
-                    valid=bool(item.get("clock_sync_valid", False)),
-                    offset_us=int(item.get("clock_offset_us", 0)),
-                    delay_us=int(item.get("clock_delay_us", 0)),
-                    drift_ppm=float(item.get("clock_drift_ppm", 0.0)),
-                    last_sync_us=int(item.get("clock_last_sync_us", 0)),
-                    receiver_update_us=update_us,
-                )
-            with self._lock:
-                self._models = models
-                self.last_admin_error = ""
+            self.update_status(status)
         except Exception as exc:
             with self._lock:
                 self.last_admin_error = str(exc)
+
+    def update_status(self, status: dict[str, Any]) -> None:
+        models: dict[str, ClockModel] = {}
+        update_us = now_us()
+        for item in status.get("clock_sync", []):
+            sender_id = str(item.get("sender_id", ""))
+            if not sender_id:
+                continue
+            models[sender_id] = ClockModel(
+                valid=bool(item.get("clock_sync_valid", False)),
+                offset_us=int(item.get("clock_offset_us", 0)),
+                delay_us=int(item.get("clock_delay_us", 0)),
+                drift_ppm=float(item.get("clock_drift_ppm", 0.0)),
+                last_sync_us=int(item.get("clock_last_sync_us", 0)),
+                receiver_update_us=update_us,
+            )
+        with self._lock:
+            self._models = models
+            self.last_admin_error = ""
 
     def map_packet(self, sender_id: str, packet: RtpPacket) -> RtpPacket:
         with self._lock:
@@ -484,6 +504,11 @@ class OpusSegment:
         self.total_late = 0
         self.total_duplicate = 0
         self.clock_valid_packets = 0
+        self.longest_missing_packets = 0
+        self._missing_run_packets = 0
+        self._missing_run_start_us = 0
+        self.outage_intervals: list[dict[str, int]] = []
+        self.playback_events: list[dict[str, Any]] = []
         self.current_second: SecondStats | None = None
         self.writer = OggOpusWriter(self.audio_path, sample_rate)
 
@@ -500,11 +525,35 @@ class OpusSegment:
         self.total_expected += 1
         if packet is None:
             self.total_silence += 1
+            if self._missing_run_packets == 0:
+                self._missing_run_start_us = slot_us
+            self._missing_run_packets += 1
+            self.longest_missing_packets = max(
+                self.longest_missing_packets,
+                self._missing_run_packets,
+            )
         else:
+            self._finish_missing_run(slot_us)
             self.total_received += 1
             if packet.clock_valid:
                 self.clock_valid_packets += 1
         self.last_slot_us = slot_us
+
+    def _finish_missing_run(self, end_us: int) -> None:
+        if self._missing_run_packets <= 0:
+            return
+        self.outage_intervals.append(
+            {
+                "start_global_us": self._missing_run_start_us,
+                "end_global_us": end_us,
+                "duration_us": self._missing_run_packets * 20_000,
+            }
+        )
+        self._missing_run_packets = 0
+        self._missing_run_start_us = 0
+
+    def add_playback_event(self, event: dict[str, Any]) -> None:
+        self.playback_events.append(dict(event))
 
     def add_discard_counts(self, late: int, duplicate: int) -> None:
         self.total_late += late
@@ -521,20 +570,24 @@ class OpusSegment:
         self.current_second = None
 
     def close(self, reason: str) -> Path | None:
+        self._finish_missing_run(self.last_slot_us + 20_000 if self.last_slot_us else self.window_end_us)
         self.flush_second()
         self.csv_handle.flush()
         self.csv_handle.close()
         self.writer.close()
-        if self.audio_path.exists():
+        if self.audio_path.exists() and self.total_received > 0:
             final_audio = self.inprogress_dir / "audio.opus"
             os.replace(self.audio_path, final_audio)
         else:
-            LOG.error("audio segment missing sender=%s", self.sender_id)
-            shutil.rmtree(self.inprogress_dir, ignore_errors=True)
-            return None
+            self.audio_path.unlink(missing_ok=True)
         duration_us = max(0, self.last_slot_us + 20_000 - self.first_slot_us)
+        quality_status, audio_valid, received_ratio, longest_no_input_ms = classify_audio_quality(
+            self.total_expected,
+            self.total_received,
+            self.longest_missing_packets,
+        )
         meta = {
-            "schema_version": 1,
+            "schema_version": 2,
             "sender_id": self.sender_id,
             "segment_id": self.segment_id,
             "codec": "opus",
@@ -561,11 +614,167 @@ class OpusSegment:
             "late_packets": self.total_late,
             "duplicate_packets": self.total_duplicate,
             "clock_sync_valid_packets": self.clock_valid_packets,
+            "audio_valid": audio_valid,
+            "quality_status": quality_status,
+            "received_ratio": received_ratio,
+            "longest_no_input_ms": longest_no_input_ms,
+            "outage_intervals": self.outage_intervals,
+            "playback_events": self.playback_events,
             "created_receiver_us": now_us(),
         }
         write_json(self.inprogress_dir / "audio_meta.json", meta)
         os.replace(self.inprogress_dir, self.finalize_dir)
         return self.finalize_dir
+
+
+@dataclass(frozen=True)
+class TaskAudioSpec:
+    sender_id: str
+    camera_id: str
+    directory: Path
+    recording_session_id: int
+    window_start_us: int
+    window_end_us: int
+
+
+class TaskAudioSegment(OpusSegment):
+    """Mux one already encoded RTP/Opus stream into a video segment directory."""
+
+    def __init__(self, spec: TaskAudioSpec, sample_rate: int, payload_type: int, output_ssrc: int):
+        self.spec = spec
+        self.sender_id = spec.sender_id
+        self.window_start_us = spec.window_start_us
+        self.window_end_us = spec.window_end_us
+        self.first_slot_us = ((spec.window_start_us + 19_999) // 20_000) * 20_000
+        self.last_slot_us = 0
+        self.sample_rate = sample_rate
+        self.payload_type = payload_type
+        self.output_ssrc = output_ssrc
+        self.segment_id = uuid.uuid4().hex
+        self.date_text = ""
+        self.time_text = ""
+        self.inprogress_dir = spec.directory
+        self.staged_dir = spec.directory
+        self.finalize_dir = spec.directory
+        spec.directory.mkdir(parents=True, exist_ok=True)
+        self.audio_path = spec.directory / ".audio.opus.inprogress"
+        self.csv_path = spec.directory / ".audio_timing.csv.inprogress"
+        self.csv_handle = self.csv_path.open("w", encoding="utf-8", newline="")
+        self.csv_writer = csv.writer(self.csv_handle)
+        self.csv_writer.writerow(TIMING_CSV_HEADER)
+        self.total_expected = 0
+        self.total_received = 0
+        self.total_silence = 0
+        self.total_late = 0
+        self.total_duplicate = 0
+        self.clock_valid_packets = 0
+        self.longest_missing_packets = 0
+        self._missing_run_packets = 0
+        self._missing_run_start_us = 0
+        self.outage_intervals: list[dict[str, int]] = []
+        self.playback_events: list[dict[str, Any]] = []
+        self.current_second: SecondStats | None = None
+        self.writer = OggOpusWriter(self.audio_path, sample_rate)
+
+    @property
+    def start_slot(self) -> int:
+        return (self.window_start_us + 19_999) // 20_000
+
+    @property
+    def end_slot(self) -> int:
+        return (self.window_end_us + 19_999) // 20_000
+
+    def set_window_end(self, end_us: int) -> None:
+        if end_us > self.window_start_us:
+            self.window_end_us = min(self.window_end_us, end_us)
+
+    def close_to_video_directory(self, reason: str) -> dict[str, Any]:
+        self._finish_missing_run(self.last_slot_us + 20_000 if self.last_slot_us else self.window_end_us)
+        self.flush_second()
+        self.csv_handle.flush()
+        self.csv_handle.close()
+        self.writer.close()
+
+        final_audio = self.spec.directory / "audio.opus"
+        if self.total_received > 0:
+            os.replace(self.audio_path, final_audio)
+        else:
+            self.audio_path.unlink(missing_ok=True)
+            final_audio.unlink(missing_ok=True)
+        final_csv = self.spec.directory / "audio_timing.csv"
+        os.replace(self.csv_path, final_csv)
+        quality_status, audio_valid, received_ratio, longest_no_input_ms = classify_audio_quality(
+            self.total_expected,
+            self.total_received,
+            self.longest_missing_packets,
+        )
+        duration_us = max(0, self.last_slot_us + 20_000 - self.first_slot_us)
+        meta = {
+            "schema_version": 2,
+            "task_audio": True,
+            "sender_id": self.spec.sender_id,
+            "camera_id": self.spec.camera_id,
+            "recording_session_id": self.spec.recording_session_id,
+            "segment_id": self.segment_id,
+            "codec": "opus",
+            "container": "ogg",
+            "muxer": "gwv3_native_ogg_opus",
+            "encoded_packet_reuse": True,
+            "global_timestamp_source": "sender_system_timestamp_us_plus_clock_offset",
+            "sample_rate": self.sample_rate,
+            "channels": 1,
+            "frame_duration_ms": 20,
+            "payload_type": self.payload_type,
+            "ssrc": self.output_ssrc,
+            "segment_window_start_global_us": self.window_start_us,
+            "segment_window_end_global_us": self.window_end_us,
+            "first_audio_global_us": self.first_slot_us if self.total_expected else 0,
+            "last_audio_global_us": self.last_slot_us,
+            "audio_duration_us": duration_us,
+            "close_reason": reason,
+            "expected_packets": self.total_expected,
+            "received_packets": self.total_received,
+            "silence_packets": self.total_silence,
+            "late_packets": self.total_late,
+            "duplicate_packets": self.total_duplicate,
+            "clock_sync_valid_packets": self.clock_valid_packets,
+            "audio_valid": audio_valid,
+            "quality_status": quality_status,
+            "received_ratio": received_ratio,
+            "longest_no_input_ms": longest_no_input_ms,
+            "outage_intervals": self.outage_intervals,
+            "playback_events": self.playback_events,
+            "created_receiver_us": now_us(),
+        }
+        atomic_json(self.spec.directory / "audio_meta.json", meta)
+        files: dict[str, dict[str, Any]] = {}
+        for name in TASK_AUDIO_FILENAMES:
+            path = self.spec.directory / name
+            if not path.exists():
+                continue
+            fsync_file(path)
+            files[name] = {"size": path.stat().st_size, "sha256": sha256_file(path)}
+        ready = {
+            "schema_version": 2,
+            "ready": True,
+            "task_audio": True,
+            "sender_id": self.spec.sender_id,
+            "camera_id": self.spec.camera_id,
+            "recording_session_id": self.spec.recording_session_id,
+            "segment_id": self.segment_id,
+            "finalized_receiver_us": now_us(),
+            "audio_valid": audio_valid,
+            "quality_status": quality_status,
+            "expected_packets": self.total_expected,
+            "received_packets": self.total_received,
+            "received_ratio": received_ratio,
+            "longest_no_input_ms": longest_no_input_ms,
+            "files": files,
+        }
+        (self.spec.directory / ".audio_task.json").unlink(missing_ok=True)
+        (self.spec.directory / ".audio_finalize_request.json").unlink(missing_ok=True)
+        atomic_json(self.spec.directory / "audio_ready.json", ready)
+        return ready
 
 
 @dataclass
@@ -575,6 +784,8 @@ class StreamConfig:
     ssrc: int
     payload_type: int = 111
     sample_rate: int = 48000
+    control_host: str = ""
+    control_port: int = 50131
 
 
 class AudioStreamRecorder:
@@ -588,6 +799,10 @@ class AudioStreamRecorder:
         self._enabled_lock = threading.Lock()
         self._buffer_lock = threading.Lock()
         self._buffer: dict[int, RtpPacket] = {}
+        self._task_lock = threading.Lock()
+        self._task_segments: dict[str, TaskAudioSegment] = {}
+        self._resolved_history: dict[int, RtpPacket | None] = {}
+        self._playback_history: list[dict[str, Any]] = []
         self._duplicate_pending = 0
         self._late_pending = 0
         self._socket: socket.socket | None = None
@@ -605,6 +820,13 @@ class AudioStreamRecorder:
         self.last_packet_global_us = 0
         self.last_error = ""
         self.completed_segments = 0
+        self.completed_task_segments = 0
+        self.no_input_warnings = 0
+        self.rebuild_requests = 0
+        self.last_rebuild_request_us = 0
+        self._outage_started_us = 0
+        self._last_warning_us = 0
+        self._control_host = config.control_host
 
     def start(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -672,15 +894,26 @@ class AudioStreamRecorder:
             self.received_packets += 1
             self.last_packet_receiver_us = receive_us
             self.last_packet_global_us = packet.global_us
+            if self._outage_started_us:
+                LOG.info(
+                    "audio RTP recovered sender=%s outage_ms=%d",
+                    self.config.sender_id,
+                    (receive_us - self._outage_started_us) // 1000,
+                )
+                self._outage_started_us = 0
 
     def _schedule(self) -> None:
         jitter_us = self.app.config["jitter_buffer_ms"] * 1000
         while not self._stop.is_set():
-            if not self.enabled() or self.app.storage_blocked():
+            archive_active = self.enabled() and not self.app.storage_blocked()
+            if not archive_active:
                 self._close_segment("archive_paused" if not self.enabled() else "storage_blocked")
-                self._next_slot = None
-                time.sleep(0.1)
-                continue
+                with self._task_lock:
+                    has_tasks = bool(self._task_segments)
+                if not has_tasks:
+                    self._next_slot = None
+                    time.sleep(0.1)
+                    continue
             ready_slot = (now_us() - jitter_us) // self.frame_us
             if self._next_slot is None:
                 self._next_slot = ready_slot
@@ -691,7 +924,7 @@ class AudioStreamRecorder:
             slot_us = slot * self.frame_us
             segment_seconds = self.app.config["segment_seconds"]
             window_start_us = (slot_us // (segment_seconds * 1_000_000)) * segment_seconds * 1_000_000
-            if self._segment is None or self._segment.window_start_us != window_start_us:
+            if archive_active and (self._segment is None or self._segment.window_start_us != window_start_us):
                 self._close_segment("wall_clock_boundary")
                 try:
                     self._segment = OpusSegment(
@@ -722,13 +955,27 @@ class AudioStreamRecorder:
                     del self._buffer[old_slot]
                     late += 1
             try:
-                self._segment.add_discard_counts(late, duplicate)
-                self._segment.write_slot(
-                    slot_us,
-                    self._output_sequence,
-                    self._output_timestamp,
-                    packet,
-                )
+                if self._segment is not None:
+                    self._segment.add_discard_counts(late, duplicate)
+                    self._segment.write_slot(
+                        slot_us,
+                        self._output_sequence,
+                        self._output_timestamp,
+                        packet,
+                    )
+                with self._task_lock:
+                    self._resolved_history[slot] = packet
+                    oldest_slot = slot - self.app.config["max_buffer_seconds"] * 1_000_000 // self.frame_us
+                    for old_slot in [value for value in self._resolved_history if value < oldest_slot]:
+                        del self._resolved_history[old_slot]
+                    for task in self._task_segments.values():
+                        if task.start_slot <= slot < task.end_slot:
+                            task.write_slot(
+                                slot_us,
+                                self._output_sequence,
+                                self._output_timestamp,
+                                packet,
+                            )
                 self._output_sequence = (self._output_sequence + 1) & 0xFFFF
                 self._output_timestamp = (self._output_timestamp + self.frame_samples) & 0xFFFFFFFF
                 self._next_slot += 1
@@ -738,6 +985,7 @@ class AudioStreamRecorder:
                 self._close_segment("write_error")
                 self._next_slot = ready_slot + 1
         self._close_segment("service_stop")
+        self.finalize_all_tasks("service_stop")
 
     def _close_segment(self, reason: str) -> None:
         segment = self._segment
@@ -753,6 +1001,136 @@ class AudioStreamRecorder:
         except Exception as exc:
             self.last_error = str(exc)
             LOG.exception("audio segment close failed sender=%s", self.config.sender_id)
+
+    def start_task(self, spec: TaskAudioSpec) -> bool:
+        key = str(spec.directory)
+        with self._task_lock:
+            if key in self._task_segments or (spec.directory / "audio_ready.json").exists():
+                return False
+            task = TaskAudioSegment(
+                spec,
+                self.config.sample_rate,
+                self.config.payload_type,
+                self.config.ssrc,
+            )
+            current_slot = self._next_slot if self._next_slot is not None else task.start_slot
+            for slot in range(task.start_slot, min(current_slot, task.end_slot)):
+                task.write_slot(
+                    slot * self.frame_us,
+                    self._output_sequence,
+                    self._output_timestamp,
+                    self._resolved_history.get(slot),
+                )
+            for event in self._playback_history:
+                event_us = int(event.get("global_timestamp_us", 0))
+                if spec.window_start_us <= event_us < spec.window_end_us:
+                    task.add_playback_event(event)
+            self._task_segments[key] = task
+        LOG.info(
+            "task audio started sender=%s camera=%s session=%d directory=%s",
+            spec.sender_id,
+            spec.camera_id,
+            spec.recording_session_id,
+            spec.directory,
+        )
+        return True
+
+    def finalize_task(self, directory: Path, end_us: int, reason: str) -> bool:
+        key = str(directory)
+        with self._task_lock:
+            task = self._task_segments.get(key)
+            if task is None:
+                return (directory / "audio_ready.json").exists()
+            task.set_window_end(end_us)
+            current_slot = self._next_slot if self._next_slot is not None else 0
+            if current_slot < task.end_slot:
+                return False
+            del self._task_segments[key]
+            try:
+                ready = task.close_to_video_directory(reason)
+                self.completed_task_segments += 1
+                LOG.info(
+                    "task audio finalized sender=%s camera=%s quality=%s received=%d/%d directory=%s",
+                    task.spec.sender_id,
+                    task.spec.camera_id,
+                    ready["quality_status"],
+                    ready["received_packets"],
+                    ready["expected_packets"],
+                    directory,
+                )
+                return True
+            except Exception as exc:
+                self.last_error = str(exc)
+                LOG.exception("task audio finalize failed sender=%s directory=%s", self.config.sender_id, directory)
+                return False
+
+    def finalize_all_tasks(self, reason: str) -> None:
+        with self._task_lock:
+            tasks = list(self._task_segments.values())
+            self._task_segments.clear()
+            for task in tasks:
+                try:
+                    task.set_window_end(min(task.window_end_us, now_us()))
+                    task.close_to_video_directory(reason)
+                    self.completed_task_segments += 1
+                except Exception:
+                    LOG.exception("task audio shutdown finalize failed directory=%s", task.spec.directory)
+
+    def add_playback_event(self, event: dict[str, Any]) -> None:
+        with self._task_lock:
+            self._playback_history.append(dict(event))
+            cutoff = now_us() - self.app.config["max_buffer_seconds"] * 1_000_000
+            self._playback_history = [
+                item for item in self._playback_history
+                if int(item.get("receiver_receive_timestamp_us", 0)) >= cutoff
+            ]
+            for task in self._task_segments.values():
+                task.add_playback_event(event)
+
+    def monitor_input(self, current_us: int) -> None:
+        if not self.enabled():
+            self._outage_started_us = 0
+            return
+        last_us = self.last_packet_receiver_us
+        age_us = current_us - last_us if last_us > 0 else current_us
+        warn_us = self.app.config["input_warning_seconds"] * 1_000_000
+        rebuild_us = self.app.config["input_rebuild_seconds"] * 1_000_000
+        if age_us < warn_us:
+            return
+        if self._outage_started_us == 0:
+            self._outage_started_us = last_us or current_us
+        if current_us - self._last_warning_us >= 30_000_000:
+            self._last_warning_us = current_us
+            self.no_input_warnings += 1
+            LOG.warning("audio RTP input missing sender=%s age_ms=%d", self.config.sender_id, age_us // 1000)
+        if age_us < rebuild_us or not self._control_host:
+            return
+        if current_us - self.last_rebuild_request_us < self.app.config["input_rebuild_interval_seconds"] * 1_000_000:
+            return
+        payload = json.dumps(
+            {
+                "protocol_version": "3.0",
+                "message_type": "audio_stream_control",
+                "control": "rebuild_capture",
+                "sender_id": self.config.sender_id,
+                "request_receiver_us": current_us,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.sendto(payload, (self._control_host, self.config.control_port))
+            self.rebuild_requests += 1
+            self.last_rebuild_request_us = current_us
+            LOG.warning("audio capture rebuild requested sender=%s target=%s:%d",
+                        self.config.sender_id, self._control_host, self.config.control_port)
+        except OSError as exc:
+            self.last_error = str(exc)
+
+    def set_control_endpoint(self, endpoint: str) -> None:
+        host = endpoint.rsplit(":", 1)[0].strip("[]") if endpoint else ""
+        if host:
+            self._control_host = host
 
     def status(self) -> dict[str, Any]:
         with self._buffer_lock:
@@ -772,6 +1150,13 @@ class AudioStreamRecorder:
             "last_packet_receiver_us": self.last_packet_receiver_us,
             "last_packet_global_us": self.last_packet_global_us,
             "completed_segments": self.completed_segments,
+            "task_recording_segments": len(self._task_segments),
+            "completed_task_segments": self.completed_task_segments,
+            "input_outage": self._outage_started_us > 0,
+            "input_outage_started_us": self._outage_started_us,
+            "no_input_warnings": self.no_input_warnings,
+            "rebuild_requests": self.rebuild_requests,
+            "last_rebuild_request_us": self.last_rebuild_request_us,
             "last_error": self.last_error,
             **self.app.timing.snapshot(self.config.sender_id),
         }
@@ -836,7 +1221,10 @@ class AudioUploader:
         meta = json.loads((pending / "audio_meta.json").read_text(encoding="utf-8"))
         segment_id = str(meta.get("segment_id") or pending.name.split(".")[-2])
         files = {}
-        for name in ("audio.opus", "audio_timing.csv", "audio_meta.json"):
+        required = ["audio_timing.csv", "audio_meta.json"]
+        if int(meta.get("received_packets", 1 if (pending / "audio.opus").exists() else 0)) > 0:
+            required.insert(0, "audio.opus")
+        for name in required:
             path = pending / name
             if not path.exists() or path.stat().st_size == 0:
                 raise RuntimeError(f"audio segment file missing or empty: {path}")
@@ -848,6 +1236,8 @@ class AudioUploader:
                 "schema_version": 1,
                 "segment_id": segment_id,
                 "staged_receiver_us": now_us(),
+                "audio_valid": bool(meta.get("audio_valid", False)),
+                "quality_status": str(meta.get("quality_status", "unknown")),
                 "files": files,
             },
         )
@@ -921,10 +1311,16 @@ class AudioUploader:
             if target.stat().st_size != expected["size"] or sha256_file(target) != expected["sha256"]:
                 raise RuntimeError(f"NAS verification failed: {target}")
         ready = {
-            "schema_version": 1,
+            "schema_version": 2,
             "sender_id": sender_id,
             "segment_id": marker["segment_id"],
             "published_receiver_us": now_us(),
+            "audio_valid": bool(incoming_meta.get("audio_valid", False)),
+            "quality_status": str(incoming_meta.get("quality_status", "unknown")),
+            "expected_packets": int(incoming_meta.get("expected_packets", 0)),
+            "received_packets": int(incoming_meta.get("received_packets", 0)),
+            "received_ratio": float(incoming_meta.get("received_ratio", 0.0)),
+            "longest_no_input_ms": int(incoming_meta.get("longest_no_input_ms", 0)),
             "files": marker["files"],
         }
         atomic_json(hidden / "audio_ready.json", ready)
@@ -971,13 +1367,18 @@ class AudioArchiveService:
         self._storage_blocked = False
         self._storage_reason = ""
         self._runtime_storage_error = ""
+        self._task_state_lock = threading.Lock()
+        self._task_specs: dict[str, TaskAudioSpec] = {}
+        self._task_finalize_ends: dict[str, int] = {}
+        self._task_seen_active: set[str] = set()
+        self._last_task_status_warning_us = 0
         self.streams = {
             item["sender_id"]: AudioStreamRecorder(StreamConfig(**item), self)
             for item in config["streams"]
         }
         self.uploader = AudioUploader(self)
         self._timing_thread = threading.Thread(target=self._timing_loop, name="audio-timing", daemon=True)
-        self._clock_thread = threading.Thread(target=self._clock_loop, name="audio-clock-model", daemon=True)
+        self._task_thread = threading.Thread(target=self._task_loop, name="audio-video-task", daemon=True)
         self._admin_server: ThreadingHTTPServer | None = None
         self._admin_thread: threading.Thread | None = None
         self._timing_socket: socket.socket | None = None
@@ -992,7 +1393,7 @@ class AudioArchiveService:
         self._timing_socket = timing_socket
         self._start_admin()
         self._timing_thread.start()
-        self._clock_thread.start()
+        self._task_thread.start()
         self.uploader.start()
         for stream in self.streams.values():
             stream.start()
@@ -1047,7 +1448,7 @@ class AudioArchiveService:
             stream.stop()
         self.uploader.stop()
         self._timing_thread.join(timeout=2.0)
-        self._clock_thread.join(timeout=2.0)
+        self._task_thread.join(timeout=4.0)
         if self._admin_thread is not None:
             self._admin_thread.join(timeout=2.0)
 
@@ -1095,7 +1496,33 @@ class AudioArchiveService:
                 try:
                     report = json.loads(data.decode("utf-8"))
                     sender_id = str(report.get("sender_id", ""))
-                    if report.get("message_type") != "audio_timing_anchor" or sender_id not in self.streams:
+                    if sender_id not in self.streams:
+                        continue
+                    if report.get("message_type") in (
+                        "video_task_audio_start",
+                        "video_task_audio_finalize",
+                    ):
+                        spec = self._task_spec(report)
+                        if spec is None:
+                            continue
+                        self.register_task(spec)
+                        if report.get("message_type") == "video_task_audio_finalize":
+                            self.request_task_finalize(
+                                spec.directory,
+                                int(report.get("segment_end_global_us", spec.window_end_us)),
+                            )
+                        continue
+                    if report.get("message_type") == "audio_playback_event":
+                        report["receiver_receive_timestamp_us"] = receive_us
+                        report["global_timestamp_us"] = int(
+                            report.get("sender_system_timestamp_us", receive_us)
+                        )
+                        model = self.timing.snapshot(sender_id)
+                        if model.get("clock_sync_valid"):
+                            report["global_timestamp_us"] += int(model.get("clock_offset_us", 0))
+                        self.streams[sender_id].add_playback_event(report)
+                        continue
+                    if report.get("message_type") != "audio_timing_anchor":
                         continue
                     if int(report.get("ssrc", -1)) != self.streams[sender_id].config.ssrc:
                         continue
@@ -1109,6 +1536,118 @@ class AudioArchiveService:
         while not self._stop.is_set():
             self.timing.refresh_models()
             self._stop.wait(1.0)
+
+    def _task_spec(self, camera: dict[str, Any]) -> TaskAudioSpec | None:
+        directory_text = str(camera.get("segment_dir", ""))
+        sender_id = str(camera.get("sender_id", ""))
+        camera_id = str(camera.get("camera_id", ""))
+        start_us = int(camera.get("segment_window_start_global_us", 0))
+        end_us = int(camera.get("segment_window_end_global_us", 0))
+        if not directory_text or not sender_id or not camera_id or start_us <= 0 or end_us <= start_us:
+            return None
+        directory = Path(directory_text).resolve()
+        allowed = False
+        for root_text in self.config["task_allowed_roots"]:
+            try:
+                directory.relative_to(Path(root_text).expanduser().resolve())
+                allowed = True
+                break
+            except ValueError:
+                continue
+        if not allowed:
+            LOG.warning("task audio directory rejected outside allowed roots: %s", directory)
+            return None
+        return TaskAudioSpec(
+            sender_id=sender_id,
+            camera_id=camera_id,
+            directory=directory,
+            recording_session_id=int(camera.get("recording_session_id", 0)),
+            window_start_us=start_us,
+            window_end_us=end_us,
+        )
+
+    def register_task(self, spec: TaskAudioSpec) -> None:
+        key = str(spec.directory)
+        stream = self.streams.get(spec.sender_id)
+        if stream is None:
+            return
+        with self._task_state_lock:
+            if key in self._task_specs:
+                return
+            self._task_specs[key] = spec
+        stream.start_task(spec)
+
+    def request_task_finalize(self, directory: Path, end_us: int) -> None:
+        with self._task_state_lock:
+            self._task_finalize_ends[str(directory)] = end_us
+
+    def _task_loop(self) -> None:
+        poll_seconds = self.config["task_poll_interval_ms"] / 1000.0
+        fallback_poll_seconds = self.config["task_status_fallback_seconds"]
+        next_fallback_poll = 0.0
+        active: dict[str, TaskAudioSpec] = {}
+        while not self._stop.is_set():
+            monotonic_now = time.monotonic()
+            if monotonic_now >= next_fallback_poll:
+                next_fallback_poll = monotonic_now + fallback_poll_seconds
+                active = {}
+                try:
+                    with urllib.request.urlopen(
+                        self.config["receiver_admin_url"].rstrip("/") + "/api/status",
+                        timeout=1.0,
+                    ) as response:
+                        status = json.loads(response.read().decode("utf-8"))
+                    self.timing.update_status(status)
+                    for camera in status.get("cameras", []):
+                        sender_id = str(camera.get("sender_id", ""))
+                        if sender_id in self.streams:
+                            self.streams[sender_id].set_control_endpoint(
+                                str(camera.get("sender_source_ip", ""))
+                            )
+                        if not camera.get("segment_active"):
+                            continue
+                        spec = self._task_spec(camera)
+                        if spec is None:
+                            continue
+                        active[str(spec.directory)] = spec
+                        self._task_seen_active.add(str(spec.directory))
+                        self.register_task(spec)
+                    self.set_runtime_storage_error("")
+                except Exception as exc:
+                    warning_us = now_us()
+                    if warning_us - self._last_task_status_warning_us >= 30_000_000:
+                        self._last_task_status_warning_us = warning_us
+                        LOG.warning("task audio receiver status unavailable: %s", exc)
+
+            current_us = now_us()
+            for stream in self.streams.values():
+                stream.monitor_input(current_us)
+            with self._task_state_lock:
+                tasks = list(self._task_specs.items())
+                finalize_ends = dict(self._task_finalize_ends)
+            for key, spec in tasks:
+                request_path = spec.directory / ".audio_finalize_request.json"
+                requested_end_us = finalize_ends.get(key, 0)
+                if request_path.exists():
+                    try:
+                        request = json.loads(request_path.read_text(encoding="utf-8"))
+                        requested_end_us = int(request.get("segment_end_global_us", requested_end_us))
+                    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                        pass
+                if requested_end_us <= 0:
+                    if key in active or key not in self._task_seen_active:
+                        continue
+                end_us = requested_end_us or min(spec.window_end_us, current_us)
+                stream = self.streams.get(spec.sender_id)
+                if stream is None or stream.finalize_task(spec.directory, end_us, "video_segment_finalize"):
+                    with self._task_state_lock:
+                        self._task_specs.pop(key, None)
+                        self._task_finalize_ends.pop(key, None)
+                        self._task_seen_active.discard(key)
+            self._stop.wait(poll_seconds)
+
+        for stream in self.streams.values():
+            stream.finalize_all_tasks("service_stop")
 
     def _start_admin(self) -> None:
         app = self
@@ -1229,6 +1768,15 @@ def load_config(path: Path) -> dict[str, Any]:
         "local_retention_days": 7,
         "min_free_disk_mb": 5120,
         "upload_interval_seconds": 2.0,
+        "task_poll_interval_ms": 100,
+        "task_status_fallback_seconds": 1.0,
+        "task_allowed_roots": [
+            "/home/fz/Desktop/nas/.gwv3_direct_inprogress",
+            "/home/fz/recording_staging",
+        ],
+        "input_warning_seconds": 3,
+        "input_rebuild_seconds": 5,
+        "input_rebuild_interval_seconds": 10,
         "streams": [],
     }
     config = {**defaults, **raw}
@@ -1240,6 +1788,14 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("audio archive stream ports and sender IDs must be unique")
     if config["frame_duration_ms"] != 20:
         raise ValueError("only 20 ms Opus frames are supported")
+    if not 50 <= int(config["task_poll_interval_ms"]) <= 2000:
+        raise ValueError("task_poll_interval_ms must be between 50 and 2000")
+    if not 0.5 <= float(config["task_status_fallback_seconds"]) <= 30.0:
+        raise ValueError("task_status_fallback_seconds must be between 0.5 and 30")
+    if not isinstance(config["task_allowed_roots"], list) or not config["task_allowed_roots"]:
+        raise ValueError("task_allowed_roots must be a non-empty list")
+    if int(config["input_warning_seconds"]) <= 0 or int(config["input_rebuild_seconds"]) < int(config["input_warning_seconds"]):
+        raise ValueError("audio input warning/rebuild thresholds are invalid")
     return config
 
 
