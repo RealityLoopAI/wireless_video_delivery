@@ -126,8 +126,8 @@ def run(args: argparse.Namespace) -> None:
                             fixture,
                         )
                     )
-                for frame_id in range(90):
                     media.sendall(depth_packet("staging-test", "cam01", frame_id, 64, 48, timestamp + frame_id * 33333))
+                    time.sleep(1 / 30)
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
                     current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
@@ -149,8 +149,6 @@ def run(args: argparse.Namespace) -> None:
                     time.sleep(0.05)
                 else:
                     raise AssertionError("receiver did not drain the staged test media before stop")
-            last_test_frame_us = timestamp + 89 * 33333
-            time.sleep(max(0.0, last_test_frame_us / 1_000_000 - time.time() + 0.05))
             finalize_started = time.monotonic()
             assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
             deadline = time.monotonic() + 3

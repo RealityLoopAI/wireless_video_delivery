@@ -1450,8 +1450,7 @@ def run(args) -> None:
                     media.sendall(rgb_packet("test-sender", "cam01", 1, 64, 48, start_timestamp, h264_fixture))
                     for frame_id in range(70):
                         media.sendall(depth_packet("test-sender", "cam01", frame_id, 64, 48, start_timestamp + frame_id * 33333))
-                last_test_frame_us = start_timestamp + 69 * 33333
-                time.sleep(max(0.0, last_test_frame_us / 1_000_000 - time.time() + 0.05))
+                        time.sleep(1 / 30)
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
                     staging_files = list((temporary / "nas").rglob("*frames.csv.inprogress"))
