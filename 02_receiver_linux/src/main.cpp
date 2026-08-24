@@ -1227,7 +1227,7 @@ struct Config {
     };
 
     struct TaskAudioConfig {
-        bool enabled = true;
+        bool enabled = false;
         int finalize_wait_ms = 3000;
         int poll_interval_ms = 25;
         std::string notify_host = "127.0.0.1";
