@@ -120,6 +120,9 @@ def run(args: argparse.Namespace) -> None:
             "recording_complete": False,
             "recording_quality_reason": "rgb tail is missing",
             "rgb_coverage_ratio": 0.75,
+            "recording_window_valid_rgb_frames": 90,
+            "rgb_depth_duration_delta_us": 33333,
+            "task_audio_ready_file": "audio_ready.json",
         }
         quality_ready = uploader_module.build_ready_marker(
             quality_source,
@@ -128,6 +131,9 @@ def run(args: argparse.Namespace) -> None:
         assert quality_ready["recording_quality_status"] == "partial"
         assert quality_ready["recording_complete"] is False
         assert quality_ready["rgb_coverage_ratio"] == 0.75
+        assert quality_ready["recording_window_valid_rgb_frames"] == 90
+        assert quality_ready["rgb_depth_duration_delta_us"] == 33333
+        assert quality_ready["task_audio_ready_file"] == "audio_ready.json"
 
         incremental_staging = temporary / "incremental-staging"
         incremental_nas = temporary / "incremental-nas"

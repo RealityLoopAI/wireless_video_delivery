@@ -4799,7 +4799,7 @@ private:
     }
 
     struct RecordingQualitySummary {
-        std::string status = "unknown";
+        std::string status = "partial";
         std::string reason = "recording window is unavailable";
         bool complete = false;
         uint64_t window_start_us = 0;

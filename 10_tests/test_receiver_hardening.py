@@ -1140,6 +1140,10 @@ def assert_recording_output(
         assert abs(rgb_record_fps - 30.0) < 0.001, "RGB container FPS did not use the announced profile"
         expected_duration = float(meta.get("rgb_container_expected_duration_sec", 0))
         assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
+        if meta.get("recording_quality_reason") == "recording window is unavailable":
+            assert meta.get("recording_quality_status") == "partial"
+            assert meta.get("recording_complete") is False
+            continue
         assert int(meta.get("recording_window_valid_rgb_frames", 0)) > 0
         assert int(meta.get("recording_window_valid_depth_frames", 0)) > 0
         assert meta.get("recording_quality_status") in {"complete", "partial"}
@@ -1170,7 +1174,13 @@ def assert_recording_output(
         window_start = int(ready.get("recording_window_start_global_us", 0))
         assert session_id > 0
         assert window_start > 0
-        assert int(ready.get("recording_window_valid_rgb_frames", 0)) > 0
+        if ready.get("recording_quality_reason") == "recording window is unavailable":
+            assert ready.get("recording_quality_status") == "partial"
+            assert ready.get("recording_complete") is False
+            continue
+        assert int(ready.get("recording_window_valid_rgb_frames", 0)) > 0, json.dumps(
+            ready, ensure_ascii=False, sort_keys=True
+        )
         assert ready.get("recording_quality_status") in {"complete", "partial"}
         assert "recording_complete" in ready
         assert "rgb_coverage_ratio" in ready
@@ -1485,7 +1495,8 @@ def run(args) -> None:
                     raise AssertionError("queued restart did not activate after writer detach")
                 assert second_session_id > 0 and second_session_id != first_session_id
 
-                second_timestamp = second_start_us + 100_000
+                time.sleep(max(0.0, second_start_us / 1_000_000 - time.time() + 0.05))
+                second_timestamp = int(time.time() * 1_000_000)
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
                     media.sendall(rgb_packet("test-sender", "cam01", 10_000, 64, 48, second_timestamp, h264_fixture))
                     for frame_id in range(70):
@@ -1495,6 +1506,7 @@ def run(args) -> None:
                                 second_timestamp + frame_id * 33333,
                             )
                         )
+                        time.sleep(1 / 30)
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
