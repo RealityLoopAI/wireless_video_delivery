@@ -1441,13 +1441,17 @@ def run(args) -> None:
                 assert start_response.get("ok") is True
                 first_session_id = int(start_response["recording_session_id"])
                 assert first_session_id > 0
-                assert int(start_response["recording_start_us"]) >= int(time.time() * 1_000_000) + 500_000
+                recording_start_us = int(start_response["recording_start_us"])
+                assert recording_start_us >= int(time.time() * 1_000_000) + 500_000
+                time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
                 start_timestamp = int(time.time() * 1_000_000)
                 h264_fixture = generate_h264_fixture()
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
                     media.sendall(rgb_packet("test-sender", "cam01", 1, 64, 48, start_timestamp, h264_fixture))
                     for frame_id in range(70):
                         media.sendall(depth_packet("test-sender", "cam01", frame_id, 64, 48, start_timestamp + frame_id * 33333))
+                last_test_frame_us = start_timestamp + 69 * 33333
+                time.sleep(max(0.0, last_test_frame_us / 1_000_000 - time.time() + 0.05))
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
                     staging_files = list((temporary / "nas").rglob("*frames.csv.inprogress"))

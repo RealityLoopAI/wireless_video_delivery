@@ -149,6 +149,8 @@ def run(args: argparse.Namespace) -> None:
                     time.sleep(0.05)
                 else:
                     raise AssertionError("receiver did not drain the staged test media before stop")
+            last_test_frame_us = timestamp + 89 * 33333
+            time.sleep(max(0.0, last_test_frame_us / 1_000_000 - time.time() + 0.05))
             finalize_started = time.monotonic()
             assert request(ports["admin"], "POST", "/api/record/stop-all", timeout=10)[0] == 200
             deadline = time.monotonic() + 3
