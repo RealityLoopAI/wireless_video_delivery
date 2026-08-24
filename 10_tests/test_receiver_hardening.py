@@ -1055,6 +1055,7 @@ def assert_recording_output(
     minimum_rgb_duration: float = 1.0,
     expected_rgb_container: str = "conventional_mp4",
     expected_segment_seconds: float = 1.0,
+    expect_task_audio: bool = False,
 ) -> None:
     rgb_files = list(nas_root.rglob("rgb.mp4"))
     assert rgb_files, "rgb.mp4 was not finalized"
@@ -1184,17 +1185,18 @@ def assert_recording_output(
         assert segment_window[0] > 0
         assert segment_window[1] - segment_window[0] == int(expected_segment_seconds * 1_000_000)
         assert session_segment_windows.setdefault((session_id, segment_index), segment_window) == segment_window
-        audio_ready_path = ready_file.parent / "audio_ready.json"
-        audio_meta_path = ready_file.parent / "audio_meta.json"
-        audio_timing_path = ready_file.parent / "audio_timing.csv"
-        assert audio_ready_path.exists(), "task audio ready marker missing"
-        assert audio_meta_path.exists(), "task audio metadata missing"
-        assert audio_timing_path.exists(), "task audio timing index missing"
-        audio_ready = json.loads(audio_ready_path.read_text(encoding="utf-8"))
-        assert audio_ready.get("quality_status") in {"complete", "partial", "no_input"}
-        assert audio_ready.get("task_audio") is True
-        if audio_ready.get("quality_status") == "no_input":
-            assert not (ready_file.parent / "audio.opus").exists(), "no-input task published false silence audio"
+        if expect_task_audio:
+            audio_ready_path = ready_file.parent / "audio_ready.json"
+            audio_meta_path = ready_file.parent / "audio_meta.json"
+            audio_timing_path = ready_file.parent / "audio_timing.csv"
+            assert audio_ready_path.exists(), "task audio ready marker missing"
+            assert audio_meta_path.exists(), "task audio metadata missing"
+            assert audio_timing_path.exists(), "task audio timing index missing"
+            audio_ready = json.loads(audio_ready_path.read_text(encoding="utf-8"))
+            assert audio_ready.get("quality_status") in {"complete", "partial", "no_input"}
+            assert audio_ready.get("task_audio") is True
+            if audio_ready.get("quality_status") == "no_input":
+                assert not (ready_file.parent / "audio.opus").exists(), "no-input task published false silence audio"
 
     for frames_file in nas_root.rglob("*frames.csv"):
         last_global_timestamp = None
@@ -1272,6 +1274,12 @@ def run(args) -> None:
             "record_finalize_max_pending_segments": 4,
             "record_finalize_workers": 3,
             "recording_staging": {"enabled": False, "idle_finalize_ms": 1000},
+            "task_audio": {
+                "enabled": True,
+                "finalize_wait_ms": 100,
+                "poll_interval_ms": 5,
+                "sender_ids": ["configured-audio-sender"],
+            },
         }
         config_path = temporary / "receiver.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -1515,10 +1523,14 @@ def run(args) -> None:
                     time.sleep(0.1)
                 else:
                     raise AssertionError("recording did not finalize")
-                assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)
+                assert_recording_output(
+                    temporary / "nas", minimum_rgb_duration=0.0, expect_task_audio=True
+                )
                 exercise_media_idle_finalize_and_resume(ports, temporary / "nas")
                 exercise_async_segment_rotation(ports, temporary / "nas")
-                assert_recording_output(temporary / "nas", minimum_rgb_duration=0.0)
+                assert_recording_output(
+                    temporary / "nas", minimum_rgb_duration=0.0, expect_task_audio=True
+                )
                 assert_no_deleted_recording_fds(receiver.pid, temporary / "nas")
             else:
                 print("recording finalization check skipped: ffmpeg/ffprobe unavailable")
