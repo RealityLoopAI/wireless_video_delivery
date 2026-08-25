@@ -13,14 +13,14 @@ GstH264RtpSender::GstH264RtpSender(const RgbRtpOutputConfig &config, int fps)
     std::call_once(gst_init_once, [] { gst_init(nullptr, nullptr); });
 
     const std::string pipeline_text =
-        "appsrc name=src is-live=true block=false leaky-type=downstream max-buffers=2 max-bytes=0 "
+        "appsrc name=src is-live=true block=true max-buffers=8 max-bytes=0 max-time=0 "
         "format=time do-timestamp=false "
         "caps=video/x-h264,stream-format=byte-stream,alignment=au,framerate=" + std::to_string(fps_) + "/1 "
-        "! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream "
+        "! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 "
         "! h264parse "
         "! rtph264pay config-interval=1 pt=" + std::to_string(config.payload_type)
         + " mtu=" + std::to_string(config.mtu_bytes)
-        + " ! udpsink host=" + config.host
+        + " ! udpsink buffer-size=4194304 host=" + config.host
         + " port=" + std::to_string(config.port)
         + " sync=false async=false qos=false";
 

@@ -6093,11 +6093,14 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
                 }
             }
             const uint64_t rtp_timestamp_us = encoded.has_pts ? encoded.pts_us : submitted_timing.system_timestamp_us;
-            if(!camera.rgb_rtp_sender->push(encoded.data.data(), encoded.data.size(), rtp_timestamp_us)
-               && frame_now >= camera.next_rgb_rtp_warning) {
-                camera.next_rgb_rtp_warning = frame_now + std::chrono::seconds(2);
-                logger.warn("rgb RTP send failed camera_id=" + camera.config.camera_id
-                            + " error=" + camera.rgb_rtp_sender->error());
+            if(!camera.rgb_rtp_sender->push(encoded.data.data(), encoded.data.size(), rtp_timestamp_us)) {
+                const std::string error = camera.rgb_rtp_sender->error();
+                camera.rgb_rtp_sender.reset();
+                if(frame_now >= camera.next_rgb_rtp_warning) {
+                    camera.next_rgb_rtp_warning = frame_now + std::chrono::seconds(2);
+                    logger.warn("rgb RTP send failed; pipeline will be rebuilt camera_id="
+                                + camera.config.camera_id + " error=" + error);
+                }
             }
         }
         if(is_key_frame) {
