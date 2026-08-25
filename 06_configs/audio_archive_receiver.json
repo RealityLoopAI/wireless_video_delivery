@@ -50,6 +50,14 @@
       "payload_type": 111,
       "sample_rate": 48000,
       "control_port": 50131
+    },
+    {
+      "sender_id": "lubancat-4df661d7",
+      "port": 50033,
+      "ssrc": 1307992535,
+      "payload_type": 111,
+      "sample_rate": 48000,
+      "control_port": 50131
     }
   ]
 }

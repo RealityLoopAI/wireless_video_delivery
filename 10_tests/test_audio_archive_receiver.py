@@ -148,6 +148,32 @@ def test_task_audio_reuses_opus_and_reports_quality(module):
         assert meta["silence_packets"] == 1
 
 
+def test_task_audio_real_silent_rtp_is_retained(module):
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp) / "silent-audio-segment"
+        spec = module.TaskAudioSpec("sender-a", "cam01", directory, 9, 5_000_000, 5_200_000)
+        segment = module.TaskAudioSegment(spec, 48000, 111, 9)
+        for index, slot in enumerate(range(segment.start_slot, segment.end_slot)):
+            packet = module.RtpPacket(
+                index,
+                index * 960,
+                9,
+                111,
+                False,
+                module.OPUS_SILENCE_20_MS,
+                slot * 20_000,
+                global_us=slot * 20_000,
+                clock_valid=True,
+            )
+            segment.write_slot(slot * 20_000, index, index * 960, packet)
+        ready = segment.close_to_video_directory("test-silent-input")
+        assert ready["quality_status"] == "complete"
+        assert ready["received_packets"] == ready["expected_packets"] == 10
+        assert (directory / "audio.opus").exists()
+        meta = json.loads((directory / "audio_meta.json").read_text(encoding="utf-8"))
+        assert meta["silence_packets"] == 0
+
+
 def free_port(socket_type):
     with socket.socket(socket.AF_INET, socket_type) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -416,6 +442,7 @@ def main():
     test_audio_quality_gate(module)
     test_task_audio_no_input_has_no_false_audio_file(module)
     test_task_audio_reuses_opus_and_reports_quality(module)
+    test_task_audio_real_silent_rtp_is_retained(module)
     test_task_audio_udp_integration(module)
     test_verified_atomic_nas_publish(module)
     test_local_finalize_is_separate_from_publish(module)

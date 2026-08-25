@@ -21,3 +21,5 @@ __pycache__/
 .cache/
 .vscode/
 .idea/
+12_apps/recording_buttons/config_lubancat-local.json
+12_apps/recording_buttons/config_lubancat-local_power.json

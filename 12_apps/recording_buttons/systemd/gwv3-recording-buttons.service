@@ -6,7 +6,7 @@ Wants=network-online.target xiaohuan-wake.service
 [Service]
 Type=simple
 WorkingDirectory=%h/wireless_video_delivery/12_apps/recording_buttons
-ExecStart=/usr/bin/python3 -u %h/wireless_video_delivery/12_apps/recording_buttons/recording_button_service.py --config %h/wireless_video_delivery/12_apps/recording_buttons/config_lubancat-52d2ef0c.json
+ExecStart=/usr/bin/python3 -u %h/wireless_video_delivery/12_apps/recording_buttons/recording_button_service.py --config %h/wireless_video_delivery/12_apps/recording_buttons/config_lubancat-local.json
 Restart=always
 RestartSec=2
 TimeoutStopSec=6

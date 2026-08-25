@@ -32,7 +32,7 @@ The power key is handled by the root system service
 service `gwv3-recording-buttons.service`. `systemd-logind` must use
 `HandlePowerKey=ignore` so a short press cannot bypass the 5-second policy.
 
-On `lubancat-52d2ef0c`, `GPIO4_C3_D` (`gpiochip4`, line `19`) is an
+On the configured LubanCat, `GPIO4_C3_D` (`gpiochip4`, line `19`) is an
 active-high recording LED. The root service `gwv3-recording-led.service`
 holds it high while the sender is idle or receiver status is unavailable, and
 toggles it every 500 ms while this sender is recording. HTTP status polling runs in a
@@ -42,8 +42,17 @@ the last valid state is retained for at most 5 seconds during a brief timeout.
 ## Install
 
 ```bash
-./install_service.sh
+./install_service.sh lubancat-52d2ef0c
 systemctl --user status gwv3-recording-buttons.service
+```
+
+The device ID selects `config_<device-id>.json` and
+`config_<device-id>_power.json`. The installer copies them to ignored local
+runtime files so the shared systemd units never hard-code another sender's
+identity. For example, the additional LubanCat uses:
+
+```bash
+./install_service.sh lubancat-4df661d7
 ```
 
 ## Probe

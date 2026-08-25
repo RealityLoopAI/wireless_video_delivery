@@ -504,6 +504,11 @@ def test_usb_audio_exclusive_install(source_root: Path):
             "3322710864",
             "lubancat-e8cc0cb3",
         ),
+        "xiaohuan-wake-rtp-lubancat-4df661d7.conf": (
+            "50033",
+            "1307992535",
+            "lubancat-4df661d7",
+        ),
     }
     for filename, (port, ssrc, sender_id) in rtp_profiles.items():
         rtp_profile = (app_root / "systemd" / filename).read_text(encoding="utf-8")

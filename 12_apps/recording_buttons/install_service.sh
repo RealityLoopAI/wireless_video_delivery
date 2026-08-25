@@ -2,10 +2,25 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEVICE_ID="${1:-lubancat-52d2ef0c}"
 UNIT_NAME="gwv3-recording-buttons.service"
 POWER_UNIT_NAME="gwv3-power-button.service"
 LED_UNIT_NAME="gwv3-recording-led.service"
 USER_UNIT_DIR="$HOME/.config/systemd/user"
+BUTTON_CONFIG_SOURCE="$ROOT_DIR/config_${DEVICE_ID}.json"
+POWER_CONFIG_SOURCE="$ROOT_DIR/config_${DEVICE_ID}_power.json"
+
+if [[ ! "$DEVICE_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "invalid device id: $DEVICE_ID" >&2
+  exit 2
+fi
+if [[ ! -f "$BUTTON_CONFIG_SOURCE" || ! -f "$POWER_CONFIG_SOURCE" ]]; then
+  echo "missing recording button config for device id: $DEVICE_ID" >&2
+  exit 2
+fi
+
+install -m 0644 "$BUTTON_CONFIG_SOURCE" "$ROOT_DIR/config_lubancat-local.json"
+install -m 0644 "$POWER_CONFIG_SOURCE" "$ROOT_DIR/config_lubancat-local_power.json"
 
 mkdir -p "$USER_UNIT_DIR"
 install -m 0644 "$ROOT_DIR/systemd/$UNIT_NAME" "$USER_UNIT_DIR/$UNIT_NAME"
@@ -35,4 +50,5 @@ sudo systemctl enable --now "$LED_UNIT_NAME"
 sudo systemctl --no-pager status "$POWER_UNIT_NAME"
 sudo systemctl --no-pager status "$LED_UNIT_NAME"
 
+echo "recording controls installed for device_id=$DEVICE_ID"
 echo "HandlePowerKey=ignore is installed; reboot once if logind did not already use it."
