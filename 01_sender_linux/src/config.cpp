@@ -505,6 +505,18 @@ AppConfig load_config(const std::string &path) {
             camera.rgb_encoding.bitrate_bps = optional_int(encoding, "bitrate_bps", camera.rgb_encoding.bitrate_bps);
         }
 
+        const auto &rtp_output = item["rgb_rtp_output"];
+        if(!rtp_output.isNull()) {
+            if(!rtp_output.isObject()) {
+                throw std::runtime_error("invalid object field: rgb_rtp_output");
+            }
+            camera.rgb_rtp_output.enabled = optional_bool(rtp_output, "enabled", camera.rgb_rtp_output.enabled);
+            camera.rgb_rtp_output.host = optional_string(rtp_output, "host", camera.rgb_rtp_output.host);
+            camera.rgb_rtp_output.port = parse_port(rtp_output, "port", camera.rgb_rtp_output.port);
+            camera.rgb_rtp_output.payload_type = optional_int(rtp_output, "payload_type", camera.rgb_rtp_output.payload_type);
+            camera.rgb_rtp_output.mtu_bytes = optional_int(rtp_output, "mtu_bytes", camera.rgb_rtp_output.mtu_bytes);
+        }
+
         const auto &depth = item["depth_transport"];
         if(!depth.isNull()) {
             camera.depth_transport.compression = optional_string(depth, "compression", camera.depth_transport.compression);
@@ -612,6 +624,7 @@ void validate_config(const AppConfig &config) {
     std::set<std::string> camera_ids;
     std::set<std::string> serial_numbers;
     std::set<std::string> uids;
+    std::set<std::string> rgb_rtp_endpoints;
     auto validate_profile = [](const VideoProfileConfig &profile, const std::string &name) {
         if(profile.width < 0 || profile.height < 0 || profile.fps < 0
            || profile.width > 16384 || profile.height > 16384 || profile.fps > 240) {
@@ -664,6 +677,21 @@ void validate_config(const AppConfig &config) {
         }
         if(camera.rgb_encoding.bitrate_bps <= 0 || camera.rgb_encoding.bitrate_bps > 200'000'000) {
             throw std::runtime_error("rgb_encoding.bitrate_bps must be in range [1, 200000000]");
+        }
+        if(camera.rgb_rtp_output.enabled) {
+            if(!is_valid_ipv4_or_hostname(camera.rgb_rtp_output.host)) {
+                throw std::runtime_error("rgb_rtp_output.host must be a valid IPv4 address or hostname");
+            }
+            if(camera.rgb_rtp_output.payload_type < 96 || camera.rgb_rtp_output.payload_type > 127) {
+                throw std::runtime_error("rgb_rtp_output.payload_type must be in range [96, 127]");
+            }
+            if(camera.rgb_rtp_output.mtu_bytes < 576 || camera.rgb_rtp_output.mtu_bytes > 9000) {
+                throw std::runtime_error("rgb_rtp_output.mtu_bytes must be in range [576, 9000]");
+            }
+            const std::string endpoint = camera.rgb_rtp_output.host + ":" + std::to_string(camera.rgb_rtp_output.port);
+            if(!rgb_rtp_endpoints.insert(endpoint).second) {
+                throw std::runtime_error("duplicate rgb_rtp_output endpoint is not allowed: " + endpoint);
+            }
         }
         if(camera.depth_transport.compression != "none" && camera.depth_transport.compression != "zlib"
            && camera.depth_transport.compression != "qdelta" && camera.depth_transport.compression != "pq12zlib"

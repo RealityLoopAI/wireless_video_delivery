@@ -22,6 +22,14 @@ struct RgbEncodingConfig {
     int bitrate_bps = 2000000;
 };
 
+struct RgbRtpOutputConfig {
+    bool enabled = false;
+    std::string host;
+    uint16_t port = 5600;
+    int payload_type = 96;
+    int mtu_bytes = 1200;
+};
+
 struct DepthTransportConfig {
     std::string compression = "none";
     double quantization_step_mm = 10.0;
@@ -93,6 +101,7 @@ struct CameraConfig {
     VideoProfileConfig rgb_profile;
     VideoProfileConfig depth_profile;
     RgbEncodingConfig rgb_encoding;
+    RgbRtpOutputConfig rgb_rtp_output;
     DepthTransportConfig depth_transport;
     ColorControlsConfig color_controls;
     AdaptiveExposureConfig adaptive_exposure;

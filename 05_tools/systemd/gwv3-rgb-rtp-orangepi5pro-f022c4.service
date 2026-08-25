@@ -1,0 +1,22 @@
+[Unit]
+Description=GWV3 RGB RTP-only Sender (orangepi5pro-f022c4)
+Wants=network-online.target
+After=network-online.target
+Conflicts=gwv3-gemini-sender.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+SupplementaryGroups=video render
+WorkingDirectory=/home/orangepi/Downloads/wireless_video_delivery
+Environment=HOME=/home/orangepi
+ExecStartPre=+/home/orangepi/Downloads/wireless_video_delivery/05_tools/prepare_rk3588_usb.sh
+ExecStart=/home/orangepi/Downloads/wireless_video_delivery/05_tools/sender_watchdog.sh /home/orangepi/Downloads/wireless_video_delivery/06_configs/sender_orangepi5pro-f022c4_rtp_only.json no-local-preview
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

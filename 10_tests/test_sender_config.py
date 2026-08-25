@@ -61,6 +61,27 @@ def run(args) -> None:
         invalid["cameras"][0]["rgb_profile"]["width"] = 10**9
         expect_invalid(args.sender, temporary, "oversized_profile", invalid)
 
+        valid_rtp = copy.deepcopy(base)
+        valid_rtp["cameras"][0]["rgb_rtp_output"] = {
+            "enabled": True,
+            "host": "192.168.66.226",
+            "port": 5600,
+            "payload_type": 96,
+            "mtu_bytes": 1200,
+        }
+        valid_rtp_path = temporary / "valid_rgb_rtp_output.json"
+        valid_rtp_path.write_text(json.dumps(valid_rtp), encoding="utf-8")
+        result = validate(args.sender, valid_rtp_path)
+        assert result.returncode == 0, f"valid rgb_rtp_output was rejected: {result.stdout}"
+
+        invalid = copy.deepcopy(valid_rtp)
+        invalid["cameras"][0]["rgb_rtp_output"]["host"] = "bad host!"
+        expect_invalid(args.sender, temporary, "invalid_rgb_rtp_host", invalid)
+
+        invalid = copy.deepcopy(valid_rtp)
+        invalid["cameras"][0]["rgb_rtp_output"]["payload_type"] = 95
+        expect_invalid(args.sender, temporary, "invalid_rgb_rtp_payload_type", invalid)
+
         invalid = copy.deepcopy(base)
         invalid["cameras"][0]["device_model"] = "bad\nmodel"
         expect_invalid(args.sender, temporary, "invalid_device_model", invalid)

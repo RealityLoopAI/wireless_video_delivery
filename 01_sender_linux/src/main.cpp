@@ -3,6 +3,7 @@
 #include "gwv3_sender/clock_sync_client.hpp"
 #include "gwv3_sender/config.hpp"
 #include "gwv3_sender/gst_h264_encoder.hpp"
+#include "gwv3_sender/gst_h264_rtp_sender.hpp"
 #include "gwv3_sender/logger.hpp"
 #include "gwv3_sender/rgb_transport_recovery.hpp"
 #include "gwv3_sender/scheduled_keyframe.hpp"
@@ -305,6 +306,7 @@ struct CameraRuntime {
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     std::unique_ptr<GstH264Encoder> encoder;
+    std::unique_ptr<GstH264RtpSender> rgb_rtp_sender;
     std::unique_ptr<GstH264Encoder> web_preview_encoder;
     std::unique_ptr<GstJpegDualH264Encoder> jpeg_dual_encoder;
     std::unique_ptr<AdaptiveExposureController> adaptive_exposure_controller;
@@ -364,6 +366,7 @@ struct CameraRuntime {
     std::chrono::steady_clock::time_point next_keyframe_guard_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_rgb_timing_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_rgb_encoder_lag_warning = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point next_rgb_rtp_warning = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_rgb_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_depth_frame_at = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point next_capture_stall_reconnect = std::chrono::steady_clock::now();
@@ -5234,6 +5237,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
         }
     }
     camera.encoder.reset();
+    camera.rgb_rtp_sender.reset();
     camera.web_preview_encoder.reset();
     camera.jpeg_dual_encoder.reset();
     camera.adaptive_exposure_controller.reset();
@@ -5283,6 +5287,7 @@ void start_v4l2_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.color_profile.reset();
         runtime.depth_profile.reset();
         runtime.encoder.reset();
+        runtime.rgb_rtp_sender.reset();
         runtime.web_preview_encoder.reset();
         runtime.jpeg_dual_encoder.reset();
         runtime.adaptive_exposure_controller.reset();
@@ -5428,6 +5433,7 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.color_profile = std::move(color_profile);
         runtime.depth_profile = std::move(depth_profile);
         runtime.encoder.reset();
+        runtime.rgb_rtp_sender.reset();
         runtime.web_preview_encoder.reset();
         runtime.jpeg_dual_encoder.reset();
         runtime.adaptive_exposure_controller = std::move(adaptive_exposure_controller);
@@ -6072,6 +6078,28 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
     for(auto &encoded : encoded_units) {
         const bool encoded_has_vcl = h264_payload_has_vcl_nal(encoded.data);
         const bool is_key_frame = h264_payload_has_idr(encoded.data);
+        if(camera.config.rgb_rtp_output.enabled && !encoded.data.empty()) {
+            if(!camera.rgb_rtp_sender) {
+                camera.rgb_rtp_sender = std::make_unique<GstH264RtpSender>(camera.config.rgb_rtp_output,
+                                                                           camera.config.rgb_profile.fps);
+                if(camera.rgb_rtp_sender->ok()) {
+                    logger.info("rgb RTP sender ready camera_id=" + camera.config.camera_id
+                                + " target=" + camera.config.rgb_rtp_output.host + ":"
+                                + std::to_string(camera.config.rgb_rtp_output.port));
+                }
+                else {
+                    logger.warn("rgb RTP sender unavailable camera_id=" + camera.config.camera_id
+                                + " error=" + camera.rgb_rtp_sender->error());
+                }
+            }
+            const uint64_t rtp_timestamp_us = encoded.has_pts ? encoded.pts_us : submitted_timing.system_timestamp_us;
+            if(!camera.rgb_rtp_sender->push(encoded.data.data(), encoded.data.size(), rtp_timestamp_us)
+               && frame_now >= camera.next_rgb_rtp_warning) {
+                camera.next_rgb_rtp_warning = frame_now + std::chrono::seconds(2);
+                logger.warn("rgb RTP send failed camera_id=" + camera.config.camera_id
+                            + " error=" + camera.rgb_rtp_sender->error());
+            }
+        }
         if(is_key_frame) {
             report_forced_rgb_keyframe(camera, logger);
         }
@@ -7143,6 +7171,7 @@ CameraConfig make_hotplug_camera_config(const AppConfig &config, const OrbbecDev
                                         const std::string &camera_id) {
     CameraConfig camera = config.cameras.front();
     camera.camera_id = camera_id;
+    camera.rgb_rtp_output.enabled = false;
     camera.serial_number.clear();
     camera.uid.clear();
     camera.device_index = static_cast<int>(identity.index);
@@ -7389,6 +7418,11 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
 template <typename StatusSender, typename MediaSender, typename MakeMediaSender, typename PreviewMediaSender>
 void run_sender(AppConfig config, const Args &args, StatusSender &status_transport, MakeMediaSender &make_media_sender,
                 PreviewMediaSender &preview_media_transport, Logger &logger) {
+    if(args.no_send) {
+        for(auto &camera : config.cameras) {
+            camera.rgb_rtp_output.enabled = false;
+        }
+    }
     const bool display_available = std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
     if(args.no_preview || args.no_local_preview || !display_available) {
         config.preview.enabled = false;
@@ -7433,6 +7467,15 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
                     + " timeout_ms=" + std::to_string(clock_config.timeout_ms));
     }
     auto cameras = start_cameras(config, logger);
+    for(const auto &camera : cameras) {
+        const auto &rtp = camera->config.rgb_rtp_output;
+        if(rtp.enabled) {
+            logger.info("rgb RTP output enabled camera_id=" + camera->config.camera_id
+                        + " target=" + rtp.host + ":" + std::to_string(rtp.port)
+                        + " payload_type=" + std::to_string(rtp.payload_type)
+                        + " mtu=" + std::to_string(rtp.mtu_bytes));
+        }
+    }
     configure_depth_remap_targets(config, cameras, logger);
     ReliableSnapshotQueue rgb_snapshot_queue;
     for(auto &camera : cameras) {
