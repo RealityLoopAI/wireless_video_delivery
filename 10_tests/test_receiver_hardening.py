@@ -846,8 +846,13 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
     )
     time.sleep(0.1)
     start_path = f"/api/record/start?sender_id={sender_id}&camera_id={camera_id}"
-    assert request(ports["admin"], "POST", start_path)[0] == 200
+    start_status, _, start_body = request(ports["admin"], "POST", start_path)
+    assert start_status == 200
+    start_response = json.loads(start_body)
+    recording_start_us = int(start_response.get("recording_start_us", 0))
+    assert recording_start_us > 0
     fixture = generate_h264_fixture(60)
+    time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
     timestamp = int(time.time() * 1_000_000)
     with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
         media.sendall(rgb_packet(sender_id, camera_id, 1, 64, 48, timestamp, fixture))
