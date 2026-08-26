@@ -1,0 +1,63 @@
+{
+  "bind_ip": "0.0.0.0",
+  "timing_port": 50130,
+  "admin_bind_ip": "127.0.0.1",
+  "admin_port": 18083,
+  "receiver_admin_url": "http://127.0.0.1:18080",
+  "clock_model_timeout_ms": 10000,
+  "staging_root": "/home/loop/audio_staging",
+  "nas_root": "/home/loop/Desktop/nas",
+  "nas_subdirectory": "audio",
+  "nas_require_mount": true,
+  "nas_low_space_warning_mb": 51200,
+  "segment_seconds": 900,
+  "jitter_buffer_ms": 250,
+  "frame_duration_ms": 20,
+  "max_buffer_seconds": 30,
+  "local_retention_days": 7,
+  "min_free_disk_mb": 5120,
+  "upload_interval_seconds": 2.0,
+  "task_poll_interval_ms": 100,
+  "task_status_fallback_seconds": 1.0,
+  "task_allowed_roots": [
+    "/home/loop/Desktop/nas/.gwv3_direct_inprogress",
+    "/home/loop/recording_staging"
+  ],
+  "input_warning_seconds": 3,
+  "input_rebuild_seconds": 5,
+  "input_rebuild_interval_seconds": 10,
+  "streams": [
+    {
+      "sender_id": "lubancat-52d2ef0c",
+      "port": 50030,
+      "ssrc": 1389555468,
+      "payload_type": 111,
+      "sample_rate": 48000,
+      "control_port": 50131
+    },
+    {
+      "sender_id": "orangepi5pro-d12a4719",
+      "port": 50031,
+      "ssrc": 3509208857,
+      "payload_type": 111,
+      "sample_rate": 48000,
+      "control_port": 50131
+    },
+    {
+      "sender_id": "lubancat-e8cc0cb3",
+      "port": 50032,
+      "ssrc": 3322710864,
+      "payload_type": 111,
+      "sample_rate": 48000,
+      "control_port": 50131
+    },
+    {
+      "sender_id": "lubancat-4df661d7",
+      "port": 50033,
+      "ssrc": 1307992535,
+      "payload_type": 111,
+      "sample_rate": 48000,
+      "control_port": 50131
+    }
+  ]
+}
