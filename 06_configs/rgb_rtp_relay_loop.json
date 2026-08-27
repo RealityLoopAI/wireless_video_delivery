@@ -1,0 +1,62 @@
+{
+  "receiver_admin_url": "http://127.0.0.1:18080",
+  "target_host": "192.168.66.226",
+  "payload_type": 96,
+  "mtu_bytes": 1200,
+  "udp_buffer_bytes": 4194304,
+  "reconnect_delay_ms": 1000,
+  "maximum_reconnect_delay_ms": 10000,
+  "log_interval_seconds": 30,
+  "routes": [
+    {
+      "sender_id": "orangepi5pro-f022c4",
+      "camera_id": "cam01",
+      "port": 5600
+    },
+    {
+      "sender_id": "lubancat-4df661d7",
+      "camera_id": "cam01",
+      "port": 5602
+    },
+    {
+      "sender_id": "lubancat-52d2ef0c",
+      "camera_id": "cam01",
+      "port": 5604
+    },
+    {
+      "sender_id": "lubancat-e8cc0cb3",
+      "camera_id": "cam01",
+      "port": 5606
+    },
+    {
+      "sender_id": "orangepi5pro-d12a4719",
+      "camera_id": "cam01",
+      "port": 5608
+    },
+    {
+      "sender_id": "orangepi5pro-b439137c",
+      "camera_id": "cam02",
+      "port": 5610
+    },
+    {
+      "sender_id": "rk3588-ubuntu",
+      "camera_id": "cam01",
+      "port": 5612
+    },
+    {
+      "sender_id": "orangepi5pro-fe0ec3fe",
+      "camera_id": "cam01",
+      "port": 5614
+    },
+    {
+      "sender_id": "orangepi5pro-ab748372",
+      "camera_id": "cam01",
+      "port": 5616
+    },
+    {
+      "sender_id": "orangepi5pro-fe0e946c",
+      "camera_id": "cam01",
+      "port": 5618
+    }
+  ]
+}

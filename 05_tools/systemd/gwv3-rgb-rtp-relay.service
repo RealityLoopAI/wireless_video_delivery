@@ -1,0 +1,17 @@
+[Unit]
+Description=GWV3 receiver-side multi-camera RGB RTP relay
+After=network-online.target gwv3-gemini-receiver.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/wireless_video_delivery
+ExecStart=/usr/bin/python3 %h/Desktop/wireless_video_delivery/05_tools/rgb_rtp_relay.py --config %h/Desktop/wireless_video_delivery/06_configs/rgb_rtp_relay_loop.json
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+StandardOutput=append:%h/Desktop/wireless_video_delivery/08_reports/receiver_logs/rgb_rtp_relay.log
+StandardError=append:%h/Desktop/wireless_video_delivery/08_reports/receiver_logs/rgb_rtp_relay.log
+
+[Install]
+WantedBy=default.target
