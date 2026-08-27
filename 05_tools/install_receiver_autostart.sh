@@ -171,6 +171,10 @@ command -v python3 >/dev/null 2>&1 || fail "未找到 python3"
 ADMIN_PORT="$(read_config_field admin_port 18080)"
 WEB_BIND_IP="$(read_config_field web_bind_ip 0.0.0.0)"
 WEB_PORT="$(read_config_field web_port 8080)"
+WEB_MAX_MAIN_STREAM_CLIENTS="$(read_config_field web_max_main_stream_clients 16)"
+if [[ ! "$WEB_MAX_MAIN_STREAM_CLIENTS" =~ ^[0-9]+$ ]] || ((WEB_MAX_MAIN_STREAM_CLIENTS < 1 || WEB_MAX_MAIN_STREAM_CLIENTS > 64)); then
+  fail "web_max_main_stream_clients 必须是 1 到 64 的整数"
+fi
 RECEIVER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/receiver_stdout.log"
 WEB_STDOUT="$ROOT_DIR/08_reports/receiver_logs/web_stdout.log"
 NAS_ROOT="$(read_config_field nas_root /home/fz/Desktop/nas)"
@@ -324,6 +328,7 @@ Type=simple
 WorkingDirectory=$WEB_DIR
 Environment=GWV3_RECEIVER_ADMIN=http://127.0.0.1:$ADMIN_PORT
 Environment=GWV3_AUDIO_ARCHIVE_ADMIN=http://127.0.0.1:18083
+Environment=GWV3_WEB_MAX_MAIN_STREAM_CLIENTS=$WEB_MAX_MAIN_STREAM_CLIENTS
 ExecStart=$VENV/bin/python -m uvicorn server:app --host $WEB_BIND_IP --port $WEB_PORT --no-access-log
 Restart=on-failure
 RestartSec=2
