@@ -5,6 +5,7 @@
 #include "gwv3_sender/gst_h264_encoder.hpp"
 #include "gwv3_sender/gst_h264_rtp_sender.hpp"
 #include "gwv3_sender/logger.hpp"
+#include "gwv3_sender/media_outage_guard.hpp"
 #include "gwv3_sender/rgb_transport_recovery.hpp"
 #include "gwv3_sender/scheduled_keyframe.hpp"
 #include "gwv3_sender/transport.hpp"
@@ -1099,13 +1100,13 @@ RgbFrameDiagnostics rgb_frame_diagnostics(CameraRuntime &camera, const std::shar
 int media_outage_restart_samples() {
     const char *value = std::getenv("GEMINI_SENDER_MEDIA_OUTAGE_RESTART_SAMPLES");
     if(value == nullptr || value[0] == '\0') {
-        return 60;
+        return 0;
     }
     try {
-        return std::max(1, std::stoi(value));
+        return std::max(0, std::stoi(value));
     }
     catch(const std::exception &) {
-        return 60;
+        return 0;
     }
 }
 
@@ -1249,16 +1250,8 @@ void update_media_outage_guard(CameraRuntime &camera, Logger &logger, const Came
     const bool depth_outage = camera.live.depth_input_fps >= capture_outage_fps_floor()
                               && perf.depth_sent_frames == 0 && perf.depth_send_failures > 0;
 
-    if(rgb_outage || depth_outage) {
-        camera.media_outage_samples++;
-    }
-    else {
-        camera.media_outage_samples = 0;
-        return;
-    }
-
     const int restart_samples = media_outage_restart_samples();
-    if(camera.media_outage_samples < static_cast<uint32_t>(restart_samples)) {
+    if(!media_outage_restart_due(camera.media_outage_samples, restart_samples, rgb_outage || depth_outage)) {
         return;
     }
 
@@ -4725,14 +4718,35 @@ void process_rgb_snapshot_request_file(const AppConfig &config,
         remove_file_quietly(path);
         return;
     }
-    if(request.capture_not_before_unix_us > now_us() + 30ull * 1000ull * 1000ull) {
-        logger.warn("rgb snapshot request ignored because capture schedule is too far in the future request_id="
+    request.result_path =
+        safe_rgb_snapshot_result_path(request.request_id, json_string_or(*root, "result_path")).string();
+    const uint64_t current_us = now_us();
+    const uint64_t request_timeout_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(kRgbSnapshotRequestTimeout).count());
+    if(request.requested_at_unix_us > current_us + request_timeout_us) {
+        logger.warn("rgb snapshot request ignored because request time is too far in the future request_id="
                     + request.request_id);
+        write_rgb_snapshot_result(config, request.camera_id, request, false, "error", "",
+                                  "snapshot request time is too far in the future", logger);
         remove_file_quietly(path);
         return;
     }
-    request.result_path =
-        safe_rgb_snapshot_result_path(request.request_id, json_string_or(*root, "result_path")).string();
+    if(current_us > request.requested_at_unix_us
+       && current_us - request.requested_at_unix_us > request_timeout_us) {
+        logger.warn("rgb snapshot request expired before sender queue request_id=" + request.request_id);
+        write_rgb_snapshot_result(config, request.camera_id, request, false, "timeout", "",
+                                  "snapshot request expired before sender queue", logger);
+        remove_file_quietly(path);
+        return;
+    }
+    if(request.capture_not_before_unix_us > current_us + request_timeout_us) {
+        logger.warn("rgb snapshot request ignored because capture schedule is too far in the future request_id="
+                    + request.request_id);
+        write_rgb_snapshot_result(config, request.camera_id, request, false, "error", "",
+                                  "snapshot capture schedule is too far in the future", logger);
+        remove_file_quietly(path);
+        return;
+    }
 
     CameraRuntime *camera = choose_rgb_snapshot_camera(cameras, request.camera_id);
     if(camera == nullptr) {

@@ -597,7 +597,7 @@ def main():
     assert defaults.photo_burst_count == 3
     assert defaults.photo_burst_interval_seconds == 0.2
     assert defaults.photo_result_timeout_seconds == 30.0
-    assert defaults.photo_decode_min_seconds == 0.45
+    assert defaults.photo_decode_min_seconds == 0.30
     assert defaults.photo_decode_min_rms == 0.016
     assert defaults.photo_end_silence_seconds == 0.25
     assert defaults.barge_in is False
@@ -609,6 +609,7 @@ def main():
     assert defaults.audio_archive_stream is False
     assert defaults.audio_archive_host == "192.168.66.196"
     assert defaults.audio_archive_timing_port == 50130
+    assert defaults.audio_capture_rebuild_stale_seconds == 2.0
     assert defaults.continuous_listen_during_playback is False
     assert defaults.tts_http is True
     assert defaults.tts_http_port == 18082

@@ -118,6 +118,7 @@ command_tail_seconds: 0.3
 audio_read_timeout_seconds: 2.0
 audio_recovery_seconds: 20.0
 audio_recovery_interval_seconds: 0.5
+audio_capture_rebuild_stale_seconds: 2.0
 capture_playback_mode: keep（通用默认）；restart（133 正式配置）
 zero_audio_rms: 0.0005
 zero_audio_restart_seconds: 12.0
@@ -246,7 +247,7 @@ photo_burst_interval_seconds: 0.2
 photo_camera_id: cam01
 photo_cue_wav: cue_photo_ding.wav
 forward_cue_wav: cue_forward_deng.wav
-photo_decode_min_seconds: 0.45
+photo_decode_min_seconds: 0.30
 photo_decode_min_rms: 0.016
 command_end_silence_seconds: 0.6
 command_max_speech_seconds: 60.0

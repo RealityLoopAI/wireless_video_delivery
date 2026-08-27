@@ -219,6 +219,13 @@ if(BUILD_TESTING)
     target_compile_options(rgb_transport_recovery_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME rgb_transport_recovery COMMAND rgb_transport_recovery_test)
 
+    add_executable(media_outage_guard_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_media_outage_guard.cpp"
+    )
+    target_include_directories(media_outage_guard_test PRIVATE include)
+    target_compile_options(media_outage_guard_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME media_outage_guard COMMAND media_outage_guard_test)
+
     add_executable(scheduled_keyframe_test
         "${CMAKE_SOURCE_DIR}/10_tests/test_scheduled_keyframe.cpp"
     )

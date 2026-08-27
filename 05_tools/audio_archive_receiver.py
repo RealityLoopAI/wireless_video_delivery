@@ -824,6 +824,12 @@ class AudioStreamRecorder:
         self.no_input_warnings = 0
         self.rebuild_requests = 0
         self.last_rebuild_request_us = 0
+        self.rebuild_accepted = 0
+        self.rebuild_ignored = 0
+        self.last_rebuild_result_us = 0
+        self.last_rebuild_result = ""
+        self.last_rebuild_request_id = ""
+        self._control_lock = threading.Lock()
         self._outage_started_us = 0
         self._last_warning_us = 0
         self._control_host = config.control_host
@@ -1107,25 +1113,68 @@ class AudioStreamRecorder:
             return
         if current_us - self.last_rebuild_request_us < self.app.config["input_rebuild_interval_seconds"] * 1_000_000:
             return
+        request_id = (
+            f"audio-rebuild-{self.config.sender_id}-{current_us}-"
+            f"{uuid.uuid4().hex[:8]}"
+        )
+        request = {
+            "protocol_version": "3.0",
+            "message_type": "audio_stream_control",
+            "control": "rebuild_capture",
+            "sender_id": self.config.sender_id,
+            "request_id": request_id,
+            "reason": "rtp_input_missing",
+            "request_receiver_us": current_us,
+            "receiver_last_packet_us": last_us,
+        }
         payload = json.dumps(
-            {
-                "protocol_version": "3.0",
-                "message_type": "audio_stream_control",
-                "control": "rebuild_capture",
-                "sender_id": self.config.sender_id,
-                "request_receiver_us": current_us,
-            },
+            request,
             separators=(",", ":"),
         ).encode("utf-8")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.sendto(payload, (self._control_host, self.config.control_port))
-            self.rebuild_requests += 1
-            self.last_rebuild_request_us = current_us
-            LOG.warning("audio capture rebuild requested sender=%s target=%s:%d",
-                        self.config.sender_id, self._control_host, self.config.control_port)
+            with self._control_lock:
+                self.rebuild_requests += 1
+                self.last_rebuild_request_us = current_us
+                self.last_rebuild_request_id = request_id
+            LOG.warning(
+                "audio capture rebuild requested sender=%s request_id=%s "
+                "target=%s:%d receiver_input_age_ms=%d",
+                self.config.sender_id,
+                request_id,
+                self._control_host,
+                self.config.control_port,
+                age_us // 1000,
+            )
         except OSError as exc:
             self.last_error = str(exc)
+
+    def record_capture_control_result(
+        self,
+        report: dict[str, Any],
+        receive_us: int,
+    ) -> None:
+        accepted = bool(report.get("accepted", False))
+        request_id = str(report.get("request_id", ""))
+        reason = str(report.get("reason", "unknown"))
+        with self._control_lock:
+            if accepted:
+                self.rebuild_accepted += 1
+            else:
+                self.rebuild_ignored += 1
+            self.last_rebuild_result_us = receive_us
+            self.last_rebuild_result = reason
+            self.last_rebuild_request_id = request_id
+        LOG.warning(
+            "audio capture rebuild result sender=%s request_id=%s "
+            "accepted=%s reason=%s local_packet_age_ms=%s",
+            self.config.sender_id,
+            request_id,
+            str(accepted).lower(),
+            reason,
+            report.get("local_packet_age_ms", "unknown"),
+        )
 
     def set_control_endpoint(self, endpoint: str) -> None:
         host = endpoint.rsplit(":", 1)[0].strip("[]") if endpoint else ""
@@ -1135,6 +1184,16 @@ class AudioStreamRecorder:
     def status(self) -> dict[str, Any]:
         with self._buffer_lock:
             buffered = len(self._buffer)
+        with self._control_lock:
+            control_status = {
+                "rebuild_requests": self.rebuild_requests,
+                "last_rebuild_request_us": self.last_rebuild_request_us,
+                "rebuild_accepted": self.rebuild_accepted,
+                "rebuild_ignored": self.rebuild_ignored,
+                "last_rebuild_result_us": self.last_rebuild_result_us,
+                "last_rebuild_result": self.last_rebuild_result,
+                "last_rebuild_request_id": self.last_rebuild_request_id,
+            }
         return {
             "sender_id": self.config.sender_id,
             "port": self.config.port,
@@ -1155,9 +1214,8 @@ class AudioStreamRecorder:
             "input_outage": self._outage_started_us > 0,
             "input_outage_started_us": self._outage_started_us,
             "no_input_warnings": self.no_input_warnings,
-            "rebuild_requests": self.rebuild_requests,
-            "last_rebuild_request_us": self.last_rebuild_request_us,
             "last_error": self.last_error,
+            **control_status,
             **self.app.timing.snapshot(self.config.sender_id),
         }
 
@@ -1521,6 +1579,12 @@ class AudioArchiveService:
                         if model.get("clock_sync_valid"):
                             report["global_timestamp_us"] += int(model.get("clock_offset_us", 0))
                         self.streams[sender_id].add_playback_event(report)
+                        continue
+                    if report.get("message_type") == "audio_capture_control_result":
+                        self.streams[sender_id].record_capture_control_result(
+                            report,
+                            receive_us,
+                        )
                         continue
                     if report.get("message_type") != "audio_timing_anchor":
                         continue

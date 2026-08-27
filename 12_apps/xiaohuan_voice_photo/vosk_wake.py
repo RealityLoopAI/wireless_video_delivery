@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
+from audio_capture_recovery import CaptureRebuildGuard
 from audio_mixer import restore_capture_mixer
 from speech_service import (
     EdgeTtsEngine,
@@ -48,6 +49,12 @@ DEFAULT_PHOTO_OUTPUT_ROOT = Path("/home/orangepi/Desktop/Photos")
 DEFAULT_TTS_MODEL_DIR = BASE_DIR / "models" / "vits-melo-tts-zh_en"
 DEFAULT_EDGE_TTS_CACHE_DIR = Path.home() / ".cache" / "xiaohuan" / "edge_tts"
 PHOTO_CAPTURE_LOCK = threading.Lock()
+
+
+def runtime_log(message: str) -> None:
+    timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    print(f"{timestamp} {message}", flush=True)
+
 
 AUDIO_FILTERS = {
     "none": "",
@@ -532,6 +539,7 @@ class UdpPacketGate:
         frame_duration_ms: int = 20,
         timing_interval_seconds: float = 1.0,
         control_port: int = 50131,
+        capture_rebuild_stale_seconds: float = 2.0,
     ):
         self._remote_addresses = [
             (socket.gethostbyname(remote_host), remote_port),
@@ -568,7 +576,8 @@ class UdpPacketGate:
         self._control_socket.bind(("0.0.0.0", control_port))
         self._control_socket.settimeout(0.2)
         self._control_thread = None
-        self._rebuild_requested = threading.Event()
+        self._capture_rebuild_guard = CaptureRebuildGuard(capture_rebuild_stale_seconds)
+        self._active_rebuild_request_id = ""
 
     @property
     def local_port(self):
@@ -605,10 +614,15 @@ class UdpPacketGate:
         self._output.close()
 
     def consume_rebuild_request(self):
-        if not self._rebuild_requested.is_set():
+        request_id = self._capture_rebuild_guard.begin_rebuild()
+        if request_id is None:
             return False
-        self._rebuild_requested.clear()
+        self._active_rebuild_request_id = request_id
         return True
+
+    def complete_rebuild_request(self):
+        self._capture_rebuild_guard.complete_rebuild()
+        self._active_rebuild_request_id = ""
 
     def report_playback_event(self, event_type: str, source: str, text: str = ""):
         if self._timing_address is None:
@@ -623,6 +637,32 @@ class UdpPacketGate:
             "text": text[:200],
             "sender_system_timestamp_us": time.time_ns() // 1000,
             "sender_monotonic_timestamp_us": time.monotonic_ns() // 1000,
+        }
+        try:
+            self._output.sendto(
+                json.dumps(report, separators=(",", ":")).encode("utf-8"),
+                self._timing_address,
+            )
+        except OSError:
+            pass
+
+    def _report_capture_control_result(self, decision):
+        if self._timing_address is None:
+            return
+        report = {
+            "protocol_version": "3.0",
+            "message_type": "audio_capture_control_result",
+            "sender_id": self._sender_id,
+            "stream_instance_id": self._stream_instance_id,
+            "request_id": decision.request_id,
+            "accepted": decision.accepted,
+            "reason": decision.reason,
+            "local_packet_age_ms": (
+                None
+                if decision.local_packet_age_seconds is None
+                else round(decision.local_packet_age_seconds * 1000.0, 3)
+            ),
+            "sender_system_timestamp_us": time.time_ns() // 1000,
         }
         try:
             self._output.sendto(
@@ -651,9 +691,25 @@ class UdpPacketGate:
                 and message.get("control") == "rebuild_capture"
                 and message.get("sender_id") in (self._sender_id, "*")
             ):
-                self._stream_instance_id = uuid.uuid4().hex
-                self._last_timing_monotonic = 0.0
-                self._rebuild_requested.set()
+                request_id = str(message.get("request_id", "")).strip()
+                if not request_id:
+                    request_id = f"legacy-{message.get('request_receiver_us', 0)}"
+                decision = self._capture_rebuild_guard.request_rebuild(request_id)
+                if decision.accepted:
+                    self._stream_instance_id = uuid.uuid4().hex
+                    self._last_timing_monotonic = 0.0
+                self._report_capture_control_result(decision)
+                age_ms = (
+                    "unknown"
+                    if decision.local_packet_age_seconds is None
+                    else f"{decision.local_packet_age_seconds * 1000.0:.1f}"
+                )
+                runtime_log(
+                    "audio capture rebuild control "
+                    f"request_id={decision.request_id} "
+                    f"accepted={str(decision.accepted).lower()} "
+                    f"reason={decision.reason} local_packet_age_ms={age_ms}"
+                )
 
     def _run(self):
         while not self._stop.is_set():
@@ -663,6 +719,7 @@ class UdpPacketGate:
                 continue
             except OSError:
                 break
+            self._capture_rebuild_guard.mark_local_packet()
             if not self._enabled.is_set():
                 continue
             sender_send_us = time.time_ns() // 1000
@@ -1166,6 +1223,9 @@ def listen(args):
                 sender_id=args.audio_archive_sender_id,
                 sample_rate=args.audio_stream_sample_rate,
                 control_port=args.audio_archive_control_port,
+                capture_rebuild_stale_seconds=(
+                    args.audio_capture_rebuild_stale_seconds
+                ),
             )
             stream_gate.start()
             stream_target = ("127.0.0.1", stream_gate.local_port)
@@ -1422,9 +1482,8 @@ def listen(args):
                 "command-window",
             )
             photo_capture_threads.append(active_photo_action_thread)
-            print(
-                f"photo command dispatched after cue text={action['text'] or '<empty>'}",
-                flush=True,
+            runtime_log(
+                f"photo command dispatched after cue text={action['text'] or '<empty>'}"
             )
             return
 
@@ -1458,7 +1517,7 @@ def listen(args):
                 active_photo_action_thread is not None
                 and not active_photo_action_thread.is_alive()
             ):
-                print("photo command action completed; external TTS released", flush=True)
+                runtime_log("photo command action completed; external TTS released")
                 active_photo_action_thread = None
 
             if stream_gate is not None and stream_gate.consume_rebuild_request():
@@ -1471,6 +1530,7 @@ def listen(args):
                 capture_state = open_capture("archive-rebuild", calibrate=True)
                 if capture_state is None:
                     return 12
+                stream_gate.complete_rebuild_request()
                 capture_out, capture_procs, audio_filter, noise_rms = capture_state
                 vad_threshold = compute_vad_threshold(args, noise_rms)
                 matcher.reset()
@@ -1815,13 +1875,12 @@ def listen(args):
                         skip_reason = "low_rms"
                     else:
                         skip_reason = "too_short"
-                    print(
+                    runtime_log(
                         f"skipped low_quality segments={skipped_segments} "
                         f"last_reason={skip_reason} "
                         f"last_seconds={speech_seconds:.2f} last_rms={segment_rms:.5f} "
                         f"decode_rms_threshold={decode_rms_threshold:.5f} "
-                        f"last_voice_ratio={segment_voice_ratio:.2f}",
-                        flush=True,
+                        f"last_voice_ratio={segment_voice_ratio:.2f}"
                     )
                     skipped_segments = 0
                     last_skip_log = now
@@ -1849,11 +1908,10 @@ def listen(args):
                 ok = ok or split_ok
             else:
                 match_reason = "full" if ok else ""
-            print(
+            runtime_log(
                 f"segment seconds={speech_seconds:.2f} rms={segment_rms:.5f} "
                 f"voice_ratio={segment_voice_ratio:.2f} mode={'photo' if command_mode else 'wake'} "
-                f"text={text or '<empty>'}",
-                flush=True,
+                f"text={text or '<empty>'}"
             )
             if command_mode:
                 command_session_active = False
@@ -1886,11 +1944,10 @@ def listen(args):
                         cue_path,
                         source=cue_source,
                     )
-                    print(
+                    runtime_log(
                         f"utterance classified action={pending_command_action['kind']} "
                         f"cue={cue_path.name} text={text or '<empty>'} "
-                        f"duration={speech_seconds:.2f}s",
-                        flush=True,
+                        f"duration={speech_seconds:.2f}s"
                     )
                     if cue_task is None:
                         action = pending_command_action
@@ -1898,7 +1955,9 @@ def listen(args):
                         execute_command_action(action)
                 matcher.reset()
             elif ok and now - last_trigger >= args.cooldown_seconds:
-                print(f"wake matched: {text} ({match_reason or 'full'}) -> 我在", flush=True)
+                runtime_log(
+                    f"wake matched: {text} ({match_reason or 'full'}) -> 我在"
+                )
                 playback = speech_service.enqueue_wav(
                     args.response_wav,
                     source="wake-response",
@@ -2113,6 +2172,11 @@ def build_parser():
     p_listen.add_argument("--audio-archive-control-port", type=udp_port, default=50131)
     p_listen.add_argument("--audio-archive-sender-id", default=socket.gethostname())
     p_listen.add_argument(
+        "--audio-capture-rebuild-stale-seconds",
+        type=positive_float,
+        default=2.0,
+    )
+    p_listen.add_argument(
         "--utterance-forward",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2187,7 +2251,7 @@ def build_parser():
     p_listen.add_argument("--energy-fallback-scale", type=float, default=1.35)
     p_listen.add_argument("--decode-min-seconds", type=float, default=0.70)
     p_listen.add_argument("--decode-min-rms", type=float, default=0.024)
-    p_listen.add_argument("--photo-decode-min-seconds", type=float, default=0.45)
+    p_listen.add_argument("--photo-decode-min-seconds", type=float, default=0.30)
     p_listen.add_argument("--photo-decode-min-rms", type=float, default=0.016)
     p_listen.add_argument("--decode-noise-margin", type=float, default=0.008)
     p_listen.add_argument("--skip-log-seconds", type=float, default=20.0)

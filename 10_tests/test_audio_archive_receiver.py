@@ -434,6 +434,61 @@ def test_config_defaults_and_uniqueness(module):
             raise AssertionError("duplicate stream port accepted")
 
 
+def test_capture_rebuild_request_and_result(module):
+    class FakeTiming:
+        @staticmethod
+        def snapshot(_sender_id):
+            return {}
+
+    class FakeApp:
+        config = {
+            "frame_duration_ms": 20,
+            "input_warning_seconds": 1,
+            "input_rebuild_seconds": 5,
+            "input_rebuild_interval_seconds": 10,
+        }
+        timing = FakeTiming()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        control.bind(("127.0.0.1", 0))
+        control.settimeout(1.0)
+        recorder = module.AudioStreamRecorder(
+            module.StreamConfig(
+                sender_id="sender-a",
+                port=free_port(socket.SOCK_DGRAM),
+                ssrc=7,
+                control_host="127.0.0.1",
+                control_port=control.getsockname()[1],
+            ),
+            FakeApp(),
+        )
+        current_us = 100_000_000
+        recorder.last_packet_receiver_us = current_us - 6_000_000
+        recorder.monitor_input(current_us)
+        request = json.loads(control.recvfrom(8192)[0].decode("utf-8"))
+        assert request["message_type"] == "audio_stream_control"
+        assert request["control"] == "rebuild_capture"
+        assert request["reason"] == "rtp_input_missing"
+        assert request["receiver_last_packet_us"] == current_us - 6_000_000
+        assert request["request_id"].startswith("audio-rebuild-sender-a-")
+
+        recorder.record_capture_control_result(
+            {
+                "request_id": request["request_id"],
+                "accepted": False,
+                "reason": "local_capture_healthy",
+                "local_packet_age_ms": 20.0,
+            },
+            current_us + 1000,
+        )
+        status = recorder.status()
+        assert status["rebuild_requests"] == 1
+        assert status["rebuild_accepted"] == 0
+        assert status["rebuild_ignored"] == 1
+        assert status["last_rebuild_result"] == "local_capture_healthy"
+        assert status["last_rebuild_request_id"] == request["request_id"]
+
+
 def main():
     module = load_module()
     test_rtp_parser(module)
@@ -448,6 +503,7 @@ def main():
     test_local_finalize_is_separate_from_publish(module)
     test_restart_fragments_keep_longest_at_canonical_path(module)
     test_config_defaults_and_uniqueness(module)
+    test_capture_rebuild_request_and_result(module)
     print("audio archive receiver tests passed")
 
 
