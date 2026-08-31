@@ -20,6 +20,11 @@ def main():
     assert "this.configured = false" in frontend
     assert "this.awaitingKeyframe && !isKey" in frontend
     assert "H264_MAX_INPUT_BUFFER_BYTES" in frontend
+    assert "metadata=global" in frontend
+    assert "H264_MAX_TIMELINE_LAG_US = 400 * 1000" in frontend
+    assert "H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000" in frontend
+    assert "this.frameIsStale(timestampUs)" in frontend
+    assert "this.droppingStaleFrames" in frontend
     assert "/api/audio/status" in frontend
     assert "/api/audio/start-all" in frontend
     assert "/api/audio/stop-sender" in frontend

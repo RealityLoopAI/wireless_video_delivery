@@ -598,6 +598,9 @@
     const PREVIEW_STALE_MS = 5000;
     const H264_MAX_DECODE_QUEUE = 2;
     const H264_MAX_INPUT_BUFFER_BYTES = 4 * 1024 * 1024;
+    const H264_MAX_TIMELINE_LAG_US = 400 * 1000;
+    const H264_TIMESTAMP_DISCONTINUITY_US = 5 * 1000 * 1000;
+    const H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
@@ -717,7 +720,7 @@
     }
     function h264PreviewUrl(c, high = false) {
       const quality = high ? 'main' : 'preview';
-      return `/api/preview/rgb-h264-frames?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&quality=${quality}&t=${Date.now()}`;
+      return `/api/preview/rgb-h264-frames?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&quality=${quality}&metadata=global&t=${Date.now()}`;
     }
     function mp4PreviewUrl(c) {
       return `/api/preview/rgb-video?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&t=${Date.now()}`;
@@ -753,6 +756,10 @@
         this.decoder = null;
         this.configured = false;
         this.awaitingKeyframe = true;
+        this.droppingStaleFrames = false;
+        this.timelineTimestampUs = 0;
+        this.timelinePerformanceMs = 0;
+        this.lastTimestampUs = 0;
         this.droppedForLatency = 0;
         this.stopped = false;
         this.firstFrameTimer = null;
@@ -840,9 +847,12 @@
           const width = view.getUint32(16, true);
           const height = view.getUint32(20, true);
           const timestampUs = Number(view.getBigUint64(24, true));
+          const globalTimestampUs = headerSize >= 48 ? Number(view.getBigUint64(40, true)) : 0;
           const payload = this.buffer.slice(headerSize, total);
           this.buffer = this.buffer.slice(total);
-          this.decode(payload, flags, width, height, timestampUs);
+          const clockSyncValid = (flags & 4) !== 0;
+          this.decode(payload, flags, width, height,
+            clockSyncValid && globalTimestampUs > 0 ? globalTimestampUs : timestampUs);
         }
       }
       configure(payload, width, height) {
@@ -882,8 +892,45 @@
         }
         this.configured = true;
       }
+      frameIsStale(timestampUs) {
+        if (!Number.isFinite(timestampUs) || timestampUs <= 0) return false;
+        const nowMs = performance.now();
+        const timestampDiscontinuous = this.lastTimestampUs > 0 &&
+          (timestampUs < this.lastTimestampUs ||
+           timestampUs - this.lastTimestampUs > H264_TIMESTAMP_DISCONTINUITY_US);
+        this.lastTimestampUs = timestampUs;
+        if (!this.timelineTimestampUs || timestampDiscontinuous) {
+          this.timelineTimestampUs = timestampUs;
+          this.timelinePerformanceMs = nowMs;
+          this.droppingStaleFrames = false;
+          return false;
+        }
+        const expectedTimestampUs = this.timelineTimestampUs +
+          (nowMs - this.timelinePerformanceMs) * 1000;
+        const lagUs = expectedTimestampUs - timestampUs;
+        if (nowMs - this.timelinePerformanceMs > H264_TIMELINE_REBASE_INTERVAL_MS &&
+            Math.abs(lagUs) < H264_MAX_TIMELINE_LAG_US / 2) {
+          this.timelineTimestampUs = timestampUs;
+          this.timelinePerformanceMs = nowMs;
+          return false;
+        }
+        return lagUs > H264_MAX_TIMELINE_LAG_US;
+      }
       decode(payload, flags, width, height, timestampUs) {
         const isKey = (flags & 1) !== 0;
+        if (this.frameIsStale(timestampUs)) {
+          if (!this.droppingStaleFrames) {
+            this.resetDecoderForLatency();
+            this.droppingStaleFrames = true;
+          }
+          return;
+        }
+        if (this.droppingStaleFrames) {
+          if (!isKey) return;
+          this.droppingStaleFrames = false;
+          this.timelineTimestampUs = timestampUs;
+          this.timelinePerformanceMs = performance.now();
+        }
         if (!this.configured) {
           if (!isKey) return;
           this.configure(payload, width, height);
