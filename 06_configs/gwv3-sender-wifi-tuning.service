@@ -1,0 +1,13 @@
+[Unit]
+Description=GWV3 sender Wi-Fi queue tuning
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+Before=gwv3-gemini-sender.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gwv3-apply-sender-wifi-tuning
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

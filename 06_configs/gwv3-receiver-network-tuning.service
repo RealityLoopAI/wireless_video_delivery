@@ -1,0 +1,12 @@
+[Unit]
+Description=GWV3 receiver network RX tuning
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gwv3-apply-receiver-network-tuning
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
