@@ -1,5 +1,5 @@
 {
-  "sender_id": "orangepi5pro-b439137c",
+  "sender_id": "orangepi5pro-fe0f7222",
   "sender_version": "3.0.0",
   "receiver": {
     "ip": "192.168.1.196",
@@ -62,7 +62,7 @@
   },
   "cameras": [
     {
-      "camera_id": "cam02",
+      "camera_id": "cam01",
       "device_index": 0,
       "capture_backend": "orbbec_sdk",
       "device_model": "SV1301S_U3",
