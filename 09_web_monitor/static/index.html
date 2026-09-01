@@ -720,7 +720,9 @@
       placeholder.style.display = visible ? '' : 'none';
     }
     function h264PreviewUrl(c, high = false) {
-      const quality = high ? 'main' : 'preview';
+      // Keep the browser on the dedicated low-bitrate stream. Main H.264
+      // remains available to recording and downstream relay clients.
+      const quality = 'preview';
       return `/api/preview/rgb-h264-frames?sender_id=${encodeURIComponent(c.sender_id)}&camera_id=${encodeURIComponent(c.camera_id)}&quality=${quality}&metadata=global&t=${Date.now()}`;
     }
     function mp4PreviewUrl(c) {

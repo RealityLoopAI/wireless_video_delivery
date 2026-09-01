@@ -3065,17 +3065,22 @@ bool web_rgb_preview_emit_due(const AppConfig &config, CameraRuntime &camera, st
     if(!config.web_rgb_preview.enabled) {
         return false;
     }
-    const auto interval = frame_interval_for_fps(config.web_rgb_preview.fps);
-    if(interval <= std::chrono::steady_clock::duration::zero()) {
-        return true;
-    }
-
     std::lock_guard<std::mutex> lock(camera.mutex);
     if(now < camera.web_rgb_preview_suppressed_until) {
         return false;
     }
     if(config.web_rgb_preview.on_demand && now > camera.web_rgb_preview_requested_until) {
         return false;
+    }
+    // Capture already paces frames. Reapplying the same nominal rate drops
+    // frames whenever camera jitter puts the next frame just before the tick.
+    if(camera.config.rgb_profile.fps > 0 && config.web_rgb_preview.fps >= camera.config.rgb_profile.fps) {
+        camera.next_web_rgb_preview = now;
+        return true;
+    }
+    const auto interval = frame_interval_for_fps(config.web_rgb_preview.fps);
+    if(interval <= std::chrono::steady_clock::duration::zero()) {
+        return true;
     }
     if(now < camera.next_web_rgb_preview) {
         return false;
