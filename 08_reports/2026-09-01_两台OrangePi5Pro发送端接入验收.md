@@ -100,3 +100,15 @@ TP-LINK_5G_215E / 5 GHz:
 ## 6. 已知边界
 
 SDK 对 `1920x1080 RGB + 320x200 Depth` 组合持续报告没有匹配的 calibration profile，接收端因此显示 `calibration_available=false`。这不影响原始 RGB/Depth 采集、发送和落盘，但该档位不能直接宣称已具备 SDK 几何对齐参数；下游若需要像素级 RGBD 对齐，需要使用相机支持标定参数的 profile 组合或单独标定。
+
+## 7. 构建版本说明
+
+设备原工作目录保留了旧 Git 元数据，第一次现场编译虽然源代码哈希一致，但状态接口中的 `build_commit` 仍显示旧提交。为避免版本字段误导排查，后续使用提交 bundle 创建干净临时 worktree，再次完成两台本机编译和全量配置校验：
+
+```text
+build_commit: bcc29464b2b5
+build_dirty: false
+binary sha256: 7872b7968871e1c1cdb1acf3947e8f9df2c1ae43fce61783fbbf2fe2ab96cdc5
+```
+
+干净二进制已原子替换到两台正式路径。替换时 receiver 已开始录制，因此没有人为重启正在发送的旧进程；当前录制保持连续，下一次服务自然重启或设备开机时加载上述干净构建。
