@@ -40,6 +40,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <spawn.h>
 #include <sys/socket.h>
@@ -86,6 +87,7 @@ constexpr uint64_t kRgbDepthPairValidMaxDeltaUs = 20ull * 1000ull;
 constexpr size_t kRgbH264StreamMaxPackets = 180;
 constexpr size_t kRgbH264ClientMaxLagPackets = 12;
 constexpr int kRgbH264ClientSendTimeoutMs = 150;
+constexpr int kRgbH264ClientSendBufferBytes = 32 * 1024;
 constexpr size_t kRgbH264StreamMaxHeaderBytes = 512ull * 1024ull;
 constexpr uint32_t kRecordFpsProbeFrames = 60;
 constexpr uint64_t kRecordFpsProbeMaxWaitUs = 3'000'000ull;
@@ -664,6 +666,17 @@ bool send_all_with_timeout(int fd, const void *data, size_t size, int timeout_ms
         return false;
     }
     return true;
+}
+
+void configure_rgb_h264_client_socket(int fd) {
+    const int enabled = 1;
+    const int send_buffer_bytes = kRgbH264ClientSendBufferBytes;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &send_buffer_bytes, sizeof(send_buffer_bytes));
+#ifdef TCP_NOTSENT_LOWAT
+    const int notsent_lowat_bytes = kRgbH264ClientSendBufferBytes / 2;
+    setsockopt(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, &notsent_lowat_bytes, sizeof(notsent_lowat_bytes));
+#endif
 }
 
 sockaddr_in make_bind_addr(const std::string &ip, uint16_t port) {
@@ -8961,6 +8974,7 @@ public:
     }
 
     bool stream_rgb_h264_preview(int fd, const std::string &sender_id, const std::string &camera_id) {
+        configure_rgb_h264_client_socket(fd);
         std::shared_ptr<CameraState> cam;
         std::optional<SenderControlTarget> keyframe_target;
         const auto request_us = now_us();
@@ -9091,6 +9105,7 @@ public:
                                         const std::string &camera_id,
                                         bool force_main_stream,
                                         bool include_global_timestamp) {
+        configure_rgb_h264_client_socket(fd);
         std::shared_ptr<CameraState> cam;
         std::optional<SenderControlTarget> keyframe_target;
         const auto request_us = now_us();

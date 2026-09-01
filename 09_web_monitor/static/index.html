@@ -594,13 +594,14 @@
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
     const PREVIEW_PROBE_INTERVAL_MS = 1500;
-    const H264_PREVIEW_RETRY_MS = 3000;
+    const H264_PREVIEW_RETRY_MS = 1000;
     const PREVIEW_STALE_MS = 5000;
     const H264_MAX_DECODE_QUEUE = 2;
     const H264_MAX_INPUT_BUFFER_BYTES = 4 * 1024 * 1024;
     const H264_MAX_TIMELINE_LAG_US = 400 * 1000;
     const H264_TIMESTAMP_DISCONTINUITY_US = 5 * 1000 * 1000;
     const H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000;
+    const H264_STALE_RECONNECT_MS = 250;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
@@ -760,6 +761,7 @@
         this.timelineTimestampUs = 0;
         this.timelinePerformanceMs = 0;
         this.lastTimestampUs = 0;
+        this.staleDropStartedMs = 0;
         this.droppedForLatency = 0;
         this.stopped = false;
         this.firstFrameTimer = null;
@@ -798,6 +800,9 @@
             const {value, done} = await reader.read();
             if (done) break;
             if (value) this.append(value);
+          }
+          if (!this.stopped) {
+            this.markFailed('RGB 视频中断');
           }
         }
         catch (_) {
@@ -917,17 +922,23 @@
         return lagUs > H264_MAX_TIMELINE_LAG_US;
       }
       decode(payload, flags, width, height, timestampUs) {
+        if (this.stopped) return;
         const isKey = (flags & 1) !== 0;
         if (this.frameIsStale(timestampUs)) {
           if (!this.droppingStaleFrames) {
             this.resetDecoderForLatency();
             this.droppingStaleFrames = true;
+            this.staleDropStartedMs = performance.now();
+          }
+          else if (performance.now() - this.staleDropStartedMs >= H264_STALE_RECONNECT_MS) {
+            this.markFailed('RGB 视频重连');
           }
           return;
         }
         if (this.droppingStaleFrames) {
           if (!isKey) return;
           this.droppingStaleFrames = false;
+          this.staleDropStartedMs = 0;
           this.timelineTimestampUs = timestampUs;
           this.timelinePerformanceMs = performance.now();
         }

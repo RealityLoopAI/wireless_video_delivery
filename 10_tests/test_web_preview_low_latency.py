@@ -9,6 +9,9 @@ def main():
 
     assert "kRgbH264ClientMaxLagPackets = 12" in receiver
     assert "send_all_with_timeout" in receiver
+    assert "kRgbH264ClientSendBufferBytes = 32 * 1024" in receiver
+    assert "configure_rgb_h264_client_socket(fd)" in receiver
+    assert "TCP_NOTSENT_LOWAT" in receiver
     assert "waiting_for_keyframe = true" in receiver
     assert "next_seq + kRgbH264ClientMaxLagPackets < newest_next_seq" in receiver
     assert "next_seq = newest_next_seq" in receiver
@@ -23,6 +26,9 @@ def main():
     assert "metadata=global" in frontend
     assert "H264_MAX_TIMELINE_LAG_US = 400 * 1000" in frontend
     assert "H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000" in frontend
+    assert "H264_STALE_RECONNECT_MS = 250" in frontend
+    assert "this.markFailed('RGB 视频重连')" in frontend
+    assert "if (!this.stopped)" in frontend
     assert "this.frameIsStale(timestampUs)" in frontend
     assert "this.droppingStaleFrames" in frontend
     assert "/api/audio/status" in frontend
