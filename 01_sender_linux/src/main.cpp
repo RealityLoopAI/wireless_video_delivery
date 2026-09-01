@@ -6297,7 +6297,7 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                 preview_due = config.preview.enabled && frame_now >= camera.next_preview;
             }
             const bool web_preview_due = web_rgb_preview_emit_due(config, camera, frame_now);
-            const bool web_preview_can_queue = web_preview_due && !rgb_media_queue.has_pending_primary();
+            const bool web_preview_can_queue = web_preview_due;
 
             record_rgb_input(camera, frame.size, frame.frame_id);
             RgbFrameDiagnostics diagnostics;
@@ -6847,7 +6847,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                     }
                 }
 
-                const bool web_preview_can_queue = web_preview_due && !rgb_media_queue.has_pending_primary();
+                const bool web_preview_can_queue = web_preview_due;
                 if((camera.jpeg_dual_encoder && camera.jpeg_dual_encoder->ok()) || (camera.encoder && camera.encoder->ok())) {
                     try {
                         if(camera.jpeg_dual_encoder && camera.jpeg_dual_encoder->ok()) {

@@ -10,6 +10,7 @@ def main():
 
     assert "config.web_rgb_preview.fps >= camera.config.rgb_profile.fps" in sender
     assert "camera.next_web_rgb_preview = now" in sender
+    assert sender.count("const bool web_preview_can_queue = web_preview_due;") == 2
     assert "kRgbH264ClientMaxLagPackets = 12" in receiver
     assert "send_all_with_timeout" in receiver
     assert "kRgbH264ClientSendBufferBytes = 32 * 1024" in receiver
