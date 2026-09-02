@@ -1,7 +1,7 @@
 [Unit]
 Description=GWV3 Gemini RGBD Sender (orangepi5pro-b439137c)
 Wants=network-online.target
-After=network-online.target chrony.service gemini-sender-prepare.service
+After=network-online.target chrony.service
 
 [Service]
 Type=simple
