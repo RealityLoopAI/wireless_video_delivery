@@ -1,82 +1,70 @@
-# Recording control buttons
+# Physical Recording Controls
 
-This service maps the two non-power buttons on supported sender carriers to
-sender-local recording controls after Linux has booted:
+该应用把支持底板上的物理按键映射为“只控制本 sender”的录制操作，并可选管理电源键和录制状态 LED。Linux 启动前的 Recovery/Maskrom 功能不受影响。
 
-- `RECOVERY` / SARADC channel 1: hold for 1 second to start every live camera
-  owned by the configured `sender_id`.
-- `MASKROM` / SARADC channel 0: hold for 1 second to stop every camera owned by
-  the configured `sender_id` without affecting other senders.
-- Start queues the existing `ding` prompt; stop queues the existing `deng`
-  prompt through the local Xiaohuan speech service.
-- `ON/OFF` / RK805 `KEY_POWER`: hold for 5 seconds to stop active recording,
-  wait for the current speech to finish, play `ding + 100ms + deng`, and power
-  off. Releasing before 5 seconds cancels the action.
-- Each Linux boot queues `deng + 100ms + ding` once after the speech service
-  becomes available. It gives up after 30 seconds and never delays boot.
+## Behavior
 
-Short presses and simultaneous holds are ignored. A held button fires once and
-must be released before it can fire again. The service first checks the
-receiver's per-camera state. An action already in the requested state is
-ignored without a cue. A valid action queues its cue immediately, then sends
-the sender-scoped command with one retry. A status-query failure is rejected
-without a cue or a deferred command.
-The service calls the receiver's LAN-facing Web proxy on port `8080`; the
-loopback-only receiver admin port `18080` must remain private.
+| Input | Hold | Result | Cue |
+| --- | --- | --- | --- |
+| RECOVERY / SARADC channel 1 | 1 秒 | 开始该 `sender_id` 当前在线的全部相机 | `ding` |
+| MASKROM / SARADC channel 0 | 1 秒 | 停止该 `sender_id` 的全部相机 | `deng` |
+| ON/OFF / RK805 `KEY_POWER` | 5 秒 | 先安全停止本 sender 录制，再请求关机 | `ding` + 100 ms + `deng` |
+| Linux boot | 一次 | 语音服务就绪后提示开机 | `deng` + 100 ms + `ding` |
 
-The boot-time Recovery and Maskrom behavior is not changed. The service only
-reads the SARADC channels after Linux is running.
+短按、两键同时长按和未释放的重复触发都会忽略。动作前先查询 receiver：目标状态已经满足、receiver 不可达或状态正在转换时，不执行也不播放成功提示。有效动作先把提示音加入本地高优先级队列，再发送 sender 级命令并重试一次。
 
-The power key is handled by the root system service
-`gwv3-power-button.service`; the SARADC keys remain in the unprivileged user
-service `gwv3-recording-buttons.service`. `systemd-logind` must use
-`HandlePowerKey=ignore` so a short press cannot bypass the 5-second policy.
+录制键只影响配置中的 `sender_id`，不能开始或停止其他发送端。服务通过 receiver 的局域网 Web API `8080` 调用；loopback 管理口 `18080` 不对外开放。
 
-On the configured LubanCat, `GPIO4_C3_D` (`gpiochip4`, line `19`) is an
-active-high recording LED. The root service `gwv3-recording-led.service`
-holds it high while the sender is idle or receiver status is unavailable, and
-toggles it every 500 ms while this sender is recording. HTTP status polling runs in a
-separate thread, so a slow receiver response cannot pause the blink cadence;
-the last valid state is retained for at most 5 seconds during a brief timeout.
+## Services
+
+| Service | Privilege | Responsibility |
+| --- | --- | --- |
+| `gwv3-recording-buttons.service` | user | SARADC 录制/停止键 |
+| `gwv3-power-button.service` | root | 5 秒电源键策略 |
+| `gwv3-recording-led.service` | root | 开机常亮、录制闪烁 |
+
+`systemd-logind` 使用 `HandlePowerKey=ignore`，避免短按绕过 5 秒策略。关机流程等待当前语音结束后播放组合提示，再执行系统关机。
+
+已配置 LED 的底板使用 `GPIO4_C3_D`（`gpiochip4` line `19`，active high）：sender 空闲或 receiver 状态短时不可用时常亮，本 sender 录制时每 500 ms 翻转。HTTP 轮询在独立线程中运行，短时超时不会暂停闪烁；最后有效状态最多保留 5 秒。
 
 ## Install
 
-```bash
-./install_service.sh lubancat-52d2ef0c
-systemctl --user status gwv3-recording-buttons.service
-```
-
-The device ID selects `config_<device-id>.json` and
-`config_<device-id>_power.json`. The installer copies them to ignored local
-runtime files so the shared systemd units never hard-code another sender's
-identity. For example, the additional LubanCat uses:
+在应用目录执行，设备 ID 必须有对应的 `config_<device-id>.json` 和 `config_<device-id>_power.json`：
 
 ```bash
-./install_service.sh lubancat-4df661d7
+cd 12_apps/recording_buttons
+./install_service.sh <device-id>
 ```
+
+安装器把选定配置复制为被忽略的本地 runtime 文件，使共享 systemd unit 不写死其他发送端身份。它会启用用户录制键服务、root 电源键服务和 LED 服务。
 
 ## Probe
 
+在安装前读取 SARADC 阈值：
+
 ```bash
 python3 recording_button_service.py \
-  --config config_lubancat-52d2ef0c.json --probe
+  --config config_<device-id>.json --probe
 ```
 
-Released values should be above `released_above`; pressed values should be
-below `pressed_below`.
+释放值应高于 `released_above`，按下值应低于 `pressed_below`。自制底板或硬件版本改变后必须重新探测，不能直接沿用另一块板的阈值。
 
-## Runtime checks
+## Verification
 
 ```bash
 systemctl --user is-active gwv3-recording-buttons.service
 journalctl --user -u gwv3-recording-buttons.service -f
 sudo systemctl is-active gwv3-power-button.service
-sudo journalctl -u gwv3-power-button.service -f
-curl -sS http://192.168.1.196:8080/api/status
+sudo systemctl is-active gwv3-recording-led.service
+curl -sS http://<receiver-ip>:8080/api/status
 curl -sS http://127.0.0.1:18082/healthz
 ```
 
-The speech health response must list `ding`, `deng`, `startup`, and `shutdown`
-in `cue_names`.
-The cue submission endpoint is intentionally loopback-only so LAN clients
-cannot make the device play these control sounds directly.
+语音健康响应的 `cue_names` 应包含 `ding`、`deng`、`startup` 和 `shutdown`。提示音提交接口只监听 loopback，局域网客户端不能直接让设备播放控制提示。
+
+## Failure Boundary
+
+- receiver 查询失败时不缓存延迟操作，避免网络恢复后意外开始录制。
+- 提示音或 LED 失败不得阻止核心 sender 采集与发送。
+- 服务配置中的 `sender_id` 必须与实际 sender 配置一致。
+- 电源服务和 LED 服务需要 root；用户服务不能假设自己有 GPIO 或关机权限。

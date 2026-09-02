@@ -1,6 +1,13 @@
-# 语音关键词唤醒实验
+# Xiaohuan Voice And Photo
 
-目标：当麦克风听到“你好小环”时，通过音箱播放“我在”。
+该可选应用提供离线关键词唤醒、本地回复、拍照命令、HTTP 文本播报、实时 RTP/Opus 和唤醒后整句 WAV 转发。核心 RGB-D sender 不依赖它。
+
+相关文档：
+
+- [关键词与音频前端](kws-and-audio-frontend.md)
+- [TTS HTTP API](tts-http-api.md)
+- [整句音频 HTTP API](utterance-audio-http-api.md)
+- [模型放置规则](models/README.md)
 
 当前硬件默认使用：
 
@@ -38,7 +45,7 @@ python3 -m pip install --user edge-tts
 - 支持分段命中：如果 `你好/您好` 和 `小环` 被切成相邻片段，只要在短时间窗口内出现，也算唤醒。
 - 低质量片段会先跳过，不再全部送进 Vosk。
 - 检测到唤醒后把固定回复放入统一播放队列。
-- 当前硬件没有播放参考信号可供 AEC 使用。通用默认 `capture_playback_mode=keep` 会在播报期间保持采集，识别 PCM 由 drain 丢弃；133 的 USB 麦克风和音箱位于同一个不稳定的单 TT Hub，因此正式 drop-in 使用 `restart` 半双工模式：播放前释放麦克风端点，播放后快速重开、沿用已有噪声阈值且不重复 1.5 秒标定。
+- 当前路径没有播放参考信号可供 AEC 使用。通用默认 `capture_playback_mode=keep` 会在播报期间保持采集，识别 PCM 由 drain 丢弃；录放并发不稳定的 USB Hub/声卡可通过设备 drop-in 使用 `restart` 半双工模式：播放前释放麦克风端点，播放后快速重开并沿用已有噪声阈值。
 - 拍照小语法覆盖“拍照 / 拍张照 / 拍一张照片 / 帮我拍照 / 照相”等说法，并兼容 Vosk 常见的“拍 [unk] / [unk] 照 / 牌照”结果。针对部分说话人把 `pai zhao` 说成 `pai zao` 的情况，命令窗口还会识别“拍/排/牌/派 + 照/早/造/澡/灶/遭”的近音组合；该兼容不会作用于常驻唤醒阶段。
 - 唤醒回复结束后等待用户开口 8 秒；一旦开口，连续静音 0.6 秒判定说完，单句最长 60 秒。命令音频保留约 0.2 秒前缓冲和 0.3 秒后缓冲。
 - 拍照命令会先播放“叮”再执行三连拍；其他内容或本地识别为空时先播放“登”，再把完整 WAV 异步发送给下游。
@@ -119,7 +126,7 @@ audio_read_timeout_seconds: 2.0
 audio_recovery_seconds: 20.0
 audio_recovery_interval_seconds: 0.5
 audio_capture_rebuild_stale_seconds: 2.0
-capture_playback_mode: keep（通用默认）；restart（133 正式配置）
+capture_playback_mode: keep（通用默认）；restart（设备 profile 可选）
 zero_audio_rms: 0.0005
 zero_audio_restart_seconds: 12.0
 barge_in: false
@@ -159,10 +166,7 @@ LubanCat 等使用同一张声卡同时录放音的 `SM15 M1 USB audio` 设备�
 该配置禁用低电平重启看门狗，避免声卡 AEC 输出数字静音时被误判为断流；
 `audio_read_timeout_seconds` 仍用于检测真实读取超时。
 
-当前组件仍兼容早期独立实验目录，但新部署应从仓库内的
-`12_apps/xiaohuan_voice_photo/` 运行。不同用户下不得把路径硬编码为
-`/home/orangepi`；Edge TTS 缓存缺省使用当前用户的
-`~/.cache/xiaohuan/edge_tts`。
+新部署统一从仓库内的 `12_apps/xiaohuan_voice_photo/` 运行，systemd 安装器会按实际应用目录生成 unit。不要硬编码某个用户的 home 路径；Edge TTS 缓存缺省使用当前用户的 `~/.cache/xiaohuan/edge_tts`。
 
 ## 2. sherpa-onnx KWS 方案
 
@@ -201,8 +205,7 @@ HTTP 接口已经返回的 `accepted` 仅表示任务入队，不表示合成成
 ## 5. 唤醒后拍照
 
 当前语音服务在检测到“你好小环 / 您好小环”后，会完整播放预生成的固定回复“我在”。
-133 播放前释放麦克风 USB 端点，播完等待 30ms 防回声尾窗，再快速重开麦克风并沿用
-已有噪声标定。设备等待用户开口 8 秒；开始说话后不再受 8 秒窗口限制，而是录到
+使用 `restart` profile 的设备会在播放前释放麦克风 USB 端点，播完等待 30 ms 防回声尾窗，再快速重开麦克风并沿用已有噪声标定。设备等待用户开口 8 秒；开始说话后不再受 8 秒窗口限制，而是录到
 0.6 秒尾静音或 60 秒上限。识别到拍照指令后先完整播放“叮”，再向 RGBD 发送端写入
 原有三连拍拍照请求。其他语音播放“登”后进入 HTTP WAV 后台发送队列。
 
@@ -289,7 +292,7 @@ XIAOHUAN_UTTERANCE_FORWARD_RETRY_DELAY_SECONDS=0.5
 ```
 
 HTTP 请求体不附带 JSON 或 multipart 元数据。任意 `2xx` 响应视为成功；失败最多重试
-3 次。队列满时丢弃最旧语音，上传成功后发送端不保留本地 WAV。参考 macOS 接收脚本
+3 次。队列满时丢弃最旧语音，上传成功后发送端不保留本地 WAV。跨平台参考接收器
 为 `05_tools/xiaohuan_audio_receiver.py`，完整接口见 `utterance-audio-http-api.md`。
 
 持续 RTP/Opus 与整句转发是两个可选 profile。`systemd/xiaohuan-wake-utterance-forward.conf`

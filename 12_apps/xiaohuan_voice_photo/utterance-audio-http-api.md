@@ -51,12 +51,12 @@ WAV 固定格式：
 发送失败或超时后最多重试 3 次。上传在后台执行，不阻塞下一次唤醒。发送队列容量
 为 8 段，队满时丢弃最旧语音。成功后发送端不保留本地 WAV。
 
-## 3. macOS 接收脚本
+## 3. Reference Receiver
 
-把 `xiaohuan_audio_receiver.py` 放在 Mac 桌面，然后运行：
+参考接收器只依赖 Python 标准库，可运行在 Windows、macOS 或 Linux：
 
 ```bash
-python3 ~/Desktop/xiaohuan_audio_receiver.py
+python3 05_tools/xiaohuan_audio_receiver.py
 ```
 
 默认监听：
@@ -65,26 +65,25 @@ python3 ~/Desktop/xiaohuan_audio_receiver.py
 http://0.0.0.0:50020/api/audio
 ```
 
-默认保存到：
+默认保存到当前用户桌面：
 
 ```text
 ~/Desktop/xiaohuan_received_audio/YYYY-MM-DD/*.wav
 ```
 
-自定义目录：
+自定义目录和端口：
 
 ```bash
-python3 ~/Desktop/xiaohuan_audio_receiver.py \
+python3 05_tools/xiaohuan_audio_receiver.py \
   --port 50020 \
-  --output-dir ~/Desktop/model_audio_input
+  --output-dir <output-directory>
 ```
 
-macOS 首次运行时如果弹出防火墙提示，需要允许 Python 接收局域网连接。当前接口没有
-令牌认证，只应在可信局域网中使用，不要映射到公网。
+首次运行时需要允许 Python 通过主机防火墙接收局域网连接。Windows 下使用仓库文件的实际路径，并确保所选网络配置允许 TCP 50020 入站。当前接口没有令牌认证，只应在可信局域网中使用，不要映射到公网。
 
 ## 4. 健康检查
 
-在 Mac 本机执行：
+在接收机本机执行：
 
 ```bash
 curl -sS http://127.0.0.1:50020/healthz

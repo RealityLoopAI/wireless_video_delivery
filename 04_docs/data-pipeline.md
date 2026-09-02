@@ -179,7 +179,7 @@ staging 回退模式的 NAS 隐藏队列还会使用 `recording_capture_ready.js
 <nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
 ```
 
-d12 语音服务默认连续请求 3 张，按请求起始时刻间隔 0.2 秒；一次连拍共用稳定 `burst_id`，receiver 以第一张有效帧确定 NAS 目录，后两张跨秒也沿用该目录。识别到拍照命令后立即播放“好的，已拍照”，三张请求和 `captured` 回执检查在后台执行；语音表示命令已受理，最终持久化结果以回执日志和 NAS 文件为准。
+启用语音拍照的发送端默认连续请求 3 张，目标采集时间间隔 0.2 秒；一次连拍共用稳定 `burst_id`，receiver 以第一张有效帧确定 NAS 目录，后两张跨秒也沿用该目录。识别到拍照命令并确认用户说完后先播放本地“叮”提示，再提交三张请求；`captured` 回执检查在后台执行。提示音只表示命令已受理，最终持久化结果以回执日志和 NAS 文件为准。
 
 NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾或语音确认。最终 NAS 目录只保留 JPG。
 
@@ -189,7 +189,7 @@ NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾
 
 | 字段 | 含义 |
 | --- | --- |
-| `stream_type` | `rgb`、`depth_raw` 或 `rgb_preview` |
+| `stream_type` | 最终录制 CSV 使用 `rgb` 或 `depth`；协议枚举中的 `depth_raw` 会规范化为 `depth` |
 | `sender_id` | 发送端身份 |
 | `camera_id` | 相机身份 |
 | `frame_id` | 该流自己的帧号 |

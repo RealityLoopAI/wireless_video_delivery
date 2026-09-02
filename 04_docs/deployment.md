@@ -198,7 +198,7 @@ sudo ./05_tools/install_sender_wifi_tuning.sh
 安装脚本仅对 `rtw_8821cu` 驱动应用 `pfifo limit 128`，其他无线驱动保持不变。服务会在开机联网后、sender 启动前恢复配置。
 
 RK3576 镜像需要额外核对 GStreamer 插件 ABI，不能只检查
-`libgstrockchipmpp.so` 文件是否存在。当前 LubanCat-3IO 现场镜像曾同时存在：
+`libgstrockchipmpp.so` 文件是否存在。典型错误组合是：
 
 ```text
 GStreamer runtime: 1.20
@@ -208,17 +208,17 @@ Rockchip MPP plugin build ABI: 1.22
 这种组合会把 `libgstrockchipmpp.so` 加入 GStreamer blacklist，表现为文件存在，
 但 `gst-inspect-1.0 mpph264enc` 返回 `No such element or plugin`。
 
-当前 `lubancat-52d2ef0c` 和 `lubancat-e8cc0cb3` 的处理方式是保留系统插件不动，
-在下面目录放置已验证为 GStreamer 1.20 ABI 的 Rockchip MPP 插件：
+处理方式是保留系统插件不动，把与目标 runtime ABI 一致的 Rockchip MPP 插件放入
+设备专用运行目录：
 
 ```text
-/home/cat/wireless_video_runtime/gstreamer-1.0/libgstrockchipmpp.so
+<runtime-root>/gstreamer-1.0/libgstrockchipmpp.so
 ```
 
 systemd 服务通过下面的环境变量优先加载该插件：
 
 ```text
-GST_PLUGIN_PATH_1_0=/home/cat/wireless_video_runtime/gstreamer-1.0
+GST_PLUGIN_PATH_1_0=<runtime-root>/gstreamer-1.0
 ```
 
 部署后必须同时验证 `mppjpegdec`、`mpph264enc` 和实际硬件 pipeline，不能用
@@ -238,20 +238,8 @@ Orbbec SDK `2.8.6`。SDK `1.10.27` 在该设备上即使以 root 运行也无法
 
 ### 4.3 配置文件
 
-发送端配置位于 `06_configs/`。
-
-常见模板：
-
-```text
-06_configs/sender_orangepi5pro-01_depth_zlib.json
-06_configs/sender_orangepi5pro-01.json
-06_configs/sender_lubancat-52d2ef0c_gemini305.json
-06_configs/sender_lubancat-e8cc0cb3_gemini305.json
-06_configs/sender_lubancat-4df661d7_gemini305.json
-06_configs/sender_rk3588-01_one_camera.json
-06_configs/sender_rk3588-01_two_cameras.json
-06_configs/sender_rk3588-01_cam02_depth_max.json
-```
+发送端配置位于 `06_configs/`。设备与配置清单只在
+[configuration.md](configuration.md) 维护；部署时从清单选择目标设备文件，不按文件修改时间猜测。
 
 关键字段：
 
@@ -288,28 +276,41 @@ hotplug
 `sender_id` 可以写固定值，也可以写 `auto` 由机器信息派生。复制配置到另一台设备前，必须检查身份是否会冲突。
 
 不要只用 USB Wi-Fi 网卡的 MAC 地址生成固定 `sender_id`。网卡可能在板卡之间移动，
-克隆镜像也可能生成重复的稳定 MAC。优先使用板卡序列号、不可移动网卡地址或受控的
-资产编号。2026-07-28 部署 `lubancat-e8cc0cb3` 时，Wi-Fi 网卡和相机来自上一台
-LubanCat，最终使用 RK3576 板卡序列号后 8 位区分发送端。
+克隆镜像也可能生成重复 MAC。优先使用板卡序列号、不可移动网卡地址或受控资产编号；
+更换 Wi-Fi 网卡或相机时不应改变板卡身份。
 
-### 4.5 启动、停止、状态
+### 4.5 构建、启动、停止和状态
+
+在每台目标 ARM64 设备本机构建，输出目录必须与运维脚本约定一致：
+
+```bash
+ORBBEC_SDK_ROOT=/path/to/OrbbecSDK cmake -S . -B 12_build \
+  -DGWV3_BUILD_RECEIVER=OFF \
+  -DGWV3_BUILD_SENDER=ON \
+  -DBUILD_TESTING=ON \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build 12_build -j2
+ctest --test-dir 12_build --output-on-failure
+```
+
+`start_sender.sh` 不执行编译。它先检查 `12_build/bin/gemini_sender`、SDK、插件、配置、路由和 USB，再由 watchdog 启动子进程。
 
 启动：
 
 ```bash
-./05_tools/start_sender.sh
+./05_tools/start_sender.sh 06_configs/<sender-config>.json
 ```
 
 带本地预览启动：
 
 ```bash
-./05_tools/start_sender_preview.sh
+./05_tools/start_sender_preview.sh 06_configs/<sender-config>.json
 ```
 
 查看状态：
 
 ```bash
-./05_tools/status_sender.sh
+./05_tools/status_sender.sh 06_configs/<sender-config>.json
 ```
 
 停止：
@@ -321,13 +322,13 @@ LubanCat，最终使用 RK3576 板卡序列号后 8 位区分发送端。
 前台调试：
 
 ```bash
-./05_tools/run_sender_foreground.sh 06_configs/sender_orangepi5pro-01_depth_zlib.json
+./05_tools/run_sender_foreground.sh 06_configs/<sender-config>.json
 ```
 
 预检：
 
 ```bash
-./05_tools/sender_preflight.sh
+./05_tools/sender_preflight.sh 06_configs/<sender-config>.json
 ```
 
 ## 5. 时间同步和时间显示

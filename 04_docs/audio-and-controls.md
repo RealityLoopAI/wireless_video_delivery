@@ -42,7 +42,7 @@ microphone
 
 设备可通过本地 HTTP API 接收短中文文本并排队播放。成功语义是 `accepted`，不是“已经播完”。语音唤醒回复和 HTTP 文本应使用同一引擎、voice、rate 与缓存策略，以避免音色不一致。
 
-具体请求格式见 [TTS HTTP API](../12_apps/xiaohuan_voice_photo/tts-http-api.md)。Edge TTS 依赖网络，缓存命中快、首次合成存在网络延迟；离线引擎只作为网络不可用时的降级，不保证音色一致。
+具体请求格式见 [TTS HTTP API](../12_apps/xiaohuan_voice_photo/tts-http-api.md)。Edge TTS 依赖网络，缓存命中快、首次合成存在网络延迟；离线引擎只保留作人工诊断或显式 profile，不会在请求失败时自动切换，以免音色突然改变。
 
 播报期间默认暂停或门控麦克风上行，防止音箱回授进入识别和远程音频。恢复采集必须由连续失败二次确认，不能因为一次超时就重建整个 USB 音频链路。
 

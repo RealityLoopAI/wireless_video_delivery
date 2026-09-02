@@ -15,10 +15,14 @@
 | 50014 | UDP | optional | 实验预览 UDP，生产默认关闭 |
 | 18080 | HTTP | receiver loopback | C++ admin API |
 | 8080 | HTTP | LAN client -> receiver | Web Monitor 与公开 REST 代理 |
+| 18082 | HTTP | LAN client -> voice sender | 可选 TTS 提交与健康检查 |
 | 18083 | HTTP | receiver loopback | 音频归档 admin API |
-| 50130 | UDP | audio sender -> receiver | 音频 timing/control report |
+| 50020 | HTTP | voice sender -> downstream | 可选唤醒后整句 WAV 转发 |
+| 50030+ | RTP/UDP | audio sender -> receiver/downstream | 每 sender 唯一的可选 Opus 音频流 |
+| 50130 | UDP | audio sender -> receiver | 音频 timing report |
+| 50131 | UDP | receiver -> audio sender | 音频归档启停控制 |
 
-音频 RTP 端口按 sender 配置分配，必须唯一。不要把 18080 暴露到局域网或公网；远程调用统一使用 8080。
+音频 RTP 端口按 sender 配置分配，必须唯一；表中的 `50030+` 只是当前分配方式，不是固定连续范围。不要把 18080 或 18083 暴露到局域网或公网；receiver 远程调用统一使用 8080。语音端口只在对应可选 profile 启用时存在。
 
 ## Identity
 

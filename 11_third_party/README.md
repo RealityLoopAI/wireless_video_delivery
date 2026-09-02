@@ -1,128 +1,82 @@
-# 第三方依赖说明
+# Third-Party Dependencies
 
-## 1. 目录定位
+本目录定义项目第三方依赖的版本边界和放置规则。大型 SDK、Viewer、动态库和安装包由 `.gitignore` 排除，不直接提交。
 
-本目录用于说明和放置 `wireless_video_delivery` 工程需要的第三方依赖。
-当前只放说明文件，不直接内置大型 SDK 或动态库实体。
+## Compatibility Baseline
 
-项目总说明见 [../README.md](../README.md)，部署依赖见 [../04_docs/deployment.md](../04_docs/deployment.md)。
+| Dependency | Used by | Requirement |
+| --- | --- | --- |
+| Orbbec SDK | sender | 必须匹配相机型号、CPU 架构和目标设备运行时 |
+| GStreamer | sender | 必须与 Rockchip MPP 插件 ABI 一致 |
+| Rockchip MPP plugin | sender | 提供 `mpph264enc`，部分设备还使用 `mppjpegdec` |
+| OpenCV | sender/tools | 本机预览和图像处理 |
+| jsoncpp | C++ components | 配置和状态 JSON |
+| zlib/LZ4 | sender/receiver | Depth 压缩与解压 |
+| FFmpeg | receiver/tools | RGB/Depth 封装、探测和导出 |
+| FastAPI | Web Monitor | 网页与 REST 代理 |
 
-## 2. Orbbec SDK
+仓库中的“已验证”表示在特定硬件和镜像组合上测试通过，不表示上游最新版本，也不保证换型号后兼容。
 
-发送端需要使用 Orbbec C/C++ SDK 调用 Gemini 深度相机。
+## Orbbec SDK
 
-已确认 Orbbec SDK v1.10.27 release 中包含 Linux ARM64 包，可作为树莓派 5 / 香橙派发送端的优先候选版本：
+已使用的基线：
 
-```text
-https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27
-```
+| Camera/platform | SDK result |
+| --- | --- |
+| 既有 Gemini 设备 / ARM64 | v1.10.27 为保留兼容基线，部署前仍需实机枚举与 profile 测试 |
+| Gemini 305 (`2bc5:0840`) / RK3576 ARM64 | v2.8.6 已验证可枚举并采集；v1.10.27 在该组合上不能枚举 |
 
-Gitee 镜像页面也能看到同版本下载列表：
+参考官方 release：
 
-```text
-https://gitee.com/orbbecdeveloper/OrbbecSDK/releases/tag/v1.10.27
-```
+- Orbbec SDK v1.10.27: <https://github.com/orbbec/OrbbecSDK/releases/tag/v1.10.27>
+- Orbbec SDK v2.8.6: <https://github.com/orbbec/OrbbecSDK_v2/releases/tag/v2.8.6>
 
-页面中和本项目相关的包如下：
-
-```text
-OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release.zip
-OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_x64_release.zip
-OrbbecViewer_v1.10.27_202509260950_arm64_release.zip
-OrbbecViewer_v1.10.27_202509260133_linux_x64_release.zip
-```
-
-说明：
-
-1. `linux_arm64` SDK 给发送端使用，目标是树莓派 5 / 香橙派这类 ARM64 Linux 设备。
-2. `linux_x64` SDK 给 Ubuntu 24.04 x86_64 接收端或开发机参考使用。
-3. `OrbbecViewer` 是调试工具，不是项目运行时必须依赖；现场排查相机枚举、分辨率、帧率、固件状态时可以带上。
-4. Gitee 页面中 `C++` 可能被显示成空格，最终以实际下载文件名为准。
-
-Gemini 305 需要单独验证。2026-07-27 在 LubanCat-3IO / RK3576 上确认：
-
-1. 相机 USB ID 为 `2bc5:0840`，工作在 USB 3.2。
-2. SDK `1.10.27` 无法枚举该相机，root 和普通用户结果一致。
-3. SDK `2.8.6` 可以正确枚举并稳定采集 RGB/Depth。
-4. 该设备使用的 ARM64 SDK 目录为：
+已验证的 v2.8.6 ARM64 包：
 
 ```text
-11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6/
-```
-
-当前验证使用 Orbbec 官方 v2.8.6 ARM64 tar 包：
-
-```text
-https://github.com/orbbec/OrbbecSDK_v2/releases/tag/v2.8.6
 OrbbecSDK_v2.8.6_202604271452_6399409_linux_arm64.tar.gz
 SHA256: a052221d4bdea6afb2f8b338bcd6e635afffcebbacab1483422b986e680fb441
 ```
 
-SDK 实体仍由 `.gitignore` 排除。部署时必须从受控的 SDK 包或已验证设备同步，
-不能只复制发送端二进制而遗漏其运行时 SDK。
-
-## 3. 本地参考 SDK 规则
-
-如果现场机器上已有旧版 Linux x64 SDK，只能用于：
-
-1. 查看 C/C++ API。
-2. 查看示例代码。
-3. 参考 Linux x86_64 环境下的编译方式。
-
-本仓库文档不记录个人 Windows 路径或某台机器上的临时 SDK 路径。旧版 x64 SDK 不应作为树莓派 5 / 香橙派发送端 SDK 使用。
-
-## 4. 建议放置方式
-
-如果后续确认要把 SDK 实体放进本工程，必须按架构分开：
+SDK 放置约定：
 
 ```text
 11_third_party/
   orbbec/
-    linux_x64/
-      README.md
-      OrbbecSDK/
-      OrbbecViewer/
-
     linux_arm64/
-      README.md
-      OrbbecSDK/
-      OrbbecViewer/
+      OrbbecSDK_v2.8.6/
+      <other-version>/
+    linux_x64/
+      <sdk-or-viewer>/
 ```
 
 规则：
 
-1. `linux_x64` 只给接收端或 x86_64 开发机参考。
-2. `linux_arm64` 才给树莓派 5 / 香橙派发送端使用。
-3. 不允许在发送端构建脚本中引用 `linux_x64` SDK。
-4. 不允许只放一个没有架构标识的 `SDK/` 目录。
+1. sender 只使用目标架构目录，不允许引用 `linux_x64` 作为 ARM64 运行时。
+2. 不使用无版本、无架构的通用 `SDK/` 目录名。
+3. 复制 sender 二进制时必须同步核对 SDK 动态库和配置文件，不能只复制可执行文件。
+4. USB `lsusb` 能看到设备只证明枚举到 USB，不证明 SDK 能打开它。
+5. 升级 SDK 后重新验证可选 profile、实际 FPS、曝光/白平衡属性和热插拔恢复。
 
-## 5. 当前第三方依赖分工
+## GStreamer And MPP
 
-当前主线已经围绕以下依赖组织：
+`libgstrockchipmpp.so` 文件存在不等于插件可用。部署时至少检查：
 
-1. Orbbec SDK：发送端相机采集和相机参数读取。
-2. GStreamer + Rockchip MPP：发送端 RGB H.264 硬件编码。
-3. FFmpeg：接收端 RGB/Depth 封装和导出工具依赖。
-4. OpenCV：发送端本地预览和部分图像处理。
-5. jsoncpp：C++ 配置和状态 JSON 处理。
-6. zlib：Depth 无损压缩传输。
-7. LZ4：部分量化/分块 Depth 压缩模式。
-8. FastAPI：Web Monitor 服务。
-
-后续如果引入 Zstd、SRT、WebRTC 或新的硬件编码路径，应先在技术路线文档中说明原因、收益、风险和当前实现状态。
-
-## 6. 当前不内置 SDK 实体的原因
-
-当前没有直接复制 Orbbec SDK 实体文件，原因如下：
-
-1. SDK 体积较大，打包前需要确认是否允许随项目分发。
-2. 发送端和接收端所需架构不同，必须分开管理。
-3. 先用文档明确版本和目录规则，避免后续工程师误用。
-
-如果必须随项目一起交付 SDK，请把 ARM64 和 x64 两个包分别放入第 4 节建议目录，不要只命名为：
-
-```text
-OrbbecSDK.zip
+```bash
+gst-inspect-1.0 mpph264enc
+gst-inspect-1.0 mppjpegdec
 ```
 
-这种命名无法区分平台，容易导致误用。
+如果插件被 blacklist，优先检查 GStreamer runtime 与插件构建 ABI。设备专用 `GST_PLUGIN_PATH_1_0` 可以指向已验证插件目录，但不能覆盖成另一镜像或另一 ABI 的文件。最终验收必须跑实际编码 pipeline，不能只依赖 `gst-inspect`。
+
+## Dependency Changes
+
+引入或升级 Zstd、SRT、WebRTC、SDK、codec 或硬件插件时，应在同一提交中记录：
+
+- 解决的问题和选择该版本的原因；
+- 支持的架构、系统镜像和硬件型号；
+- license 与是否允许分发；
+- 构建/运行时依赖及校验值；
+- 实机功能、性能和回退测试。
+
+部署依赖和 ABI 排查见 [deployment.md](../04_docs/deployment.md)，技术演进状态见 [roadmap.md](../04_docs/roadmap.md)。
