@@ -1813,6 +1813,7 @@ class AudioArchiveService:
 
 def load_config(path: Path) -> dict[str, Any]:
     raw = json.loads(path.read_text(encoding="utf-8"))
+    home = Path.home()
     defaults = {
         "bind_ip": "0.0.0.0",
         "timing_port": 50130,
@@ -1820,8 +1821,8 @@ def load_config(path: Path) -> dict[str, Any]:
         "admin_port": 18083,
         "receiver_admin_url": "http://127.0.0.1:18080",
         "clock_model_timeout_ms": 10000,
-        "staging_root": "/home/fz/audio_staging",
-        "nas_root": "/home/fz/Desktop/nas",
+        "staging_root": str(home / "audio_staging"),
+        "nas_root": str(home / "Desktop" / "nas"),
         "nas_subdirectory": "audio",
         "nas_require_mount": True,
         "nas_low_space_warning_mb": 51200,
@@ -1835,8 +1836,8 @@ def load_config(path: Path) -> dict[str, Any]:
         "task_poll_interval_ms": 100,
         "task_status_fallback_seconds": 1.0,
         "task_allowed_roots": [
-            "/home/fz/Desktop/nas/.gwv3_direct_inprogress",
-            "/home/fz/recording_staging",
+            str(home / "Desktop" / "nas" / ".gwv3_direct_inprogress"),
+            str(home / "recording_staging"),
         ],
         "input_warning_seconds": 3,
         "input_rebuild_seconds": 5,

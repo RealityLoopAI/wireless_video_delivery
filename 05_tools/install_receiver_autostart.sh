@@ -20,7 +20,11 @@ WEB_PID="$BUILD_DIR/web_monitor.pid"
 UPLOADER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/recording_uploader.log"
 PHOTO_UPLOADER_STDOUT="$ROOT_DIR/08_reports/receiver_logs/photo_uploader.log"
 AUDIO_ARCHIVE_STDOUT="$ROOT_DIR/08_reports/receiver_logs/audio_archive.log"
-AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$ROOT_DIR/06_configs/audio_archive_receiver.json}"
+DEFAULT_AUDIO_ARCHIVE_CONFIG="$ROOT_DIR/06_configs/audio_archive_receiver.json"
+if [[ "$(basename "$CONFIG")" == "receiver_loop.json" ]]; then
+  DEFAULT_AUDIO_ARCHIVE_CONFIG="$ROOT_DIR/06_configs/audio_archive_receiver_loop.json"
+fi
+AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$DEFAULT_AUDIO_ARCHIVE_CONFIG}"
 
 fail() {
   echo "接收端自启动安装失败：$1" >&2

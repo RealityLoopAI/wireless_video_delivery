@@ -14,6 +14,10 @@
 | `audio_archive_receiver_loop.json` | 当前接收端音频归档配置 |
 | `audio_archive_receiver.json` | 旧接收端音频归档兼容配置 |
 
+`start_receiver.sh` 和 `install_receiver_autostart.sh` 在使用 `receiver_loop.json` 时会自动选择
+`audio_archive_receiver_loop.json`。其他接收端仍使用兼容配置，也可以通过
+`GWV3_AUDIO_ARCHIVE_CONFIG` 显式指定音频归档配置。
+
 生产接收端当前关键值：
 
 ```text

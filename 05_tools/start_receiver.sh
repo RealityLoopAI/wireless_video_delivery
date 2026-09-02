@@ -17,7 +17,11 @@ RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
 UPLOADER_UNIT="gwv3-recording-uploader.service"
 AUDIO_ARCHIVE_UNIT="gwv3-audio-archive.service"
-AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$ROOT_DIR/06_configs/audio_archive_receiver.json}"
+DEFAULT_AUDIO_ARCHIVE_CONFIG="$ROOT_DIR/06_configs/audio_archive_receiver.json"
+if [[ "$(basename "$CONFIG")" == "receiver_loop.json" ]]; then
+  DEFAULT_AUDIO_ARCHIVE_CONFIG="$ROOT_DIR/06_configs/audio_archive_receiver_loop.json"
+fi
+AUDIO_ARCHIVE_CONFIG="${GWV3_AUDIO_ARCHIVE_CONFIG:-$DEFAULT_AUDIO_ARCHIVE_CONFIG}"
 MAX_LOG_BYTES=$((256 * 1024 * 1024))
 
 fail() {
