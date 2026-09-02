@@ -72,7 +72,7 @@ systemctl --user is-active gwv3-recording-buttons.service
 journalctl --user -u gwv3-recording-buttons.service -f
 sudo systemctl is-active gwv3-power-button.service
 sudo journalctl -u gwv3-power-button.service -f
-curl -sS http://192.168.66.196:8080/api/status
+curl -sS http://192.168.1.196:8080/api/status
 curl -sS http://127.0.0.1:18082/healthz
 ```
 
