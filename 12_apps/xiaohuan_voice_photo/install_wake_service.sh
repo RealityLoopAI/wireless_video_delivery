@@ -23,7 +23,19 @@ install_system_file() {
 }
 
 mkdir -p "$USER_UNIT_DIR"
-install -m 0644 "$ROOT_DIR/systemd/$UNIT_NAME" "$USER_UNIT_DIR/$UNIT_NAME"
+if [[ "$ROOT_DIR" == *'|'* || "$ROOT_DIR" == *$'\n'* ]]; then
+  echo "unsupported application path: $ROOT_DIR" >&2
+  exit 1
+fi
+unit_tmp="$(mktemp)"
+trap 'rm -f "$unit_tmp"' EXIT
+escaped_root="${ROOT_DIR//&/\\&}"
+sed "s|@APP_DIR@|$escaped_root|g" "$ROOT_DIR/systemd/$UNIT_NAME" > "$unit_tmp"
+if grep -q '@APP_DIR@' "$unit_tmp"; then
+  echo "failed to render $UNIT_NAME" >&2
+  exit 1
+fi
+install -m 0644 "$unit_tmp" "$USER_UNIT_DIR/$UNIT_NAME"
 install_system_file 0644 "$UDEV_RULE_SOURCE" "$UDEV_RULE_TARGET"
 if command -v udevadm >/dev/null 2>&1; then
   if (( EUID == 0 )); then

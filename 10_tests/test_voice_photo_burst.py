@@ -474,6 +474,12 @@ def test_usb_audio_exclusive_install(source_root: Path):
     assert rule_text.count('ENV{PULSE_IGNORE}="1"') == 3
 
     installer = (app_root / "install_wake_service.sh").read_text(encoding="utf-8")
+    unit = (app_root / "systemd" / "xiaohuan-wake.service").read_text(encoding="utf-8")
+    assert "@APP_DIR@" in unit
+    assert "new_experiment_2026-07-02" not in unit
+    assert 'WorkingDirectory="@APP_DIR@"' in unit
+    assert 'ExecStart="@APP_DIR@/run_wake_service.sh"' in unit
+    assert 'sed "s|@APP_DIR@|$escaped_root|g"' in installer
     assert "90-xiaohuan-usb-audio-exclusive.rules" in installer
     assert "udevadm control --reload-rules" in installer
     assert "XIAOHUAN_CAPTURE_PLAYBACK_MODE" in (
@@ -519,7 +525,7 @@ def test_usb_audio_exclusive_install(source_root: Path):
         assert "XIAOHUAN_AUDIO_STREAM_PAYLOAD_TYPE=111" in rtp_profile
         assert f"XIAOHUAN_AUDIO_STREAM_SSRC={ssrc}" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_STREAM_ENABLED=1" in rtp_profile
-        assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=192.168.66.196" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=192.168.1.196" in rtp_profile
         assert f"XIAOHUAN_AUDIO_ARCHIVE_PORT={port}" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_TIMING_PORT=50130" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_CONTROL_PORT=50131" in rtp_profile
@@ -607,7 +613,7 @@ def main():
     assert defaults.audio_stream_ssrc == 0
     assert defaults.audio_stream_pause_during_playback is True
     assert defaults.audio_archive_stream is False
-    assert defaults.audio_archive_host == "192.168.66.196"
+    assert defaults.audio_archive_host == "192.168.1.196"
     assert defaults.audio_archive_timing_port == 50130
     assert defaults.audio_capture_rebuild_stale_seconds == 2.0
     assert defaults.continuous_listen_during_playback is False

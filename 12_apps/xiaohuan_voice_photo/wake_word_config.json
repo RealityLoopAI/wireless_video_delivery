@@ -6,11 +6,11 @@
   "playback_device": "plughw:3,0",
   "threshold": 0.8,
   "templates": [
-    "/home/orangepi/Desktop/new_experiment_2026-07-02/keyword_templates/nihao_xiaohuan_01.wav",
-    "/home/orangepi/Desktop/new_experiment_2026-07-02/keyword_templates/nihao_xiaohuan_02.wav",
-    "/home/orangepi/Desktop/new_experiment_2026-07-02/keyword_templates/nihao_xiaohuan_03.wav",
-    "/home/orangepi/Desktop/new_experiment_2026-07-02/keyword_templates/nihao_xiaohuan_04.wav",
-    "/home/orangepi/Desktop/new_experiment_2026-07-02/keyword_templates/nihao_xiaohuan_05.wav"
+    "keyword_templates/nihao_xiaohuan_01.wav",
+    "keyword_templates/nihao_xiaohuan_02.wav",
+    "keyword_templates/nihao_xiaohuan_03.wav",
+    "keyword_templates/nihao_xiaohuan_04.wav",
+    "keyword_templates/nihao_xiaohuan_05.wav"
   ],
-  "response_wav": "/home/orangepi/Desktop/new_experiment_2026-07-02/response_wozai.wav"
+  "response_wav": "response_wozai_tts_default.wav"
 }

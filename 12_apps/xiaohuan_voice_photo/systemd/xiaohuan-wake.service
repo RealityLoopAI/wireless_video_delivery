@@ -5,8 +5,8 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Desktop/new_experiment_2026-07-02
-ExecStart=%h/Desktop/new_experiment_2026-07-02/run_wake_service.sh
+WorkingDirectory="@APP_DIR@"
+ExecStart="@APP_DIR@/run_wake_service.sh"
 Restart=always
 RestartSec=2
 KillSignal=SIGTERM

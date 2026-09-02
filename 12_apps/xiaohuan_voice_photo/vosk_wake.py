@@ -2162,7 +2162,7 @@ def build_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    p_listen.add_argument("--audio-archive-host", default="192.168.66.196")
+    p_listen.add_argument("--audio-archive-host", default="192.168.1.196")
     p_listen.add_argument("--audio-archive-port", type=udp_port, default=50030)
     p_listen.add_argument(
         "--audio-archive-timing-port",
