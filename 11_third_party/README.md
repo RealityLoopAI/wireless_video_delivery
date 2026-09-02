@@ -5,7 +5,7 @@
 本目录用于说明和放置 `wireless_video_delivery` 工程需要的第三方依赖。
 当前只放说明文件，不直接内置大型 SDK 或动态库实体。
 
-项目总说明见 [../README.md](../README.md)，部署依赖见 [../04_docs/04_部署与运行手册.md](../04_docs/04_部署与运行手册.md)。
+项目总说明见 [../README.md](../README.md)，部署依赖见 [../04_docs/deployment.md](../04_docs/deployment.md)。
 
 ## 2. Orbbec SDK
 

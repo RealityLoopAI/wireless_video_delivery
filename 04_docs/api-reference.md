@@ -1,95 +1,97 @@
-# 接口与数据格式参考
+# API And Data Format Reference
 
-更新时间：2026-08-18
+更新时间：2026-09-02
 
-本文档是查表型参考。想先理解项目，先读 [01_从零开始理解项目.md](01_从零开始理解项目.md)。
+本文是当前对外端口、媒体协议、REST API 和落盘字段的查表文档。配置字段见 [configuration.md](configuration.md)。
 
-## 1. 端口
+## Ports
 
-| 端口 | 协议 | 方向 | 当前用途 |
+| Port | Protocol | Direction | Purpose |
 | --- | --- | --- | --- |
-| 50010 | TCP | 发送端到接收端 | 媒体数据，包含 RGB、Depth、RGB preview 和按需原始 MJPEG 快照 |
-| 50011 | UDP | 发送端到接收端 | 状态心跳和事件 |
-| 50012 | UDP | 发送端和接收端双向 | CLOCK_SYNC probe/response |
-| 18080 | HTTP | 本机 | 接收端 C++ 本地管理 API |
-| 8080 | HTTP | 浏览器到接收端 | Web Monitor |
+| 50010 | TCP | sender -> receiver | RGB、Depth、低码率预览和 MJPEG 快照 |
+| 50011 | UDP | sender <-> receiver | 状态、事件和控制 |
+| 50012 | UDP | sender <-> receiver | CLOCK_SYNC probe/response |
+| 50013 | UDP | optional | 实验媒体 UDP，生产默认关闭 |
+| 50014 | UDP | optional | 实验预览 UDP，生产默认关闭 |
+| 18080 | HTTP | receiver loopback | C++ admin API |
+| 8080 | HTTP | LAN client -> receiver | Web Monitor 与公开 REST 代理 |
+| 18083 | HTTP | receiver loopback | 音频归档 admin API |
+| 50130 | UDP | audio sender -> receiver | 音频 timing/control report |
 
-## 2. 身份字段
+音频 RTP 端口按 sender 配置分配，必须唯一。不要把 18080 暴露到局域网或公网；远程调用统一使用 8080。
 
-| 字段 | 含义 | 规则 |
-| --- | --- | --- |
-| `sender_id` | 发送端身份 | 1-64 位 ASCII 字母、数字、`_`、`-` |
-| `camera_id` | 相机身份 | 1-64 位 ASCII 字母、数字、`_`、`-` |
-| `camera_key` | 接收端内部唯一 key | `<sender_id>_<camera_id>` |
-| `camera_name` | 显示和存储别名 | 不能替代原始身份 |
-| `camera_file_prefix` | 单路文件名前缀 | 只影响文件名前缀 |
+## Identity
 
-## 3. 状态消息类型
-
-状态通道使用 UDP JSON。常见消息类型：
-
-| 类型 | 用途 |
+| Field | Rule |
 | --- | --- |
-| `sender_hello` | 发送端启动后上报自身和能力 |
-| `camera_announce` | 某路相机上线或参数更新 |
-| `heartbeat` | 周期状态心跳 |
-| `camera_offline` | 某路相机离线或启动失败 |
-| `clock_sync_report` | sender 上报 clock sync offset/delay/drift；也可随 heartbeat 携带 |
-| `event` | 运行事件，如重连、编码失败、预检异常 |
+| `sender_id` | 1-64 位 ASCII 字母、数字、`_`、`-` |
+| `camera_id` | 同上，在同一 sender 内唯一 |
+| `camera_key` | `<sender_id>_<camera_id>` |
+| `camera_name` | 显示/存储别名，不改变原始身份 |
+| `camera_file_prefix` | 文件名前缀，不改变身份 |
 
-状态消息至少应包含：
+## Media Packet V2
 
-```json
-{
-  "protocol_version": "3.0",
-  "message_type": "heartbeat",
-  "sender_id": "example-sender",
-  "camera_id": "cam01",
-  "orbbec_sdk_version": "2.8.6",
-  "orbbec_sdk_version_number": 20806,
-  "timestamp_us": 1710000000000000
-}
-```
-
-所有由 sender `base_message()` 生成的状态消息都会携带真实 Orbbec SDK 运行时版本。部署核对应以这两个字段或启动日志为准，不要只依赖 SDK 目录名。
-
-实际字段以代码和 `/api/status` 返回为准。
-
-## 4. 媒体包
-
-媒体通道使用 TCP。每个媒体包由固定头、字符串字段和 payload 组成。
-
-当前媒体包版本：
+TCP 媒体包为：
 
 ```text
-magic: GWV3
-media header version: 2
-fixed header size: 134
+fixed header (134 bytes)
+sender_id bytes
+camera_id bytes
+codec_or_compression bytes
+payload bytes
 ```
 
-核心字段：
+所有整数使用 little-endian。固定头关键字段：
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `stream_type` | `rgb`、`depth_raw`、`rgb_preview` 或 `rgb_snapshot` |
-| `flags` | 关键帧、丢帧、系统时间戳、诊断字段，以及快照方向已校正等标记 |
-| `sender_id` | 发送端身份 |
-| `camera_id` | 相机身份 |
-| `codec_or_compression` | `h264`、Depth 压缩名，或快照的 `mjpeg;request_id=<id>` |
-| `frame_id` | 当前流帧号 |
-| `timestamp_us` | 设备或 SDK 时间戳 |
-| `system_timestamp_us` | 发送端系统时间戳 |
-| `pair_id` | 预留配对 ID |
-| `width` / `height` | 图像尺寸 |
-| `pixel_format` | 编码视频或 `depth_u16` |
-| `payload_size` | payload 字节数 |
-| `uncompressed_size` | 压缩前大小，Depth zlib 时有用 |
+| magic | `GWV3` / `0x33565747` |
+| version | `2` |
+| stream_type | RGB、Depth、preview 或 snapshot |
+| flags | key frame、drop、system time、诊断和方向标记 |
+| frame_id | 当前流内帧号，重启后可以归零 |
+| timestamp_us | 相机/SDK 原始帧时间 |
+| system_timestamp_us | sender 在采集处绑定的系统时间 |
+| pair_id | sender 内 RGBD 配对标识 |
+| width / height | 当前流尺寸 |
+| payload_size | 编码/压缩 payload 大小 |
+| uncompressed_size | Depth 解压后大小 |
+| rgb_exposure_us / rgb_gain | SDK 读回的曝光诊断 |
+| sender_*_timestamp_us | 采集、绑定、编码和入队阶段诊断时间 |
 
-## 5. CLOCK_SYNC 消息
+完整布局以 `03_common_core/include/gwv3_common/protocol.hpp` 为唯一源码定义。解析器必须检查 magic、版本、header size、字符串长度、尺寸、payload 上限和整数溢出。
 
-CLOCK_SYNC 使用 UDP 50012，不走媒体 TCP，也不阻塞采集线程。
+## Stream Types
 
-sender probe：
+| Value | Name | Payload |
+| --- | --- | --- |
+| 1 | `rgb` | Annex-B H.264 主码流 |
+| 2 | `depth_raw` | 原始或配置压缩后的 `uint16` Depth |
+| 3 | `rgb_preview` | 低码率 H.264 预览 |
+| 4 | `rgb_snapshot` | 带 request ID 的单帧 MJPEG |
+
+Depth 的 `codec_or_compression` 可为 `none`、`zlib`、`qdelta`、`pq12zlib`、`q8lz4`、`pq8zlib` 或 `pq8lz4`。量化模式必须同时读取实际 `quantization_step_mm`，不能只按文件扩展名推断精度。
+
+## Status Messages
+
+UDP 50011 使用 JSON，`protocol_version` 当前为 `3.0`。常见 `message_type`：
+
+```text
+sender_hello
+camera_announce
+heartbeat
+camera_offline
+clock_sync_report
+event
+control
+```
+
+状态消息携带 sender/camera 身份、运行版本、FPS、码率、队列、相机属性、时间同步和错误计数。实际字段以 sender `base_message()` 和 `GET /api/status` 为准，消费者必须容忍新增字段。
+
+## Clock Sync Messages
+
+Probe：
 
 ```json
 {
@@ -101,7 +103,7 @@ sender probe：
 }
 ```
 
-receiver response：
+Response：
 
 ```json
 {
@@ -115,449 +117,168 @@ receiver response：
 }
 ```
 
-sender 计算并通过 heartbeat 或 `clock_sync_report` 上报：
+sender 在本地记录 t4 并通过 heartbeat/report 上报 `clock_sync_valid`、`clock_offset_us`、`clock_delay_us`、`clock_drift_ppm` 与 `clock_last_sync_us`。详细语义见 [clock-sync.md](clock-sync.md)。
 
-```json
-{
-  "sender_id": "example-sender",
-  "clock_sync_valid": true,
-  "clock_offset_us": 1234,
-  "clock_delay_us": 800,
-  "clock_drift_ppm": 1.2,
-  "clock_last_sync_us": 1710000000000000
-}
-```
+## REST Base URL
 
-## 6. Stream Type
-
-| 值 | 名称 | 当前含义 |
-| --- | --- | --- |
-| 1 | `rgb` | 正式 RGB H.264 媒体流 |
-| 2 | `depth_raw` | 正式 Depth 数据流 |
-| 3 | `rgb_preview` | 给 Web 预览使用的低码率 RGB 预览流 |
-| 4 | `rgb_snapshot` | 语音拍照按需发送的单帧 MJPEG；使用独立可靠发送队列 |
-
-## 7. Pixel Format
-
-| 值 | 名称 | 当前含义 |
-| --- | --- | --- |
-| 1 | `encoded_video` | H.264 等编码视频 |
-| 2 | `depth_u16` | `uint16` 小端深度帧 |
-
-### 7.1 按需 MJPEG 快照
-
-语音服务向发送端本地请求目录写入 `rgb_snapshot_request`。发送端从目标相机取得下一帧完整 MJPEG；方向无需校正时保留有效 JPEG 字节，配置 RGB 软件旋转 180 度时在独立快照线程中完成旋转后再通过 `rgb_snapshot` 包发送，并设置 `snapshot_orientation_applied` flag。接收端把图片和 CRC 清单写入本地 staging 并完成 `fsync` 后，通过 sender 的状态 UDP 回传：
-
-```json
-{
-  "message_type": "rgb_snapshot_request",
-  "request_id": "xiaohuan_photo_20260728_120000_000001_02of03",
-  "sender_id": "orangepi5pro-d12a4719",
-  "camera_id": "cam01",
-  "burst_id": "xiaohuan_photo_20260728_120000_000001",
-  "burst_index": 2,
-  "burst_count": 3,
-  "capture_not_before_unix_us": 1785231163918215
-}
-```
-
-`capture_not_before_unix_us` 为 sender 本机时间轴上的最早采集时刻。语音服务为一次三连拍生成稳定的 `burst_id`，三个 `request_id` 分别追加 `_01of03`、`_02of03`、`_03of03`，并用目标时间表达 0.2 秒间隔，避免目录扫描和回执延迟改变目标采集时间。
-
-```json
-{
-  "protocol_version": "3.0",
-  "message_type": "control",
-  "control": "rgb_snapshot_result",
-  "sender_id": "orangepi5pro-d12a4719",
-  "camera_id": "cam01",
-  "request_id": "xiaohuan_photo_20260728_120000_000001_02of03",
-  "burst_id": "xiaohuan_photo_20260728_120000_000001",
-  "burst_index": 2,
-  "burst_count": 3,
-  "ok": true,
-  "status": "captured",
-  "orientation_applied_degrees": 180,
-  "image_path": "/home/fz/Desktop/nas/voice_photos/orangepi5pro-d12a4719_cam01/2026-07-28/12-00-00/20260728_120000_001.jpg"
-}
-```
-
-`captured` 只表示接收端本地副本已可靠持久化，不表示 NAS 上传已经结束。当前 d12 语音服务在识别到拍照命令时就立即播放“好的，已拍照”，因此该语音只表示命令已受理，并不是 `captured` 或 NAS 完成回执。`gwv3-photo-uploader.service` 随后校验大小和 CRC，通过 NAS 端临时文件加原子重命名发布 JPG。NAS 不可用时保留 staging 并重试。
-
-最终目录：
+局域网调用：
 
 ```text
-<nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
+http://<receiver-ip>:8080
 ```
 
-单张拍照的路径时间来自选中帧的 `system_timestamp_us`，同秒重名追加 `_001`。三连拍以第一张有效帧确定日期、目录和文件名前缀，三张依次保存为 `.jpg`、`_001.jpg`、`_002.jpg`；后两张即使跨过整秒也强制沿用同一目录。若该秒目录已被另一轮拍照占用，整组三张改用 `HH-MM-SS_001` 目录。未配置软件旋转时保存相机原始 MJPEG 有效字节；配置 180 度软件旋转时，JPG 已按相同方向校正。
+Web Monitor 对受信任采集局域网默认无 token。它代理 loopback admin API，并对短时 admin 超时提供有限的只读 status cache；写操作绝不会用缓存伪造成功。
 
-## 8. REST API
+## Status And Configuration
 
-Web Monitor 暴露给浏览器和外部调用者的常用接口如下。默认地址：
-
-```text
-http://<receiver_ip>:8080
-```
-
-Web Monitor 的 `/api/*` 在受信任的采集局域网内无需登录。C++ admin API 只监听 `127.0.0.1:18080`，不作为远程公开接口；不要将 Web 端口暴露到公网。
-
-### 8.1 状态和配置
-
-```text
+```http
 GET /api/status
 GET /api/config
 ```
 
-`/api/status` 用于查看在线相机、录制状态、预览可用性、帧率、码率和错误事件。
-也会返回 `clock_sync_enabled`、`clock_sync_port` 和每个 sender/camera 当前 clock sync 模型状态。
+`/api/status` 包含：
 
-### 8.2 预览
+- sender/camera 在线状态、profile、FPS、Mbps 和媒体 age；
+- 录制状态、session、窗口、队列、finalizer 和交付状态；
+- CLOCK_SYNC model；
+- Web preview 与 H.264 stream 状态；
+- build commit/source hash/dirty；
+- 音频摘要与最近错误。
 
-```text
-GET /api/preview/rgb?sender_id=...&camera_id=...
-GET /api/preview/depth?sender_id=...&camera_id=...
-GET /api/preview/rgb-main?sender_id=...&camera_id=...
-GET /api/preview/rgb-h264-frames?sender_id=...&camera_id=...&quality=preview|main&metadata=legacy|global
-POST /api/preview/main-target?sender_id=...&camera_id=...
+## Recording
+
+```http
+POST /api/record/start-all[?file_prefix=...]
+POST /api/record/stop-all
+POST /api/record/start-sender?sender_id=...
+POST /api/record/stop-sender?sender_id=...
+POST /api/record/start?sender_id=...&camera_id=...[&file_prefix=...]
+POST /api/record/stop?sender_id=...&camera_id=...
 ```
 
-预览接口只用于监控，不作为正式数据来源。
+成功响应包含 `ok=true`。全局开始还返回统一 `recording_session_id`、`recording_start_us` 和可能的 `start_pending`。停止返回 `recording_end_global_us`；该响应表示停止边界已接受，不等于所有容器已经完成 NAS 发布。
 
-`rgb-h264-frames` 返回自定义 `GWHP` 帧头加 Annex-B H.264 payload 的连续帧流。`quality=preview`
-是默认的低码率网页预览流；下游需要原始主码流画质时使用 `quality=main`。下游可先通过 `/api/status` 自动发现在线相机，
-再为每个相机建立独立连接以并发获取全路 RGB。生产 receiver 的主码流并发上限为 16。主码流直接复用录制母流，不会
-重新编码，但会增加 receiver 到下游的局域网带宽。
-`quality=preview` 严格只返回低码率流；按需预览在 1 秒内未就绪时返回 `503`，不会静默回退到主码流。
+GPIO 录制按键调用 sender 级接口，只控制该物理 sender 的全部相机。
 
-`metadata=legacy` 保持 v1 的 40 字节帧头。`metadata=global` 返回 v2 的 48 字节帧头，在 v1 字段之后追加
-`uint64_le global_timestamp_us`；`flags & 0x4` 表示该帧的 CLOCK_SYNC 模型有效。无论版本都必须使用帧头中的
-`header_size` 定位 H.264 payload，不要写死 40。
+## Camera Naming
 
-### 8.3 命名和前缀
-
-```text
+```http
 POST /api/camera/name?sender_id=...&camera_id=...&camera_name=...
 POST /api/camera/prefix?sender_id=...&camera_id=...&prefix=...
 POST /api/storage/prefix?prefix=...
 ```
 
-注意：
+名称和前缀只能使用安全文件名字符，不能改变原始 sender/camera ID。
 
-1. 设置名称或前缀时仍必须传原始 `sender_id` / `camera_id`。
-2. 名称和前缀不能改变设备身份。
-3. 名称和前缀应只使用安全文件名字符。
+## Preview Images
 
-### 8.4 录制控制
-
-```text
-POST /api/record/start-all
-POST /api/record/stop-all
-POST /api/record/start-sender?sender_id=...
-POST /api/record/stop-sender?sender_id=...
-POST /api/record/start?sender_id=...&camera_id=...
-POST /api/record/stop?sender_id=...&camera_id=...
+```http
+GET  /api/preview/rgb?sender_id=...&camera_id=...
+GET  /api/preview/rgb-main?sender_id=...&camera_id=...
+GET  /api/preview/depth?sender_id=...&camera_id=...
+POST /api/preview/main-target?sender_id=...&camera_id=...
 ```
 
-`start-all` 返回 `recording_session_id`、`recording_start_us` 和 `start_pending`。`recording_start_us` 是 receiver 全局时间轴上的数据集有效起点；接收端不写入该起点之前的 RGB 预滚帧，并从起点后第一个可解码 IDR 开始。`start_pending=true` 表示旧 writer 尚在分离，分离完成后会自动为所有路生成同一新会话和起点，不需要再点一次。
+这些接口返回当前最新图像快照，只用于监控。客户端应设置 no-cache 并允许 404/503，不能因预览暂时不可用判定正式录制失败。
 
-录制状态接口增加：
+## Live H.264 Frames
 
-| 字段 | 含义 |
+```http
+GET /api/preview/rgb-h264-frames
+    ?sender_id=...
+    &camera_id=...
+    &quality=preview|main
+    &metadata=legacy|global
+```
+
+- `quality=preview`：低码率预览流。
+- `quality=main`：复用原始 H.264 主码流，不重编码，适合下游临时获取全画质 30 FPS。
+- `metadata=legacy`：GWHP v1，40 字节头。
+- `metadata=global`：GWHP v2，48 字节头，包含 global timestamp。
+
+每个输出单元为 `GWHP header + Annex-B payload`，little-endian：
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| 0 | 4 bytes | `GWHP` |
+| 4 | u16 | version |
+| 6 | u16 | header_size，必须按此定位 payload |
+| 8 | u32 | payload_size |
+| 12 | u32 | flags: bit0 key, bit1 config, bit2 clock valid |
+| 16 | u32 | width |
+| 20 | u32 | height |
+| 24 | u64 | sender frame timestamp |
+| 32 | u64 | stream sequence |
+| 40 | u64 | `global_timestamp_us`，仅 v2 |
+
+每路建立独立 HTTP 连接。客户端必须持续读取并自行解码 H.264，不能积压后慢速消费；达到并发上限或预览尚未准备时返回 503。主码流会增加 receiver 到下游的总网络带宽，但不增加 sender 编码负担。
+
+## Audio Control
+
+```http
+GET  /api/audio/status
+POST /api/audio/start-all
+POST /api/audio/stop-all
+POST /api/audio/start-sender?sender_id=...
+POST /api/audio/stop-sender?sender_id=...
+```
+
+这些接口代理音频归档 admin 服务。音频归档是否开机自动开始由配置和服务状态决定，与视频录制按钮分离。
+
+## RGB Snapshot Result
+
+语音服务通过本地请求文件提交 `request_id`、`burst_id`、序号和目标采集时间。接收端持久化成功后，通过状态控制消息返回：
+
+```json
+{
+  "message_type": "control",
+  "control": "rgb_snapshot_result",
+  "sender_id": "example-sender",
+  "camera_id": "cam01",
+  "request_id": "request-01of03",
+  "burst_id": "request",
+  "burst_index": 1,
+  "burst_count": 3,
+  "ok": true,
+  "status": "captured",
+  "orientation_applied_degrees": 180,
+  "image_path": "<receiver-local-staging-path>"
+}
+```
+
+`captured` 表示 receiver 本地可靠副本完成，不表示照片已发布到 NAS。
+
+## Frames CSV
+
+旧列不删除，新字段追加。下游关键列：
+
+| Field | Meaning |
 | --- | --- |
-| `recording_state` | `idle`、`starting`、`recording` 或 `faulted` |
-| `recording_faulted` | 本轮录制是否因存储故障被终止 |
-| `recording_fault_session_id` | 故障会话 ID |
-| `recording_fault_us` | 故障的 receiver 系统时间 |
-| `recording_fault_camera_key` | 首个触发故障的路由 |
-| `recording_fault_reason` | 可读故障原因 |
+| `stream_type` | RGB 或 Depth |
+| `frame_id` / `timestamp_us` | 原始流帧号与 SDK 时间 |
+| `frame_system_timestamp_us` | sender 采集绑定时间 |
+| `receiver_receive_timestamp_us` | receiver 完整收包时间 |
+| `clock_sync_valid` | global time 模型是否有效 |
+| `sender_offset_us` / `sender_delay_us` / `sender_drift_ppm` | 该行 clock model |
+| `global_timestamp_us` | 统一时间轴 |
+| `rgb_recorded` | RGB 是否进入视频 |
+| `rgb_video_frame_index` | RGB 在 MP4 解码帧序号 |
+| `recording_window_valid` | 是否处于数据集有效窗口 |
+| `recording_session_id` | 多路统一会话 |
+| `segment_window_*_global_us` | 逻辑切片窗口 |
 
-本地暂存空间不足时，`start-all`/单路 `start` 直接返回 `ok=false`。录制期间触发存储保留线时，receiver 终止整个 session 并进入 `faulted`，不会恢复空间后在原 session 内静默续录。
+消费者必须按 header 名称解析 CSV，不能依赖固定列号。
 
-`stop-all` 返回本次的 `recording_session_id` 和 `recording_end_global_us`。旧文件进入后台收尾后不再阻塞下一次开始；交付或断电前仍须等待 finalizer 和 uploader backlog 清零。
+## Ready Contract
 
-`start-sender` 原子选择指定 `sender_id` 当前在线的全部相机，新启动的相机共享同一个 `recording_start_us` 和 `recording_session_id`。`stop-sender` 只停止该 sender 的全部相机。若当前录制由 `start-all` 发起，调用 `stop-sender` 会保留其他 sender 为独立录制，不会一起停止。物理按键使用这两个 sender 级接口；网页“全部开始/全部停止”仍使用原接口。
+最终录像目录只有在存在有效 `recording_ready.json` 时可消费。隐藏目录、`.inprogress` 文件和仅含 `recording_staged.json` 的目录都不是正式交付。
 
-可选文件名前缀：
+任务音频先检查 `audio_ready.json` 和 `audio_meta.json`。照片最终目录位于 `voice_photos/<camera-key>/...`，只保留完成发布的 JPG。
 
-```text
-POST /api/record/start-all?file_prefix=...
-POST /api/record/start?sender_id=...&camera_id=...&file_prefix=...
-```
+## Compatibility
 
-## 9. CLI
-
-接收端 CLI：
-
-```bash
-./05_tools/gwv3_receiver_cli.py status
-./05_tools/gwv3_receiver_cli.py start-all
-./05_tools/gwv3_receiver_cli.py stop-all
-./05_tools/gwv3_receiver_cli.py start <sender_id> <camera_id>
-./05_tools/gwv3_receiver_cli.py stop <sender_id> <camera_id>
-```
-
-## 10. 接收端配置
-
-默认文件：
-
-```text
-06_configs/receiver_ubuntu-01.json
-```
-
-常见字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `status_bind_ip` | 状态 UDP 监听地址 |
-| `status_port` | 状态 UDP 端口 |
-| `media_bind_ip` | 媒体 TCP 监听地址 |
-| `media_port` | 媒体 TCP 端口 |
-| `clock_sync.enabled` | 是否启用 CLOCK_SYNC |
-| `clock_sync.bind_ip` | CLOCK_SYNC UDP 监听地址 |
-| `clock_sync.port` | CLOCK_SYNC UDP 端口，默认 50012 |
-| `clock_sync.model_timeout_ms` | clock model 超时时间 |
-| `admin_bind_ip` | 本地管理 API 监听地址 |
-| `admin_port` | 本地管理 API 端口 |
-| `web_bind_ip` | Web Monitor 监听地址 |
-| `web_port` | Web Monitor 端口 |
-| `nas_root` | NAS 挂载后的本地根目录 |
-| `recording_staging.enabled` | 是否先写本地暂存并异步发布到 NAS |
-| `recording_staging.root` | receiver 本地暂存根目录，不能等于 `nas_root` |
-| `recording_staging.defer_player_compatible_finalize` | 是否把普通 MP4 无损重封装延迟到 uploader |
-| `recording_staging.rgb_output_mode` | `fragmented_mp4` 直接交付完整 fMP4；`conventional_mp4` 保持旧的普通 MP4 重封装，缺省为后者 |
-| `recording_staging.idle_finalize_ms` | 媒体离线后结束当前分片的超时 |
-| `recording_staging.incremental_mirror_enabled` | 是否在活动分片上做流水镜像；当前五路生产配置启用，使用 32 MiB 大块顺序读，不再使用旧的 4 MiB 六路轮询策略 |
-| `recording_staging.incremental_mirror_workers` | 活动分片流水 worker 数；当前单系统盘环境为 2 |
-| `recording_staging.active_recording_full_copy_workers` | 录制期间允许回读的历史整段数；当前为 0，确保冷数据不与实时录制争用本地盘 |
-| `recording_staging.full_copy_workers` | 停录后已关闭分片的 NAS 搬运并发；当前为 2 |
-| `recording_staging.upload_interval_ms` | uploader 扫描重试间隔 |
-| `recording_staging.upload_bandwidth_limit_mbps` | NAS 搬运的共享速率目标和统计口径；缓冲复制路径执行限速，`0` 表示不限速，当前为 200 Mbps |
-| `recording_staging.full_copy_bandwidth_limit_mbps` | 整文件缓冲回退路径的限速；大文件 direct-copy 路径上报实际吞吐，当前为 200 Mbps |
-| `recording_staging.emergency_free_disk_headroom_mb` | staging 可用空间距 `min_free_disk_mb` 小于该余量时进入紧急泄压；允许已安全关闭分片越过切片边界等待并立即释放 NAS capture 已接管的本地副本 |
-| `recording_staging.nas_capture_queue_directory` | NAS 隐藏 capture queue 目录名，默认 `.gwv3_capture_queue` |
-| `recording_staging.capture_workers` | 最大搬运 worker 数；实际按当前待搬运相机路数创建，同一路切片保持串行 |
-| `recording_staging.parallel_capture_min_mirror_reuse_percent` | 不受完整拷贝并发限制所需的最小镜像复用率；当前为 `80`。低于该值但已有可复用数据的新分片仍优先于零复用历史分片，但受 `full_copy_workers` 限制 |
-| `recording_staging.finalize_workers` | NAS capture 容器校验与最终发布的最大并发数 |
-| `recording_staging.incremental_mirror_max_copy_mb_per_file` | 每轮每文件的活跃镜像上限，避免长文件饿死已关闭切片 |
-| `recording_staging.incremental_mirror_fsync_interval_ms` | 录制期间增量镜像的持久化间隔，避免停止时集中 `fsync` |
-| `recording_staging.pause_during_receiver_finalize` | receiver 收尾或实时录制队列有压力时是否暂停后台 NAS I/O |
-| `recording_staging.quiet_before_segment_finalize_ms` | 自动切片边界前暂停后台 NAS I/O 的窗口 |
-| `recording_staging.pause_record_queue_bytes` | receiver 录制队列达到该总字节数时暂停后台 NAS I/O |
-| `recording_staging.pause_record_queue_oldest_age_ms` | 任一路录制队列最老包达到该等待时间时暂停后台 NAS I/O |
-| `recording_staging.delete_after_upload` | NAS capture 持久化并校验成功后是否删除本地副本 |
-| `photo_capture.enabled` | 是否接收并可靠暂存按需原始 MJPEG 快照 |
-| `photo_capture.staging_root` | 快照本地 staging 根目录；不应位于 NAS 挂载内 |
-| `photo_capture.nas_subdirectory` | 快照在 NAS 根目录下的一级目录，默认 `voice_photos` |
-| `photo_capture.max_jpeg_mb` | 单张原始 MJPEG 最大字节数 |
-| `photo_capture.queue_max_items` | 接收端快照 staging 队列最大任务数 |
-| `photo_capture.upload_interval_ms` | 独立照片上传器扫描重试间隔 |
-| `segment_seconds` | 录制切片时长 |
-| `segment_keyframe_lead_ms` | 在统一切片边界前预约 RGB 关键帧的提前量，默认 500 ms |
-| `recording_start_lead_ms` | 统一全局起点相对开始请求的预留时间，默认 1000 ms，用于强制 IDR 和收集可解码预滚 |
-| `ffmpeg_path` | ffmpeg 路径 |
-| `state_path` | Web/REST 持久化状态文件 |
-| `write_debug_h264` | 是否长期保留 RGB debug h264 |
-| `write_debug_depth_raw` | 是否长期保留 Depth debug raw |
-| `max_payload_mb` | 单包最大 payload 限制 |
-| `record_queue_max_mb` | 每路相机可靠录制队列上限 |
-| `record_queue_total_max_mb` | 所有相机录制队列总上限 |
-| `record_finalize_max_pending_segments` | 全局待收尾切片上限，默认 8；达到上限时延后自动轮转但不中断当前录制 |
-| `record_finalize_workers` | receiver 本地分片收尾 worker 数；多路停止时可并行关闭管道和合并 CSV |
-| `min_free_disk_mb` | 开始和持续录制时保留的最小可用空间 |
-
-## 11. 发送端配置
-
-常见字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `sender_id` | 发送端身份，可为固定值或 `auto` |
-| `receiver.ip` | 接收端 IP |
-| `receiver.media_port` | 媒体 TCP 端口 |
-| `receiver.status_port` | 状态 UDP 端口 |
-| `clock_sync.enabled` | 是否启用 CLOCK_SYNC client |
-| `clock_sync.receiver_ip` | CLOCK_SYNC receiver IP，缺省跟随 `receiver.ip` |
-| `clock_sync.port` | CLOCK_SYNC UDP 端口，默认 50012 |
-| `clock_sync.interval_ms` | probe 间隔 |
-| `clock_sync.timeout_ms` | response 等待超时 |
-| `transport.status_protocol` | 当前只实现 `udp` |
-| `transport.media_protocol` | 当前只实现 `tcp` |
-| `preview.enabled` | 本地预览开关 |
-| `web_rgb_preview.enabled` | Web RGB 预览流开关 |
-| `hotplug.enabled` | 运行时热插拔扫描 |
-| `cameras[].camera_id` | 相机身份 |
-| `cameras[].device_model` | SDK 返回的精确型号；单相机可据此接受同型号任意序列号 |
-| `cameras[].serial_number` | 物理相机序列号 |
-| `cameras[].uid` | 稳定 USB 端口约束 |
-| `cameras[].rotation_degrees` | 可选的 Orbbec RGB/Depth 统一旋转角度，仅允许 `0`/`90`/`180`/`270`；缺省时不改变设备方向 |
-| `cameras[].publish_warmup_ms` | pipeline 启动后禁止发布的暖机时间；`-1` 时 Gemini 305 默认 3000 ms、其他型号默认 0 |
-| `cameras[].rgb_profile` | RGB 采集档位 |
-| `cameras[].depth_profile` | Depth 采集档位 |
-| `cameras[].rgb_encoding` | RGB 编码设置 |
-| `cameras[].depth_transport.compression` | `none`、`zlib`、`qdelta`、`pq12zlib`、`q8lz4`、`pq8zlib` 或 `pq8lz4` |
-| `cameras[].depth_transport.quantization_step_mm` | 量化类压缩的毫米级步长 |
-| `cameras[].adaptive_exposure.enabled` | 启用源 MJPEG 软件测光与手动曝光闭环；默认关闭，目前支持 Gemini 305 和实测通过的 SV1301S_U3 |
-| `cameras[].adaptive_exposure.control_mode` | `proportional` 或 `pid`；`pid` 在对数曝光域内运行，并带积分限幅和高光保护 |
-| `cameras[].adaptive_exposure.interval_ms` | 测光周期，默认 500 ms，最低 33 ms；不进入逐帧编码路径 |
-| `cameras[].adaptive_exposure.stable_interval_ms` | 曝光收敛后的测光周期，缺省跟随 `interval_ms`；可用更低的稳态采样率减少 CPU 占用 |
-| `cameras[].adaptive_exposure.settle_ms` | 每次写入曝光或增益后等待新参数反映到源帧的时间；不得短于测光周期，缺省时跟随 `interval_ms` |
-| `cameras[].adaptive_exposure.max_exposure_step` | 普通明暗变化时每次允许的最大曝光步长，用于限制线性变化斜率 |
-| `cameras[].adaptive_exposure.max_gain_step` | 普通明暗变化时每次允许的最大增益步长，默认为 `2` |
-| `cameras[].adaptive_exposure.exposure_min/max` | 软件控制允许的曝光范围；30fps 型号上限按实测校验：Gemini 305 为 300，SV1301S_U3 为 325 |
-| `cameras[].adaptive_exposure.soft_highlight_exposure_floor` | P95 软高光超限时允许回退的曝光下限；`-1` 跟随 `exposure_min`，严重削顶和整体过亮不受该软下限限制 |
-| `cameras[].adaptive_exposure.gain_min/max` | 软件控制允许的 RGB gain 范围 |
-| `cameras[].adaptive_exposure.target_p50_luma` | 可选的中央 ROI 中间调目标；配置后由 P50 控制主体亮度，P95/P99 只限制高光 |
-| `cameras[].adaptive_exposure.target_p95_luma` | 未配置 P50 时是主亮度目标；配置 P50 后作为中央 ROI 上部亮度约束 |
-| `cameras[].adaptive_exposure.luma_deadband` | 目标亮度死区，防止曝光反复跳变 |
-| `cameras[].adaptive_exposure.soft_highlight_luma` | 可选 P99 软高光阈值；用于亮端低于 255 的相机，触发渐进回退且受 `soft_highlight_exposure_floor` 保护，`-1` 表示关闭 |
-| `cameras[].adaptive_exposure.highlight_luma` | 高光像素阈值 |
-| `cameras[].adaptive_exposure.max_highlight_fraction` | 允许超过高光阈值的最大像素比例 |
-| `cameras[].adaptive_exposure.highlight_recovery_ratio` | 高光保护退出比例，默认 0.7；超限后要回落到 `max_highlight_fraction` 的该比例以下才恢复增亮 |
-| `cameras[].adaptive_exposure.underexposed_samples` | 连续低亮样本达到该次数后才缓慢增亮 |
-| `cameras[].adaptive_exposure.roi_margin_percent` | 测光时从图像四边排除的比例 |
-| `cameras[].adaptive_exposure.metering_window` | 测光时域中值窗口，只允许 1–9 的奇数；用于抑制 LED/PWM 闪烁和单帧异常 |
-| `cameras[].adaptive_exposure.pid_kp/ki/kd` | PID 模式的比例、积分和微分系数；默认关闭微分项，避免放大帧间测光噪声 |
-| `cameras[].adaptive_exposure.pid_integral_limit` | PID 积分项限幅，防止明暗突变后积分饱和 |
-| `cameras[].adaptive_exposure.pid_derivative_alpha` | 微分项低通滤波系数；仅在 `pid_kd > 0` 时实际参与控制 |
-
-Orbbec SDK 设备选择优先使用 `uid`、`serial_number`，二者均缺省时才使用 `device_model`。配置同时包含型号与序列号/UID 时，两项都必须匹配。型号唯一时直接选择；检测到多个同型号设备时使用显式 `device_index`，正式多相机配置仍要求序列号或 UID。
-
-启用 `adaptive_exposure` 时，`color_controls.auto_exposure` 必须显式为 `false`，并提供位于自适应范围内的初始 `exposure` 和 `gain`。PID 模式中，P99 软高光只阻止继续增亮；只有 P50/P95 或高光面积真正超限才主动减亮，避免相邻曝光/增益档位反复切换。发送端 heartbeat 会额外上报 `adaptive_exposure_luma_p50/p95/p99`、`adaptive_exposure_highlight_fraction`、当前请求曝光/增益、样本数、调整数和失败数。测光或 SDK 属性写入失败时只保留当前手动参数，不会中断采集、编码或发送。
-
-## 12. 落盘文件
-
-每段录制目录里常见文件：
-
-| 文件 | 用途 |
-| --- | --- |
-| `rgb.mp4` | RGB 正式视频 |
-| `depth.mkv` | Depth 正式视频容器 |
-| `frames.csv` | 帧索引、时间戳、诊断字段 |
-| `frames.csv.inprogress` | 录制期间的内部帧日志；不得给下游使用，收尾后删除 |
-| `meta.json` | 录制元信息 |
-| `calibration.json` | 相机参数和 Depth scale |
-| `ffmpeg.log` | 封装日志 |
-| `rgb_debug.h264` | RGB 调试/恢复旁路，仅 `write_debug_h264=true` 时写入 |
-| `depth_debug.raw` | Depth 调试旁路，按配置保留 |
-| `recording_staged.json` | 本地分片已关闭，等待 uploader 复制到 NAS capture queue |
-| `recording_ready.json` | NAS 最终分片已完整发布；可能带文件前缀，以 `meta.recording_ready_file` 为准 |
-
-## 13. `frames.csv` 当前重点列
-
-| 字段 | 用途 |
-| --- | --- |
-| `stream_type` | 区分 RGB、Depth 和预览流 |
-| `frame_id` | 该流帧号 |
-| `timestamp_us` | 设备或 SDK 时间戳 |
-| `frame_system_timestamp_us` | 发送端系统时间戳 |
-| `receiver_receive_timestamp_us` | 接收端完整收到包并开始处理时的本机时间 |
-| `clock_sync_valid` | 当前 sender clock model 是否有效 |
-| `sender_offset_us` | receiver clock - sender clock 的偏移估计 |
-| `sender_delay_us` | 最近 clock sync 网络延迟估计 |
-| `sender_drift_ppm` | sender 时钟漂移估计 |
-| `global_timestamp_us` | 接收端统一时间轴时间戳 |
-| `packet_system_timestamp_us` | 包级系统时间戳 |
-| `rgb_system_timestamp_us` | 最近 RGB 系统时间戳 |
-| `depth_system_timestamp_us` | 最近 Depth 系统时间戳 |
-| `pair_delta_us` | 最近 RGB/Depth 时间差 |
-| `pair_delta_source` | 时间差使用 `system_timestamp_us` 或设备时间戳 |
-| `rgb_depth_pair_valid` | 时间差和 `pair_id` 共同判断的配对质量标记 |
-| `pair_id_valid` | RGB/Depth 非零 `pair_id` 是否严格相等 |
-| `rgb_recorded` | RGB 是否进入 `rgb.mp4` |
-| `rgb_video_frame_index` | RGB 在 `rgb.mp4` 中的视频帧号 |
-| `rgb_recorded_payload_size` | 录制 RGB payload 大小 |
-| `recording_session_id` | 本次录制会话 ID；`start-all` 的所有路必须相同 |
-| `recording_window_start_global_us` | 该会话在 receiver 全局时间轴上的有效起点 |
-| `recording_window_end_global_us` | 显式停止时的全局结束边界；`0` 表示该自动切片在会话结束前已收尾 |
-| `recording_window_valid` | 该行是否位于当前录制有效窗口；下游数据集只使用 `1` |
-| `global_segment_index` | 以录制会话统一起点和 `segment_seconds` 计算的逻辑分片编号 |
-| `segment_window_start_global_us` | 当前逻辑分片统一起点 |
-| `segment_window_end_global_us` | 当前逻辑分片统一终点，按左闭右开解释 |
-| `segment_window_valid` | 该行是否位于当前逻辑分片时间窗；下游只使用 `1` |
-
-`global_timestamp_us` 只有在媒体包带有效 sender 系统时间且 CLOCK_SYNC 模型有效时才应用 offset/drift；否则保留 sender 系统时间或设备时间并写 `clock_sync_valid=0`。下游不能把无效模型生成的值当成跨设备统一时间。
-
-录制期间不会公开最终名称的 `frames.csv`。接收端先在本地 staging 写 `frames.csv.inprogress`，收尾时合并 RGB 实际落盘索引，再原子发布 `frames.csv`、`meta.closed=true` 和 `recording_staged.json`。独立 uploader 先把原始 capture 包可靠复制到 NAS 隐藏队列，再按 `rgb_output_mode` 直接保留完整 fMP4 或兼容性重封装普通 MP4，最后发布目标目录。隐藏队列不会出现正式 `recording_ready.json`；该文件只在最终目录清理完成后原子生成。下游开始对齐前必须满足：
-
-```text
-meta.closed == true
-meta.frames_publish_state == "finalized"   # 新数据
-recording_ready.ready == true               # meta 声明 ready 文件时
-```
-
-可使用 `05_tools/sync_input_guard.py --inputs <segment...> --verify-video-frames` 做统一检查。
-
-`meta.json`、`recording_staged.json` 和 `recording_ready.json` 还会保存 `global_segment_index`、`segment_window_start_global_us`、`segment_window_end_global_us` 以及分片有效窗口摘要。`meta.json` 额外保存 RGB/Depth 各自的首尾 `global_timestamp_us`。相同 `recording_session_id + global_segment_index` 的各相机文件共享同一逻辑时间窗；相机重连时可能出现同编号的后缀目录，下游应合并这些目录中的有效行，而不是按目录名假设帧号连续。
-
-下游生成多机 RGB 对齐清单时使用：
-
-```bash
-python3 05_tools/build_rgb_sync_manifest.py \
-  --output rgb_sync_manifest.csv \
-  --max-delta-ms 33.333 \
-  reference=/path/to/camera_a \
-  camera_b=/path/to/camera_b \
-  camera_c=/path/to/camera_c
-```
-
-工具只读取 `rgb_recorded=1`、`recording_window_valid=1`、`segment_window_valid=1` 的 RGB 行，以第一路为参考做不复用旧帧的单调近邻匹配。内容标定得到固定偏移后可加 `--content-offset-us camera_b=-12000`；该偏移只用于生成清单，不修改 `frames.csv` 的原始 `global_timestamp_us`。
-
-`/api/status` 顶层包含 `build_commit`、`build_dirty`、组件级 `build_source_hash`、`recording_start_pending`、`recording_session_id`、`record_queue_total_bytes`、`recording_staging_enabled`、`recording_write_root`、`recording_uploader`、`photo_capture`，以及 `record_finalize_outstanding_segments`、`record_finalize_queued_segments`、`record_finalize_active_segments`、`record_finalize_completed_segments`、`record_finalize_failed_segments`、`media_ingress_superseded_sessions`、`media_ingress_stale_packets`。`photo_capture` 提供 available、队列字节数、已接收、已完成和失败计数。每路相机包含 sender 组件哈希、输入/发送 FPS、发送失败计数、当前 media session、录制会话/窗口、暖机状态、录制队列和 finalizer 指标。所有 sender 的 `build_source_hash` 应一致；receiver 使用独立哈希，不因另一组件源码变化产生假差异。
-
-`recording_uploader` 使用 `gwv3_recording_uploader_status_v2`。除 `active_phase`、`active_bytes_done`、`active_bytes_total`、`active_progress_percent` 和 `active_elapsed_ms` 外，还提供 `active_capture_workers`、`active_full_copy_workers`、`incremental_mirror_worker_running`、`incremental_mirror_current_segment`、`incremental_mirror_active_source_bytes`、`incremental_mirror_active_reusable_bytes`、`incremental_mirror_active_lag_bytes`、`incremental_mirror_active_coverage_percent`、`rgb_output_mode`、`fragmented_passthroughs`、`local_pending_segments/bytes`、`nas_finalize_pending_segments/bytes`、`publish_recovery_journals`、`captured_segments`、`incremental_mirror_fsyncs` 和 `last_capture_success_us`。`pending_metrics_refreshed_us` 是 uploader 最近一次完整扫描 staging/capture queue 的开始时间，不是普通状态写入时间或扫描结束时间。它作为安全水位：在 receiver 收尾前已开始的扫描，即使之后才结束，也不能证明新分片不存在。`pending_transfer_eta_seconds` 按最近共享写入速率粗估剩余时间；`nas_write_shared_limit_mbps`、`nas_write_recent_mbps` 和 `nas_write_submitted_bytes` 分别表示所有流水镜像/补拷 worker 共享的总上限、近期平均写入速率和已提交字节。`receiver_recording_active` 和 `active_recording_full_copy_workers` 用于确认实时录制期间的低优先级全量补拷是否已自动限制。
-
-完整交付判定应直接使用顶层 `recording_delivery_ready=true`。receiver 用 `record_finalize_last_completed_us` 与 `recording_uploader_pending_metrics_refreshed_us` 比较，只有 uploader 在最后一段本地收尾之后已重新扫描，且 receiver/uploader 队列都为 0 时才会置 true。这避免停录后本地收尾已完成、uploader 尚未发现新分片时出现短暂的假 `pending_segments=0`。详细诊断仍可使用 `recording_delivery_pending`、`record_finalize_outstanding_segments`、`recording_uploader.pending_segments` 和 `record_finalize_failed_segments`。
-
-活跃切片增量镜像在独立后台线程中运行，不受历史关闭切片搬运阻塞。每次数据 `fsync` 后会记录持久化 chunk 边界；uploader 重启时只复用已持久化部分，未确认的尾部会重新拷贝。所有 worker 通过同一个线程安全的 token limiter 共享 `upload_bandwidth_limit_mbps`，该数值是总带宽而非每个 worker 的上限。录制中，低镜像复用率的历史整段补拷限制为 `active_recording_full_copy_workers`（默认 1）；停录后恢复到 `full_copy_workers`（默认 3）以快速清空积压。正常高复用率切片仍可按相机路由并行 worker 收尾。
-
-每路相机的切片边界状态包含 `global_segment_index`、`segment_window_start_global_us`、`segment_window_end_global_us`、`segment_rotation_keyframe_requested_us`、`segment_rotation_keyframe_requests`、`segment_prestart_depth_drops` 和 `segment_prestart_rgb_drops`。前五项用于确认各路是否在同一逻辑分片，以及是否正在等待边界 IDR；后两项记录 idle 重连或进程恢复后、首个 SPS/PPS/IDR 之前被拒绝的无配对 Depth 和不可独立解码 RGB。
-
-CLOCK_SYNC 模型还包含 `clock_report_stale`、`clock_last_probe_receiver_us` 和 `clock_probe_count`。sender 状态报告暂时过期但双向 probe 仍存活时，模型可继续有效；只有报告和 probe 都过期才按超时策略失效。
-
-自动切片按 `recording_window_start_global_us + N * segment_seconds` 的统一时间轴执行，不再按每路 writer 的启动时刻独立计时。receiver 在边界前发送带 `target_global_us` 的关键帧预约；sender 通过 CLOCK_SYNC offset 换算成本机采集时间，在首个达到边界的 RGB 帧编码前触发 IDR。掉线重连会重新加入当前 `global_segment_index`，不会重新开始一套 15 分钟周期。边界处仍可能有约一帧的采集相位差，因此文件同窗不等于内容硬同步，下游仍须按 `global_timestamp_us` 近邻匹配。
-
-接收端切换到新切片后，由后台 worker 快速关闭旧本地切片。显式停止时，`segment_finalizing/record_finalizing` 只表示 writer 分离的短临界区；分离后的后台工作由 `segment_finalize_pending` 和顶层 finalizer 计数表示，它不再阻塞新录制。NAS capture、容器校验和最终发布由独立 uploader 处理，且在 receiver 队列积压或切片边界附近主动暂停。生产 fMP4 模式不执行 RGB 整文件重封装。`recording=true` 可以与 receiver finalizer 或 uploader backlog 同时出现。重启、断电或正式交付前必须等待 `record_finalize_outstanding_segments=0` 且 uploader backlog 为 0。
-
-TCP media 每个 `sender_id/camera_id/stream_type` 只允许最新会话拥有入口。sender 重连时，新会话会立即取代并关闭旧会话；旧会话后续包不会进入预览或录制。`media_ingress_superseded_sessions` 计数重连接管，`media_ingress_stale_packets` 计数被拒绝的旧会话包。
-
-sender 进程或相机重启后 `frame_id` 可能从 0 重新计数，不应将它当作跨重启的全局序号。下游跨设备、跨切片对齐仍使用 `global_timestamp_us`，并在入库前检查其严格单调。
-
-`camera_announce` 带来的运行状态会持久化到 `state_path`。状态快照在全局锁内生成，但磁盘写入在释放全局锁后执行；并发保存使用递增 revision 串行化，旧快照不会覆盖新快照，慢磁盘也不会阻塞 media 入口。
-
-## 14. Orbbec 兼容导出
-
-导出命令：
-
-```bash
-./05_tools/export_orbbec_delivery.py <segment_dir> --overwrite
-```
-
-如需导出逐帧 Depth PNG：
-
-```bash
-./05_tools/export_orbbec_delivery.py <segment_dir> --export-depth-png --overwrite
-```
-
-默认不展开逐帧 PNG，避免文件数量和容量过大。
-
-## 15. 录制任务音频文件
-
-每个最终视频分片目录固定包含 `audio_timing.csv`、`audio_meta.json` 和 `audio_ready.json`。只有收到过真实 RTP/Opus 包时才包含 `audio.opus`；`quality_status=no_input` 时没有 `audio.opus` 是正常且必要的，不能把它当作文件丢失，也不能自行生成全静音音频冒充有效数据。
-
-`audio_meta.json` 重点字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `recording_session_id` | 与同目录视频一致的录制会话 |
-| `segment_window_start_global_us` | 任务音频全局起点 |
-| `segment_window_end_global_us` | 任务音频实际全局终点 |
-| `expected_packets` / `received_packets` | 20 ms 包期望数和真实实收数 |
-| `silence_packets` | 为保持时间轴连续而补入的静音包数 |
-| `received_ratio` | 实收比例 |
-| `longest_no_input_ms` | 最长连续无真实输入时长 |
-| `quality_status` | `complete`、`partial` 或 `no_input` |
-| `audio_valid` | 仅完整质量为 true |
-| `outage_intervals` | 音频断流区间 |
-| `playback_events` | 本机 TTS/叮登提示音的开始和结束事件 |
-
-下游应先检查 `audio_ready.ready=true`，再按 `quality_status` 决定是否使用。`complete` 要求实收比例至少 99% 且最长连续无输入不超过 1 秒；`partial` 可以用于人工排查，但默认不应进入严格训练集。
+- REST 和 CSV 允许新增字段，客户端应忽略未知字段。
+- 不删除旧字段，不覆盖原始 timestamp。
+- H.264 客户端必须读取 `header_size`，兼容 GWHP v1/v2。
+- `frame_id` 不是跨重启全局序号。
+- 网页预览、实时主码流和正式录制是不同交付语义。

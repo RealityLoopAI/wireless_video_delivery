@@ -1,6 +1,6 @@
 # 部署与运行手册
 
-更新时间：2026-09-01
+更新时间：2026-09-02
 
 本文档说明当前主线如何部署、启动、停止、检查状态和录制。密码、私有凭据和现场临时备份不写入仓库文档。
 
@@ -38,10 +38,10 @@ Web Monitor 依赖位于：
 
 ### 2.2 配置文件
 
-默认接收端配置：
+当前生产接收端配置：
 
 ```text
-06_configs/receiver_ubuntu-01.json
+06_configs/receiver_loop.json
 ```
 
 关键字段：
@@ -52,24 +52,16 @@ status_port: 50011
 clock_sync.port: 50012
 admin_port: 18080
 web_port: 8080
-nas_root: 接收端本地挂载目录
-recording_staging.root: receiver 本地可靠暂存目录
-recording_staging.enabled: 是否启用先本地后 NAS 的可靠发布
+nas_root: 接收端挂载后的 NAS 根目录
+recording_staging.enabled: false 为当前 NAS 直写；true 为本地 staging 回退
+recording_staging.root: 回退模式的 receiver 本地可靠暂存目录
+recording_staging.direct_publish_hidden_directory: 直写模式的 NAS 隐藏写入目录
 recording_staging.rgb_output_mode: fragmented_mp4 直接交付或 conventional_mp4 兼容重封装
-recording_staging.nas_capture_queue_directory: NAS 隐藏 capture queue 名称
-recording_staging.upload_bandwidth_limit_mbps: 本地到 NAS capture 的带宽上限
-recording_staging.retain_local_capture_for_finalize: capture 安全落 NAS 后是否暂留本地副本直到最终发布
-recording_staging.local_cache_high_watermark_percent: 本地缓存强制回收高水位
-recording_staging.local_cache_low_watermark_percent: 高水位回收停止水位
-recording_staging.finalize_workers: capture 校验和最终发布并发上限，生产默认 2
-recording_staging.status_write_interval_ms: uploader 活跃状态写入间隔
-recording_staging.pause_record_queue_bytes: 实时录制队列达到该值时暂停后台 NAS I/O
-recording_staging.pause_record_queue_oldest_age_ms: 实时录制队列等待达到该值时暂停后台 NAS I/O
 segment_seconds: 单段切片时长
 state_path: Web/REST 持久化状态文件
 ```
 
-`nas_root` 和 `recording_staging.root` 都必须可写，且不能指向同一目录。staging 应位于本地 ext4/xfs 文件系统；`nas_root` 可以来自 NFS、CIFS/SMB 或其他网络文件系统挂载。`min_free_disk_mb` 用于给 staging 所在文件系统保留安全水位。
+当前生产配置要求 `nas_root` 是真实挂载点、可写，并且隐藏目录与正式目录位于同一文件系统。切换到 staging 回退模式时，`recording_staging.root` 还必须位于 receiver 本地 ext4/xfs，不能等于或位于 `nas_root` 内。`min_free_disk_mb` 保护当前写入根目录的安全水位。
 
 ### 2.3 启动、停止、状态
 
@@ -94,11 +86,11 @@ state_path: Web/REST 持久化状态文件
 使用指定配置：
 
 ```bash
-./05_tools/start_receiver.sh 06_configs/receiver_ubuntu-01.json
-./05_tools/status_receiver.sh 06_configs/receiver_ubuntu-01.json
+./05_tools/start_receiver.sh 06_configs/receiver_loop.json
+./05_tools/status_receiver.sh 06_configs/receiver_loop.json
 ```
 
-启动脚本会编译接收端、准备 Web Monitor venv，并优先通过 systemd 用户服务启动 receiver、recording uploader 和 Web Monitor。
+启动脚本会编译接收端、准备 Web Monitor venv，并优先通过 systemd 用户服务启动 receiver 和 Web Monitor。只有 `recording_staging.enabled=true` 时才需要 recording uploader；直写模式不应产生本地搬运 backlog。
 构建产物位于当前构建目录的 `bin/`，隔离测试构建不会覆盖正式 `12_build/bin/`。
 
 ### 2.4 自启动
@@ -129,7 +121,7 @@ sudo ./05_tools/install_receiver_network_tuning.sh
 ```text
 gwv3-gemini-receiver.service
 gwv3-receiver-network-tuning.service
-gwv3-recording-uploader.service
+gwv3-recording-uploader.service  # staging 回退模式
 gwv3-web-monitor.service
 gwv3-receiver-log-rotate.timer
 ```
@@ -370,10 +362,10 @@ LubanCat，最终使用 RK3576 板卡序列号后 8 位区分发送端。
 3. 点击全部录制或单路录制。
 4. 观察录制状态和保存目录。
 5. 停止录制。
-6. 等待页面中 `record_finalizing=false`、`segment_finalizing=false`、录制队列归零；此时可以开始下一次录制，不必等待 uploader 最终发布。
-7. `local_pending_segments=0` 表示本地已关闭分片都已安全写入 NAS capture queue；`local_finalize_cache_segments` 是最终发布前仍保留的本地可删除副本，不是唯一副本。
-8. 生产 fMP4 模式应看到 `last_remux_source=fragmented_passthrough`；只有 `conventional_mp4` 兼容模式才会显示 `local` 或 `nas` 重封装来源。
-9. 等待 `recording_uploader.pending_segments=0` 且 `local_finalize_cache_segments=0`，再到 NAS 最终目录检查 `rgb.mp4`、`depth.mkv`、`frames.csv`、`meta.json`、`recording_ready.json` 和 `calibration.json`。
+6. writer 分离后可以开始下一次录制；旧段后台关闭期间查看 `record_finalize_outstanding_segments`，不要把“可重新开始”和“已可交付”混为一谈。
+7. 等待最终目录出现 `recording_ready.json`，并确认 record queue 与 finalizer 归零。
+8. 生产 fMP4 模式应看到 `rgb_container_format=fragmented_mp4`，不应出现整文件重封装。
+9. staging 回退模式还需要等待 `recording_uploader.pending_segments=0` 和本地缓存清零。
 10. 多机对齐前运行 `./05_tools/sync_input_guard.py --inputs <各路录制目录> --verify-video-frames`。
 
 ### 6.2 CLI 录制
@@ -452,8 +444,8 @@ python3 05_tools/align_depth_to_rgb.py <segment_dir>
 
 接收端：
 
-1. NAS 挂载目录和本地 staging 目录存在且可写，并且位于不同文件系统路径。
-2. `ffmpeg` 可用，`gwv3-recording-uploader.service` 为 active。
+1. NAS 挂载目录存在、是挂载点且可写；直写隐藏目录与正式目录位于同一文件系统。
+2. `ffmpeg` 可用；仅 staging 回退模式要求 `gwv3-recording-uploader.service` active。
 3. `50010`、`50011`、`8080` 未被错误占用。
 4. 接收端服务和 Web Monitor 都已启动。
 5. Web Monitor 能访问。

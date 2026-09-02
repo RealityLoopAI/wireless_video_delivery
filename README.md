@@ -1,94 +1,78 @@
 # wireless_video_delivery
 
-`wireless_video_delivery` 是一套多路 Orbbec Gemini RGBD 相机的无线采集、传输、网页预览和录制工程。
+`wireless_video_delivery` 是一套面向 Linux 的多机 Orbbec RGB-D 采集、无线传输、网页监控和 NAS 录制系统。仓库统一维护发送端、接收端、Web Monitor、设备配置、运维脚本、语音扩展与测试。
 
-这个仓库把发送端、接收端、Web Monitor、配置模板、运行脚本和文档放在一起，目标是在 Linux 设备上完成从相机采集到 NAS 落盘的完整链路。
-
-## 先读什么
-
-如果你是第一次看这个项目，按下面顺序读：
-
-1. [04_docs/00_文档索引.md](04_docs/00_文档索引.md)
-2. [04_docs/01_从零开始理解项目.md](04_docs/01_从零开始理解项目.md)
-3. [04_docs/02_系统架构与技术路线.md](04_docs/02_系统架构与技术路线.md)
-4. [04_docs/03_RGBD数据链路.md](04_docs/03_RGBD数据链路.md)
-5. [04_docs/04_部署与运行手册.md](04_docs/04_部署与运行手册.md)
-
-旧文档已经移动到 [04_docs/archive/README_历史文档说明.md](04_docs/archive/README_历史文档说明.md)。归档文档只用于追溯历史问题和取舍，不代表当前实现。
-
-## 当前系统做什么
-
-系统由发送端、接收端、Web Monitor 和 NAS 组成：
+## Current Architecture
 
 ```mermaid
 flowchart LR
-  camera[Orbbec Gemini RGBD 相机]
-  sender[Linux ARM 发送端]
-  receiver[Linux x86_64 接收端]
+  camera[Orbbec RGB-D camera]
+  sender[ARM sender]
+  receiver[x86 receiver]
   web[Web Monitor]
-  nas[NAS 录制目录]
+  nas[NAS]
 
   camera --> sender
-  sender -->|TCP 50010 媒体数据| receiver
-  sender -->|UDP 50011 状态心跳| receiver
-  sender <-->|UDP 50012 CLOCK_SYNC| receiver
+  sender -->|TCP 50010 media| receiver
+  sender -->|UDP 50011 status| receiver
+  sender <-->|UDP 50012 clock sync| receiver
   receiver --> web
   receiver --> nas
 ```
 
-当前主线实现：
+当前正式链路：
 
-1. 发送端通过 Orbbec SDK 采集 RGB 和 Depth。
-2. RGB 在发送端编码为 H.264 后发送。
-3. Depth 以 `uint16` 深度帧为母版，支持原始帧、zlib 无损和量化/分块压缩模式。
-4. CLOCK_SYNC 通过独立 UDP 端口估计 sender 到 receiver 的时间偏移，接收端生成 `global_timestamp_us`。
-5. 接收端接收媒体数据和状态心跳，提供录制控制和网页预览。
-6. 录制数据写入接收端挂载的 NAS 目录。
-7. Web Monitor 用于看在线状态、实时预览、开始/停止录制和设置显示名称。
-8. d12 语音服务默认以 0.2 秒间隔连拍 3 张；sender 按相机方向配置校正 MJPEG，receiver 本地可靠确认后异步发布到 NAS `voice_photos`。
+1. sender 通过 Orbbec SDK 采集 RGB 和 Depth。
+2. RGB 编码为 H.264；Depth 保持 `uint16` 语义并按配置压缩。
+3. receiver 接收媒体、生成预览、按统一时间窗录制并发布到 NAS。
+4. chrony 与 CLOCK_SYNC 建立跨 sender 的统一时间轴，录制保留 `global_timestamp_us`。
+5. Web Monitor 只负责状态、预览和控制，不是正式数据源。
 
-当前默认网络入口：
+当前默认端口：
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 50010 | TCP | RGB/Depth 主媒体 |
+| 50011 | UDP | 状态与控制 |
+| 50012 | UDP | CLOCK_SYNC |
+| 18080 | HTTP loopback | receiver admin API |
+| 8080 | HTTP | Web Monitor 和对外 REST |
+
+## Documentation
+
+从 [documentation index](04_docs/index.md) 开始。常用入口：
+
+- [项目说明](04_docs/overview.md)
+- [系统架构](04_docs/architecture.md)
+- [数据链路](04_docs/data-pipeline.md)
+- [部署手册](04_docs/deployment.md)
+- [配置说明](04_docs/configuration.md)
+- [接口参考](04_docs/api-reference.md)
+- [录制与 NAS](04_docs/recording-and-nas.md)
+- [故障排查](04_docs/troubleshooting.md)
+
+历史阶段报告不再保存在主线工作区；可通过 Git 历史追溯。`08_reports/` 仅保留为运行日志目录，不能再提交现场日志或阶段报告。
+
+## Repository Layout
 
 ```text
-media:   TCP 50010
-status:  UDP 50011
-clock:   UDP 50012
-admin:   HTTP 127.0.0.1:18080
-web:     HTTP 0.0.0.0:8080
+01_sender_linux/     sender C++ source
+02_receiver_linux/   receiver C++ source
+03_common_core/      shared wire protocol
+04_docs/             maintained documentation
+05_tools/            deployment, operations and analysis tools
+06_configs/          device and service configurations
+07_samples/          small non-sensitive samples
+08_reports/          runtime log root, logs are ignored
+09_web_monitor/      FastAPI monitor and REST proxy
+10_tests/            automated and integration tests
+11_third_party/      third-party dependency placement
+12_apps/             optional device applications
 ```
 
-## 当前不是目标
+## Common Commands
 
-当前主线不把下面内容当成正式能力：
-
-1. Windows 接收端。
-2. Python SDK 实时取流接口。
-3. RTP/UDP 5600 旧链路。
-4. Web 端历史录像检索和下载系统。
-5. 接收端远程修改发送端采集参数。
-6. 硬件同步、PTP 或严格画面内容级同步。
-7. 长时间 7x24 满负载稳定性承诺。
-
-## 仓库目录
-
-```text
-01_sender_linux/     发送端 C++ 工程
-02_receiver_linux/   接收端 C++ 工程
-03_common_core/      发送端和接收端共用协议定义
-04_docs/             当前主文档和历史归档
-05_tools/            启动、停止、状态、导出和维护脚本
-06_configs/          发送端和接收端配置模板
-07_samples/          样例材料
-08_reports/          近期运行、排查和合并归档；较早历史报告已迁入 04_docs/archive
-09_web_monitor/      FastAPI Web Monitor
-10_tests/            测试和模拟工具
-11_third_party/      第三方依赖放置说明
-12_apps/             独立应用实验；当前包含“小环”离线语音拍照服务
-```
-
-## 常用命令
-
-接收端：
+Receiver:
 
 ```bash
 ./05_tools/start_receiver.sh
@@ -96,7 +80,7 @@ web:     HTTP 0.0.0.0:8080
 ./05_tools/stop_receiver.sh
 ```
 
-发送端：
+Sender:
 
 ```bash
 ./05_tools/start_sender.sh
@@ -105,12 +89,11 @@ web:     HTTP 0.0.0.0:8080
 ./05_tools/stop_sender.sh
 ```
 
-具体部署、配置和排障步骤见 [04_docs/04_部署与运行手册.md](04_docs/04_部署与运行手册.md) 和 [04_docs/06_故障排查手册.md](04_docs/06_故障排查手册.md)。
+Build and test details are in [testing-and-release.md](04_docs/testing-and-release.md).
 
-## 关键约束
+## Invariants
 
-多发送端系统最重要的约束是身份稳定。
-
-接收端使用 `<sender_id>_<camera_id>` 作为唯一相机 key。这个 key 影响网页预览、录制控制、存储目录、时间戳对齐和下游处理。不要为了临时调试、当前 IP、仓库默认配置或看起来更顺手而随意改 `sender_id` / `camera_id`。
-
-文档和配置中不应提交密码、私有凭据、NAS 原始数据或本地临时备份。
+- `<sender_id>_<camera_id>` 是稳定且唯一的相机身份，不能用显示名称、当前 IP 或临时 USB 顺序替代。
+- 正式数据以带 `recording_ready.json` 的 NAS 目录为准；网页预览不能作为质量验收依据。
+- 不提交密码、访问令牌、NAS 原始数据、本地 SDK 二进制、运行日志或备份包。
+- 生产部署必须上报并核对 commit、组件源码哈希和 dirty 状态。

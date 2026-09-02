@@ -1,10 +1,10 @@
-# 133 语音播报 HTTP 接口
+# Xiaohuan TTS HTTP API
 
 ## 服务地址
 
 ```text
 设备: orangepi5pro-d12a4719
-IP: 192.168.66.133
+IP: use current sender address
 端口: 18082/TCP
 接口: POST /api/tts/speak
 Content-Type: application/json
@@ -72,7 +72,7 @@ CORS。不要把 `18082/TCP` 映射到公网。
 Linux/macOS：
 
 ```bash
-curl -sS -X POST http://192.168.66.133:18082/api/tts/speak \
+curl -sS -X POST http://<sender-ip>:18082/api/tts/speak \
   -H 'Content-Type: application/json' \
   -d '{"request_id":"demo-001","text":"数据采集已经完成，camera 01 正常。"}'
 ```
@@ -88,7 +88,7 @@ payload = {
     "text": "请检查设备 RGBD 连接状态。",
 }
 request = Request(
-    "http://192.168.66.133:18082/api/tts/speak",
+    "http://<sender-ip>:18082/api/tts/speak",
     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
     headers={"Content-Type": "application/json"},
     method="POST",
@@ -100,7 +100,7 @@ with urlopen(request, timeout=2) as response:
 ## 健康检查
 
 ```bash
-curl -sS http://192.168.66.133:18082/healthz
+curl -sS http://<sender-ip>:18082/healthz
 ```
 
 正常示例：
@@ -142,7 +142,7 @@ curl -sS http://192.168.66.133:18082/healthz
 ```bash
 systemctl --user status xiaohuan-wake.service
 systemctl --user restart xiaohuan-wake.service
-tail -f /home/orangepi/Desktop/new_experiment_2026-07-02/wake_runtime.log
+tail -f 12_apps/xiaohuan_voice_photo/wake_runtime.log
 ```
 
 关键环境变量：
@@ -162,7 +162,7 @@ XIAOHUAN_TTS_RESUME_DELAY_SECONDS=0.2
 XIAOHUAN_ECHO_TAIL_SECONDS=0.03
 XIAOHUAN_CAPTURE_PLAYBACK_MODE=restart
 XIAOHUAN_UTTERANCE_FORWARD_ENABLED=1
-XIAOHUAN_UTTERANCE_FORWARD_URL=http://192.168.66.113:50020/api/audio
+XIAOHUAN_UTTERANCE_FORWARD_URL=http://<downstream-ip>:50020/api/audio
 ```
 
 133 使用半双工快速恢复：播放前释放 USB 麦克风端点，识别暂停；

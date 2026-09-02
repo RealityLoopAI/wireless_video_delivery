@@ -1,6 +1,6 @@
 # Web Monitor
 
-Web Monitor 是接收端管理 API 的 FastAPI 网页和 REST 代理。完整说明见 [../04_docs/04_部署与运行手册.md](../04_docs/04_部署与运行手册.md) 和 [../04_docs/05_接口与数据格式参考.md](../04_docs/05_接口与数据格式参考.md)。
+Web Monitor 是接收端管理 API 的 FastAPI 网页和 REST 代理。完整说明见 [../04_docs/deployment.md](../04_docs/deployment.md) 和 [../04_docs/api-reference.md](../04_docs/api-reference.md)。
 
 前端页面：
 
@@ -20,10 +20,10 @@ http://127.0.0.1:18080
 http://0.0.0.0:8080
 ```
 
-接收端启动脚本会从下面配置读取 `web_bind_ip`、`web_port` 和 `admin_port`：
+接收端启动脚本会从启动时选择的 receiver 配置读取 `web_bind_ip`、`web_port` 和 `admin_port`。当前生产文件为：
 
 ```text
-06_configs/receiver_ubuntu-01.json
+06_configs/receiver_loop.json
 ```
 
 本机访问地址：

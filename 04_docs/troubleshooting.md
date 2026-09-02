@@ -1,6 +1,6 @@
 # 故障排查手册
 
-更新时间：2026-07-21
+更新时间：2026-09-02
 
 本文档把历史问题压缩成按现象排查的步骤。排查时先确认“当前实际运行状态”，不要只看某个服务是否 active。
 
@@ -127,61 +127,49 @@ curl -X POST 'http://<receiver_ip>:8080/api/preview/main-target?sender_id=<sende
 
 可能原因：
 
-1. 本地 staging 目录不存在或不可写。
-2. NAS 目录不可写，导致 uploader backlog 增长。
-3. 本地 staging 磁盘达到保留水位。
+1. NAS 未挂载、不可写或被错误挂载到普通本地目录。
+2. NAS 隐藏写入目录和正式目录不在同一文件系统。
+3. 当前写入文件系统达到保留水位。
 4. 录制命令没有到达接收端。
 5. 相机没有在线。
 6. `storage_key` 或文件名前缀包含非法字符。
 
 处理：
 
-1. 检查 `recording_staging.root` 和 `nas_root` 是否存在、可写且不是同一路径。
+1. 检查 `nas_root` 是真实挂载点并且可写；确认 `.gwv3_direct_inprogress` 可创建目录。
 2. Web 或 CLI 开始录制后看 `/api/status` 的 recording 状态。
-3. 录制中先看 `<recording_staging.root>/<storage_key>/<date>/<time>/`；交付完成后再看 NAS 同相对路径。
+3. 录制中看 `<nas_root>/.gwv3_direct_inprogress/`，交付后看正式相机/date/time 路径。
 4. 查看 `ffmpeg.log` 和接收端日志。
-5. 看 `/api/status` 的 `record_accepting`、`record_finalizing`、`record_write_errors`、队列字节数和 `recording_uploader` backlog。
+5. 看 `/api/status` 的 `recording_state`、`record_accepting`、`record_finalizing`、`record_write_errors`、队列字节数和 finalizer 计数。
+6. 若明确启用了 staging 回退，再检查 `recording_staging.root`、uploader 和 capture queue。
 
 ## 7. `rgb.mp4` 打不开或收尾失败
 
-历史根因：
-
-1. 普通 MP4 需要结束时写 `moov`。
-2. 旧版直接写 NAS/CIFS 时，进程被杀或写盘失败可能造成 MP4 缺 `moov`。
+普通 MP4 在异常退出时可能缺少尾部索引。当前生产输出为 fMP4，录制开始即写初始化信息，运行中写 `moof` 分片，正常关闭补 `mfra`；不使用会触发长文件全扫描的 `global_sidx`。这提高异常可恢复性，但仍不意味着断电时最后一个活动分片一定完整。
 
 当前结论：
 
-1. RGB 在本地 staging 使用 fragmented MP4，receiver 正常关闭后发布 staged 标记。
-2. 实时 MP4 正常关闭时保留尾部 `mfra` 完整性标记，但不使用 `global_sidx`，避免多路长文件在关闭时同时扫描和回写整个文件。
-3. `write_debug_h264=false` 时不再打开或双写 RGB debug H.264；只有显式开启才生成旁路。
-4. 独立 uploader 先把 closed fragmented MP4、Depth、CSV 和元数据复制到 NAS 隐藏 capture queue；文件逐个 `fsync`、清单一致且 capture 标记落盘后，本地 fMP4 才降级为可删除缓存。
-5. 生产配置 `rgb_output_mode=fragmented_mp4` 时，uploader 对完整 fMP4 做结构校验后直接发布，不再完整读回和重写 RGB；`conventional_mp4` 兼容模式才执行本地优先、NAS 回退的无损重封装。内部 finalized 标记不是下游 ready。
-6. 最终发布使用持久化发布日志。即使进程在目录移动后退出，重启后也会补齐清理和正式 `recording_ready.json`，不会删除唯一副本。
-7. NAS 不可用或上传器重启时，本地完成分片保留并自动重试，不反压 receiver media socket。
-8. 自动切片等待 SPS/PPS/IDR 后再切换 writer，触发关键帧进入新段；旧本地 writer 由后台 worker 快速关闭。
-9. sender 离线超过 `idle_finalize_ms` 时旧分片主动关闭；重连后在首个可解码 RGB 到达前不创建 Depth-only 微小尾段。
-10. 停止 receiver 前应等待 receiver 队列和 finalizer 归零；正式交付或关机前还应等待 uploader backlog 为 0。
-11. 文件带前缀时，ready 标记也带相同前缀；以 `meta.recording_ready_file` 为准。
+1. RGB 直接在 NAS 隐藏目录写 fragmented MP4，关闭后检查 `moov+moof+mfra` 并原子发布。
+2. `write_debug_h264=false` 时不双写 H.264 调试旁路。
+3. 自动切片等待 SPS/PPS/IDR 后切换 writer；旧 writer 后台关闭，不阻塞当前录制。
+4. sender 离线超过 `idle_finalize_ms` 时关闭旧分片；重连在首个可解码 RGB 前不发布 Depth-only 小段。
+5. 文件带前缀时 ready marker 也带同一前缀，以 `meta.recording_ready_file` 为准。
+6. staging 回退模式才使用 uploader/capture queue；不要把其状态字段用于解释直写模式。
 
 排查：
 
 1. 看 `ffmpeg.log`。
 2. 看 `meta.json` 的 closed 状态和帧数。
 3. 看 `frames.csv` 中 `rgb_recorded=1` 的数量。
-4. 检查本地 staging 可用空间、uploader 日志和 NAS 挂载状态。
-5. 如果本地有 `recording_staged.json`，说明 receiver 已安全关闭但 uploader 尚未完成；看 `pending_segments` 和 `last_error`。
-6. 如果 NAS 的 `.gwv3_capture_queue` 中出现 capture/finalized 标记，说明数据已安全到 NAS、但最终目录尚未发布；不得把隐藏目录直接交给下游。
-7. 如果 NAS 只出现 `.gwv3-uploading-*`，说明 capture 复制曾被中断；当前 uploader 会在下一次重试清理，不能手工添加 ready 标记。
-8. 如果最终目录有 `.gwv3_publish_incomplete.json` 或 capture queue 根目录有 `.gwv3-publish-*.json`，说明最终目录移动被中断；保持 uploader 运行，它会根据日志自动补齐正式 ready。不得手工删除两边文件。
-9. 长时录制后若 `frame_id`、`frame_system_timestamp_us`、`global_timestamp_us` 同时大幅倒退，检查 `media_ingress_superseded_sessions` 和 `media_ingress_stale_packets`。这通常是 sender 重连时新旧 TCP 会话重叠，不是 clock sync offset 漂移。
-10. `record_prequeue_peak_delay_ms` 表示包完整收到到进入录制队列的峰值延迟；`record_queue_peak_wait_ms` 表示入队后等待落盘 worker 的峰值。前者高说明录制入队前仍有重处理，后者高则优先排查 NAS 或落盘处理能力。
-11. 若五路 `record_prequeue_peak_delay_ms` 在同一时刻一起跃增，查找是否有在 receiver 全局锁内执行的磁盘 I/O。当前版本已将 `receiver_runtime_state.json` 持久化移到锁外；若日志仍显示 `camera_announce` 与全路读包停顿同时发生，先核对 `build_source_hash`。
-12. uploader 长时间显示 active 时，查看 `active_phase`、`active_bytes_done`、`active_bytes_total`、`active_progress_percent` 和 `active_elapsed_ms`。字节持续增长表示仍在工作；完全不变且日志报错时再按挂载、空间、权限或 ffmpeg 故障处理。
-13. 若出现 2 至 3 帧的 Depth-only 段，核对 receiver 是否为最新构建，并查看 `segment_prestart_depth_drops`。新版本会在 RGBD 相机首个可解码 RGB 关键帧之前拒绝无配对 Depth，不发布这种微小尾段。
-14. 若 `last_error` 显示历史 `media TCP connect failed`，但 `media_age_ms` 很小且帧率正常，先核对 receiver 构建版本。当前版本会在媒体恢复后忽略 sender 尚未清理的这类历史传输错误；相机错误和 `recording_*` 错误仍会保留。
-15. 若 receiver finalizer 持续数十秒至数分钟，并看到子进程执行 `ffprobe -show_entries format=duration` 读取大型 fragmented MP4，说明仍在使用旧版全文件扫描校验。核对 receiver 构建至少包含 `5309c8e`；当前版本对源 fMP4 检查 `moov+moof+mfra`，正常五路短测的单段 receiver 收尾约 89 至 99 ms。
-16. 生产 fMP4 模式正常应显示 `pipeline_mode=nas_first_fragmented_mp4`、`rgb_output_mode=fragmented_mp4` 和 `last_remux_source=fragmented_passthrough`。若配置为 `conventional_mp4`，才应看到 `nas_first_local_cache_finalize` 以及 `local`/`nas` 重封装来源。
-17. 最终 `rgb.mp4` 是 fMP4 时必须同时有 `moov`、`moof` 和尾部 `mfra`，且 `recording_ready.json` 应包含 `rgb_container_format=fragmented_mp4`、`rgb_fragmented=true`。VLC、mpv、ffplay 和 FFmpeg 下游可直接使用；遇到只支持传统 MP4 的旧软件时再切换兼容模式。
+4. 检查 NAS 挂载、可用空间和 `.gwv3_direct_inprogress` 中是否有滞留目录。
+5. 长时录制后若 `frame_id`、`frame_system_timestamp_us`、`global_timestamp_us` 同时大幅倒退，检查 `media_ingress_superseded_sessions` 和 `media_ingress_stale_packets`。这通常是 sender 重连时新旧 TCP 会话重叠，不是 clock offset 正常漂移。
+6. `record_prequeue_peak_delay_ms` 高说明入队前有重处理；`record_queue_peak_wait_ms` 高则优先排查 NAS 或写盘能力。
+7. 若多路 prequeue delay 同时跃增，检查 receiver 全局锁内是否发生磁盘 I/O，并核对运行 `build_source_hash`。
+8. 若出现少量 Depth-only 小段，查看 `segment_prestart_depth_drops` 和是否在首个可解码 RGB 前错误建段。
+9. 若历史 `media TCP connect failed` 仍显示，但媒体 age 很小且 FPS 正常，区分当前状态和未清理历史错误。
+10. finalizer 持续数十秒且 `ffprobe` 在读取整段大 fMP4，说明运行的仍是旧版全文件扫描路径；核对组件版本。
+11. 最终 fMP4 应有 `moov`、`moof`、尾部 `mfra`，且 ready marker 声明 `rgb_container_format=fragmented_mp4`。
+12. 若启用了 staging 回退，再按 uploader 的 pending、active phase、capture queue 与发布日志排查；不得手工伪造 ready marker。
 
 ## 8. 帧率低或画面卡
 
@@ -362,15 +350,6 @@ curl -s http://<receiver_ip>:8080/api/status
 4. 丢包和重传迹象。
 5. 多发送端同时运行时总码率是否接近链路上限。
 
-## 15. 什么时候看历史归档
+## 15. 历史问题如何追溯
 
-只有在下面情况需要看归档：
-
-1. 想知道某个问题以前为什么这么修。
-2. 主文档步骤不够，需要追溯现场证据。
-3. 要比较旧方案和当前方案。
-4. 要确认某个风险是不是历史上出现过。
-
-归档入口：
-
-[archive/README_历史文档说明.md](archive/README_历史文档说明.md)
+主线不再保留按日期堆积的报告。需要复核旧问题时使用 `git log --all -- <path>`、`git show <commit>` 和 GitHub 提交记录。结论回写当前文档，证据保留在提交和自动测试中。

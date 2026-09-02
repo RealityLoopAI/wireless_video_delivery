@@ -1,9 +1,8 @@
-# 小环整句语音 HTTP 接收接口
+# Xiaohuan Utterance Audio HTTP API
 
 ## 1. 功能
 
-`orangepi5pro-d12a4719` 不再持续发送 RTP/Opus 音频。设备只在以下流程中发送用户
-说出的完整语句：
+本接口用于可选的 utterance-forward profile。该 profile 关闭持续 RTP/Opus，只在以下流程中发送用户说出的完整语句：
 
 1. 用户说“你好小环”。
 2. 设备播放“我在”。
@@ -13,13 +12,13 @@
 6. 其他内容或本地识别为空时，播放“登”，随后异步发送完整 WAV。
 
 发送音频保留约 200ms 语音前缓冲和 300ms 语音后缓冲。原有文本转语音接口
-`POST http://192.168.66.133:18082/api/tts/speak` 保持不变。
+`POST http://<sender-ip>:18082/api/tts/speak` 保持不变。
 
 ## 2. 接口
 
 ```text
 接收设备: macOS
-接收地址: 192.168.66.113
+接收地址: <downstream-ip>
 协议: HTTP/1.1
 端口: 50020/TCP
 方法: POST
@@ -105,13 +104,13 @@ curl -sS http://127.0.0.1:50020/healthz
 从其他局域网设备检查：
 
 ```bash
-curl -sS http://192.168.66.113:50020/healthz
+curl -sS http://<downstream-ip>:50020/healthz
 ```
 
 ## 5. 手工发送测试
 
 ```bash
-curl -sS -X POST http://192.168.66.113:50020/api/audio \
+curl -sS -X POST http://<downstream-ip>:50020/api/audio \
   -H 'Content-Type: audio/wav' \
   --data-binary @test.wav
 ```

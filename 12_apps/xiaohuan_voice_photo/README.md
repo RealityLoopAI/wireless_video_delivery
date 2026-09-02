@@ -107,7 +107,7 @@ tts_queue_capacity: 100
 tts_max_text_chars: 500
 tts_speaker_retry_seconds: 15.0
 tts_resume_delay_seconds: 0.2
-utterance_forward_url: http://192.168.66.113:50020/api/audio
+utterance_forward_url: http://<downstream-ip>:50020/api/audio
 utterance_forward_queue: 8
 utterance_forward_retries: 3
 command_start_timeout_seconds: 8.0
@@ -139,7 +139,7 @@ systemctl --user status xiaohuan-wake.service
 tail -f wake_runtime.log
 ```
 
-更多 KWS 候选后端、AEC/NS/AGC 条件说明见 `KWS_AND_AUDIO_FRONTEND.md`。
+更多 KWS 候选后端、AEC/NS/AGC 条件说明见 `kws-and-audio-frontend.md`。
 
 为降低无人说唤醒词时的误触发，正式服务使用严格唤醒模式：
 
@@ -159,9 +159,9 @@ LubanCat 等使用同一张声卡同时录放音的 `SM15 M1 USB audio` 设备�
 该配置禁用低电平重启看门狗，避免声卡 AEC 输出数字静音时被误判为断流；
 `audio_read_timeout_seconds` 仍用于检测真实读取超时。
 
-systemd 单元使用 `%h/Desktop/new_experiment_2026-07-02`，可在
-`orangepi`、`cat` 等不同用户下共用，不得再将路径硬编码为
-`/home/orangepi`。Edge TTS 缓存缺省使用当前用户的
+当前组件仍兼容早期独立实验目录，但新部署应从仓库内的
+`12_apps/xiaohuan_voice_photo/` 运行。不同用户下不得把路径硬编码为
+`/home/orangepi`；Edge TTS 缓存缺省使用当前用户的
 `~/.cache/xiaohuan/edge_tts`。
 
 ## 2. sherpa-onnx KWS 方案
@@ -185,7 +185,7 @@ systemd 单元使用 `%h/Desktop/new_experiment_2026-07-02`，可在
 `cue_photo_ding.wav` 与 `cue_forward_deng.wav`，触发时均不依赖网络。历史文件
 `response_photo_done.wav` 只为旧流程兼容保留，正式流程不再播放“好的，已拍照”。
 
-`192.168.66.133` 上的外部动态文本默认使用 Edge TTS
+启用 TTS HTTP 的发送端使用 Edge TTS
 `zh-CN-XiaoyiNeural`。首次遇到的文本需要联网合成；成功结果写入
 `~/.cache/xiaohuan/edge_tts`，相同文本在进程重启后仍可复用。磁盘缓存上限为
 256 MB，超出后按最久未使用顺序清理。
@@ -195,7 +195,7 @@ Edge 请求失败或 4 秒超时时，该条动态播报失败并写日志，不
 HTTP 接口已经返回的 `accepted` 仅表示任务入队，不表示合成成功。Edge 模式会把待播
 文本发送给云端服务。
 
-代码仍保留手工诊断用的 `espeak` 和 `sherpa` 后端，但 133 的正式配置不得启用它们，
+代码仍保留手工诊断用的 `espeak` 和 `sherpa` 后端，但需要统一音色的设备不得启用它们，
 否则不能保证统一音色。
 
 ## 5. 唤醒后拍照
@@ -223,13 +223,13 @@ HTTP 接口已经返回的 `accepted` 仅表示任务入队，不表示合成成
 接收端本地 staging：
 
 ```text
-/home/fz/recording_staging/.gwv3_photo_queue/<request_id>/
+<photo_staging_root>/.gwv3_photo_queue/<request_id>/
 ```
 
 最终 NAS 目录只发布 JPG，不写旁路 JSON：
 
 ```text
-/home/fz/Desktop/nas/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
+<nas_root>/voice_photos/<sender_id>_<camera_id>/YYYY-MM-DD/HH-MM-SS/YYYYMMDD_HHMMSS.jpg
 ```
 
 一次三连拍以第一张实际选中 RGB 帧的 `frame_system_timestamp_us` 确定目录和文件名前缀，三张使用 `.jpg`、`_001.jpg`、`_002.jpg`；后两张跨秒时仍保存在该目录。目标秒目录已被另一轮拍照占用时，整组改用 `HH-MM-SS_001` 目录。目录时间不是语音识别完成时间或 NAS 上传时间。
@@ -255,23 +255,23 @@ command_max_speech_seconds: 60.0
 
 ## 6. 局域网文本播报
 
-`192.168.66.133` 默认监听：
+启用 TTS HTTP 后默认监听：
 
 ```text
-POST http://192.168.66.133:18082/api/tts/speak
+POST http://<sender-ip>:18082/api/tts/speak
 ```
 
 请求必须包含 `request_id` 和 `text`。重复 `request_id` 不会重复播放。接口返回
 `accepted` 只表示已经入队。唤醒后的用户会话进行期间，远程文本只排队不插播；固定
 回复和“叮/登”本地提示音优先于远程文本。完整协议、错误码和调用示例见
-`TTS_HTTP_API.md`。
+`tts-http-api.md`。
 
-## 7. 唤醒后整句 WAV 发送
+## 7. 唤醒后整句 WAV 发送（可选模式）
 
-133 正式配置不再持续发送 RTP/Opus。只有一次唤醒会话中的非拍照语音会发送到：
+启用 `xiaohuan-wake-utterance-forward.conf` 时关闭持续 RTP/Opus，只有一次唤醒会话中的非拍照语音会发送到：
 
 ```text
-POST http://192.168.66.113:50020/api/audio
+POST http://<downstream-ip>:50020/api/audio
 Content-Type: audio/wav
 Body: 16000Hz / mono / PCM signed 16-bit WAV
 ```
@@ -281,7 +281,7 @@ Body: 16000Hz / mono / PCM signed 16-bit WAV
 ```text
 XIAOHUAN_AUDIO_STREAM_ENABLED=0
 XIAOHUAN_UTTERANCE_FORWARD_ENABLED=1
-XIAOHUAN_UTTERANCE_FORWARD_URL=http://192.168.66.113:50020/api/audio
+XIAOHUAN_UTTERANCE_FORWARD_URL=http://<downstream-ip>:50020/api/audio
 XIAOHUAN_UTTERANCE_FORWARD_QUEUE=8
 XIAOHUAN_UTTERANCE_FORWARD_TIMEOUT_SECONDS=10
 XIAOHUAN_UTTERANCE_FORWARD_RETRIES=3
@@ -290,10 +290,10 @@ XIAOHUAN_UTTERANCE_FORWARD_RETRY_DELAY_SECONDS=0.5
 
 HTTP 请求体不附带 JSON 或 multipart 元数据。任意 `2xx` 响应视为成功；失败最多重试
 3 次。队列满时丢弃最旧语音，上传成功后发送端不保留本地 WAV。参考 macOS 接收脚本
-为 `05_tools/xiaohuan_audio_receiver.py`，完整接口见 `UTTERANCE_AUDIO_HTTP_API.md`。
+为 `05_tools/xiaohuan_audio_receiver.py`，完整接口见 `utterance-audio-http-api.md`。
 
-旧 RTP/Opus 参数和实现仅保留用于兼容诊断，133 的正式 systemd profile
-`systemd/xiaohuan-wake-utterance-forward.conf` 明确关闭该链路。
+持续 RTP/Opus 与整句转发是两个可选 profile。`systemd/xiaohuan-wake-utterance-forward.conf`
+明确关闭持续 RTP；`systemd/xiaohuan-wake-rtp-*.conf` 则启用实时音频和归档。
 
 ## 8. 文件识别测试
 
