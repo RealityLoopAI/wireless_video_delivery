@@ -59,6 +59,7 @@ endforeach()
 
 add_executable(gemini_sender
     src/adaptive_exposure_controller.cpp
+    src/application.cpp
     src/clock_sync_client.cpp
     src/config.cpp
     src/gst_h264_encoder.cpp

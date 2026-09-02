@@ -2,10 +2,16 @@
 from pathlib import Path
 
 
+def read_component_sources(root: Path, component: str) -> str:
+    source_root = root / component / "src"
+    paths = sorted(source_root.rglob("*.cpp")) + sorted(source_root.rglob("*.inl"))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
-    sender = (root / "01_sender_linux" / "src" / "main.cpp").read_text(encoding="utf-8")
-    receiver = (root / "02_receiver_linux" / "src" / "main.cpp").read_text(encoding="utf-8")
+    sender = read_component_sources(root, "01_sender_linux")
+    receiver = read_component_sources(root, "02_receiver_linux")
     frontend = (root / "09_web_monitor" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "config.web_rgb_preview.fps >= camera.config.rgb_profile.fps" in sender

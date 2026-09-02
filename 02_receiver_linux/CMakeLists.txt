@@ -1,4 +1,5 @@
 add_executable(gemini_receiver
+    src/application.cpp
     src/clock_sync_manager.cpp
     src/main.cpp
 )
@@ -121,4 +122,29 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_audio_archive_audit.py
     )
     set_tests_properties(audio_archive_audit_unit PROPERTIES TIMEOUT 10)
+    add_test(
+        NAME recording_led_service_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_led_service.py
+    )
+    set_tests_properties(recording_led_service_unit PROPERTIES TIMEOUT 10)
+    add_test(
+        NAME power_button_service_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_power_button_service.py
+    )
+    set_tests_properties(power_button_service_unit PROPERTIES TIMEOUT 10)
+    add_test(
+        NAME voice_tts_service_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_tts_service.py
+    )
+    set_tests_properties(voice_tts_service_unit PROPERTIES TIMEOUT 20)
+    add_test(
+        NAME voice_utterance_forward_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_utterance_forward.py
+    )
+    set_tests_properties(voice_utterance_forward_unit PROPERTIES TIMEOUT 20)
+    add_test(
+        NAME voice_audio_mixer_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_audio_mixer.py
+    )
+    set_tests_properties(voice_audio_mixer_unit PROPERTIES TIMEOUT 10)
 endif()

@@ -35,12 +35,15 @@ file(GLOB_RECURSE GWV3_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.cpp"
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.h"
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.hpp"
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/*.inl"
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.cpp"
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.h"
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.hpp"
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.inl"
     "${CMAKE_SOURCE_DIR}/03_common_core/*.cpp"
     "${CMAKE_SOURCE_DIR}/03_common_core/*.h"
     "${CMAKE_SOURCE_DIR}/03_common_core/*.hpp"
+    "${CMAKE_SOURCE_DIR}/03_common_core/*.inl"
 )
 foreach(GWV3_VERSION_CMAKE_FILE IN ITEMS
         "${CMAKE_SOURCE_DIR}/CMakeLists.txt"
@@ -82,16 +85,19 @@ file(GLOB_RECURSE GWV3_COMMON_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/03_common_core/*.cpp"
     "${CMAKE_SOURCE_DIR}/03_common_core/*.h"
     "${CMAKE_SOURCE_DIR}/03_common_core/*.hpp"
+    "${CMAKE_SOURCE_DIR}/03_common_core/*.inl"
 )
 file(GLOB_RECURSE GWV3_SENDER_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.cpp"
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.h"
     "${CMAKE_SOURCE_DIR}/01_sender_linux/*.hpp"
+    "${CMAKE_SOURCE_DIR}/01_sender_linux/*.inl"
 )
 file(GLOB_RECURSE GWV3_RECEIVER_VERSION_SOURCE_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.cpp"
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.h"
     "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.hpp"
+    "${CMAKE_SOURCE_DIR}/02_receiver_linux/*.inl"
 )
 gwv3_compute_component_hash(GWV3_SENDER_SOURCE_HASH
     ${GWV3_COMMON_VERSION_SOURCE_FILES}
