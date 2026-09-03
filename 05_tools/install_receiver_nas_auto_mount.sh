@@ -12,6 +12,7 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exit 1
 fi
 [[ -f "$CONFIG" ]] || { echo "Receiver config not found: $CONFIG" >&2; exit 1; }
+CONFIG="$(realpath "$CONFIG")"
 NAS_ROOT="$(python3 - "$CONFIG" <<'PY'
 import json
 import os
