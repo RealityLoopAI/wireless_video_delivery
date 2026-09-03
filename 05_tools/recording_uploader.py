@@ -2587,6 +2587,18 @@ class Uploader:
         nas_root_text = str(config.get("nas_root") or "")
         self.staging_root = Path(staging_root_text).expanduser()
         self.nas_root = Path(nas_root_text).expanduser()
+        nas_auto_mount = config.get("nas_auto_mount") or {}
+        if not isinstance(nas_auto_mount, dict):
+            raise ValueError("nas_auto_mount must be an object")
+        self.nas_mount_gate_enabled = bool(nas_auto_mount.get("enabled", False))
+        self.nas_mount_status_path = Path(
+            str(nas_auto_mount.get("status_path") or "/run/gwv3/nas-mount-status.json")
+        ).expanduser()
+        self.nas_mount_status_max_age_us = max(
+            1_000,
+            int(nas_auto_mount.get("status_max_age_ms", 10_000)),
+        ) * 1_000
+        self.nas_mount_ready_status = not self.nas_mount_gate_enabled
         capture_queue_name = str(staging.get("nas_capture_queue_directory") or CAPTURE_QUEUE_DIRECTORY)
         if Path(capture_queue_name).name != capture_queue_name or capture_queue_name in {"", ".", ".."}:
             raise ValueError("nas_capture_queue_directory must be one directory name")
@@ -2832,6 +2844,25 @@ class Uploader:
             raise ValueError("recording staging root must differ from nas_root")
         self.staging_root.mkdir(parents=True, exist_ok=True)
 
+    def nas_mount_ready(self) -> bool:
+        if not self.nas_mount_gate_enabled:
+            self.nas_mount_ready_status = True
+            return True
+        try:
+            status = load_json(self.nas_mount_status_path)
+            updated_us = int(status.get("updated_us") or 0)
+            mount_point = Path(str(status.get("mount_point") or "")).expanduser()
+            current_us = now_us()
+            ready = (
+                status.get("ready") is True
+                and mount_point.absolute() == self.nas_root.absolute()
+                and 0 <= current_us - updated_us <= self.nas_mount_status_max_age_us
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            ready = False
+        self.nas_mount_ready_status = ready
+        return ready
+
     def write_status(self, refresh_metrics: bool = False) -> None:
         with self.status_lock:
             if refresh_metrics or self.cached_pending_status is None:
@@ -2892,6 +2923,9 @@ class Uploader:
                     "rgb_output_mode": self.rgb_output_mode,
                     "staging_root": str(self.staging_root),
                     "nas_root": str(self.nas_root),
+                    "nas_mount_gate_enabled": self.nas_mount_gate_enabled,
+                    "nas_mount_ready": self.nas_mount_ready_status,
+                    "nas_mount_status_path": str(self.nas_mount_status_path),
                     "capture_queue_root": str(self.capture_queue_root),
                     "local_pending_segments": metrics["local_count"],
                     "local_pending_bytes": metrics["local_bytes"],
@@ -3770,6 +3804,9 @@ class Uploader:
             )
 
     def process_active_mirrors(self) -> bool:
+        if not self.nas_mount_ready():
+            self.close_incremental_mirror_handles()
+            return False
         if (
             not self.incremental_mirror_enabled
             or STOP_REQUESTED
@@ -4695,6 +4732,13 @@ class Uploader:
         return self.process_local_one(segment)
 
     def run_once(self) -> bool:
+        if not self.nas_mount_ready():
+            self.close_incremental_mirror_handles()
+            self.last_error = "NAS mount unavailable; uploads are paused and local recordings are retained"
+            self.write_status(refresh_metrics=True)
+            return False
+        if self.last_error.startswith("NAS mount unavailable"):
+            self.last_error = ""
         progress = self.recover_pending_publications()
         # Keep the segment currently being recorded close to NAS before
         # processing older closed segments. Otherwise a backlog can starve the

@@ -3,11 +3,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "gwv3_sender/config.hpp"
+#include "gwv3_sender/receiver_target.hpp"
 
 namespace gwv3 {
 
@@ -23,6 +25,7 @@ struct MediaPacketView {
 class Transport {
 public:
     explicit Transport(const AppConfig &config);
+    Transport(const AppConfig &config, std::shared_ptr<ReceiverTarget> receiver_target);
     ~Transport();
 
     bool send_status(const std::string &json_message);
@@ -56,11 +59,13 @@ private:
     std::optional<uint16_t> udp_port_for_packet(const MediaPacketView &packet, int &mtu_bytes, const char *&label) const;
 
     AppConfig config_;
+    std::shared_ptr<ReceiverTarget> receiver_target_;
     int status_udp_fd_ = -1;
     int media_tcp_fd_ = -1;
     int media_udp_fd_ = -1;
     int preview_udp_fd_ = -1;
     int media_send_buffer_bytes_ = 0;
+    uint64_t media_target_generation_ = 0;
     uint32_t media_udp_sequence_ = 0;
     uint32_t preview_udp_sequence_ = 0;
     uint32_t consecutive_media_backpressure_drops_ = 0;

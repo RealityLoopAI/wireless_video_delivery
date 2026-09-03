@@ -508,7 +508,7 @@
     <h1>Gemini Monitor</h1>
     <div class="topbar">
       <div id="summary" class="summary">加载中...</div>
-      <button onclick="post('/api/record/start-all')">开始</button>
+      <button id="startAllButton" onclick="post('/api/record/start-all')">开始</button>
       <button class="stop" onclick="post('/api/record/stop-all')">停止</button>
       <button class="secondary" onclick="openAudioSettings()">音频</button>
       <button class="ghost" onclick="openSettings()">设置</button>
@@ -1481,6 +1481,10 @@
       const visible = visibleCameras.length;
       document.getElementById('summary').textContent =
         `${visible}/${cameras.length} 有画面 · ${online} 在线 · ${recording ? `${recording} 路录制` : '空闲'}${finalizing ? ` · ${finalizing} 路收尾` : ''}${data.receiver_admin_stale ? ' · 状态暂存' : ''}`;
+      const startAllButton = document.getElementById('startAllButton');
+      const startBlocked = data.recording_start_ready === false && !data.recording_all;
+      startAllButton.disabled = startBlocked;
+      startAllButton.title = startBlocked ? (data.recording_start_block_reason || '录制存储尚未就绪') : '';
       document.getElementById('system').innerHTML = `
         <div class="debug-item"><span class="debug-label">系统时间</span><div class="debug-value">${formatBeijingDate(new Date())}</div></div>
         <div class="debug-item"><span class="debug-label">时区</span><div class="debug-value">北京时间 UTC+8</div></div>

@@ -22,6 +22,8 @@
 | Tool | Purpose |
 | --- | --- |
 | `install_receiver_autostart.sh` | 安装 receiver 用户级自启动服务 |
+| `install_receiver_nas_auto_mount.sh` | 安装 Receiver 的 NAS 自动发现、挂载和健康检查服务 |
+| `install_nas_discovery_beacon.sh` | 在配套 NAS 安装局域网发现 beacon |
 | `install_receiver_network_tuning.sh` | 安装 receiver 收包队列/RPS 调优 |
 | `install_sender_wifi_tuning.sh` | 为匹配驱动安装发送队列限制 |
 | `sender_preflight.sh [config]` | 检查配置、SDK、编码器、网络和设备条件 |
@@ -40,7 +42,7 @@
 | `setup_sender_chrony_client.sh` | 配置 sender 向 receiver 校时 |
 | `wait_chrony_sync.sh` | 等待并验证 chrony 状态 |
 | `gwv3_receiver_cli.py` | 调用接收端录制控制 API |
-| `recording_uploader.py` | staging 回退模式的 NAS 上传器 |
+| `recording_uploader.py` | 生产 staging 模式的 NAS 增量搬运和原子发布器 |
 | `audio_archive_receiver.py` | 接收和切分持续音频归档 |
 | `photo_uploader.py` | 原子发布语音快照到 NAS |
 

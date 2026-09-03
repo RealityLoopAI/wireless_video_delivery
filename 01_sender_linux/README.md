@@ -53,6 +53,7 @@ ctest --test-dir 12_build_sender --output-on-failure
 - 帧系统时间在采集回调附近绑定，编码和网络线程不能重新取时间替换它。
 - 采集、编码、Depth 压缩、主媒体和预览使用有界队列；预览允许丢旧帧，录制主链路优先。
 - 相机或网络恢复由 watchdog/hotplug 状态机处理，不能因 CLOCK_SYNC、预览或语音应用失败阻塞采集。
+- Receiver 默认通过 UDP 50009 自动发现；媒体、状态、预览和 CLOCK_SYNC 共享同一个动态目标，固定 `receiver.ip` 仅作兜底。
 - 多设备部署必须保持唯一 `sender_id`，多相机设备还必须保持稳定 `camera_id` 映射。
 
 设备配置和身份规则见 [configuration.md](../04_docs/configuration.md)，数据链路见 [data-pipeline.md](../04_docs/data-pipeline.md)。

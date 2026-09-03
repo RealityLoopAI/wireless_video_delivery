@@ -4,7 +4,8 @@ public:
         : config_(std::move(config)),
           logger_(config_.log_directory),
           runtime_state_(load_runtime_state(config_.state_path)),
-          clock_sync_manager_(config_.clock_sync) {
+          clock_sync_manager_(config_.clock_sync),
+          receiver_discovery_server_(config_.receiver_discovery) {
         logger_.info("receiver state loaded: " + config_.state_path);
     }
 
@@ -102,6 +103,10 @@ public:
             clock_sync_manager_.set_log_callbacks([this](const std::string &message) { logger_.info(message); },
                                                  [this](const std::string &message) { logger_.warn(message); });
             clock_sync_manager_.start();
+            receiver_discovery_server_.set_log_callbacks(
+                [this](const std::string &message) { logger_.info(message); },
+                [this](const std::string &message) { logger_.warn(message); });
+            receiver_discovery_server_.start();
             udp_thread_ = std::thread([this] { udp_loop(); });
             if(config_.media_udp_enabled) {
                 media_udp_thread_ = std::thread([this] { media_udp_loop(); });
@@ -148,6 +153,7 @@ public:
             recording_maintenance_thread_.join();
         }
         clock_sync_manager_.stop();
+        receiver_discovery_server_.stop();
         shutdown_client_sockets();
         if(udp_thread_.joinable()) {
             udp_thread_.join();
@@ -211,6 +217,19 @@ public:
         }
         const auto now = now_us();
         refresh_camera_liveness_locked(now);
+        const auto recording_start_block = recording_start_block_reason();
+        std::error_code recording_space_error;
+        const auto recording_space = std::filesystem::space(recording_write_root(config_), recording_space_error);
+        const int recording_free_percent = recording_space_error || recording_space.capacity == 0
+                                               ? -1
+                                               : static_cast<int>(static_cast<long double>(recording_space.available)
+                                                                  * 100.0L
+                                                                  / static_cast<long double>(recording_space.capacity));
+        const bool recording_space_warning =
+            recording_free_percent >= 0 && config_.warn_free_disk_percent > 0
+            && recording_free_percent < config_.warn_free_disk_percent;
+        const bool recording_space_hard_limit =
+            recording_space_error || !storage_space_meets_limits(recording_space, config_);
         UdpReassemblyStats media_udp_stats;
         UdpReassemblyStats preview_udp_stats;
         size_t active_media_udp_assemblies = 0;
@@ -234,6 +253,15 @@ public:
         out << "\"build_commit\":\"" << json_escape(GWV3_GIT_COMMIT) << "\",";
         out << "\"build_dirty\":" << (GWV3_GIT_DIRTY != 0 ? "true" : "false") << ',';
         out << "\"build_source_hash\":\"" << GWV3_RECEIVER_SOURCE_HASH << "\",";
+        out << "\"receiver_discovery\":{";
+        out << "\"enabled\":" << (config_.receiver_discovery.enabled ? "true" : "false") << ',';
+        out << "\"healthy\":" << (receiver_discovery_server_.healthy() ? "true" : "false") << ',';
+        out << "\"receiver_id\":\"" << json_escape(receiver_discovery_server_.receiver_id()) << "\",";
+        out << "\"port\":" << config_.receiver_discovery.port << ',';
+        out << "\"requests_received\":" << receiver_discovery_server_.requests_received() << ',';
+        out << "\"responses_sent\":" << receiver_discovery_server_.responses_sent() << ',';
+        out << "\"last_request_us\":" << receiver_discovery_server_.last_request_us();
+        out << "},";
         out << "\"recording_all\":" << (recording_all_ ? "true" : "false") << ',';
         const bool individual_recording_active = std::any_of(
             cameras_.begin(), cameras_.end(), [](const auto &item) {
@@ -255,6 +283,29 @@ public:
         out << "\"default_file_prefix\":\"" << json_escape(runtime_state_.default_file_prefix) << "\",";
         out << "\"file_prefix_scope\":\"per_camera\",";
         out << "\"nas_root\":\"" << json_escape(config_.nas_root) << "\",";
+        out << "\"recording_storage\":{";
+        out << "\"root\":\"" << json_escape(recording_write_root(config_).string()) << "\",";
+        out << "\"available\":" << (!recording_space_error ? "true" : "false") << ',';
+        out << "\"capacity_bytes\":" << (recording_space_error ? 0 : recording_space.capacity) << ',';
+        out << "\"free_bytes\":" << (recording_space_error ? 0 : recording_space.available) << ',';
+        out << "\"free_percent\":" << recording_free_percent << ',';
+        out << "\"warning\":" << (recording_space_warning ? "true" : "false") << ',';
+        out << "\"hard_limit\":" << (recording_space_hard_limit ? "true" : "false") << ',';
+        out << "\"warn_free_percent\":" << config_.warn_free_disk_percent << ',';
+        out << "\"min_free_percent\":" << config_.min_free_disk_percent << ',';
+        out << "\"min_free_bytes\":" << config_.min_free_disk_bytes;
+        out << "},";
+        out << "\"nas_auto_mount\":{";
+        out << "\"enabled\":" << (config_.nas_auto_mount.enabled ? "true" : "false") << ',';
+        out << "\"ready\":" << (nas_ready_for_new_recording() ? "true" : "false") << ',';
+        out << "\"required_for_new_recording\":"
+            << (config_.nas_auto_mount.require_for_new_recording ? "true" : "false") << ',';
+        out << "\"status_path\":\"" << json_escape(config_.nas_auto_mount.status_path) << "\"";
+        out << "},";
+        out << "\"recording_start_ready\":"
+            << (recording_start_block.has_value() ? "false" : "true") << ',';
+        out << "\"recording_start_block_reason\":\""
+            << json_escape(recording_start_block.value_or("")) << "\",";
         out << "\"recording_staging\":{";
         out << "\"enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
         out << "\"root\":\"" << json_escape(config_.recording_staging.root) << "\",";
@@ -1639,10 +1690,44 @@ public:
             return false;
         }
         const auto space = std::filesystem::space(recording_root, ec);
-        if(ec || config_.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - kRecoveryHeadroomBytes) {
+        if(ec) {
             return false;
         }
-        return space.available >= config_.min_free_disk_bytes + kRecoveryHeadroomBytes;
+        return storage_space_meets_limits(space, config_, kRecoveryHeadroomBytes);
+    }
+
+    bool nas_ready_for_new_recording() const {
+        if(!config_.nas_auto_mount.enabled || !config_.nas_auto_mount.require_for_new_recording) {
+            return true;
+        }
+        std::ifstream input(config_.nas_auto_mount.status_path);
+        if(!input) {
+            return false;
+        }
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        Json::Value root;
+        if(!parse_json_object_strict(text, root) || !root["ready"].isBool() || !root["updated_us"].isUInt64()
+           || !root["mount_point"].isString() || !root["ready"].asBool()) {
+            return false;
+        }
+        if(std::filesystem::path(root["mount_point"].asString()).lexically_normal()
+           != std::filesystem::path(config_.nas_root).lexically_normal()) {
+            return false;
+        }
+        const uint64_t updated_us = root["updated_us"].asUInt64();
+        const uint64_t current_us = now_us();
+        const uint64_t max_age_us = static_cast<uint64_t>(config_.nas_auto_mount.status_max_age_ms) * 1000ull;
+        return updated_us <= current_us && current_us - updated_us <= max_age_us;
+    }
+
+    std::optional<std::string> recording_start_block_reason() const {
+        if(!recording_storage_recovery_ready()) {
+            return "recording storage does not have enough free-space headroom";
+        }
+        if(!nas_ready_for_new_recording()) {
+            return "NAS is not mounted and writable; new recording is blocked";
+        }
+        return std::nullopt;
     }
 
     void abort_recording_after_storage_failure(const std::string &camera_key,
@@ -1894,7 +1979,7 @@ public:
                 return json_error(*error);
             }
         }
-        const bool storage_ready = recording_storage_recovery_ready();
+        const auto start_block_reason = recording_start_block_reason();
         RecordingActivation activation;
         uint64_t response_start_us = 0;
         uint64_t response_session_id = 0;
@@ -1905,8 +1990,8 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             refresh_camera_liveness_locked(now_us());
             const bool already_recording = recording_all_;
-            if(!already_recording && !storage_ready) {
-                return json_error("recording storage does not have enough free-space headroom");
+            if(!already_recording && start_block_reason) {
+                return json_error(*start_block_reason);
             }
             const bool individual_recording_active = !already_recording
                                                      && std::any_of(cameras_.begin(), cameras_.end(), [](const auto &item) {
@@ -2033,7 +2118,7 @@ public:
         if(sender_id.empty()) {
             return json_error("sender_id is required");
         }
-        const bool storage_ready = recording_storage_recovery_ready();
+        const auto start_block_reason = recording_start_block_reason();
         RecordingActivation activation;
         size_t camera_count = 0;
         size_t started_count = 0;
@@ -2058,8 +2143,8 @@ public:
             const bool needs_start = std::any_of(sender_cameras.begin(), sender_cameras.end(), [](const auto &cam) {
                 return !cam->recording_requested;
             });
-            if(needs_start && !storage_ready) {
-                return json_error("recording storage does not have enough free-space headroom");
+            if(needs_start && start_block_reason) {
+                return json_error(*start_block_reason);
             }
             if(needs_start) {
                 recording_faulted_ = false;
@@ -2201,7 +2286,7 @@ public:
                 return json_error(*error);
             }
         }
-        const bool storage_ready = recording_storage_recovery_ready();
+        const auto start_block_reason = recording_start_block_reason();
         uint64_t response_start_us = 0;
         uint64_t response_session_id = 0;
         bool response_pending = false;
@@ -2212,8 +2297,8 @@ public:
             auto cam_ptr = ensure_camera_ptr_locked(sender_id, camera_id);
             auto &cam = *cam_ptr;
             const bool already_recording = cam.recording_requested || cam.segment_active;
-            if(!already_recording && !storage_ready) {
-                return json_error("recording storage does not have enough free-space headroom");
+            if(!already_recording && start_block_reason) {
+                return json_error(*start_block_reason);
             }
             if(!already_recording && !recording_all_) {
                 recording_faulted_ = false;
@@ -5097,6 +5182,7 @@ private:
     Logger logger_;
     RuntimeState runtime_state_;
     ClockSyncManager clock_sync_manager_;
+    ReceiverDiscoveryServer receiver_discovery_server_;
     std::atomic<bool> started_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> listener_start_failed_{false};
@@ -5195,4 +5281,3 @@ private:
     std::thread decoder_cleanup_thread_;
     std::thread photo_capture_thread_;
 };
-

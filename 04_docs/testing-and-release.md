@@ -1,6 +1,6 @@
 # Testing And Release
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 ## Branch Policy
 
@@ -44,7 +44,7 @@ ctest --test-dir 12_build_sender --output-on-failure
 重点覆盖：
 
 - sender 配置、曝光控制、关键帧和媒体恢复 guard；
-- receiver 协议 hardening、录制队列、direct NAS、staging uploader 与故障注入；
+- Receiver/Sender 自动发现、NAS 自动发现门禁、协议 hardening、录制队列、direct NAS、staging uploader 与故障注入；
 - Web 低延迟预览；
 - CLOCK_SYNC 输入与 RGB sync manifest；
 - 语音拍照、TTS、音频采集恢复、全天归档、GPIO 按键和 LED。
@@ -67,7 +67,7 @@ ctest --test-dir 12_build_sender --output-on-failure
 1. 拉取同一个 `main` commit。
 2. 使用该设备本地 SDK 和插件重新构建。
 3. 验证 service 引用的配置文件与预期一致。
-4. 验证 `sender_id`、`camera_id`、receiver 地址和端口。
+4. 验证 `sender_id`、`camera_id`、Receiver 自动发现目标和兜底地址/端口。
 5. 重启服务并核对 status 中的 commit、source hash、dirty=false。
 6. 观察至少 2 分钟 FPS、码率、媒体 age、Send-Q、温度和重连计数。
 

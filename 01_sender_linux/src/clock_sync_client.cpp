@@ -84,7 +84,11 @@ bool json_string_equals(const Json::Value &root, const char *key, const std::str
 }  // namespace
 
 ClockSyncClient::ClockSyncClient(ClockSyncClientConfig config, std::string sender_id)
-    : config_(std::move(config)), sender_id_(std::move(sender_id)) {
+    : ClockSyncClient(config, std::move(sender_id), std::make_shared<ReceiverTarget>(config.receiver_ip)) {}
+
+ClockSyncClient::ClockSyncClient(ClockSyncClientConfig config, std::string sender_id,
+                                 std::shared_ptr<ReceiverTarget> receiver_target)
+    : config_(std::move(config)), sender_id_(std::move(sender_id)), receiver_target_(std::move(receiver_target)) {
     config_.interval_ms = std::max(1, config_.interval_ms);
     config_.timeout_ms = std::max(1, config_.timeout_ms);
     config_.max_delay_us = std::max<int64_t>(1, config_.max_delay_us);
@@ -167,7 +171,7 @@ ClockSyncClientState ClockSyncClient::state() const {
 }
 
 void ClockSyncClient::run_loop() {
-    if(config_.receiver_ip.empty()) {
+    if(!receiver_target_ || receiver_target_->snapshot().host.empty()) {
         log_warn("clock_sync disabled: receiver_ip is empty");
         running_ = false;
         return;
@@ -185,8 +189,9 @@ void ClockSyncClient::run_loop() {
     while(running_) {
         const bool ok = send_probe_and_wait_response(fd, ++sequence);
         if(!ok && std::chrono::steady_clock::now() >= next_warning) {
+            const auto target = receiver_target_->snapshot();
             log_warn("clock_sync probe timeout or invalid response sender_id=" + sender_id_
-                     + " receiver=" + config_.receiver_ip + ":" + std::to_string(config_.port));
+                     + " receiver=" + target.host + ":" + std::to_string(config_.port));
             next_warning = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         }
 
@@ -199,9 +204,20 @@ void ClockSyncClient::run_loop() {
 }
 
 bool ClockSyncClient::send_probe_and_wait_response(int fd, uint64_t sequence) {
+    const auto target = receiver_target_->snapshot();
+    if(target.host.empty()) {
+        return false;
+    }
+    if(target_generation_ != target.generation) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = ClockSyncClientState{};
+        samples_.clear();
+        last_sync_steady_ = {};
+        target_generation_ = target.generation;
+    }
     sockaddr_in addr{};
     try {
-        addr = resolve_ipv4_endpoint(config_.receiver_ip, config_.port);
+        addr = resolve_ipv4_endpoint(target.host, config_.port);
     }
     catch(const std::exception &e) {
         log_warn(e.what());
@@ -292,6 +308,10 @@ bool ClockSyncClient::send_probe_and_wait_response(int fd, uint64_t sequence) {
         const auto s_t4 = static_cast<int64_t>(t4);
         const int64_t offset_us = ((r_t2 - s_t1) + (r_t3 - s_t4)) / 2;
         const int64_t delay_us = (s_t4 - s_t1) - (r_t3 - r_t2);
+        if(receiver_target_->snapshot().generation != target.generation) {
+            return false;
+        }
+        receiver_target_->mark_success(target.generation);
         return apply_sample(t4, offset_us, delay_us);
     }
 

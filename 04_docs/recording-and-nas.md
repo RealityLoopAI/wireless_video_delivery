@@ -1,26 +1,26 @@
 # Recording And NAS
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文是录制、切片、文件收尾和 NAS 发布的唯一正式说明。
 
 ## Production Path
 
-当前 `receiver_loop.json` 使用直接 NAS 模式：
+当前 `receiver_loop.json` 使用本地 staging + NAS uploader 模式：
 
 ```text
 media packet
   -> per-camera reliable record queue
   -> receiver segment writer
-  -> <nas_root>/.gwv3_direct_inprogress/<segment>
-  -> close RGB/Depth/CSV metadata
-  -> fsync files and directory
-  -> same-filesystem atomic rename
+  -> <recording_staging.root>/<segment>
+  -> close RGB/Depth/CSV metadata and local ready marker
+  -> uploader hidden NAS capture queue
+  -> NAS finalization and atomic publication
   -> final camera/date/time directory
   -> recording_ready.json
 ```
 
-这条链路没有“先上传到 NAS，再从 NAS 读回重封装，再写回 NAS”的生产步骤。RGB 直接交付完整 fMP4，因此停止时不再整文件重封装。
+RGB 本地直接写完整 fMP4，停止时不做整文件重封装。uploader 可以在录制期间增量镜像，结束后只补齐尾部、验证并发布；NAS 断线时本地录制继续，恢复后补传。
 
 ## Recording State Machine
 
@@ -84,7 +84,7 @@ fMP4 可由 VLC、mpv、ffplay 和 FFmpeg 系列工具直接播放与定位。�
 3. 接收端还有全局队列字节上限和磁盘保留水位。
 4. 存储故障触发整次 session `faulted`，不在同一 session 中悄悄续录。
 
-直接 NAS 模式消除了本地 staging 的持续搬运积压，但没有消除 NAS 或 SMB 的物理吞吐上限。NAS 写延迟超过实时数据生成速度时，record queue 仍会增长。持续录制必须监控：
+本地 staging 隔离 NAS 短时抖动，但没有消除 NAS 或 SMB 的物理吞吐上限。NAS 长期写入低于媒体生成速度时，backlog 仍会增长。持续录制必须监控：
 
 ```text
 record_queue_packets
@@ -96,11 +96,11 @@ record_finalize_outstanding_segments
 recording_delivery_ready
 ```
 
-## Fallback Staging Mode
+## Direct NAS Compatibility Mode
 
-`recording_staging.enabled=true` 是 NAS 不适合实时直写时的回退模式：先写接收端本地盘，再由 `recording_uploader.py` 可靠复制到 NAS capture queue 并原子发布。
+`recording_staging.enabled=false` 保留为受控环境下的直接 NAS 兼容模式。它依赖 NAS 全程在线，不能满足现场断线后继续本地录制的要求。
 
-它能隔离 NAS 短时抖动，但要求本地平均读写和 NAS 平均写入都追得上媒体生成速度。若长期写入速度不足，backlog 一定会累积；增加 worker 只能改善并行度，不能突破磁盘、无线或 SMB 的总带宽。
+生产 staging 模式要求本地平均写入和 NAS 平均搬运都追得上媒体生成速度。若长期写入速度不足，backlog 一定会累积；增加 worker 只能改善并行度，不能突破磁盘、网络或 SMB 的总带宽。
 
 ## Task Audio
 

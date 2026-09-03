@@ -67,6 +67,8 @@ add_executable(gemini_sender
     src/logger.cpp
     src/main.cpp
     src/network_utils.cpp
+    src/receiver_discovery_client.cpp
+    src/receiver_target.cpp
     src/transport.cpp
 )
 

@@ -1,6 +1,6 @@
 # Documentation Index
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本目录只保存当前 `main` 的长期维护文档。文件名使用英文，正文使用中文。历史现象通过 Git 历史追溯，不把旧报告当作当前行为。
 
@@ -12,6 +12,7 @@
 | 理解进程、线程和模块边界 | [architecture.md](architecture.md) |
 | 追踪 RGB、Depth、时间戳和预览链路 | [data-pipeline.md](data-pipeline.md) |
 | 构建、部署、启停和现场检查 | [deployment.md](deployment.md) |
+| 现场 DHCP、自动发现与 NAS 容错 | [field-deployment.md](field-deployment.md) |
 | 选择或修改设备配置 | [configuration.md](configuration.md) |
 | 调用端口、REST、视频流和读取文件 | [api-reference.md](api-reference.md) |
 | 理解分片、fMP4、完成标记和 NAS | [recording-and-nas.md](recording-and-nas.md) |

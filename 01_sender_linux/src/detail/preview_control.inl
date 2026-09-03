@@ -23,6 +23,8 @@ Json::Value sender_hello(const AppConfig &config) {
     capabilities["hotplug"] = config.hotplug.enabled;
     capabilities["clock_sync"] = config.clock_sync.enabled;
     capabilities["clock_sync_port"] = config.clock_sync.port;
+    capabilities["receiver_discovery"] = config.receiver_discovery.enabled;
+    capabilities["receiver_discovery_port"] = config.receiver_discovery.port;
     capabilities["media_protocol"] = config.transport.media_protocol;
     capabilities["status_protocol"] = config.transport.status_protocol;
     msg["capabilities"] = capabilities;
@@ -107,7 +109,8 @@ Json::Value camera_offline_message(const AppConfig &config, const std::string &c
 Json::Value camera_heartbeat(const AppConfig &config,
                              CameraRuntime &camera,
                              std::chrono::steady_clock::time_point started,
-                             const ClockSyncClient *clock_sync) {
+                             const ClockSyncClient *clock_sync,
+                             const ReceiverTarget *receiver_target = nullptr) {
     Json::Value msg = base_message(config, "heartbeat");
     const auto uptime = std::chrono::steady_clock::now() - started;
     msg["uptime_ms"] = Json::UInt64(std::chrono::duration_cast<std::chrono::milliseconds>(uptime).count());
@@ -119,6 +122,13 @@ Json::Value camera_heartbeat(const AppConfig &config,
     msg["clock_drift_ppm"] = clock_state.drift_ppm;
     msg["clock_last_sync_us"] = Json::UInt64(clock_state.last_sync_us);
     msg["clock_samples"] = Json::UInt64(clock_state.sample_count);
+    if(receiver_target != nullptr) {
+        const auto target = receiver_target->snapshot();
+        msg["receiver_target_host"] = target.host;
+        msg["receiver_target_id"] = target.receiver_id;
+        msg["receiver_target_discovered"] = target.discovered;
+        msg["receiver_target_generation"] = Json::UInt64(target.generation);
+    }
     std::lock_guard<std::mutex> lock(camera.mutex);
     const auto seconds = std::max(0.001, std::chrono::duration<double>(std::chrono::steady_clock::now() - camera.stats_started).count());
     msg["camera_id"] = camera.config.camera_id;
@@ -1011,4 +1021,3 @@ bool preview_aligned_rgb_pair(const std::vector<std::unique_ptr<CameraRuntime>> 
     cv::waitKey(1);
     return true;
 }
-

@@ -5,10 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "gwv3_sender/receiver_target.hpp"
 
 namespace gwv3 {
 
@@ -34,6 +37,8 @@ struct ClockSyncClientState {
 class ClockSyncClient {
 public:
     ClockSyncClient(ClockSyncClientConfig config, std::string sender_id);
+    ClockSyncClient(ClockSyncClientConfig config, std::string sender_id,
+                    std::shared_ptr<ReceiverTarget> receiver_target);
     ~ClockSyncClient();
 
     ClockSyncClient(const ClockSyncClient &) = delete;
@@ -66,6 +71,8 @@ private:
 
     ClockSyncClientConfig config_;
     std::string sender_id_;
+    std::shared_ptr<ReceiverTarget> receiver_target_;
+    uint64_t target_generation_ = 0;
     std::atomic<bool> running_{false};
     std::thread thread_;
 

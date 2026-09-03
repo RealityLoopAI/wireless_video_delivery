@@ -379,6 +379,25 @@ AppConfig load_config(const std::string &path) {
     config.receiver.media_port = parse_port(receiver, "media_port", config.receiver.media_port);
     config.receiver.status_port = parse_port(receiver, "status_port", config.receiver.status_port);
 
+    const auto &receiver_discovery = root["receiver_discovery"];
+    if(!receiver_discovery.isNull()) {
+        if(!receiver_discovery.isObject()) {
+            throw std::runtime_error("invalid object field: receiver_discovery");
+        }
+        config.receiver_discovery.enabled =
+            optional_bool(receiver_discovery, "enabled", config.receiver_discovery.enabled);
+        config.receiver_discovery.port =
+            parse_port(receiver_discovery, "port", config.receiver_discovery.port);
+        config.receiver_discovery.interval_ms =
+            optional_int(receiver_discovery, "interval_ms", config.receiver_discovery.interval_ms);
+        config.receiver_discovery.response_window_ms =
+            optional_int(receiver_discovery, "response_window_ms", config.receiver_discovery.response_window_ms);
+        config.receiver_discovery.sticky_timeout_ms =
+            optional_int(receiver_discovery, "sticky_timeout_ms", config.receiver_discovery.sticky_timeout_ms);
+        config.receiver_discovery.state_path =
+            optional_string(receiver_discovery, "state_path", config.receiver_discovery.state_path);
+    }
+
     config.clock_sync.receiver_ip = config.receiver.ip;
     const auto &clock_sync = root["clock_sync"];
     if(!clock_sync.isNull()) {
@@ -539,6 +558,19 @@ void validate_config(const AppConfig &config) {
     }
     if(!is_valid_ipv4_or_hostname(config.receiver.ip)) {
         throw std::runtime_error("receiver.ip must be a valid IPv4 address or hostname");
+    }
+    if(config.receiver_discovery.interval_ms < 250 || config.receiver_discovery.interval_ms > 60000) {
+        throw std::runtime_error("receiver_discovery.interval_ms must be in range [250, 60000]");
+    }
+    if(config.receiver_discovery.response_window_ms < 50
+       || config.receiver_discovery.response_window_ms >= config.receiver_discovery.interval_ms) {
+        throw std::runtime_error(
+            "receiver_discovery.response_window_ms must be in range [50, interval_ms)");
+    }
+    if(config.receiver_discovery.sticky_timeout_ms < config.receiver_discovery.interval_ms
+       || config.receiver_discovery.sticky_timeout_ms > 300000) {
+        throw std::runtime_error(
+            "receiver_discovery.sticky_timeout_ms must be in range [interval_ms, 300000]");
     }
     if(config.heartbeat_interval_ms <= 0 || config.heartbeat_interval_ms > 60000) {
         throw std::runtime_error("heartbeat_interval_ms must be in range [1, 60000]");

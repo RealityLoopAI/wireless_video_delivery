@@ -1,6 +1,6 @@
 # Configuration
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文说明配置文件的职责、选择方法和修改约束。配置文件不包含密码；现场凭据由设备本地或受控密码管理保存。
 
@@ -8,7 +8,7 @@
 
 | File | Purpose |
 | --- | --- |
-| `receiver_loop.json` | 当前 `loop` 接收端生产配置，接收端地址由现场网络固定为 `.196` |
+| `receiver_loop.json` | 当前 `loop` 接收端生产配置，使用 DHCP、Receiver/NAS 自动发现和本地 staging |
 | `receiver_ubuntu-01.json` | 旧接收端兼容配置，保留用于回退和迁移 |
 | `receiver_runtime_state.json` | 显示名称、文件前缀等持久化状态初始值 |
 | `audio_archive_receiver_loop.json` | 当前接收端音频归档配置 |
@@ -21,16 +21,17 @@
 生产接收端当前关键值：
 
 ```text
+receiver discovery UDP:     50009
 media TCP:                  50010
 status UDP:                 50011
 clock sync UDP:             50012
 admin HTTP loopback:        18080
 segment_seconds:            900
-recording_staging.enabled:  false
+recording_staging.enabled:  true
 rgb_output_mode:            fragmented_mp4
 ```
 
-`recording_staging.enabled=false` 表示媒体直接写 NAS 隐藏目录并在收尾后同文件系统原子发布。配置里保留的 uploader 参数用于回退到本地 staging 模式，不能据此误判生产链路正在二次搬运。
+`recording_staging.enabled=true` 表示媒体先写 Receiver 本地可靠暂存目录，再由 uploader 搬运并在 NAS 原子发布。该模式用于隔离 NAS 短时断线和 DHCP 地址变化。`nas_auto_mount` 控制自动发现、挂载状态文件和新录制门禁。
 
 ## Sender Configurations
 
@@ -60,7 +61,8 @@ rgb_output_mode:            fragmented_mp4
 | Field | Meaning |
 | --- | --- |
 | `sender_id` | 稳定发送端身份；生产设备优先固定值 |
-| `receiver.ip` | 接收端当前地址 |
+| `receiver.ip` | 自动发现失败时的接收端兜底地址 |
+| `receiver_discovery.*` | Receiver 自动发现端口、周期、黏性超时和上次目标状态文件 |
 | `receiver.media_port` / `status_port` | 媒体与状态端口 |
 | `clock_sync.*` | probe 地址、端口、周期、超时和过滤窗口 |
 | `transport.media_protocol` | 当前正式值为 `tcp` |

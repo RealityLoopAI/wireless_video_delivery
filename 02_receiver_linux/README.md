@@ -7,6 +7,7 @@
 核心入口：
 
 ```text
+UDP 50009          Receiver discovery
 TCP 50010          media packets
 UDP 50011          sender status/control
 UDP 50012          CLOCK_SYNC
@@ -17,7 +18,7 @@ HTTP 127.0.0.1:18080 admin API
 
 ## Recording Boundary
 
-当前生产录制直接写 `<nas_root>/.gwv3_direct_inprogress`，关闭完整 fMP4/FFV1/CSV 后在同一 NAS 文件系统原子发布。`recording_staging.enabled=true` 时才启用本地 staging 和独立 uploader 回退链路。
+当前生产录制先写 Receiver 本地 staging，再由独立 uploader 向 NAS 增量搬运并原子发布。NAS 暂时不可用时已有录制继续留存在本地；NAS 恢复后自动补传。新录制必须同时满足 NAS 已挂载和本地空间门槛。
 
 `main.cpp` 只保留进程入口；`application.cpp` 负责应用生命周期，私有实现按职责位于 `src/detail/`。CLOCK_SYNC 是独立编译模块。
 

@@ -1,6 +1,6 @@
 # 故障排查手册
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文档把历史问题压缩成按现象排查的步骤。排查时先确认“当前实际运行状态”，不要只看某个服务是否 active。
 
@@ -57,9 +57,9 @@ Web Monitor 默认无需登录；不要为了远程访问而把 C++ admin 端口
 
 1. 发送端没启动。
 2. 发送端卡在 Wi-Fi guard、预检或相机启动。
-3. 发送端配置里的接收端 IP/主机名错了，或局域网 DNS 无法解析主机名。
+3. UDP 50009 广播被网络隔离，且配置中的兜底 IP/主机名也不可达。
 
-发送端支持在 `receiver.ip` 和 `clock_sync.receiver_ip` 中填写 IPv4 或 DNS 主机名。DHCP 网络建议使用接收端的 `.lan` 主机名，避免租约变化后所有 sender 指向旧 IP。解析结果会短时缓存，DNS 失败时 sender 降级为重连，不会因异常退出。
+生产 Sender 默认通过 UDP 50009 自动发现 Receiver，并让媒体、状态、预览和 CLOCK_SYNC 共用同一动态目标。`receiver.ip` 只作为发现失败时的兜底；若网络禁止客户端广播或启用了 AP isolation，需要放通同一二层网络内的 UDP 50009，或提供可解析的兜底主机名。发现失败只会进入重连，不会让采集进程异常退出。
 4. 状态 UDP 50011 不通。
 5. `sender_id` / `camera_id` 改了，页面还在看旧 key。
 
@@ -141,7 +141,7 @@ curl -X POST 'http://<receiver_ip>:8080/api/preview/main-target?sender_id=<sende
 3. 录制中看 `<nas_root>/.gwv3_direct_inprogress/`，交付后看正式相机/date/time 路径。
 4. 查看 `ffmpeg.log` 和接收端日志。
 5. 看 `/api/status` 的 `recording_state`、`record_accepting`、`record_finalizing`、`record_write_errors`、队列字节数和 finalizer 计数。
-6. 若明确启用了 staging 回退，再检查 `recording_staging.root`、uploader 和 capture queue。
+6. 当前生产 staging 模式还要检查 `recording_staging.root`、uploader 和 capture queue。
 
 ## 7. `rgb.mp4` 打不开或收尾失败
 
@@ -154,7 +154,7 @@ curl -X POST 'http://<receiver_ip>:8080/api/preview/main-target?sender_id=<sende
 3. 自动切片等待 SPS/PPS/IDR 后切换 writer；旧 writer 后台关闭，不阻塞当前录制。
 4. sender 离线超过 `idle_finalize_ms` 时关闭旧分片；重连在首个可解码 RGB 前不发布 Depth-only 小段。
 5. 文件带前缀时 ready marker 也带同一前缀，以 `meta.recording_ready_file` 为准。
-6. staging 回退模式才使用 uploader/capture queue；不要把其状态字段用于解释直写模式。
+6. 当前生产 staging 模式使用 uploader/capture queue；只有显式回退到直写配置时才不看这些字段。
 
 排查：
 
@@ -169,7 +169,7 @@ curl -X POST 'http://<receiver_ip>:8080/api/preview/main-target?sender_id=<sende
 9. 若历史 `media TCP connect failed` 仍显示，但媒体 age 很小且 FPS 正常，区分当前状态和未清理历史错误。
 10. finalizer 持续数十秒且 `ffprobe` 在读取整段大 fMP4，说明运行的仍是旧版全文件扫描路径；核对组件版本。
 11. 最终 fMP4 应有 `moov`、`moof`、尾部 `mfra`，且 ready marker 声明 `rgb_container_format=fragmented_mp4`。
-12. 若启用了 staging 回退，再按 uploader 的 pending、active phase、capture queue 与发布日志排查；不得手工伪造 ready marker。
+12. 按 uploader 的 pending、active phase、capture queue 与发布日志排查；不得手工伪造 ready marker。
 
 ## 8. 帧率低或画面卡
 

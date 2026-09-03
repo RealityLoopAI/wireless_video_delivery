@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/12_build"
-CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/receiver_loop.json}"
 RECEIVER_UNIT="gwv3-gemini-receiver.service"
 WEB_UNIT="gwv3-web-monitor.service"
 UPLOADER_UNIT="gwv3-recording-uploader.service"

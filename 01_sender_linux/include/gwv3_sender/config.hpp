@@ -113,6 +113,15 @@ struct ReceiverConfig {
     uint16_t status_port = 50011;
 };
 
+struct ReceiverDiscoveryConfig {
+    bool enabled = true;
+    uint16_t port = 50009;
+    int interval_ms = 1000;
+    int response_window_ms = 250;
+    int sticky_timeout_ms = 10000;
+    std::string state_path;
+};
+
 struct ClockSyncConfig {
     bool enabled = true;
     std::string receiver_ip;
@@ -179,6 +188,7 @@ struct AppConfig {
     std::string sender_id;
     std::string sender_version = "3.0.0";
     ReceiverConfig receiver;
+    ReceiverDiscoveryConfig receiver_discovery;
     ClockSyncConfig clock_sync;
     TransportConfig transport;
     MediaUdpConfig media_udp;

@@ -122,7 +122,14 @@ bool tcp_peer_closed(int fd) {
 
 }  // namespace
 
-Transport::Transport(const AppConfig &config) : config_(config) {
+Transport::Transport(const AppConfig &config)
+    : Transport(config, std::make_shared<ReceiverTarget>(config.receiver.ip)) {}
+
+Transport::Transport(const AppConfig &config, std::shared_ptr<ReceiverTarget> receiver_target)
+    : config_(config), receiver_target_(std::move(receiver_target)) {
+    if(!receiver_target_) {
+        throw std::runtime_error("receiver target must not be null");
+    }
     if(config_.transport.enabled) {
         status_udp_fd_ = make_udp_socket();
     }
@@ -204,8 +211,9 @@ std::optional<std::string> Transport::receive_status_control(int timeout_ms) {
         return std::nullopt;
     }
     sockaddr_in expected_peer{};
+    const auto target = receiver_target_->snapshot();
     try {
-        expected_peer = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.status_port);
+        expected_peer = resolve_ipv4_endpoint(target.host, config_.receiver.status_port);
     }
     catch(const std::exception &e) {
         set_error(e.what());
@@ -281,8 +289,9 @@ bool Transport::close_if_media_peer_closed() {
 
 bool Transport::send_udp_status(const std::string &json_message) {
     sockaddr_in addr{};
+    const auto target = receiver_target_->snapshot();
     try {
-        addr = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.status_port);
+        addr = resolve_ipv4_endpoint(target.host, config_.receiver.status_port);
     }
     catch(const std::exception &e) {
         set_error(e.what());
@@ -375,8 +384,9 @@ bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes,
     const uint32_t sequence = ++sequence_counter == 0 ? ++sequence_counter : sequence_counter;
     const uint16_t chunk_count = static_cast<uint16_t>(chunk_count_size);
     sockaddr_in addr{};
+    const auto target = receiver_target_->snapshot();
     try {
-        addr = resolve_ipv4_endpoint(config_.receiver.ip, port);
+        addr = resolve_ipv4_endpoint(target.host, port);
     }
     catch(const std::exception &e) {
         set_error(std::string(label) + " send failed: " + e.what());
@@ -429,8 +439,14 @@ bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes,
 }
 
 bool Transport::ensure_media_tcp_connected() {
+    const auto target = receiver_target_->snapshot();
+    if(media_tcp_fd_ >= 0 && media_target_generation_ != target.generation) {
+        close_media_socket();
+        last_media_connect_attempt_ = {};
+    }
     if(media_tcp_fd_ >= 0) {
         if(!tcp_peer_closed(media_tcp_fd_)) {
+            receiver_target_->mark_success(target.generation);
             return true;
         }
         close_media_socket();
@@ -447,7 +463,7 @@ bool Transport::ensure_media_tcp_connected() {
     }
     sockaddr_in addr{};
     try {
-        addr = resolve_ipv4_endpoint(config_.receiver.ip, config_.receiver.media_port);
+        addr = resolve_ipv4_endpoint(target.host, config_.receiver.media_port);
     }
     catch(const std::exception &e) {
         set_error(std::string("media TCP connect failed: ") + e.what());
@@ -483,6 +499,8 @@ bool Transport::ensure_media_tcp_connected() {
         return false;
     }
     media_tcp_fd_ = fd;
+    media_target_generation_ = target.generation;
+    receiver_target_->mark_success(target.generation);
     return true;
 }
 
@@ -631,6 +649,7 @@ void Transport::close_media_socket() {
         close(media_tcp_fd_);
         media_tcp_fd_ = -1;
     }
+    media_target_generation_ = 0;
 }
 
 void Transport::close_udp_socket(int &fd) {

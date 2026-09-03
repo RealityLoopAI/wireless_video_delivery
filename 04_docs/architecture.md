@@ -1,6 +1,6 @@
 # 系统架构与技术路线
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文档说明系统架构、当前技术路线、为什么这么选，以及哪些方向只是后续候选。
 
@@ -15,12 +15,14 @@ flowchart LR
     depthpack[Depth 原始帧或压缩]
     status[状态心跳]
     clocks[Clock sync client]
+    discovery[Receiver discovery client]
   end
 
   subgraph Network[网络]
     tcp[TCP 50010 媒体]
     udp[UDP 50011 状态]
     clockudp[UDP 50012 CLOCK_SYNC]
+    discoveryudp[UDP 50009 自动发现]
   end
 
   subgraph Receiver[接收端 Linux x86_64]
@@ -29,6 +31,9 @@ flowchart LR
     record[录制封装]
     preview[预览派生]
     clockmgr[Clock sync manager]
+    discoveryserver[Receiver discovery server]
+    staging[本地可靠暂存]
+    uploader[NAS uploader]
     web[Web Monitor 8080]
   end
 
@@ -41,12 +46,16 @@ flowchart LR
   depthpack --> tcp
   status --> udp
   clocks --> clockudp
+  discovery --> discoveryudp
   tcp --> media
   udp --> media
   clockudp --> clockmgr
+  discoveryudp --> discoveryserver
   media --> record
   media --> preview
-  record --> nas
+  record --> staging
+  staging --> uploader
+  uploader --> nas
   admin --> web
   preview --> web
 ```
@@ -63,7 +72,7 @@ flowchart LR
 8. CLOCK_SYNC 走独立 UDP 端口，接收端作为时间基准。
 9. 接收端提供本地 HTTP 管理 API。
 10. Web Monitor 使用 FastAPI 做网页和 REST 代理。
-11. 录制数据写入 NAS 挂载目录。
+11. 录制数据先写 Receiver 本地 staging，再增量搬运并原子发布到自动发现的 NAS。
 
 ## 2. 为什么从旧方案切到当前方案
 
@@ -166,7 +175,7 @@ CLOCK_SYNC 用独立 UDP 50012 做轻量四时间戳测量，目标是 dataset-g
 3. 下游处理可以离线读取，不要求实时连接接收端。
 4. 接收端统一控制写盘，发送端不需要知道 NAS。
 
-NAS 可以通过 NFS、CIFS/SMB 或等价网络文件系统挂载。当前生产配置直接把实时分片写入 NAS 的 `.gwv3_direct_inprogress`，关闭完整 fMP4、Depth、CSV 和元数据并完成持久化后，在同一文件系统中原子重命名到正式目录，最后以 `recording_ready.json` 表示可交付。这样避免本地暂存、回读和二次网络复制。若 NAS 不适合实时直写，可切回本地 staging + 独立 uploader 的可靠发布模式。
+当前生产配置通过 CIFS/SMB 挂载配套 NAS。Receiver 先把实时分片写入本地 staging；独立 uploader 在录制期间增量镜像，关闭完整 fMP4、Depth、CSV 和元数据后，在 NAS 隐藏 capture queue 中完成校验与持久化，再原子发布到正式目录。`recording_ready.json` 是可交付边界。NAS 短时离线不打断已有本地录制，恢复后自动补传；直接写 NAS 仅保留为受控环境兼容模式。
 
 ### 3.9 为什么 Web Monitor 不直接做数据面
 
@@ -183,7 +192,7 @@ Web Monitor 只负责展示和控制，不负责决定底层数据语义。
 | 模块 | 职责 | 不负责 |
 | --- | --- | --- |
 | `01_sender_linux` | 采集、编码、Depth 压缩、媒体发送、状态上报、CLOCK_SYNC 客户端、本地预览 | NAS 写入、录制控制、Web 页面 |
-| `02_receiver_linux` | 媒体接收、状态聚合、CLOCK_SYNC 模型、录制控制、预览派生、NAS 原子发布、管理 API | 修改发送端采集参数、分配正式 ID |
+| `02_receiver_linux` | 媒体接收、状态聚合、Receiver 发现响应、CLOCK_SYNC 模型、录制控制、预览派生、本地可靠录制、管理 API | 修改发送端采集参数、分配正式 ID |
 | `03_common_core` | 协议常量、媒体包头、公共结构 | 业务流程 |
 | `05_tools` | 启停、状态、预检、导出、时间同步、NAS 可靠上传和维护脚本 | 核心媒体采集与编码 |
 | `06_configs` | 发送端和接收端配置模板 | 现场密码和私有凭据 |
@@ -195,7 +204,7 @@ Web Monitor 只负责展示和控制，不负责决定底层数据语义。
 2. 严格画面内容级跨相机同步尚未实现，当前依赖系统时间、CLOCK_SYNC 和离线对齐。
 3. Web 预览是监控用途，不是正式数据源。
 4. Depth 高规格会明显增加 USB、CPU、网络和接收端压力。
-5. 生产直写依赖 NAS 持续可用且平均吞吐高于输入；回退 staging 模式还受本地盘容量限制。
+5. 生产 staging 受 Receiver 本地盘容量限制；NAS 长期平均吞吐低于输入时仍会形成待上传积压。
 6. 现场配置和仓库模板可能不同，正式文档以主线能力为准，现场状态只作为部署信息。
 
 ## 6. Source Layout

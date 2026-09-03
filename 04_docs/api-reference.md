@@ -1,6 +1,6 @@
 # API And Data Format Reference
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文是当前对外端口、媒体协议、REST API 和落盘字段的查表文档。配置字段见 [configuration.md](configuration.md)。
 
@@ -8,6 +8,8 @@
 
 | Port | Protocol | Direction | Purpose |
 | --- | --- | --- | --- |
+| 50008 | UDP | receiver <-> NAS | 配套 NAS 自动发现 |
+| 50009 | UDP | sender <-> receiver | Receiver 自动发现 |
 | 50010 | TCP | sender -> receiver | RGB、Depth、低码率预览和 MJPEG 快照 |
 | 50011 | UDP | sender <-> receiver | 状态、事件和控制 |
 | 50012 | UDP | sender <-> receiver | CLOCK_SYNC probe/response |
@@ -123,6 +125,42 @@ Response：
 
 sender 在本地记录 t4 并通过 heartbeat/report 上报 `clock_sync_valid`、`clock_offset_us`、`clock_delay_us`、`clock_drift_ppm` 与 `clock_last_sync_us`。详细语义见 [clock-sync.md](clock-sync.md)。
 
+## Receiver Discovery Messages
+
+Sender 向 UDP `50009` 广播请求。`preferred_receiver_id` 是上次成功 Receiver 的稳定身份；首次运行可以为空。
+
+```json
+{
+  "protocol_version": "3.0",
+  "message_type": "receiver_discovery_request",
+  "sender_id": "example-sender",
+  "sequence": 123,
+  "preferred_receiver_id": "receiver-a1b2c3d4"
+}
+```
+
+Receiver 将响应发回请求来源地址。Sender 使用 UDP 响应包的来源 IP，不信任 JSON 中声明的目标地址。
+
+```json
+{
+  "protocol_version": "3.0",
+  "message_type": "receiver_discovery_response",
+  "receiver_id": "receiver-a1b2c3d4",
+  "sequence": 123,
+  "media_port": 50010,
+  "status_port": 50011,
+  "clock_sync_port": 50012,
+  "media_udp_port": 50013,
+  "preview_udp_port": 50014
+}
+```
+
+端口当前仍由出厂配置固定；响应中的端口用于能力诊断，不覆盖 Sender 本地端口配置。多个 Receiver 同时响应时，Sender 保持上次成功的 `receiver_id`，只有其持续不可达后才切换。
+
+## NAS Discovery Messages
+
+Receiver 上的系统挂载服务向 UDP `50008` 广播 `nas_discovery_request`。配套 NAS 返回稳定 `nas_id` 和 SMB share 名；账号密码不进入发现协议，凭据仅保存在 Receiver 的 root-only 文件中。完整部署见 [field-deployment.md](field-deployment.md)。
+
 ## REST Base URL
 
 局域网调用：
@@ -148,6 +186,17 @@ GET /api/config
 - Web preview 与 H.264 stream 状态；
 - build commit/source hash/dirty；
 - 音频摘要与最近错误。
+
+现场部署相关状态：
+
+| Field | Meaning |
+| --- | --- |
+| `receiver_discovery` | 发现服务健康、稳定 Receiver ID、请求/响应计数 |
+| `nas_auto_mount.ready` | 自动挂载服务最近一次确认 NAS 已挂载且可写 |
+| `recording_start_ready` | 当前是否允许开始新的录制会话 |
+| `recording_start_block_reason` | NAS 或本地空间门禁阻止录制时的原因 |
+| `recording_storage` | Receiver 本地暂存盘容量、剩余比例及 20% 警告/10% 硬门槛状态 |
+| `recording_uploader.nas_mount_ready` | uploader 是否允许访问 NAS；为 false 时只保留本地数据 |
 
 ## Recording
 

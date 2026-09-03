@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${1:-$ROOT_DIR/06_configs/receiver_ubuntu-01.json}"
+CONFIG="${1:-$ROOT_DIR/06_configs/receiver_loop.json}"
 BUILD_DIR="$ROOT_DIR/12_build"
 BIN="$BUILD_DIR/bin/gemini_receiver"
 WEB_DIR="$ROOT_DIR/09_web_monitor"

@@ -8,6 +8,8 @@
 #include "gwv3_sender/gst_h264_rtp_sender.hpp"
 #include "gwv3_sender/logger.hpp"
 #include "gwv3_sender/media_outage_guard.hpp"
+#include "gwv3_sender/receiver_discovery_client.hpp"
+#include "gwv3_sender/receiver_target.hpp"
 #include "gwv3_sender/rgb_transport_recovery.hpp"
 #include "gwv3_sender/scheduled_keyframe.hpp"
 #include "gwv3_sender/transport.hpp"
@@ -100,12 +102,19 @@ int run_sender_application(int argc, char **argv) {
             run_sender<NullTransport, NullTransport>(config, args, transport, make_media_sender, transport, logger);
         }
         else {
-            Transport status_transport(config);
-            Transport preview_transport(config);
-            auto make_media_sender = [&config] {
-                return std::make_unique<Transport>(config);
+            auto receiver_target = std::make_shared<ReceiverTarget>(config.receiver.ip);
+            ReceiverDiscoveryClient receiver_discovery(config.receiver_discovery, config.sender_id, receiver_target);
+            receiver_discovery.set_log_callbacks([&logger](const std::string &message) { logger.info(message); },
+                                                 [&logger](const std::string &message) { logger.warn(message); });
+            receiver_discovery.start();
+            Transport status_transport(config, receiver_target);
+            Transport preview_transport(config, receiver_target);
+            auto make_media_sender = [&config, &receiver_target] {
+                return std::make_unique<Transport>(config, receiver_target);
             };
-            run_sender<Transport, Transport>(config, args, status_transport, make_media_sender, preview_transport, logger);
+            run_sender<Transport, Transport>(config, args, status_transport, make_media_sender, preview_transport, logger,
+                                             receiver_target);
+            receiver_discovery.stop();
         }
         logger.info("gemini sender stopped");
         return 0;

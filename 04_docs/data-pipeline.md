@@ -1,6 +1,6 @@
 # RGBD 数据链路
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文档说明 RGB 和 Depth 数据从相机到录制文件的完整链路，并解释时间戳、帧号、预览和下游同步的关系。
 
@@ -22,9 +22,8 @@ sequenceDiagram
   S->>R: UDP CLOCK_SYNC
   R->>W: 状态和预览
   W->>R: 开始录制
-  R->>N: rgb.mp4
-  R->>N: depth.mkv
-  R->>N: frames.csv / meta.json / calibration.json
+  R->>R: 本地 staging 写 rgb/depth/csv
+  R->>N: 增量搬运、校验并原子发布
 ```
 
 ## 2. 身份链路
@@ -136,13 +135,13 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 
 ## 8. 落盘目录
 
-当前生产接收端每段录制先写入 NAS 隐藏目录：
+当前生产接收端每段录制先写入 Receiver 本地 staging：
 
 ```text
-<nas_root>/.gwv3_direct_inprogress/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
+<recording_staging.root>/<storage_key>/<YYYY-MM-DD>/<HHMMSS>/
 ```
 
-分片完成后，receiver 关闭 RGB fMP4、Depth、CSV 和元数据，完成必要持久化，再把整个目录原子重命名到正式路径。生产配置不执行 RGB 整文件重封装，也没有本地 staging 搬运。配置切回 `recording_staging.enabled=true` 时，才使用本地 staging 和 `.gwv3_capture_queue` uploader 回退链路。下游只能读取带正式 ready 标记的最终目录。
+录制期间 uploader 将增长中的文件增量镜像到 `<nas_root>/.gwv3_capture_queue/`。分片完成后，receiver 关闭 RGB fMP4、Depth、CSV 和元数据并生成本地完成标记；uploader 补齐尾部、校验文件，再把 NAS 隐藏目录原子发布到正式路径。NAS 不可用时本地分片保留并等待补传。下游只能读取带正式 `recording_ready.json` 的最终目录。
 
 默认 `storage_key` 是：
 
@@ -164,10 +163,10 @@ RGB 与 Depth 不能简单假设同一个序号就是同一时刻。
 | `ffmpeg.log` | RGB/Depth 封装日志 |
 | `rgb_debug.h264` | RGB 调试/恢复旁路；仅 `write_debug_h264=true` 时写入 |
 | `depth_debug.raw` | Depth 调试旁路，仅配置开启时保留 |
-| `recording_staged.json` | 仅 staging 回退模式使用：本地媒体和索引已关闭 |
+| `recording_staged.json` | staging 模式本地媒体和索引已关闭 |
 | `recording_ready.json` | NAS 最终目录已完整发布，可供下游使用 |
 
-staging 回退模式的 NAS 隐藏队列还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。任何模式下都只有最终目录中的 `recording_ready.json` 表示该段媒体已完整交付。
+staging 模式的 NAS 隐藏队列还会使用 `recording_capture_ready.json`、`recording_nas_finalized.json`、`.gwv3_publish_incomplete.json` 和发布日志。这些都是恢复控制文件，不是下游完成标记。任何模式下都只有最终目录中的 `recording_ready.json` 表示该段媒体已完整交付。
 
 ### 9.1 按需语音照片
 

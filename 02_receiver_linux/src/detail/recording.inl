@@ -426,7 +426,7 @@ public:
             throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
         }
         const auto space = std::filesystem::space(recording_root, root_ec);
-        if(root_ec || space.available < cfg.min_free_disk_bytes) {
+        if(root_ec || !storage_space_meets_limits(space, cfg)) {
             throw std::runtime_error("insufficient free space under recording root: " + recording_root.string());
         }
         const uint64_t directory_time_us = segment_timeline_.start_global_us > 0
@@ -738,7 +738,7 @@ public:
             storage_check_packets_ = 0;
             std::error_code ec;
             const auto space = std::filesystem::space(directory_, ec);
-            if(ec || space.available < cfg.min_free_disk_bytes) {
+            if(ec || !storage_space_meets_limits(space, cfg)) {
                 storage_failed_ = true;
                 throw std::runtime_error("recording stopped because free space is below the configured reserve: " + directory_);
             }
@@ -2799,4 +2799,3 @@ private:
     FrameInfo last_depth_;
     std::optional<int64_t> last_rgb_frame_interval_us_;
 };
-

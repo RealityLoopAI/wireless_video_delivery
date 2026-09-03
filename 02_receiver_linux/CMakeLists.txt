@@ -2,6 +2,7 @@ add_executable(gemini_receiver
     src/application.cpp
     src/clock_sync_manager.cpp
     src/main.cpp
+    src/receiver_discovery_server.cpp
 )
 
 find_package(ZLIB REQUIRED)
@@ -38,6 +39,45 @@ set_target_properties(gemini_receiver PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(test_receiver_target
+        ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_target.cpp
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/src/receiver_target.cpp
+    )
+    target_include_directories(test_receiver_target PRIVATE
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/include
+    )
+    target_compile_features(test_receiver_target PRIVATE cxx_std_17)
+    target_compile_options(test_receiver_target PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME receiver_target_unit COMMAND test_receiver_target)
+    add_executable(test_receiver_discovery_client
+        ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_discovery_client.cpp
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/src/receiver_discovery_client.cpp
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/src/receiver_target.cpp
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/src/network_utils.cpp
+    )
+    target_include_directories(test_receiver_discovery_client PRIVATE
+        ${CMAKE_SOURCE_DIR}/01_sender_linux/include
+        ${CMAKE_SOURCE_DIR}/03_common_core/include
+        ${JSONCPP_INCLUDE_DIR}
+    )
+    target_compile_features(test_receiver_discovery_client PRIVATE cxx_std_17)
+    target_compile_options(test_receiver_discovery_client PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(test_receiver_discovery_client PRIVATE ${JSONCPP_LIBRARY} pthread)
+    add_test(NAME receiver_discovery_client_integration COMMAND test_receiver_discovery_client)
+    add_test(
+        NAME receiver_discovery_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_discovery.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+    )
+    set_tests_properties(receiver_discovery_integration PROPERTIES TIMEOUT 20)
+    add_test(
+        NAME nas_discovery_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_nas_discovery.py
+                --beacon ${CMAKE_SOURCE_DIR}/05_tools/nas_discovery_beacon.py
+                --manager ${CMAKE_SOURCE_DIR}/05_tools/nas_mount_manager.py
+                --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
+    )
+    set_tests_properties(nas_discovery_integration PROPERTIES TIMEOUT 20)
     add_test(
         NAME receiver_hardening_integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_hardening.py

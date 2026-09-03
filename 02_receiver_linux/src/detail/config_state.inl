@@ -25,6 +25,13 @@ struct Config {
         std::set<std::string> sender_ids;
     };
 
+    struct NasAutoMountConfig {
+        bool enabled = false;
+        std::string status_path = "/run/gwv3/nas-mount-status.json";
+        int status_max_age_ms = 10000;
+        bool require_for_new_recording = true;
+    };
+
     std::string status_bind_ip = "0.0.0.0";
     uint16_t status_port = 50011;
     std::string media_bind_ip = "0.0.0.0";
@@ -36,10 +43,12 @@ struct Config {
     bool preview_udp_enabled = false;
     std::string preview_udp_bind_ip = "0.0.0.0";
     uint16_t preview_udp_port = 50014;
+    ReceiverDiscoveryServerConfig receiver_discovery;
     ClockSyncManagerConfig clock_sync;
     std::string admin_bind_ip = "127.0.0.1";
     uint16_t admin_port = 18080;
     std::string nas_root = "/home/fz/Desktop/nas";
+    NasAutoMountConfig nas_auto_mount;
     RecordingStagingConfig recording_staging;
     PhotoCaptureConfig photo_capture;
     TaskAudioConfig task_audio;
@@ -59,6 +68,8 @@ struct Config {
     size_t record_finalize_max_pending_segments = kDefaultRecordFinalizeMaxPendingSegments;
     size_t record_finalize_workers = 1;
     uint64_t min_free_disk_bytes = 2ull * 1024ull * 1024ull * 1024ull;
+    int min_free_disk_percent = 0;
+    int warn_free_disk_percent = 0;
 };
 
 Config load_config(const std::string &path) {
@@ -139,6 +150,21 @@ Config load_config(const std::string &path) {
     cfg.preview_udp_enabled = bool_value(root, "preview_udp_enabled", cfg.preview_udp_enabled);
     cfg.preview_udp_bind_ip = string_value(root, "preview_udp_bind_ip", cfg.preview_udp_bind_ip);
     cfg.preview_udp_port = port_value(root, "preview_udp_port", cfg.preview_udp_port);
+    Json::Value receiver_discovery(Json::objectValue);
+    if(!root["receiver_discovery"].isNull()) {
+        if(!root["receiver_discovery"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: receiver_discovery");
+        }
+        receiver_discovery = root["receiver_discovery"];
+    }
+    cfg.receiver_discovery.enabled =
+        bool_value(receiver_discovery, "enabled", cfg.receiver_discovery.enabled);
+    cfg.receiver_discovery.bind_ip =
+        string_value(receiver_discovery, "bind_ip", cfg.receiver_discovery.bind_ip);
+    cfg.receiver_discovery.port =
+        port_value(receiver_discovery, "port", cfg.receiver_discovery.port);
+    cfg.receiver_discovery.receiver_id =
+        string_value(receiver_discovery, "receiver_id", cfg.receiver_discovery.receiver_id);
     Json::Value clock_sync(Json::objectValue);
     if(!root["clock_sync"].isNull()) {
         if(!root["clock_sync"].isObject()) {
@@ -150,9 +176,28 @@ Config load_config(const std::string &path) {
     cfg.clock_sync.bind_ip = string_value(clock_sync, "bind_ip", cfg.clock_sync.bind_ip);
     cfg.clock_sync.port = port_value(clock_sync, "port", cfg.clock_sync.port);
     cfg.clock_sync.model_timeout_ms = int_value(clock_sync, "model_timeout_ms", cfg.clock_sync.model_timeout_ms);
+    cfg.receiver_discovery.media_port = cfg.media_port;
+    cfg.receiver_discovery.status_port = cfg.status_port;
+    cfg.receiver_discovery.clock_sync_port = cfg.clock_sync.port;
+    cfg.receiver_discovery.media_udp_port = cfg.media_udp_port;
+    cfg.receiver_discovery.preview_udp_port = cfg.preview_udp_port;
     cfg.admin_bind_ip = string_value(root, "admin_bind_ip", cfg.admin_bind_ip);
     cfg.admin_port = port_value(root, "admin_port", cfg.admin_port);
     cfg.nas_root = string_value(root, "nas_root", cfg.nas_root);
+    Json::Value nas_auto_mount(Json::objectValue);
+    if(!root["nas_auto_mount"].isNull()) {
+        if(!root["nas_auto_mount"].isObject()) {
+            throw std::runtime_error("receiver config field must be an object: nas_auto_mount");
+        }
+        nas_auto_mount = root["nas_auto_mount"];
+    }
+    cfg.nas_auto_mount.enabled = bool_value(nas_auto_mount, "enabled", cfg.nas_auto_mount.enabled);
+    cfg.nas_auto_mount.status_path =
+        string_value(nas_auto_mount, "status_path", cfg.nas_auto_mount.status_path);
+    cfg.nas_auto_mount.status_max_age_ms =
+        int_value(nas_auto_mount, "status_max_age_ms", cfg.nas_auto_mount.status_max_age_ms);
+    cfg.nas_auto_mount.require_for_new_recording =
+        bool_value(nas_auto_mount, "require_for_new_recording", cfg.nas_auto_mount.require_for_new_recording);
     Json::Value recording_staging(Json::objectValue);
     if(!root["recording_staging"].isNull()) {
         if(!root["recording_staging"].isObject()) {
@@ -218,6 +263,8 @@ Config load_config(const std::string &path) {
     const int max_payload_mb = int_value(root, "max_payload_mb", 32);
     const int record_queue_max_mb = int_value(root, "record_queue_max_mb", 512);
     const int min_free_disk_mb = int_value(root, "min_free_disk_mb", 2048);
+    cfg.min_free_disk_percent = int_value(root, "min_free_disk_percent", cfg.min_free_disk_percent);
+    cfg.warn_free_disk_percent = int_value(root, "warn_free_disk_percent", cfg.warn_free_disk_percent);
     const int record_queue_total_max_mb = int_value(root, "record_queue_total_max_mb", 2048);
     const int record_finalize_max_pending_segments =
         int_value(root, "record_finalize_max_pending_segments", static_cast<int>(kDefaultRecordFinalizeMaxPendingSegments));
@@ -227,7 +274,9 @@ Config load_config(const std::string &path) {
        || record_queue_total_max_mb <= 0 || record_queue_total_max_mb > 16384
        || record_finalize_max_pending_segments <= 0 || record_finalize_max_pending_segments > 128
        || record_finalize_workers <= 0 || record_finalize_workers > 32
-       || min_free_disk_mb < 0 || min_free_disk_mb > 1024 * 1024) {
+       || min_free_disk_mb < 0 || min_free_disk_mb > 1024 * 1024
+       || cfg.min_free_disk_percent < 0 || cfg.min_free_disk_percent > 100
+       || cfg.warn_free_disk_percent < cfg.min_free_disk_percent || cfg.warn_free_disk_percent > 100) {
         throw std::runtime_error("receiver payload/record queue limits are out of range");
     }
     cfg.max_payload_bytes = static_cast<size_t>(max_payload_mb) * 1024ull * 1024ull;
@@ -251,6 +300,10 @@ Config load_config(const std::string &path) {
     }
     if(cfg.clock_sync.model_timeout_ms <= 0) {
         throw std::runtime_error("clock_sync.model_timeout_ms must be positive");
+    }
+    if(cfg.nas_auto_mount.status_path.empty() || cfg.nas_auto_mount.status_max_age_ms < 1000
+       || cfg.nas_auto_mount.status_max_age_ms > 300000) {
+        throw std::runtime_error("nas_auto_mount status_path/timing is invalid");
     }
     if(cfg.recording_staging.enabled && cfg.recording_staging.root.empty()) {
         throw std::runtime_error("recording_staging.root must not be empty when staging is enabled");
@@ -289,6 +342,7 @@ Config load_config(const std::string &path) {
     (void)make_bind_addr(cfg.media_bind_ip, cfg.media_port);
     (void)make_bind_addr(cfg.media_udp_bind_ip, cfg.media_udp_port);
     (void)make_bind_addr(cfg.preview_udp_bind_ip, cfg.preview_udp_port);
+    (void)make_bind_addr(cfg.receiver_discovery.bind_ip, cfg.receiver_discovery.port);
     (void)make_bind_addr(cfg.admin_bind_ip, cfg.admin_port);
     if(cfg.nas_root.empty() || cfg.log_directory.empty() || cfg.state_path.empty() || cfg.ffmpeg_path.empty()) {
         throw std::runtime_error("receiver path fields must not be empty");
@@ -308,6 +362,7 @@ Config load_config(const std::string &path) {
         }
     };
     add_udp_port(cfg.clock_sync.enabled, cfg.clock_sync.port, "clock_sync.port");
+    add_udp_port(cfg.receiver_discovery.enabled, cfg.receiver_discovery.port, "receiver_discovery.port");
     add_udp_port(cfg.media_udp_enabled, cfg.media_udp_port, "media_udp_port");
     add_udp_port(cfg.preview_enabled && cfg.preview_udp_enabled, cfg.preview_udp_port, "preview_udp_port");
     if(cfg.admin_port == cfg.media_port
@@ -324,6 +379,20 @@ std::filesystem::path direct_recording_root(const Config &cfg) {
 std::filesystem::path recording_write_root(const Config &cfg) {
     return cfg.recording_staging.enabled ? std::filesystem::path(cfg.recording_staging.root)
                                          : direct_recording_root(cfg);
+}
+
+bool storage_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
+                                uint64_t extra_headroom_bytes = 0) {
+    if(cfg.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - extra_headroom_bytes
+       || space.available < cfg.min_free_disk_bytes + extra_headroom_bytes) {
+        return false;
+    }
+    if(cfg.min_free_disk_percent <= 0 || space.capacity == 0) {
+        return true;
+    }
+    const long double free_percent = static_cast<long double>(space.available) * 100.0L
+                                     / static_cast<long double>(space.capacity);
+    return free_percent >= static_cast<long double>(cfg.min_free_disk_percent);
 }
 
 bool rgb_h264_full_range_for_camera(const Config &cfg, const std::string &sender_id, const std::string &camera_id) {
@@ -498,4 +567,3 @@ std::optional<size_t> find_marker(const std::vector<uint8_t> &buffer, uint8_t a,
 }
 
 int add_spawn_closefrom(posix_spawn_file_actions_t *actions);
-

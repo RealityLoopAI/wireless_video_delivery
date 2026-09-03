@@ -345,7 +345,8 @@ void scan_hotplug_cameras(const AppConfig &config, std::vector<std::unique_ptr<C
 
 template <typename StatusSender, typename MediaSender, typename MakeMediaSender, typename PreviewMediaSender>
 void run_sender(AppConfig config, const Args &args, StatusSender &status_transport, MakeMediaSender &make_media_sender,
-                PreviewMediaSender &preview_media_transport, Logger &logger) {
+                PreviewMediaSender &preview_media_transport, Logger &logger,
+                std::shared_ptr<ReceiverTarget> receiver_target = nullptr) {
     if(args.no_send) {
         for(auto &camera : config.cameras) {
             camera.rgb_rtp_output.enabled = false;
@@ -386,7 +387,8 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         clock_config.timeout_ms = config.clock_sync.timeout_ms;
         clock_config.max_delay_us = config.clock_sync.max_delay_us;
         clock_config.sample_window = config.clock_sync.sample_window;
-        clock_sync = std::make_unique<ClockSyncClient>(clock_config, config.sender_id);
+        clock_sync = receiver_target ? std::make_unique<ClockSyncClient>(clock_config, config.sender_id, receiver_target)
+                                     : std::make_unique<ClockSyncClient>(clock_config, config.sender_id);
         clock_sync->set_log_callbacks([&logger](const std::string &message) { logger.info(message); },
                                       [&logger](const std::string &message) { logger.warn(message); });
         clock_sync->start();
@@ -557,7 +559,7 @@ void run_sender(AppConfig config, const Args &args, StatusSender &status_transpo
         if(now >= next_heartbeat) {
             for(auto &camera : cameras) {
                 send_status_locked(status_transport, logger, status_transport_mutex,
-                                   camera_heartbeat(config, *camera, started, clock_sync.get()));
+                                   camera_heartbeat(config, *camera, started, clock_sync.get(), receiver_target.get()));
             }
             next_heartbeat = now + std::chrono::milliseconds(config.heartbeat_interval_ms);
         }
