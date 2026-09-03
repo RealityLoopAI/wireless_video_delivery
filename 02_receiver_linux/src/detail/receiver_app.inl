@@ -1008,6 +1008,7 @@ public:
         }
 
         bool dropped_before_segment_start = false;
+        bool prestart_before_recording_window = false;
         uint64_t prestart_drops = 0;
         {
             std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
@@ -1015,6 +1016,7 @@ public:
                 const bool before_recording_window = job.recording_window.start_global_us > 0
                                                      && queued_packet.global_timestamp_us
                                                             < job.recording_window.start_global_us;
+                prestart_before_recording_window = before_recording_window;
                 if(queued_packet.stream_type == StreamType::depth_raw) {
                     prestart_drops = cam->segment_prestart_depth_drops.fetch_add(1) + 1;
                     dropped_before_segment_start = true;
@@ -1029,8 +1031,19 @@ public:
         }
         if(dropped_before_segment_start) {
             if(prestart_drops == 1) {
+                const bool rgb_packet = queued_packet.stream_type == StreamType::rgb;
                 logger_.info("recording waiting for decodable RGB segment start camera=" + cam->key
                              + " stream=" + std::string(stream_type_name(queued_packet.stream_type))
+                             + " before_window=" + (prestart_before_recording_window ? "true" : "false")
+                             + " packet_global_us=" + std::to_string(queued_packet.global_timestamp_us)
+                             + " window_start_us=" + std::to_string(job.recording_window.start_global_us)
+                             + (rgb_packet
+                                    ? " key_frame=" + std::string(((queued_packet.flags & key_frame) != 0u) ? "true" : "false")
+                                          + " has_idr="
+                                          + (h264_payload_has_nal_type(queued_packet.payload, 5) ? "true" : "false")
+                                          + " has_sps_pps="
+                                          + (h264_payload_has_sps_and_pps(queued_packet.payload) ? "true" : "false")
+                                    : "")
                              + "; unpaired prestart packets are ignored");
             }
             return;
