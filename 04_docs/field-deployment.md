@@ -54,6 +54,8 @@ Receiver 的系统级 `nas_mount_manager.py`：
 4. 将健康状态原子写入 `/run/gwv3/nas-mount-status.json`。
 5. NAS DHCP 地址变化或旧挂载持续失效时，重新发现并挂载。
 
+该管理器必须运行在主机 mount namespace，不能给其 systemd 单元启用 `PrivateMounts` 或由 `PrivateTmp` 隐式创建私有 mount namespace，否则会出现“服务报告 ready、Receiver 却看不到挂载”的假健康状态。
+
 凭据文件只存在 Receiver 本机，权限必须为 `0600`，禁止提交 GitHub。
 
 安装 NAS beacon：

@@ -89,12 +89,12 @@ RestartSec=2
 RuntimeDirectory=gwv3
 StateDirectory=gwv3
 NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now gwv3-nas-auto-mount.service
+systemctl enable gwv3-nas-auto-mount.service
+systemctl restart gwv3-nas-auto-mount.service
 systemctl --no-pager --full status gwv3-nas-auto-mount.service
