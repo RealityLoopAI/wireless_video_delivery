@@ -146,7 +146,7 @@ class NasMountManager:
         self.gid = int(config.get("gid", 1000))
         self.mount_options = str(
             config.get("mount_options")
-            or "vers=3.0,iocharset=utf8,noserverino,soft,actimeo=1,_netdev"
+            or "vers=3.1.1,iocharset=utf8,noserverino,soft,actimeo=1,_netdev"
         )
         self.remount_after_failures = max(2, int(config.get("remount_after_failures", 5)))
         self.preferred: dict[str, str] = {}

@@ -68,6 +68,8 @@ sudo ./05_tools/install_nas_discovery_beacon.sh <smb-share-name>
 sudo ./05_tools/install_receiver_nas_auto_mount.sh 06_configs/receiver_loop.json
 ```
 
+安装脚本会把同一 `nas_root` 的旧固定 IP `/etc/fstab` 项备份到 `/etc/fstab.gwv3-before-nas-discovery` 后移除，避免旧 automount 与自动发现服务竞争；若存在旧 `/etc/gwv3-nas-credentials`，会以 `0600` 权限迁移到新路径。只能在停止录制且 finalizer 已清空时执行这次迁移。
+
 ## Recording Failure Policy
 
 生产配置使用本地 staging：
