@@ -12,6 +12,7 @@
 | 理解进程、线程和模块边界 | [architecture.md](architecture.md) |
 | 追踪 RGB、Depth、时间戳和预览链路 | [data-pipeline.md](data-pipeline.md) |
 | 构建、部署、启停和现场检查 | [deployment.md](deployment.md) |
+| 按工单初始化 Sender、Receiver 和 NAS | [device-initialization.md](device-initialization.md) |
 | 现场 DHCP、自动发现与 NAS 容错 | [field-deployment.md](field-deployment.md) |
 | 选择或修改设备配置 | [configuration.md](configuration.md) |
 | 调用端口、REST、视频流和读取文件 | [api-reference.md](api-reference.md) |

@@ -100,7 +100,7 @@ rgb_output_mode:            fragmented_mp4
 发送端配置验证：
 
 ```bash
-./12_build/bin/gemini_sender --config 06_configs/<sender-config>.json --validate-only
+./12_build/bin/gemini_sender --config 06_configs/<sender-config>.json --validate-config
 ```
 
 接收端配置在进程启动时严格校验。上线前还应执行：
