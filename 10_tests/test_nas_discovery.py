@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from unittest import mock
 
 
 def load_module(name: str, path: Path):
@@ -84,6 +85,19 @@ def run(beacon_path: Path, manager_path: Path, uploader_path: Path) -> None:
             mount_manager = manager_module.NasMountManager(receiver_config)
             assert mount_manager.select_target() is True
             assert mount_manager.preferred["nas_id"] == "test-nas"
+            with mock.patch.object(mount_manager, "is_cifs_mount", return_value=True), mock.patch.object(
+                manager_module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+            ) as probe_run:
+                assert mount_manager.writable_probe() is True
+                probe_commands = [call.args[0] for call in probe_run.call_args_list]
+                assert probe_commands == [
+                    [
+                        "timeout",
+                        str(mount_manager.probe_timeout_seconds),
+                        "touch",
+                        str(mount_manager.mount_point / ".gwv3_mount_health"),
+                    ]
+                ]
             mount_manager.write_status(False, "waiting", "test")
             status = json.loads(status_path.read_text(encoding="utf-8"))
             assert status["ready"] is False

@@ -198,7 +198,9 @@ class NasMountManager:
     def writable_probe(self) -> bool:
         if not self.is_cifs_mount():
             return False
-        probe = self.mount_point / f".gwv3_mount_probe_{os.getpid()}"
+        # Keep one probe in place. Deleting a fresh file on every poll causes
+        # NAS recycle-bin implementations to accumulate thousands of entries.
+        probe = self.mount_point / ".gwv3_mount_health"
         try:
             touch = subprocess.run(
                 ["timeout", str(self.probe_timeout_seconds), "touch", str(probe)],
@@ -206,15 +208,7 @@ class NasMountManager:
                 capture_output=True,
                 timeout=self.probe_timeout_seconds + 1,
             )
-            if touch.returncode != 0:
-                return False
-            remove = subprocess.run(
-                ["timeout", str(self.probe_timeout_seconds), "rm", "-f", str(probe)],
-                check=False,
-                capture_output=True,
-                timeout=self.probe_timeout_seconds + 1,
-            )
-            return remove.returncode == 0
+            return touch.returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
