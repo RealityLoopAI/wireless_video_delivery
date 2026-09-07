@@ -8,6 +8,8 @@
 
 | Task | Document |
 | --- | --- |
+| 回答现场交付、IP、自动发现、NAS 和离线边界问题 | [field-delivery-solution.md](field-delivery-solution.md) |
+| 非技术现场人员进行开关机、预览和录制 | [operator-manual.md](operator-manual.md) |
 | 第一次理解系统 | [overview.md](overview.md) |
 | 理解进程、线程和模块边界 | [architecture.md](architecture.md) |
 | 追踪 RGB、Depth、时间戳和预览链路 | [data-pipeline.md](data-pipeline.md) |

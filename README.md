@@ -45,7 +45,9 @@ flowchart LR
 | Reader | Recommended entry |
 | --- | --- |
 | 第一次接触项目 | [项目概览](04_docs/overview.md) |
-| 负责现场部署 | [部署与运行](04_docs/deployment.md) |
+| 负责现场日常操作 | [现场运维操作手册](04_docs/operator-manual.md) |
+| 负责现场交付方案 | [现场交付方案与问题答复](04_docs/field-delivery-solution.md) |
+| 负责安装和开发维护 | [部署与运行](04_docs/deployment.md) |
 | 调用 REST、视频流或读取文件 | [接口与数据格式](04_docs/api-reference.md) |
 | 负责录制和 NAS | [录制与 NAS](04_docs/recording-and-nas.md) |
 | 负责跨设备时间对齐 | [时间同步](04_docs/clock-sync.md) |
