@@ -40,7 +40,7 @@ else
     doctor_output="$($ROOT_DIR/05_tools/gwv3_doctor.sh "$ROLE" "$CONFIG" 2>&1)"
   fi
   doctor_status=$?
-  if ((doctor_status >= 2)); then
+  if ((doctor_status >= 2)) || [[ "$doctor_output" != *"SUMMARY "* ]]; then
     reason="gwv3-doctor reported a failure"
   elif [[ "$ROLE" == receiver ]]; then
     live_count="$(curl -fsS --max-time 3 http://127.0.0.1:18080/api/status 2>/dev/null \

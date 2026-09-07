@@ -29,7 +29,7 @@
 联网空设备执行：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/RealityLoopAI/wireless_video_delivery/field-v2026.09.07.1/05_tools/bootstrap_online.sh
+curl -fsSLO https://raw.githubusercontent.com/RealityLoopAI/wireless_video_delivery/field-v2026.09.07.2/05_tools/bootstrap_online.sh
 chmod +x bootstrap_online.sh
 ./bootstrap_online.sh --role sender
 ```

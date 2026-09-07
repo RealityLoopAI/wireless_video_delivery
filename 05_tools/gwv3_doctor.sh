@@ -83,14 +83,18 @@ if [[ -r /etc/gwv3/release.json ]]; then
   release_root="$(json_value /etc/gwv3/release.json repository_root || true)"
   [[ -n "$release_commit" ]] && pass "release metadata commit=$release_commit" \
     || warn "release metadata does not contain a commit"
-  if [[ -n "$release_root" ]] && git -C "$release_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    current_commit="$(git -C "$release_root" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$release_root" ]] \
+    && git -c safe.directory="$release_root" -C "$release_root" \
+      rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    current_commit="$(git -c safe.directory="$release_root" -C "$release_root" \
+      rev-parse HEAD 2>/dev/null || true)"
     if [[ "$current_commit" == "$release_commit" ]]; then
       pass "repository HEAD matches the installed release"
     else
       fail "repository HEAD=$current_commit differs from installed commit=$release_commit"
     fi
-    if [[ -z "$(git -C "$release_root" status --porcelain 2>/dev/null)" ]]; then
+    if [[ -z "$(git -c safe.directory="$release_root" -C "$release_root" \
+      status --porcelain 2>/dev/null)" ]]; then
       pass "installed repository worktree is clean"
     else
       warn "installed repository worktree has uncommitted changes"
@@ -240,11 +244,12 @@ PY
     warn "no CLOCK_SYNC health record found in $sender_log"
   fi
 
-  sender_home="$HOME"
+  sender_home="${HOME:-}"
   if [[ -r /etc/gwv3/sender.env ]]; then
     sender_home="$(bash -c 'source /etc/gwv3/sender.env; printf "%s" "${GWV3_HOME:-}"' 2>/dev/null || true)"
-    [[ -n "$sender_home" ]] || sender_home="$HOME"
+    [[ -n "$sender_home" ]] || sender_home="${HOME:-}"
   fi
+  [[ -n "$sender_home" ]] || sender_home=/root
   target_state="${XDG_STATE_HOME:-$sender_home/.local/state}/gwv3/receiver_target.json"
   if [[ -r "$target_state" ]]; then
     target_host="$(json_value "$target_state" receiver_host || json_value "$target_state" host || true)"

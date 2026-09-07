@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPOSITORY_URL="${GWV3_REPOSITORY_URL:-https://github.com/RealityLoopAI/wireless_video_delivery.git}"
-RELEASE_REF="${GWV3_RELEASE_REF:-field-v2026.09.07.1}"
+RELEASE_REF="${GWV3_RELEASE_REF:-field-v2026.09.07.2}"
 INSTALL_DIR="${GWV3_INSTALL_DIR:-$HOME/wireless_video_delivery}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

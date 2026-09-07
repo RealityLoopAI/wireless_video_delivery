@@ -128,8 +128,16 @@ printf '%s\n' "$value"
         text = (SOURCE_ROOT / "05_tools/gwv3_doctor.sh").read_text(encoding="utf-8")
         self.assertIn("repository_root", text)
         self.assertIn('ROOT_DIR="$installed_root"', text)
+        self.assertIn('safe.directory="$release_root"', text)
+        self.assertIn('sender_home="${HOME:-}"', text)
         self.assertIn("chronyc waitsync 1 0.010", text)
         self.assertIn("CLOCK_SYNC is healthy", text)
+
+    def test_post_install_verify_rejects_truncated_doctor_output(self):
+        text = (SOURCE_ROOT / "05_tools/gwv3_post_install_verify.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('doctor_output" != *"SUMMARY "*', text)
 
     def test_one_click_deployment_has_pinned_assets_and_no_plaintext_password_option(self):
         deployment = SOURCE_ROOT / "06_configs/deployment"
