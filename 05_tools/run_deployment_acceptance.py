@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import datetime
 import json
 import shutil
 import subprocess
@@ -58,17 +59,29 @@ def recording_roots(config_path: Path) -> list[Path]:
 
 def recording_session_directories(config_path: Path, session_id: int) -> list[Path]:
     directories: set[Path] = set()
+    session_seconds = session_id / 1_000_000
+    date_names: set[str] = set()
+    for session_time in (
+        datetime.datetime.fromtimestamp(session_seconds),
+        datetime.datetime.fromtimestamp(session_seconds, datetime.timezone.utc),
+    ):
+        for day_offset in (-1, 0, 1):
+            date_names.add(
+                (session_time + datetime.timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            )
     for root in recording_roots(config_path):
         if not root.is_absolute() or not root.is_dir() or str(root) == "/":
             continue
-        for marker in root.rglob("*recording_ready.json"):
-            try:
-                metadata = json.loads(marker.read_text(encoding="utf-8"))
-                matches = int(metadata.get("recording_session_id") or 0) == session_id
-            except (OSError, ValueError, json.JSONDecodeError):
-                matches = False
-            if matches and marker.parent != root and root in marker.parent.parents:
-                directories.add(marker.parent)
+        for date_name in date_names:
+            for date_directory in root.glob(f"*/{date_name}"):
+                for marker in date_directory.rglob("*recording_ready.json"):
+                    try:
+                        metadata = json.loads(marker.read_text(encoding="utf-8"))
+                        matches = int(metadata.get("recording_session_id") or 0) == session_id
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        matches = False
+                    if matches and marker.parent != root and root in marker.parent.parents:
+                        directories.add(marker.parent)
     return sorted(directories)
 
 

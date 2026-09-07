@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime
 import json
 import os
 import subprocess
@@ -69,7 +70,10 @@ def main():
     State.calls = []
     with tempfile.TemporaryDirectory(prefix="gwv3-acceptance-test-") as temporary_text:
         temporary = Path(temporary_text)
-        segment = temporary / "nas" / "sender-a_cam01" / "segment"
+        session_date = datetime.datetime.fromtimestamp(123 / 1_000_000).strftime(
+            "%Y-%m-%d"
+        )
+        segment = temporary / "nas" / "sender-a_cam01" / session_date / "segment"
         segment.mkdir(parents=True)
         (segment / "deployment_canaryrecording_ready.json").write_text(
             json.dumps({"recording_session_id": 123}), encoding="utf-8"
