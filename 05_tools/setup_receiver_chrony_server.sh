@@ -14,7 +14,16 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -z "$ALLOW_CIDR" ]]; then
-  echo "usage: $0 <customer-lan-cidr>" >&2
+  echo "usage: $0 <customer-lan-cidr|auto-private>" >&2
+  exit 2
+fi
+
+if [[ "$ALLOW_CIDR" == "auto-private" ]]; then
+  ALLOW_LINES=$'allow 10.0.0.0/8\nallow 172.16.0.0/12\nallow 192.168.0.0/16'
+elif [[ "$ALLOW_CIDR" =~ ^[0-9a-fA-F:.]+/[0-9]{1,3}$ ]]; then
+  ALLOW_LINES="allow $ALLOW_CIDR"
+else
+  echo "invalid chrony allow value: $ALLOW_CIDR" >&2
   exit 2
 fi
 
@@ -41,7 +50,7 @@ cat >> "$tmp" <<EOF
 $BEGIN_MARK
 # Gemini Wireless Video receiver time source.
 # All senders should sync to this receiver before RGB capture starts.
-allow $ALLOW_CIDR
+$ALLOW_LINES
 local stratum 10
 makestep 0.1 3
 rtcsync

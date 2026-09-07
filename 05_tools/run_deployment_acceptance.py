@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -45,6 +47,90 @@ def wait_status(base_url, description, predicate, timeout_seconds, poll_seconds=
     raise TimeoutError(f"timed out waiting for {description}; latest={latest}")
 
 
+def recording_roots(config_path: Path) -> list[Path]:
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    roots = [Path(str(config.get("nas_root") or ""))]
+    staging = config.get("recording_staging") or {}
+    if isinstance(staging, dict):
+        roots.append(Path(str(staging.get("root") or "")))
+    return roots
+
+
+def recording_session_directories(config_path: Path, session_id: int) -> list[Path]:
+    directories: set[Path] = set()
+    for root in recording_roots(config_path):
+        if not root.is_absolute() or not root.is_dir() or str(root) == "/":
+            continue
+        for marker in root.rglob("*segment_meta.json"):
+            try:
+                metadata = json.loads(marker.read_text(encoding="utf-8"))
+                matches = int(metadata.get("recording_session_id") or 0) == session_id
+            except (OSError, ValueError, json.JSONDecodeError):
+                matches = False
+            if matches and marker.parent != root and root in marker.parent.parents:
+                directories.add(marker.parent)
+    return sorted(directories)
+
+
+def validate_recording_session(config_path: Path, session_id: int, expected_cameras: int) -> dict:
+    directories = recording_session_directories(config_path, session_id)
+    if len(directories) < expected_cameras:
+        raise RuntimeError(
+            f"recorded session has {len(directories)} published directories for {expected_cameras} cameras"
+        )
+    results = []
+    for directory in directories:
+        ready = list(directory.glob("*recording_ready.json"))
+        csv_files = list(directory.glob("*frames.csv"))
+        rgb_files = list(directory.glob("*.mp4"))
+        depth_files = list(directory.glob("*.mkv"))
+        if len(ready) != 1 or len(csv_files) != 1 or len(rgb_files) != 1 or len(depth_files) != 1:
+            raise RuntimeError(f"recorded directory is incomplete: {directory}")
+        if any(path.stat().st_size <= 0 for path in csv_files + rgb_files + depth_files):
+            raise RuntimeError(f"recorded directory contains an empty file: {directory}")
+        with csv_files[0].open("r", encoding="utf-8", errors="replace") as source:
+            line_count = sum(1 for _ in source)
+        if line_count < 3:
+            raise RuntimeError(f"frames CSV has no frame records: {csv_files[0]}")
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(rgb_files[0])],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if probe.returncode != 0 or "video" not in probe.stdout:
+            raise RuntimeError(f"RGB recording is not readable by ffprobe: {rgb_files[0]}")
+        results.append(
+            {
+                "directory": str(directory),
+                "frames_csv_lines": line_count,
+                "rgb_bytes": rgb_files[0].stat().st_size,
+                "depth_bytes": depth_files[0].stat().st_size,
+            }
+        )
+    return {"directories": results}
+
+
+def cleanup_recording_session(config_path: Path, session_id: int) -> list[str]:
+    removed: list[str] = []
+    roots = recording_roots(config_path)
+    for directory in recording_session_directories(config_path, session_id):
+        root = next((item for item in roots if item in directory.parents), None)
+        if root is None:
+            continue
+        shutil.rmtree(directory)
+        removed.append(str(directory))
+        parent = directory.parent
+        while parent != root and root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    return removed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run an explicit short recording acceptance test against a GWV3 receiver"
@@ -54,6 +140,8 @@ def main() -> int:
     parser.add_argument("--start-timeout", type=float, default=30.0)
     parser.add_argument("--finalize-timeout", type=float, default=900.0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--cleanup-on-success", action="store_true")
     args = parser.parse_args()
     if args.record_seconds <= 0:
         parser.error("--record-seconds must be positive")
@@ -87,6 +175,8 @@ def main() -> int:
         if start_response.get("ok") is not True:
             raise RuntimeError(f"start-all was rejected: {start_response}")
         started_by_this_process = True
+        recording_session_id = int(start_response.get("recording_session_id") or 0)
+        report["recording_session_id"] = recording_session_id
 
         def all_started(status):
             cameras = camera_map(status)
@@ -146,6 +236,18 @@ def main() -> int:
         report["ok"] = not failures
         if failures:
             raise RuntimeError("; ".join(failures))
+        if args.config is not None:
+            report["recording_files"] = validate_recording_session(
+                args.config, recording_session_id, len(before_cameras)
+            )
+        if args.cleanup_on_success:
+            if args.config is None:
+                raise RuntimeError("--cleanup-on-success requires --config")
+            if recording_session_id <= 0:
+                raise RuntimeError("receiver did not return a recording_session_id")
+            report["cleanup_removed_directories"] = cleanup_recording_session(
+                args.config, recording_session_id
+            )
     except Exception as exc:
         report["error"] = str(exc)
         report["finished_at_us"] = int(time.time() * 1_000_000)

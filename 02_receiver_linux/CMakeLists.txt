@@ -178,6 +178,16 @@ if(BUILD_TESTING)
     )
     set_tests_properties(power_button_service_unit PROPERTIES TIMEOUT 10)
     add_test(
+        NAME gwv3_provision_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_gwv3_provision.py
+    )
+    set_tests_properties(gwv3_provision_unit PROPERTIES TIMEOUT 10)
+    add_test(
+        NAME chrony_receiver_watch_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_chrony_receiver_watch.py
+    )
+    set_tests_properties(chrony_receiver_watch_unit PROPERTIES TIMEOUT 10)
+    add_test(
         NAME voice_tts_service_unit
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_voice_tts_service.py
     )

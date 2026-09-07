@@ -6,6 +6,12 @@
 
 | Tool | Purpose |
 | --- | --- |
+| `bootstrap.sh` | Sender/Receiver 统一的一键部署入口，支持交互与非交互模式 |
+| `bootstrap_online.sh` | 从冻结 GitHub release 安装到空设备 |
+| `build_offline_bundle.sh` | 按目标 OS/架构生成含依赖和 SDK 的离线包 |
+| `gwv3_provision.py` | 检测板卡、相机、音频和稳定设备身份并生成配置 |
+| `install_orbbec_sdk.sh` | 按 manifest 下载/缓存、校验并安装官方 Orbbec SDK |
+| `install_post_boot_verify.sh` | 安装一次性开机诊断和 30 秒录制验收 |
 | `start_receiver.sh [config]` | 构建并启动 receiver、Web Monitor 和所需辅助服务 |
 | `status_receiver.sh [config]` | 只读查看 receiver、Web、录制队列和近期日志 |
 | `stop_receiver.sh [config]` | 请求安全停止录制并停止 receiver 相关服务 |

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import pathlib
 import subprocess
 import tempfile
@@ -23,15 +24,24 @@ class DeploymentScriptTests(unittest.TestCase):
     def test_modified_shell_scripts_parse(self):
         scripts = [
             "05_tools/audit_time_sync_conflicts.sh",
+            "05_tools/bootstrap.sh",
+            "05_tools/bootstrap_online.sh",
+            "05_tools/build_offline_bundle.sh",
             "05_tools/gwv3_doctor.sh",
+            "05_tools/gwv3_post_install_verify.sh",
             "05_tools/gwv3_sender_service_launcher.sh",
+            "05_tools/install_chrony_receiver_watch.sh",
             "05_tools/install_device.sh",
+            "05_tools/install_optional_voice.sh",
+            "05_tools/install_orbbec_sdk.sh",
+            "05_tools/install_post_boot_verify.sh",
             "05_tools/install_sender_service.sh",
             "05_tools/rollback_sender_install.sh",
             "05_tools/sender_watchdog.sh",
             "05_tools/sender_wifi_guard.sh",
             "05_tools/setup_receiver_chrony_server.sh",
             "05_tools/setup_sender_chrony_client.sh",
+            "12_apps/recording_buttons/install_service.sh",
         ]
         subprocess.run(["bash", "-n", *scripts], cwd=SOURCE_ROOT, check=True)
 
@@ -120,6 +130,35 @@ printf '%s\n' "$value"
         self.assertIn('ROOT_DIR="$installed_root"', text)
         self.assertIn("chronyc waitsync 1 0.010", text)
         self.assertIn("CLOCK_SYNC is healthy", text)
+
+    def test_one_click_deployment_has_pinned_assets_and_no_plaintext_password_option(self):
+        deployment = SOURCE_ROOT / "06_configs/deployment"
+        sdk = json.loads((deployment / "sdk-manifest.json").read_text(encoding="utf-8"))
+        assets = json.loads((deployment / "asset-manifest.json").read_text(encoding="utf-8"))
+        for package in sdk["packages"].values():
+            self.assertRegex(package["sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(package["url"].startswith("https://github.com/orbbec/"))
+        self.assertRegex(
+            assets["assets"]["vosk_small_cn_0_22"]["sha256"], r"^[0-9a-f]{64}$"
+        )
+        bootstrap = (SOURCE_ROOT / "05_tools/bootstrap.sh").read_text(encoding="utf-8")
+        self.assertNotIn("--nas-password)", bootstrap)
+        self.assertIn("--nas-password-file", bootstrap)
+        self.assertIn("receiver_discovery", (SOURCE_ROOT / "05_tools/gwv3_provision.py").read_text(encoding="utf-8"))
+
+    def test_recording_button_units_are_rendered_from_actual_install_path(self):
+        app = SOURCE_ROOT / "12_apps/recording_buttons"
+        for name in (
+            "gwv3-recording-buttons.service",
+            "gwv3-power-button.service",
+            "gwv3-recording-led.service",
+        ):
+            text = (app / "systemd" / name).read_text(encoding="utf-8")
+            self.assertIn("@APP_DIR@", text)
+            self.assertNotIn("/home/cat/", text)
+        installer = (app / "install_service.sh").read_text(encoding="utf-8")
+        self.assertIn("render_unit", installer)
+        self.assertIn("GWV3_BUTTON_CONFIG", installer)
 
 
 def main():

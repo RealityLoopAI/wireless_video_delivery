@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "v1": {
+      "version": "1.10.27",
+      "architecture": "arm64",
+      "archive_name": "OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release.zip",
+      "archive_type": "zip",
+      "url": "https://github.com/orbbec/OrbbecSDK/releases/download/v1.10.27/OrbbecSDK_C_C%2B%2B_v1.10.27_20250925_0549823_linux_arm64_release.zip",
+      "sha256": "90b9b81f323a4db1bdc887aaac1aab2e6ba9569cf67038f68ecc5941833f469d",
+      "sdk_root_glob": "*/OrbbecSDK_v1.10.27/SDK"
+    },
+    "v2": {
+      "version": "2.8.6",
+      "architecture": "arm64",
+      "archive_name": "OrbbecSDK_v2.8.6_202604271452_6399409_linux_arm64.tar.gz",
+      "archive_type": "tar.gz",
+      "url": "https://github.com/orbbec/OrbbecSDK_v2/releases/download/v2.8.6/OrbbecSDK_v2.8.6_202604271452_6399409_linux_arm64.tar.gz",
+      "sha256": "a052221d4bdea6afb2f8b338bcd6e635afffcebbacab1483422b986e680fb441",
+      "sdk_root_glob": "OrbbecSDK_v2.8.6_*_linux_arm64"
+    }
+  }
+}

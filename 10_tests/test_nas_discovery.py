@@ -130,6 +130,27 @@ def run(beacon_path: Path, manager_path: Path, uploader_path: Path) -> None:
             stale["updated_us"] = 1
             status_path.write_text(json.dumps(stale), encoding="utf-8")
             assert uploader.nas_mount_ready() is False
+
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "nas_id": "manual-aabbccddeeff",
+                        "host": "192.168.1.89",
+                        "share": "recordings",
+                        "mac": "aa:bb:cc:dd:ee:ff",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            relocated = manager_module.NasMountManager(receiver_config)
+            with mock.patch.object(manager_module, "tcp_reachable", return_value=False), mock.patch.object(
+                manager_module, "find_host_by_mac", return_value="192.168.1.90"
+            ):
+                assert relocated.relocate_by_mac() is True
+            assert relocated.preferred["host"] == "192.168.1.90"
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            assert persisted["mac"] == "aa:bb:cc:dd:ee:ff"
+            assert persisted["source"] == "mac-scan"
         finally:
             beacon.send_signal(signal.SIGTERM)
             try:

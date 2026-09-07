@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 PROTOCOL_VERSION = "3.0"
 STOP_REQUESTED = False
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAC_PATTERN = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$")
 
 
 def request_stop(_signum: int, _frame: object) -> None:
@@ -121,6 +123,81 @@ def discover_nas(port: int, timeout_ms: int, preferred_id: str) -> list[dict[str
     return [candidates[key] for key in sorted(candidates)]
 
 
+def local_ipv4_interfaces() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["ip", "-j", "-4", "address", "show", "up"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        interfaces = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError):
+        return []
+    return sorted(
+        str(item.get("ifname"))
+        for item in interfaces
+        if item.get("ifname") != "lo"
+        and any(address.get("scope") == "global" for address in item.get("addr_info", []))
+    )
+
+
+def find_host_by_mac(mac: str) -> str:
+    mac = mac.lower()
+    if not MAC_PATTERN.fullmatch(mac):
+        return ""
+    try:
+        neighbors = subprocess.run(
+            ["ip", "neigh", "show"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        neighbors = ""
+    for line in neighbors.splitlines():
+        if re.search(rf"\blladdr\s+{re.escape(mac)}\b", line, re.IGNORECASE):
+            host = line.split(maxsplit=1)[0]
+            try:
+                socket.inet_aton(host)
+                return host
+            except OSError:
+                continue
+
+    if not shutil.which("arp-scan"):
+        return ""
+    for interface in local_ipv4_interfaces():
+        try:
+            result = subprocess.run(
+                ["arp-scan", "--interface", interface, "--localnet", "--plain"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[1].lower() == mac:
+                try:
+                    socket.inet_aton(fields[0])
+                    return fields[0]
+                except OSError:
+                    continue
+    return ""
+
+
+def tcp_reachable(host: str, port: int = 445, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 class NasMountManager:
     def __init__(self, receiver_config_path: Path):
         receiver = load_json(receiver_config_path)
@@ -162,6 +239,8 @@ class NasMountManager:
                     "nas_id": str(persisted["nas_id"]),
                     "host": str(persisted.get("host") or ""),
                     "share": str(persisted.get("share") or ""),
+                    "mac": str(persisted.get("mac") or "").lower(),
+                    "source": str(persisted.get("source") or "persisted"),
                 }
         except (OSError, ValueError, json.JSONDecodeError):
             pass
@@ -178,6 +257,7 @@ class NasMountManager:
                 "nas_id": self.preferred.get("nas_id", ""),
                 "host": self.preferred.get("host", ""),
                 "share": self.preferred.get("share", ""),
+                "mac": self.preferred.get("mac", ""),
                 "updated_us": now_us(),
             },
         )
@@ -218,8 +298,31 @@ class NasMountManager:
         if not candidates:
             return bool(self.preferred.get("host") and self.preferred.get("share"))
         selected = next((item for item in candidates if item["nas_id"] == preferred_id), candidates[0])
+        if selected["nas_id"] == preferred_id:
+            selected["mac"] = self.preferred.get("mac", "")
+        selected["source"] = "beacon"
         self.preferred = selected
         atomic_json_write(self.state_path, {**selected, "updated_us": now_us()}, mode=0o600)
+        return True
+
+    def relocate_by_mac(self) -> bool:
+        host = self.preferred.get("host", "")
+        if host and tcp_reachable(host):
+            return True
+        mac = self.preferred.get("mac", "").lower()
+        if not MAC_PATTERN.fullmatch(mac):
+            return bool(host)
+        relocated = find_host_by_mac(mac)
+        if not relocated:
+            return bool(host)
+        if relocated != host:
+            self.preferred["host"] = relocated
+            self.preferred["source"] = "mac-scan"
+            atomic_json_write(
+                self.state_path,
+                {**self.preferred, "updated_us": now_us()},
+                mode=0o600,
+            )
         return True
 
     def mount(self) -> tuple[bool, str]:
@@ -227,6 +330,7 @@ class NasMountManager:
             return False, f"credentials file missing: {self.credentials_file}"
         if not self.select_target():
             return False, "supplied NAS not discovered"
+        self.relocate_by_mac()
         self.mount_point.mkdir(parents=True, exist_ok=True)
         source = f"//{self.preferred['host']}/{self.preferred['share']}"
         options = (
@@ -281,7 +385,6 @@ class NasMountManager:
                     detached, error = self.detach_stale_mount()
                     if detached:
                         mounted_now = False
-                        self.preferred = {}
                     else:
                         self.write_status(False, "waiting", error)
                 if not mounted_now:

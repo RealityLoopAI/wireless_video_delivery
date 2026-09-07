@@ -6,6 +6,7 @@ CONFIG_SOURCE=""
 RUN_USER="${SUDO_USER:-}"
 RECEIVER_FALLBACK=""
 CHRONY_SERVER=""
+SDK_ROOT="${ORBBEC_SDK_ROOT:-}"
 START_SERVICE=1
 BUILD_SENDER=1
 RUN_PREFLIGHT=1
@@ -21,6 +22,7 @@ Options:
   --run-user USER           Linux account that owns the camera process
   --receiver-fallback HOST  Override receiver.ip and clock_sync.receiver_ip
   --chrony-server HOST      Chrony source; defaults to the receiver fallback
+  --sdk-root PATH           Explicit Orbbec SDK root used for build and runtime
   --no-start                Install and enable without starting the service
   --skip-build              Reuse the existing sender binary
   --skip-preflight          Skip hardware/runtime preflight
@@ -44,6 +46,10 @@ while (($#)); do
       ;;
     --chrony-server)
       CHRONY_SERVER="${2:-}"
+      shift 2
+      ;;
+    --sdk-root)
+      SDK_ROOT="${2:-}"
       shift 2
       ;;
     --no-start)
@@ -110,6 +116,11 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 command -v systemctl >/dev/null 2>&1 || fail "systemctl is required"
 command -v runuser >/dev/null 2>&1 || fail "runuser is required"
+if [[ -n "$SDK_ROOT" ]]; then
+  SDK_ROOT="$(realpath "$SDK_ROOT")"
+  [[ -d "$SDK_ROOT/include" && -s "$SDK_ROOT/lib/libOrbbecSDK.so" ]] \
+    || fail "invalid Orbbec SDK root: $SDK_ROOT"
+fi
 
 if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
@@ -129,9 +140,15 @@ run_as_sender() {
 }
 
 if (( BUILD_SENDER == 1 )); then
-  run_as_sender cmake -S "$ROOT_DIR" -B "$ROOT_DIR/12_build" \
+  CMAKE_ARGS=(
+    -S "$ROOT_DIR" -B "$ROOT_DIR/12_build"
     -DGWV3_BUILD_RECEIVER=OFF -DGWV3_BUILD_SENDER=ON \
     -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  )
+  if [[ -n "$SDK_ROOT" ]]; then
+    CMAKE_ARGS+=("-DORBBEC_SDK_ROOT=$SDK_ROOT")
+  fi
+  run_as_sender env ORBBEC_SDK_ROOT="$SDK_ROOT" cmake "${CMAKE_ARGS[@]}"
   run_as_sender cmake --build "$ROOT_DIR/12_build" -j2
 fi
 BIN="$ROOT_DIR/12_build/bin/gemini_sender"
@@ -225,6 +242,7 @@ ENV_TMP="$(mktemp)"
   shell_assignment GWV3_RUN_USER "$RUN_USER"
   shell_assignment GWV3_HOME "$RUN_HOME"
   shell_assignment GWV3_MODE no-local-preview
+  shell_assignment ORBBEC_SDK_ROOT "$SDK_ROOT"
 } > "$ENV_TMP"
 install -m 0644 "$ENV_TMP" /etc/gwv3/sender.env
 rm -f "$ENV_TMP"
@@ -235,14 +253,14 @@ install -m 0755 "$ROOT_DIR/05_tools/gwv3_doctor.sh" /usr/local/sbin/gwv3-doctor
 install -m 0644 "$ROOT_DIR/05_tools/systemd/gwv3-gemini-sender.service" \
   /etc/systemd/system/gwv3-gemini-sender.service
 
-python3 - "$ROOT_DIR" "$CONFIG_SOURCE" "$COMMIT" <<'PY'
+python3 - "$ROOT_DIR" "$CONFIG_SOURCE" "$COMMIT" "$SDK_ROOT" <<'PY'
 import datetime
 import hashlib
 import json
 import pathlib
 import sys
 
-root, config_source, commit = sys.argv[1:]
+root, config_source, commit, sdk_root = sys.argv[1:]
 config_bytes = pathlib.Path("/etc/gwv3/sender.json").read_bytes()
 record = {
     "role": "sender",
@@ -252,6 +270,7 @@ record = {
     "effective_config": "/etc/gwv3/sender.json",
     "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
     "installed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "orbbec_sdk_root": sdk_root,
 }
 pathlib.Path("/etc/gwv3/release.json").write_text(
     json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"

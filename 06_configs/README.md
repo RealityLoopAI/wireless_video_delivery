@@ -2,6 +2,8 @@
 
 本目录保存可提交的 receiver、sender、音频和网络调优配置。设备清单与字段说明见 [configuration.md](../04_docs/configuration.md)。
 
+`deployment/` 保存一键部署使用的发布、依赖、SDK/模型校验值和板卡/相机 profile 映射。该目录只含清单，不含密码或大型二进制。
+
 ## Selection
 
 生产服务实际使用哪个配置，由该设备的 systemd `ExecStart` 或启动脚本参数决定；文件名、修改时间和目录顺序都不是选择依据。修改前先记录当前 service 命令和 `sender_id`，修改后用 `--validate-only` 与状态 API 复核。

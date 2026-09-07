@@ -200,7 +200,11 @@ fi
 REQUIREMENTS_HASH="$(sha256sum "$WEB_DIR/requirements.txt" | awk '{print $1}')"
 REQUIREMENTS_STAMP="$VENV/.requirements.sha256"
 if [[ ! -f "$REQUIREMENTS_STAMP" ]] || [[ "$(<"$REQUIREMENTS_STAMP")" != "$REQUIREMENTS_HASH" ]]; then
-  "$VENV/bin/python" -m pip install -r "$WEB_DIR/requirements.txt" >/dev/null
+  PIP_ARGS=()
+  if [[ -n "${GWV3_PIP_CACHE:-}" ]]; then
+    PIP_ARGS+=(--no-index --find-links "$GWV3_PIP_CACHE")
+  fi
+  "$VENV/bin/python" -m pip install "${PIP_ARGS[@]}" -r "$WEB_DIR/requirements.txt" >/dev/null
   echo "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
 fi
 
@@ -391,6 +395,34 @@ done
 
 echo "接收端自启动已安装并启动。"
 echo "Web 地址：http://127.0.0.1:$WEB_PORT"
+
+COMMIT="unversioned"
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+fi
+RELEASE_TMP="$(mktemp)"
+python3 - "$ROOT_DIR" "$CONFIG" "$COMMIT" "$RELEASE_TMP" <<'PY'
+import datetime
+import hashlib
+import json
+import pathlib
+import sys
+
+root, config, commit, output = sys.argv[1:]
+config_bytes = pathlib.Path(config).read_bytes()
+record = {
+    "role": "receiver",
+    "commit": commit,
+    "repository_root": root,
+    "effective_config": config,
+    "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+    "installed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+pathlib.Path(output).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+sudo install -d -m 0755 /etc/gwv3
+sudo install -m 0644 "$RELEASE_TMP" /etc/gwv3/release.json
+rm -f "$RELEASE_TMP"
 
 if command -v loginctl >/dev/null 2>&1; then
   linger="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)"

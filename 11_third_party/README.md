@@ -38,6 +38,23 @@ OrbbecSDK_v2.8.6_202604271452_6399409_linux_arm64.tar.gz
 SHA256: a052221d4bdea6afb2f8b338bcd6e635afffcebbacab1483422b986e680fb441
 ```
 
+已验证的 v1.10.27 ARM64 包：
+
+```text
+OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release.zip
+SHA256: 90b9b81f323a4db1bdc887aaac1aab2e6ba9569cf67038f68ecc5941833f469d
+```
+
+新部署由 `05_tools/install_orbbec_sdk.sh` 读取
+`06_configs/deployment/sdk-manifest.json`，优先使用离线缓存，否则从上述官方 release 下载，校验后安装到：
+
+```text
+/opt/gwv3/vendor/orbbec/v1-1.10.27
+/opt/gwv3/vendor/orbbec/v2-2.8.6
+```
+
+旧设备的仓库内 SDK 路径只为兼容保留。新二进制通过明确的 `ORBBEC_SDK_ROOT` 构建并把实际路径写入 `/etc/gwv3/release.json`。
+
 SDK 放置约定：
 
 ```text

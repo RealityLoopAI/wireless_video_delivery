@@ -6,7 +6,7 @@
 
 ## Delivery Model
 
-- Sender、Receiver 和配套 NAS 在出厂前安装完成，不做现场自动更新。
+- Sender 和 Receiver 在出厂前用统一入口安装完成；绿联 NAS 只配置 SMB，不做项目代码部署，也不做现场自动更新。
 - Sender 由现场人员在设备桌面配置客户 Wi-Fi；Receiver 与 NAS 使用有线网络。
 - 所有设备使用 DHCP，避免把实验室固定地址带到客户网络造成冲突。
 - 现场只有一台 Receiver 和一台配套 NAS；测试网络允许存在多台 Receiver。
@@ -46,14 +46,10 @@ GPIO 录制按键、录制 LED 和关机前停止录制逻辑也读取同一份�
 
 ## Standard Sender Installation
 
-正式 Sender 使用统一安装器和统一服务：
+正式新 Sender 使用统一硬件探测与安装入口：
 
 ```bash
-sudo ./05_tools/install_device.sh sender \
-  --config 06_configs/<sender-config>.json \
-  --run-user <linux-user> \
-  --receiver-fallback <receiver-ip-or-hostname> \
-  --chrony-server <receiver-ip-or-hostname>
+./05_tools/bootstrap.sh --role sender
 ```
 
 - 唯一生效配置：`/etc/gwv3/sender.json`
@@ -67,15 +63,15 @@ sudo ./05_tools/install_device.sh sender \
 
 ## NAS Discovery And Mount
 
-NAS 运行 `nas_discovery_beacon.py`，在 UDP `50008` 返回稳定 `nas_id` 和 SMB share 名。响应只包含发现信息，不传输账号密码。
+如果 NAS 可以选装 `nas_discovery_beacon.py`，它会在 UDP `50008` 返回稳定 `nas_id` 和 SMB share 名。绿联 NAS 无需安装 beacon；Receiver 首次部署时记录地址、share 和同网段 MAC。
 
 Receiver 的系统级 `nas_mount_manager.py`：
 
-1. 自动发现唯一配套 NAS。
+1. 优先发现唯一配套 NAS；没有 beacon 时使用首次持久化目标。
 2. 使用本机 `/etc/gwv3/nas-credentials` 挂载 CIFS。
 3. 持续执行有超时的写探针。
 4. 将健康状态原子写入 `/run/gwv3/nas-mount-status.json`。
-5. NAS DHCP 地址变化或旧挂载持续失效时，重新发现并挂载。
+5. NAS DHCP 地址变化或旧挂载持续失效时，先重新发现，再按记录的 MAC 扫描当前直连网段并重新挂载。
 
 该管理器必须运行在主机 mount namespace，不能给其 systemd 单元启用 `PrivateMounts` 或由 `PrivateTmp` 隐式创建私有 mount namespace，否则会出现“服务报告 ready、Receiver 却看不到挂载”的假健康状态。
 

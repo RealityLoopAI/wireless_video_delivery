@@ -4,6 +4,8 @@
 适用项目：`wireless_video_delivery`  
 文档性质：初始化人员作业参考模板，交付前应由项目负责人补齐方括号内容
 
+> 新设备的实际安装统一执行 [one-click-deployment.md](one-click-deployment.md)。本文后续手工步骤只用于理解和故障恢复，不再要求初始化人员逐项复制配置。
+
 ## 1. 目标与边界
 
 本流程用于把已安装受支持 Linux 系统的设备初始化为以下角色之一：
@@ -16,7 +18,7 @@
 
 1. 设备接入客户局域网后通过 DHCP 获取地址，不使用实验室固定 IP。
 2. Sender 自动发现唯一 Receiver，不要求现场填写 Receiver 地址。
-3. Receiver 自动发现并挂载唯一配套 NAS。
+3. Receiver 首次输入一次配套 NAS 信息，之后通过 beacon、持久化目标或 MAC 扫描自动重定位并挂载。
 4. Receiver 和 NAS 断线时保留本地数据，恢复后自动补传。
 5. 断电恢复后服务自动启动，但视频录制必须由网页或按键重新手动开始。
 6. 互联网中断时，除在线 TTS 外，采集、预览、录制、按键和 NAS 补传仍可工作。
@@ -152,9 +154,9 @@ git rev-parse HEAD
 4. 确认 NAS 防火墙允许同一局域网访问 SMB 和 UDP `50008`。
 5. 开启 SSH 仅用于初始化和维护；是否长期保留由负责人决定。
 
-### 5.2 安装自动发现服务
+### 5.2 NAS 发现边界
 
-在 NAS 的仓库根目录执行：
+绿联 NAS 不要求安装本项目。Receiver 一键部署时记录首次 SMB 地址和同网段 MAC。若 NAS 支持运行自定义 systemd 服务，也可以选装 beacon：
 
 ```bash
 sudo ./05_tools/install_nas_discovery_beacon.sh video_database

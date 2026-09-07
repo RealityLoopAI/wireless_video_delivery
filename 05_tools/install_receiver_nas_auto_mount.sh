@@ -38,6 +38,9 @@ command -v mount.cifs >/dev/null 2>&1 || {
   echo "mount.cifs is required; install cifs-utils before factory delivery" >&2
   exit 1
 }
+if ! command -v arp-scan >/dev/null 2>&1; then
+  echo "warning: arp-scan is unavailable; NAS DHCP address recovery will be limited" >&2
+fi
 
 MOUNT_UNIT="$(systemd-escape --path --suffix=mount "$NAS_ROOT")"
 AUTOMOUNT_UNIT="$(systemd-escape --path --suffix=automount "$NAS_ROOT")"

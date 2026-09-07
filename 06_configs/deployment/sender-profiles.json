@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "name": "rk3588-sv1301s",
+      "board": "rk3588",
+      "camera": "sv1301s",
+      "sdk": "v1",
+      "template": "06_configs/sender_rk3588-ubuntu_one_camera.json"
+    },
+    {
+      "name": "orangepi5pro-sv1301s",
+      "board": "orangepi5pro",
+      "camera": "sv1301s",
+      "sdk": "v1",
+      "template": "06_configs/sender_orangepi5pro-fe0f7222.json"
+    },
+    {
+      "name": "orangepi5pro-gemini305",
+      "board": "orangepi5pro",
+      "camera": "gemini305",
+      "sdk": "v2",
+      "template": "06_configs/sender_orangepi5pro-d12a4719_gemini305.json"
+    },
+    {
+      "name": "lubancat-gemini305",
+      "board": "lubancat",
+      "camera": "gemini305",
+      "sdk": "v2",
+      "template": "06_configs/sender_lubancat-e8cc0cb3_gemini305.json"
+    }
+  ]
+}

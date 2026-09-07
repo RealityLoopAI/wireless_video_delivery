@@ -35,6 +35,8 @@ rgb_output_mode:            fragmented_mp4
 
 ## Sender Configurations
 
+新设备由 `06_configs/deployment/sender-profiles.json` 按板型和相机系列选择下面的批准模板，再写入自动生成的稳定 Sender ID、Receiver 兜底地址和热插拔设置。部署生成的唯一生效文件是 `/etc/gwv3/sender.json`；不要为每个新序列号继续复制一份近似配置。
+
 正式设备配置：
 
 | Device family | Configuration |
