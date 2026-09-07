@@ -1,6 +1,6 @@
 # Documentation Index
 
-更新时间：2026-09-03
+更新时间：2026-09-07
 
 本目录只保存当前 `main` 的长期维护文档。文件名使用英文，正文使用中文。历史现象通过 Git 历史追溯，不把旧报告当作当前行为。
 
@@ -14,6 +14,7 @@
 | 构建、部署、启停和现场检查 | [deployment.md](deployment.md) |
 | 按工单初始化 Sender、Receiver 和 NAS | [device-initialization.md](device-initialization.md) |
 | 现场 DHCP、自动发现与 NAS 容错 | [field-deployment.md](field-deployment.md) |
+| 理解部署故障的根因和防复发控制 | [deployment-hardening.md](deployment-hardening.md) |
 | 选择或修改设备配置 | [configuration.md](configuration.md) |
 | 调用端口、REST、视频流和读取文件 | [api-reference.md](api-reference.md) |
 | 理解分片、fMP4、完成标记和 NAS | [recording-and-nas.md](recording-and-nas.md) |

@@ -1,6 +1,6 @@
 # 部署与运行手册
 
-更新时间：2026-09-03
+更新时间：2026-09-07
 
 本文档说明当前主线如何部署、启动、停止、检查状态和录制。密码、私有凭据和现场临时备份不写入仓库文档。
 
@@ -302,6 +302,18 @@ cmake --build 12_build -j2
 ctest --test-dir 12_build --output-on-failure
 ```
 
+以上是开发调试流程。正式交付必须通过统一安装入口，不得手工复制设备专用 service：
+
+```bash
+sudo ./05_tools/install_device.sh sender \
+  --config 06_configs/<sender-config>.json \
+  --run-user <linux-user> \
+  --receiver-fallback <receiver-ip-or-hostname> \
+  --chrony-server <receiver-ip-or-hostname>
+```
+
+安装后仓库文件是模板，实际生效配置固定为 `/etc/gwv3/sender.json`，运行服务固定为 `gwv3-gemini-sender.service`。安装器记录 Git commit 和配置哈希，备份旧状态并支持 `rollback_sender_install.sh` 回退。
+
 `start_sender.sh` 不执行编译。它先检查 `12_build/bin/gemini_sender`、SDK、插件、配置、路由和 USB，再由 watchdog 启动子进程。
 
 启动：
@@ -357,9 +369,10 @@ ctest --test-dir 12_build --output-on-failure
 相关脚本：
 
 ```bash
-./05_tools/setup_receiver_chrony_server.sh
-./05_tools/setup_sender_chrony_client.sh
+./05_tools/setup_receiver_chrony_server.sh <customer-lan-cidr>
+./05_tools/setup_sender_chrony_client.sh <receiver-ip-or-hostname>
 ./05_tools/wait_chrony_sync.sh
+./05_tools/audit_time_sync_conflicts.sh --check
 ./05_tools/set_desktop_screen_timeout.sh
 ```
 
@@ -444,7 +457,7 @@ python3 05_tools/align_depth_to_rgb.py <segment_dir>
 
 ## 8. Wi-Fi Guard
 
-发送端 Wi-Fi guard 默认应检查链路是否处于 5GHz 或满足最低频率要求，不应在仓库默认脚本中写死现场 SSID。
+发送端 Wi-Fi guard 默认检查链路是否处于 5 GHz 或满足最低频率要求，不在仓库默认脚本中写死现场 SSID。当前链路不合规且未指定固定连接时，它会从已保存、可见且允许自动连接的配置中选择优先级最高的 5 GHz 连接。
 
 只有某次测试明确要求固定到某个 AP 时，才通过 systemd drop-in 或临时环境变量指定连接名。
 
@@ -466,10 +479,11 @@ python3 05_tools/align_depth_to_rgb.py <segment_dir>
 1. Orbbec SDK 路径正确。
 2. 相机能被 SDK 枚举。
 3. `mpph264enc` 可用。
-4. 配置里的接收端 IP 和端口正确。
+4. `/etc/gwv3/sender.json` 中的 Receiver 兜底地址可路由，自动发现目标正确。
 5. `sender_id` / `camera_id` 不冲突。
 6. Wi-Fi 处于目标频段。
 7. 预检通过。
+8. `gwv3_doctor.sh sender /etc/gwv3/sender.json` 没有 FAIL。
 
 ## 10. 安全和提交规则
 

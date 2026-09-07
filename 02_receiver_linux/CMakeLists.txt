@@ -148,6 +148,11 @@ if(BUILD_TESTING)
     )
     set_tests_properties(recording_button_service_unit PROPERTIES TIMEOUT 10)
     add_test(
+        NAME deployment_acceptance_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_deployment_acceptance.py
+    )
+    set_tests_properties(deployment_acceptance_integration PROPERTIES TIMEOUT 10)
+    add_test(
         NAME audio_archive_receiver_integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_audio_archive_receiver.py
     )

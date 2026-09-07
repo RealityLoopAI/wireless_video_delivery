@@ -1,6 +1,6 @@
 {
   "event_device": "/dev/input/by-path/platform-2ac40000.i2c-platform-rk805-pwrkey.2.auto-event",
-  "receiver_base_url": "http://192.168.1.196:8080",
+  "receiver_base_url": "auto",
   "speech_base_url": "http://127.0.0.1:18082",
   "hold_seconds": 5.0,
   "request_timeout_seconds": 2.0,

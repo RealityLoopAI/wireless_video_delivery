@@ -8,7 +8,7 @@ MODE="${2:-preview}"
 PID_FILE="$ROOT_DIR/12_build/sender.pid"
 CHILD_PID_FILE="$ROOT_DIR/12_build/sender_child.pid"
 LOCK_FILE="$ROOT_DIR/12_build/sender.lock"
-LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
+WATCHDOG_LOG_FILE="$ROOT_DIR/08_reports/sender_logs/sender_stdout.log"
 RESTART_DELAY_SECONDS="${GEMINI_SENDER_RESTART_DELAY_SECONDS:-3}"
 USB_MISSING_GRACE_SECONDS="${GEMINI_SENDER_USB_MISSING_GRACE_SECONDS:-10}"
 ZERO_FPS_GRACE_SECONDS="${GEMINI_SENDER_ZERO_FPS_GRACE_SECONDS:-20}"
@@ -22,6 +22,46 @@ fi
 source "$ROOT_DIR/05_tools/sender_wifi_guard.sh"
 source "$ROOT_DIR/05_tools/orbbec_runtime_guard.sh"
 gemini_sender_wifi_apply_repo_defaults
+
+resolve_app_log_file() {
+  local configured=""
+  if command -v python3 >/dev/null 2>&1 && [[ -f "$CONFIG" ]]; then
+    configured="$(python3 - "$CONFIG" "$ROOT_DIR" <<'PY' 2>/dev/null || true
+import json
+import os
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    config = json.load(handle)
+directory = (config.get("logging") or {}).get("directory") or "08_reports/sender_logs"
+if not os.path.isabs(directory):
+    directory = os.path.join(sys.argv[2], directory)
+print(os.path.join(directory, "sender.log"))
+PY
+)"
+  fi
+  printf '%s\n' "${configured:-$ROOT_DIR/08_reports/sender_logs/sender.log}"
+}
+
+monotonic_seconds() {
+  awk '{print int($1)}' /proc/uptime
+}
+
+health_log_size() {
+  if [[ -f "$APP_LOG_FILE" ]]; then
+    stat -c '%s' "$APP_LOG_FILE" 2>/dev/null || printf '0\n'
+  else
+    printf '0\n'
+  fi
+}
+
+health_log_identity() {
+  if [[ -f "$APP_LOG_FILE" ]]; then
+    stat -c '%d:%i' "$APP_LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+APP_LOG_FILE="${GEMINI_SENDER_HEALTH_LOG_FILE:-$(resolve_app_log_file)}"
 
 resolve_sender_sdk_lib() {
   local linked_lib=""
@@ -51,7 +91,7 @@ cd "$ROOT_DIR"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   printf '%s [WATCHDOG] another sender watchdog is already running; exiting pid=%s config=%s\n' \
-    "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$CONFIG" >> "$LOG_FILE"
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$CONFIG" >> "$WATCHDOG_LOG_FILE"
   exit 0
 fi
 
@@ -61,7 +101,7 @@ monitor_pid=""
 stopping=0
 
 log_watchdog() {
-  printf '%s [WATCHDOG] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+  printf '%s [WATCHDOG] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$WATCHDOG_LOG_FILE"
 }
 
 cleanup() {
@@ -79,7 +119,7 @@ cleanup() {
 
 trap cleanup INT TERM HUP EXIT
 
-log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ sdk_lib=${SDK_LIB:-auto} wifi_guard=$(gemini_sender_wifi_policy_summary)"
+log_watchdog "watchdog started mode=$MODE config=$CONFIG pid=$$ sdk_lib=${SDK_LIB:-auto} health_log=$APP_LOG_FILE wifi_guard=$(gemini_sender_wifi_policy_summary)"
 
 monitor_child_health() {
   local pid="$1"
@@ -88,19 +128,27 @@ monitor_child_health() {
   local log_offset="$initial_log_offset"
   local current_size=0
   local new_bytes=0
+  local log_identity=""
+  local current_identity=""
   local wifi_outage_started_at=0
   local wifi_outage_last_log_at=0
   local wifi_outage_elapsed=0
-  child_started_at="$(date +%s)"
+  child_started_at="$(monotonic_seconds)"
+  log_identity="$(health_log_identity)"
   declare -A camera_started=()
   declare -A startup_attempt_at=()
   declare -A zero_fps_samples=()
 
   check_sender_perf_health() {
     local now elapsed line camera_id
-    now="$(date +%s)"
+    now="$(monotonic_seconds)"
     elapsed=$((now - child_started_at))
-    current_size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+    current_identity="$(health_log_identity)"
+    if [[ -n "$current_identity" && "$current_identity" != "$log_identity" ]]; then
+      log_offset=0
+      log_identity="$current_identity"
+    fi
+    current_size="$(health_log_size)"
     if [[ "$current_size" -lt "$log_offset" ]]; then
       log_offset=0
     fi
@@ -158,7 +206,7 @@ monitor_child_health() {
       else
         zero_fps_samples["$camera_id"]=0
       fi
-    done < <(tail -c "$new_bytes" "$LOG_FILE" 2>/dev/null || true)
+    done < <(tail -c "$new_bytes" "$APP_LOG_FILE" 2>/dev/null || true)
 
     for camera_id in "${!startup_attempt_at[@]}"; do
       if [[ $((now - startup_attempt_at[$camera_id])) -ge "$STARTUP_PENDING_GRACE_SECONDS" ]]; then
@@ -184,7 +232,7 @@ monitor_child_health() {
     if gemini_sender_wifi_required; then
       if gemini_sender_wifi_check_policy; then
         if [[ "$wifi_outage_started_at" -gt 0 ]]; then
-          wifi_outage_elapsed=$(( $(date +%s) - wifi_outage_started_at ))
+          wifi_outage_elapsed=$(( $(monotonic_seconds) - wifi_outage_started_at ))
           log_watchdog "wifi link recovered after ${wifi_outage_elapsed}s; preserving sender child pid=$pid for media queue replay"
           wifi_outage_started_at=0
           wifi_outage_last_log_at=0
@@ -192,7 +240,7 @@ monitor_child_health() {
       else
         local reason="$GEMINI_SENDER_WIFI_LAST_ERROR"
         local now
-        now="$(date +%s)"
+        now="$(monotonic_seconds)"
         if [[ "$wifi_outage_started_at" -eq 0 ]]; then
           wifi_outage_started_at="$now"
           wifi_outage_last_log_at="$now"
@@ -245,7 +293,7 @@ while [[ "$stopping" -eq 0 ]]; do
 
   gemini_sender_orbbec_prepare_runtime
 
-  child_log_offset="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+  child_log_offset="$(health_log_size)"
   if [[ "$MODE" == "no-preview" ]]; then
     LD_LIBRARY_PATH="${SDK_LIB:+$SDK_LIB:}${LD_LIBRARY_PATH:-}" "$BIN" --config "$CONFIG" --no-preview &
   elif [[ "$MODE" == "no-local-preview" ]]; then

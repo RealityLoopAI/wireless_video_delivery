@@ -7,6 +7,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -16,6 +17,11 @@ from typing import Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from receiver_endpoint import resolve_receiver_base_url
 
 
 LOG = logging.getLogger("power-button")
@@ -278,11 +284,14 @@ class PowerController:
         return True
 
     def stop_recording_if_needed(self) -> str:
+        receiver_base_url = resolve_receiver_base_url(
+            self.config.receiver_base_url
+        )
         last_error = ""
         for attempt in range(1, self.config.retry_count + 1):
             try:
                 status = self.http_client.request(
-                    "GET", f"{self.config.receiver_base_url}/api/status"
+                    "GET", f"{receiver_base_url}/api/status"
                 )
                 state = str(status.get("recording_state", ""))
                 recording_all = bool(status.get("recording_all", False))
@@ -291,7 +300,7 @@ class PowerController:
                     return "idle"
                 response = self.http_client.request(
                     "POST",
-                    f"{self.config.receiver_base_url}/api/record/stop-all",
+                    f"{receiver_base_url}/api/record/stop-all",
                 )
                 if response.get("ok") is not True:
                     raise RuntimeError(

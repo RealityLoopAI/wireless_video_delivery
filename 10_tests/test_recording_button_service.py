@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +290,29 @@ def test_simultaneous_hold_is_ignored(module):
     assert [button.action for button in worker.submitted] == ["start"]
 
 
+def test_receiver_endpoint_follows_persisted_discovery(module):
+    with tempfile.TemporaryDirectory(prefix="gwv3_receiver_target_") as temporary:
+        state_path = Path(temporary) / "receiver_target.json"
+        state_path.write_text(
+            json.dumps(
+                {"receiver_host": "192.168.66.79", "receiver_id": "receiver-a"}
+            ),
+            encoding="utf-8",
+        )
+        previous = os.environ.get("GWV3_RECEIVER_TARGET_STATE")
+        os.environ["GWV3_RECEIVER_TARGET_STATE"] = str(state_path)
+        try:
+            assert (
+                module.resolve_receiver_base_url("http://192.168.1.196:8080")
+                == "http://192.168.66.79:8080"
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("GWV3_RECEIVER_TARGET_STATE", None)
+            else:
+                os.environ["GWV3_RECEIVER_TARGET_STATE"] = previous
+
+
 def main():
     module = load_module()
     test_long_press_state_machine(module)
@@ -294,6 +320,7 @@ def main():
     test_controller_success_duplicate_and_retry_confirmation(module)
     test_controller_sender_scope_stop_and_status_failure(module)
     test_simultaneous_hold_is_ignored(module)
+    test_receiver_endpoint_follows_persisted_discovery(module)
     print("recording button service tests passed")
 
 

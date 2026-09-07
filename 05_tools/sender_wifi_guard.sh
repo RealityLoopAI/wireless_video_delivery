@@ -107,16 +107,20 @@ gemini_sender_wifi_visible_freq_for_ssid() {
     return 1
   fi
 
+  local best_freq=0
   while IFS=: read -r visible_ssid visible_freq _; do
     if [[ "$visible_ssid" != "$ssid" ]]; then
       continue
     fi
     freq="${visible_freq%% *}"
-    if [[ "$freq" =~ ^[0-9]+$ ]]; then
-      printf '%s\n' "$freq"
-      return 0
+    if [[ "$freq" =~ ^[0-9]+$ ]] && (( freq > best_freq )); then
+      best_freq="$freq"
     fi
   done < <(nmcli --escape no -t -f SSID,FREQ dev wifi list ifname "$iface" 2>/dev/null || true)
+  if (( best_freq > 0 )); then
+    printf '%s\n' "$best_freq"
+    return 0
+  fi
   return 1
 }
 
@@ -168,12 +172,13 @@ gemini_sender_wifi_find_visible_saved_connection() {
 }
 
 gemini_sender_wifi_connect_if_configured() {
-  local connection iface
+  local connection iface min_freq
   connection="${GEMINI_SENDER_WIFI_CONNECTION:-}"
   iface="$(gemini_sender_wifi_iface)"
+  min_freq="${GEMINI_SENDER_WIFI_MIN_FREQ_MHZ:-0}"
   GEMINI_SENDER_WIFI_LAST_ERROR=""
 
-  if [[ -z "$connection" ]]; then
+  if ! gemini_sender_wifi_required; then
     gemini_sender_wifi_disable_powersave
     return 0
   fi
@@ -191,6 +196,9 @@ gemini_sender_wifi_connect_if_configured() {
       GEMINI_SENDER_WIFI_LAST_ERROR="当前 Wi-Fi 不满足策略，且未找到已保存、可见并满足频率要求的 Wi-Fi 连接"
       return 1
     fi
+  fi
+  if [[ "$min_freq" =~ ^[0-9]+$ ]] && (( min_freq >= 5000 )); then
+    nmcli connection modify "$connection" 802-11-wireless.band a >/dev/null 2>&1 || true
   fi
   if ! nmcli connection up "$connection" ifname "$iface" >/dev/null 2>&1; then
     if gemini_sender_wifi_check_policy; then

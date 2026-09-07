@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -14,6 +15,11 @@ from typing import Callable, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from receiver_endpoint import resolve_receiver_base_url
 
 
 LOG = logging.getLogger("recording-buttons")
@@ -242,10 +248,13 @@ class RecordingController:
         self.retry_delay_seconds = retry_delay_seconds
         self.sleep = sleep
 
+    def _receiver_url(self, path: str) -> str:
+        return f"{resolve_receiver_base_url(self.receiver_base_url)}{path}"
+
     def perform(self, action: str, cue: str) -> str:
         try:
             status = self.http_client.request(
-                "GET", f"{self.receiver_base_url}/api/status"
+                "GET", self._receiver_url("/api/status")
             )
             if self._desired_state(status, action):
                 LOG.info(
@@ -272,7 +281,7 @@ class RecordingController:
                 endpoint = "start-sender" if action == "start" else "stop-sender"
                 query = urlencode({"sender_id": self.sender_id})
                 response = self.http_client.request(
-                    "POST", f"{self.receiver_base_url}/api/record/{endpoint}?{query}"
+                    "POST", self._receiver_url(f"/api/record/{endpoint}?{query}")
                 )
                 if response.get("ok") is not True:
                     raise RuntimeError(str(response.get("error", "request rejected")))
@@ -298,7 +307,7 @@ class RecordingController:
                     self.sleep(self.retry_delay_seconds)
                     try:
                         status = self.http_client.request(
-                            "GET", f"{self.receiver_base_url}/api/status"
+                            "GET", self._receiver_url("/api/status")
                         )
                         if self._desired_state(status, action):
                             LOG.info(

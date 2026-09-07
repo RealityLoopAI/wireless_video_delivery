@@ -1,0 +1,16 @@
+[Unit]
+Description=GWV3 Gemini RGBD Sender
+After=NetworkManager-wait-online.service chrony.service gwv3-sender-wifi-tuning.service
+Wants=NetworkManager-wait-online.service chrony.service
+
+[Service]
+Type=simple
+ExecStartPre=+/usr/local/sbin/gwv3-sender-service-launcher --prepare
+ExecStart=/usr/local/sbin/gwv3-sender-service-launcher --run
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

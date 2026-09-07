@@ -28,7 +28,7 @@ ctest --test-dir 12_build_test_sender --output-on-failure
 
 ## Coverage Areas
 
-- sender 配置、曝光控制、关键帧调度和传输恢复。
+- sender 配置、曝光控制、关键帧调度、传输恢复和部署脚本。
 - receiver 输入校验、录制队列、fMP4/NAS 发布和并发上传。
 - CLOCK_SYNC 输入检查与 RGB 同步清单。
 - Web 低延迟预览。

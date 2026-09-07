@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import signal
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -10,6 +11,11 @@ from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from receiver_endpoint import resolve_receiver_base_url
 
 LOG = logging.getLogger("recording-led")
 
@@ -92,7 +98,8 @@ class GpioLed:
 
 
 def fetch_recording_state(config: LedConfig) -> bool:
-    request = Request(f"{config.receiver_base_url}/api/status", method="GET")
+    receiver_base_url = resolve_receiver_base_url(config.receiver_base_url)
+    request = Request(f"{receiver_base_url}/api/status", method="GET")
     try:
         with urlopen(request, timeout=config.request_timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))

@@ -1,6 +1,6 @@
 # 设备初始化作业模板
 
-更新时间：2026-09-03  
+更新时间：2026-09-07
 适用项目：`wireless_video_delivery`  
 文档性质：初始化人员作业参考模板，交付前应由项目负责人补齐方括号内容
 
@@ -87,7 +87,7 @@
 | Camera ID | `[Sender 填写，通常为 cam01]` |
 | 相机型号 | `[填写]` |
 | Sender 配置文件 | `[例如 06_configs/sender_lubancat-xxxx_gemini305.json]` |
-| Sender service | `[例如 gwv3-gemini-sender-lubancat-xxxx.service]` |
+| Sender service | `gwv3-gemini-sender.service` |
 | NAS SMB share | `video_database` |
 | 备注 | `[填写]` |
 
@@ -266,18 +266,18 @@ http://<receiver-ip>:8080
 
 ## 7. Sender 初始化
 
-当前仓库已有的正式设备对照如下。初始化已有设备时必须整行匹配；新增设备必须由研发先增加独立配置和 service。
+当前仓库已有的正式设备对照如下。初始化已有设备时必须选择正确配置；所有 Sender 安装后统一使用 `gwv3-gemini-sender.service`，不再为新增设备复制一份写死用户和仓库路径的 service。
 
 | Sender ID | 用户 | 仓库路径 | 配置文件 | systemd service |
 | --- | --- | --- | --- | --- |
-| `rk3588-ubuntu` | `linaro` | `/home/linaro/桌面/wireless_video_delivery` | `sender_rk3588-ubuntu_one_camera.json` | `gwv3-gemini-sender-rk3588-ubuntu.service` |
-| `orangepi5pro-b439137c` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-b439137c.json` | `gwv3-gemini-sender-orangepi5pro-b439137c.service` |
-| `orangepi5pro-f022c4` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-f022c4.json` | `gwv3-gemini-sender-orangepi5pro-f022c4.service` |
-| `orangepi5pro-fe0e946c` | `orangepi` | `/home/orangepi/Desktop/wireless_video_delivery` | `sender_orangepi5pro-fe0e946c_gemini305.json` | `gwv3-gemini-sender-orangepi5pro-fe0e946c.service` |
-| `orangepi5pro-fe0f7222` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-fe0f7222.json` | `gwv3-gemini-sender-orangepi5pro-fe0f7222.service` |
-| `lubancat-4df661d7` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-4df661d7_gemini305.json` | `gwv3-gemini-sender-lubancat-4df661d7.service` |
-| `lubancat-52d2ef0c` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-52d2ef0c_gemini305.json` | `gwv3-gemini-sender-lubancat-52d2ef0c.service` |
-| `lubancat-e8cc0cb3` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-e8cc0cb3_gemini305.json` | `gwv3-gemini-sender-lubancat-e8cc0cb3.service` |
+| `rk3588-ubuntu` | `linaro` | `/home/linaro/桌面/wireless_video_delivery` | `sender_rk3588-ubuntu_one_camera.json` | `gwv3-gemini-sender.service` |
+| `orangepi5pro-b439137c` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-b439137c.json` | `gwv3-gemini-sender.service` |
+| `orangepi5pro-f022c4` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-f022c4.json` | `gwv3-gemini-sender.service` |
+| `orangepi5pro-fe0e946c` | `orangepi` | `/home/orangepi/Desktop/wireless_video_delivery` | `sender_orangepi5pro-fe0e946c_gemini305.json` | `gwv3-gemini-sender.service` |
+| `orangepi5pro-fe0f7222` | `orangepi` | `/home/orangepi/Downloads/wireless_video_delivery` | `sender_orangepi5pro-fe0f7222.json` | `gwv3-gemini-sender.service` |
+| `lubancat-4df661d7` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-4df661d7_gemini305.json` | `gwv3-gemini-sender.service` |
+| `lubancat-52d2ef0c` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-52d2ef0c_gemini305.json` | `gwv3-gemini-sender.service` |
+| `lubancat-e8cc0cb3` | `cat` | `/home/cat/wireless_video_delivery` | `sender_lubancat-e8cc0cb3_gemini305.json` | `gwv3-gemini-sender.service` |
 
 ### 7.1 必须先取得设备专用资料
 
@@ -285,11 +285,11 @@ http://<receiver-ip>:8080
 
 - 唯一 `sender_id`。
 - 对应 `06_configs/<sender-config>.json`。
-- 对应 `05_tools/systemd/<sender-service>.service`。
+- 运行用户和仓库绝对路径。
 - 对应板卡的 Orbbec SDK 版本与目录。
 - 相机型号、RGB/Depth 档位、方向和曝光策略。
 
-仓库中没有该设备的配置或 service 时，初始化人员不得复制其他设备文件后自行改 ID。
+仓库中没有该设备的配置时，初始化人员不得复制其他设备文件后自行改 ID。
 
 ### 7.2 安装依赖与 SDK
 
@@ -348,7 +348,7 @@ ctest --test-dir 12_build --output-on-failure
 
 ### 7.5 时间与网络
 
-Sender 自动发现 Receiver 的媒体地址，但 chrony 仍需一个可解析的 Receiver 地址。优先使用现场可稳定解析的 Receiver 主机名；没有可靠本地 DNS/mDNS 时，部署完成后按 Receiver 当前 DHCP 地址执行：
+Sender 自动发现 Receiver 的媒体地址，但 chrony 仍需一个可解析的 Receiver 地址。优先使用现场可稳定解析的 Receiver 主机名；没有可靠本地 DNS/mDNS 时，在下一节的统一安装命令中传入 Receiver 当前 DHCP 地址。单独修复 Chrony 时执行：
 
 ```bash
 sudo ./05_tools/setup_sender_chrony_client.sh <receiver-ip-or-hostname>
@@ -370,21 +370,30 @@ iw dev wlan0 link
 ### 7.6 安装 Sender 自启动
 
 ```bash
-sudo install -m 0644 \
-  05_tools/systemd/<sender-service>.service \
-  /etc/systemd/system/<sender-service>.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now <sender-service>.service
+sudo ./05_tools/install_device.sh sender \
+  --config "06_configs/<sender-config>.json" \
+  --run-user "<linux-user>" \
+  --receiver-fallback "<receiver-ip-or-hostname>" \
+  --chrony-server "<receiver-ip-or-hostname>"
 ```
+
+安装器会构建并校验 Sender，把唯一生效配置写入 `/etc/gwv3/sender.json`，把发布信息写入 `/etc/gwv3/release.json`，安装通用 service，停用重复的旧 Sender service，并把安装前状态备份到 `/var/backups/gwv3/`。正式设备不得使用 `--allow-dirty`、`--skip-build` 或 `--skip-preflight`。
 
 确认 service 使用的用户名、仓库路径和配置文件与工单一致：
 
 ```bash
-systemctl cat <sender-service>.service
-systemctl is-enabled <sender-service>.service
-systemctl is-active <sender-service>.service
-./05_tools/status_sender.sh 06_configs/<sender-config>.json
-journalctl -u <sender-service>.service -n 100 --no-pager
+systemctl cat gwv3-gemini-sender.service
+systemctl is-enabled gwv3-gemini-sender.service
+systemctl is-active gwv3-gemini-sender.service
+./05_tools/status_sender.sh /etc/gwv3/sender.json
+./05_tools/gwv3_doctor.sh sender /etc/gwv3/sender.json
+journalctl -u gwv3-gemini-sender.service -n 100 --no-pager
+```
+
+安装失败需要回退时执行：
+
+```bash
+sudo ./05_tools/rollback_sender_install.sh
 ```
 
 单相机设备允许只按相机型号热插拔；一台 Sender 连接多台同型号相机时必须按序列号或稳定 UID 绑定。
@@ -434,6 +443,14 @@ recording_ready.json
 ```
 
 音频只对配置了麦克风的 Sender 做要求。fMP4 的 `nb_frames=N/A` 本身不是失败，必须结合解码、时长、CSV 和 ready marker 判断。
+
+Receiver 空闲时也可由初始化人员明确执行自动短录制验收：
+
+```bash
+python3 05_tools/run_deployment_acceptance.py \
+  --record-seconds 60 \
+  --output 08_reports/deployment-acceptance.json
+```
 
 检查工具：
 
@@ -509,7 +526,7 @@ ffprobe -v error <depth.mkv>
 
 1. 把工单示例替换为公司的实际资产字段和签字流程。
 2. 明确每种板卡的标准系统镜像、用户名、SDK 包和恢复包位置。
-3. 为每个产品 SKU 列出唯一配置、service、相机档位、曝光和选配功能。
+3. 为每个产品 SKU 列出唯一配置、相机档位、曝光和选配功能；service 统一使用通用版本。
 4. 明确客户网络的开放端口、VLAN、是否支持本地 DNS/mDNS。
 5. 明确 NAS 型号、share、容量门槛、账号发放和 SSH 保留策略。
 6. 指定正式发布 commit、回退 commit、验收样张和允许的性能范围。

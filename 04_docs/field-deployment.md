@@ -1,6 +1,6 @@
 # Field Deployment
 
-更新时间：2026-09-03
+更新时间：2026-09-07
 
 本文面向出厂部署和维护人员，说明现场 DHCP 网络下的自动发现、NAS 容错和验收边界。它不是现场操作手册。
 
@@ -41,6 +41,29 @@ $XDG_STATE_HOME/gwv3/receiver_target.json
 3. 没有发现响应时，使用配置文件 `receiver.ip` 兜底，并继续后台发现。
 
 正式现场只有一台 Receiver，因此无需人工配对。测试环境存在多台时，持久化身份可避免正常运行中随机串台。
+
+GPIO 录制按键、录制 LED 和关机前停止录制逻辑也读取同一份持久化 Receiver 目标；它们的 `receiver_base_url` 可配置为 `auto`。语音音频归档在服务启动时同样解析该目标。固定 IP 只作为跨路由、广播不可达时的安装期兜底，不再要求现场修改源码。
+
+## Standard Sender Installation
+
+正式 Sender 使用统一安装器和统一服务：
+
+```bash
+sudo ./05_tools/install_device.sh sender \
+  --config 06_configs/<sender-config>.json \
+  --run-user <linux-user> \
+  --receiver-fallback <receiver-ip-or-hostname> \
+  --chrony-server <receiver-ip-or-hostname>
+```
+
+- 唯一生效配置：`/etc/gwv3/sender.json`
+- 发布记录：`/etc/gwv3/release.json`
+- 唯一 Sender 服务：`gwv3-gemini-sender.service`
+- 安装备份：`/var/backups/gwv3/sender-*`
+- 回退：`sudo ./05_tools/rollback_sender_install.sh`
+- 诊断：`./05_tools/gwv3_doctor.sh sender /etc/gwv3/sender.json`
+
+安装器会拒绝未提交的工作区并停用旧的重复 Sender 服务。初始化人员只选择负责人批准的配置，不搜索源码修改 IP。
 
 ## NAS Discovery And Mount
 

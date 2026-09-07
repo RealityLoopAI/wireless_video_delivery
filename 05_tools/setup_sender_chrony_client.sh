@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER_IP="${1:-${GEMINI_CHRONY_SERVER_IP:-192.168.1.196}}"
+SERVER_IP="${1:-${GEMINI_CHRONY_SERVER_IP:-}}"
 CONF="/etc/chrony/chrony.conf"
 BEGIN_MARK="# BEGIN GEMINI_WIRELESS_VIDEO_CHRONY_CLIENT"
 END_MARK="# END GEMINI_WIRELESS_VIDEO_CHRONY_CLIENT"
@@ -11,15 +11,20 @@ if [[ "${EUID}" -ne 0 ]]; then
   SUDO=(sudo)
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -z "$SERVER_IP" ]]; then
+  echo "usage: $0 <receiver-ip-or-hostname>" >&2
+  exit 2
+fi
+
 if ! command -v chronyc >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   "${SUDO[@]}" apt-get update
   "${SUDO[@]}" apt-get install -y chrony
 fi
 
-if systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
-  "${SUDO[@]}" systemctl disable --now systemd-timesyncd.service 2>/dev/null || true
-fi
+"${SUDO[@]}" "$SCRIPT_DIR/audit_time_sync_conflicts.sh" --fix
 
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 "${SUDO[@]}" cp "$CONF" "${CONF}.bak.${timestamp}"
@@ -42,7 +47,7 @@ $BEGIN_MARK
 # Gemini Wireless Video sender time source.
 # Keep every sender on the same receiver clock for RGB timestamp matching.
 server $SERVER_IP iburst prefer minpoll 3 maxpoll 4
-makestep 0.05 -1
+makestep 0.05 3
 rtcsync
 $END_MARK
 EOF
@@ -61,4 +66,4 @@ chronyc sources -v || true
 echo
 chronyc tracking || true
 echo
-"$(dirname "${BASH_SOURCE[0]}")/wait_chrony_sync.sh" "${GEMINI_CHRONY_MAX_CORRECTION_S:-0.010}" || true
+"$SCRIPT_DIR/wait_chrony_sync.sh" "${GEMINI_CHRONY_MAX_CORRECTION_S:-0.010}" || true

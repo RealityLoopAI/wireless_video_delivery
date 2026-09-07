@@ -525,7 +525,7 @@ def test_usb_audio_exclusive_install(source_root: Path):
         assert "XIAOHUAN_AUDIO_STREAM_PAYLOAD_TYPE=111" in rtp_profile
         assert f"XIAOHUAN_AUDIO_STREAM_SSRC={ssrc}" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_STREAM_ENABLED=1" in rtp_profile
-        assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=192.168.1.196" in rtp_profile
+        assert "XIAOHUAN_AUDIO_ARCHIVE_HOST=auto" in rtp_profile
         assert f"XIAOHUAN_AUDIO_ARCHIVE_PORT={port}" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_TIMING_PORT=50130" in rtp_profile
         assert "XIAOHUAN_AUDIO_ARCHIVE_CONTROL_PORT=50131" in rtp_profile
@@ -613,7 +613,7 @@ def main():
     assert defaults.audio_stream_ssrc == 0
     assert defaults.audio_stream_pause_during_playback is True
     assert defaults.audio_archive_stream is False
-    assert defaults.audio_archive_host == "192.168.1.196"
+    assert defaults.audio_archive_host == "gwv3-receiver.local"
     assert defaults.audio_archive_timing_port == 50130
     assert defaults.audio_capture_rebuild_stale_seconds == 2.0
     assert defaults.continuous_listen_during_playback is False

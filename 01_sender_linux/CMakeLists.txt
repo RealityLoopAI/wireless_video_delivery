@@ -243,4 +243,10 @@ if(BUILD_TESTING)
                 --source-root "${CMAKE_SOURCE_DIR}"
     )
     set_tests_properties(sender_config_validation PROPERTIES TIMEOUT 120)
+
+    add_test(
+        NAME deployment_scripts
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_deployment_scripts.py"
+                --source-root "${CMAKE_SOURCE_DIR}"
+    )
 endif()
