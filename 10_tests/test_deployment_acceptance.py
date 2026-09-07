@@ -71,10 +71,9 @@ def main():
         temporary = Path(temporary_text)
         segment = temporary / "nas" / "sender-a_cam01" / "segment"
         segment.mkdir(parents=True)
-        (segment / "segment_meta.json").write_text(
+        (segment / "deployment_canaryrecording_ready.json").write_text(
             json.dumps({"recording_session_id": 123}), encoding="utf-8"
         )
-        (segment / "recording_ready.json").write_text("{}\n", encoding="utf-8")
         (segment / "frames.csv").write_text("header\nframe1\nframe2\n", encoding="utf-8")
         (segment / "rgb.mp4").write_bytes(b"test-rgb")
         (segment / "depth.mkv").write_bytes(b"test-depth")

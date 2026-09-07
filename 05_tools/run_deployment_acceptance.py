@@ -61,7 +61,7 @@ def recording_session_directories(config_path: Path, session_id: int) -> list[Pa
     for root in recording_roots(config_path):
         if not root.is_absolute() or not root.is_dir() or str(root) == "/":
             continue
-        for marker in root.rglob("*segment_meta.json"):
+        for marker in root.rglob("*recording_ready.json"):
             try:
                 metadata = json.loads(marker.read_text(encoding="utf-8"))
                 matches = int(metadata.get("recording_session_id") or 0) == session_id
