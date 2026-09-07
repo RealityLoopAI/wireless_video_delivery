@@ -97,8 +97,8 @@ PY
   [[ -z "$acceptance_output" ]] || printf '\nAcceptance:\n%s\n' "$acceptance_output"
 } > "$REPORT_TEXT"
 chmod 0644 "$REPORT_JSON" "$REPORT_TEXT"
+rm -f "$PENDING"
 if [[ "$status" == passed ]]; then
-  rm -f "$PENDING"
   exit 0
 fi
 exit 1

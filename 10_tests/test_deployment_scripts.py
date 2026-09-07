@@ -138,6 +138,7 @@ printf '%s\n' "$value"
             encoding="utf-8"
         )
         self.assertIn('doctor_output" != *"SUMMARY "*', text)
+        self.assertLess(text.index('rm -f "$PENDING"'), text.index('if [[ "$status" == passed ]]'))
 
     def test_one_click_deployment_has_pinned_assets_and_no_plaintext_password_option(self):
         deployment = SOURCE_ROOT / "06_configs/deployment"
