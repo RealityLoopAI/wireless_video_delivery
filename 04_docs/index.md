@@ -1,6 +1,6 @@
 # Documentation Index
 
-更新时间：2026-09-07
+更新时间：2026-09-08
 
 本目录只保存当前 `main` 的长期维护文档。文件名使用英文，正文使用中文。历史现象通过 Git 历史追溯，不把旧报告当作当前行为。
 
@@ -20,6 +20,7 @@
 | 理解部署故障的根因和防复发控制 | [deployment-hardening.md](deployment-hardening.md) |
 | 选择或修改设备配置 | [configuration.md](configuration.md) |
 | 调用端口、REST、视频流和读取文件 | [api-reference.md](api-reference.md) |
+| 查询 Sender 永久 MAC、系统日期和在线状态 | [device-info-api.md](device-info-api.md) |
 | 理解分片、fMP4、完成标记和 NAS | [recording-and-nas.md](recording-and-nas.md) |
 | 使用 chrony、CLOCK_SYNC 和统一时间轴 | [clock-sync.md](clock-sync.md) |
 | 部署音频、语音拍照、按键和 LED | [audio-and-controls.md](audio-and-controls.md) |
