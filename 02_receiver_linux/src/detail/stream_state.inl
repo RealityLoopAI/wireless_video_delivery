@@ -130,6 +130,10 @@ struct CameraState {
     std::mutex preview_mutex;
     uint64_t recording_start_us = 0;
     RecordingWindow recording_window;
+    RecordingTailDrain record_tail;
+    RecordingWindow record_tail_window;
+    std::string record_tail_file_prefix;
+    uint64_t record_tail_timeouts = 0;
     std::string recording_file_prefix;
     bool online = true;
     bool recording_requested = false;

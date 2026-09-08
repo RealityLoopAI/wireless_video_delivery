@@ -3,6 +3,7 @@
 #include "gwv3_common/protocol.hpp"
 #include "gwv3_receiver/clock_sync_manager.hpp"
 #include "gwv3_receiver/receiver_discovery_server.hpp"
+#include "gwv3_receiver/recording_tail_drain.hpp"
 
 #include <algorithm>
 #include <atomic>

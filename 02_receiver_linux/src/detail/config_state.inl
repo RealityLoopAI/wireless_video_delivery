@@ -58,6 +58,7 @@ struct Config {
     int segment_seconds = 300;
     int segment_keyframe_lead_ms = 500;
     int recording_start_lead_ms = 1000;
+    int recording_stop_drain_timeout_ms = 120000;
     int depth_fps = 30;
     bool write_debug_h264 = false;
     bool write_debug_depth_raw = false;
@@ -256,6 +257,7 @@ Config load_config(const std::string &path) {
     cfg.segment_keyframe_lead_ms =
         int_value(root, "segment_keyframe_lead_ms", cfg.segment_keyframe_lead_ms);
     cfg.recording_start_lead_ms = int_value(root, "recording_start_lead_ms", cfg.recording_start_lead_ms);
+    cfg.recording_stop_drain_timeout_ms = int_value(root, "recording_stop_drain_timeout_ms", cfg.recording_stop_drain_timeout_ms);
     cfg.depth_fps = int_value(root, "depth_fps", cfg.depth_fps);
     cfg.write_debug_h264 = bool_value(root, "write_debug_h264", cfg.write_debug_h264);
     cfg.write_debug_depth_raw = bool_value(root, "write_debug_depth_raw", cfg.write_debug_depth_raw);
@@ -294,6 +296,9 @@ Config load_config(const std::string &path) {
     }
     if(cfg.recording_start_lead_ms < 0 || cfg.recording_start_lead_ms > 10000) {
         throw std::runtime_error("recording_start_lead_ms must be between 0 and 10000");
+    }
+    if(cfg.recording_stop_drain_timeout_ms < 0 || cfg.recording_stop_drain_timeout_ms > 300000) {
+        throw std::runtime_error("recording_stop_drain_timeout_ms must be between 0 and 300000");
     }
     if(cfg.depth_fps <= 0) {
         throw std::runtime_error("depth_fps must be positive");

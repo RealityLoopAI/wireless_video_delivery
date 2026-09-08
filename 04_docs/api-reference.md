@@ -223,6 +223,13 @@ POST /api/record/stop?sender_id=...&camera_id=...
 
 成功响应包含 `ok=true`。全局开始还返回统一 `recording_session_id`、`recording_start_us` 和可能的 `start_pending`。停止返回 `recording_end_global_us`；该响应表示停止边界已接受，不等于所有容器已经完成 NAS 发布。
 
+停止后，Receiver 会有界等待采集时间不晚于结束边界的在途 RGB/Depth。
+`cameras[]` 新增 `record_tail_draining`、`record_tail_end_global_us`、
+`record_tail_rgb_complete`、`record_tail_depth_complete` 和 `record_tail_timeouts`。
+完成标志仅表示对应主流已越过停止边界，不代表无丢帧，仍须检查录制质量。
+同一相机立即重开会进入 `start_pending`，等旧任务尾帧接收和 writer 分离后才激活，
+不是同时把同一帧写入两个任务。重复停止不延长正在收尾的旧任务边界。
+
 GPIO 录制按键调用 sender 级接口，只控制该物理 sender 的全部相机。
 
 ## Camera Naming

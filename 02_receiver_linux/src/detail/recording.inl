@@ -382,6 +382,8 @@ public:
         }
     }
 
+    void mark_incomplete(std::string reason) { completeness_warning_ = std::move(reason); }
+
     void start(const Config &cfg, const std::string &sender_id, const std::string &camera_id, const std::string &camera_name,
                const std::string &storage_key, const std::string &file_prefix, const std::string &announce_json,
                const RecordingWindow &recording_window, uint64_t segment_reference_global_us, Logger &logger) {
@@ -670,6 +672,7 @@ public:
         depth_nominal_fps_ = 0.0;
         rgb_expected_ = false;
         depth_expected_ = false;
+        completeness_warning_.clear();
         rgb_stats_.reset();
         rgb_recorded_stats_.reset();
         depth_stats_.reset();
@@ -1516,6 +1519,9 @@ private:
         constexpr uint64_t kMaximumEdgeLagUs = 500'000;
         constexpr uint64_t kMaximumFrameGapUs = 500'000;
         std::vector<std::string> failures;
+        if(!completeness_warning_.empty()) {
+            failures.push_back(completeness_warning_);
+        }
         const auto inspect_stream = [&](const char *name,
                                         bool expected,
                                         uint64_t frames,
@@ -2740,6 +2746,7 @@ private:
     uint64_t start_us_ = 0;
     uint64_t end_us_ = 0;
     RecordingWindow recording_window_;
+    std::string completeness_warning_;
     RecordingSegmentTimeline segment_timeline_;
     std::string directory_;
     std::string recording_root_;

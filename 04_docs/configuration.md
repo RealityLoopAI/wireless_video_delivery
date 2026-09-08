@@ -33,6 +33,12 @@ rgb_output_mode:            fragmented_mp4
 
 `recording_staging.enabled=true` 表示媒体先写 Receiver 本地可靠暂存目录，再由 uploader 搬运并在 NAS 原子发布。该模式用于隔离 NAS 短时断线和 DHCP 地址变化。`nas_auto_mount` 控制自动发现、挂载状态文件和新录制门禁。
 
+`recording_stop_drain_timeout_ms` 控制停止后等待网络尾帧的最长时间，默认 `120000`，
+允许 `0..300000`。正常链路不固定等待两分钟，RGB/Depth 均越过结束时间后即收尾。
+超时会在录制质量中标记 `partial` 和 `tail drain` 原因；`0` 恢复旧的立即关闭入口行为，
+会重新带来迟到尾帧漏录风险，只用于明确接受该风险的回退。
+等待期限采用单调时钟，不受系统校时影响。详情见 [停止尾帧修复](recording-tail-drain-20260908.md)。
+
 ## Sender Configurations
 
 新设备由 `06_configs/deployment/sender-profiles.json` 按板型和相机系列选择下面的批准模板，再写入自动生成的稳定 Sender ID、Receiver 兜底地址和热插拔设置。部署生成的唯一生效文件是 `/etc/gwv3/sender.json`；不要为每个新序列号继续复制一份近似配置。

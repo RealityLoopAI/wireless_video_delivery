@@ -68,6 +68,7 @@ def run(args: argparse.Namespace) -> None:
             "state_path": str(temporary / "state.json"),
             "ffmpeg_path": str(ffmpeg_wrapper),
             "segment_seconds": 30,
+            "recording_stop_drain_timeout_ms": 1000,
             "depth_fps": 30,
             "max_payload_mb": 8,
             "record_queue_max_mb": 16,

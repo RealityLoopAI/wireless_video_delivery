@@ -39,6 +39,14 @@ set_target_properties(gemini_receiver PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(test_recording_tail_drain ${CMAKE_SOURCE_DIR}/10_tests/test_recording_tail_drain.cpp)
+    target_include_directories(test_recording_tail_drain PRIVATE include)
+    target_compile_features(test_recording_tail_drain PRIVATE cxx_std_17)
+    add_test(NAME recording_tail_drain_unit COMMAND test_recording_tail_drain)
+    add_test(NAME receiver_tail_drain_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_tail_drain.py
+                --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_tail_drain_integration PROPERTIES TIMEOUT 60)
     add_executable(test_receiver_target
         ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_target.cpp
         ${CMAKE_SOURCE_DIR}/01_sender_linux/src/receiver_target.cpp

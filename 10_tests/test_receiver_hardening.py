@@ -1317,6 +1317,8 @@ def run(args) -> None:
             "state_path": str(temporary / "state.json"),
             "ffmpeg_path": str(ffmpeg_wrapper) if ffmpeg_wrapper else "ffmpeg",
             "segment_seconds": 1,
+            # Finite fixtures stop producing; exercise the bounded drain timeout.
+            "recording_stop_drain_timeout_ms": 1000,
             "depth_fps": 30,
             "max_payload_mb": 8,
             "record_queue_max_mb": 16,

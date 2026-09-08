@@ -540,6 +540,11 @@ public:
             out << "\"live\":" << (live ? "true" : "false") << ',';
             out << "\"recording\":" << ((cam.recording_requested || recording_all_) ? "true" : "false") << ',';
             out << "\"recording_start_pending\":" << (cam.recording_start_pending ? "true" : "false") << ',';
+            out << "\"record_tail_draining\":" << (cam.record_tail.active() ? "true" : "false") << ',';
+            out << "\"record_tail_end_global_us\":" << cam.record_tail.end_us() << ',';
+            out << "\"record_tail_rgb_complete\":" << (cam.record_tail.rgb_done() ? "true" : "false") << ',';
+            out << "\"record_tail_depth_complete\":" << (cam.record_tail.depth_done() ? "true" : "false") << ',';
+            out << "\"record_tail_timeouts\":" << cam.record_tail_timeouts << ',';
             out << "\"recording_session_id\":" << cam.recording_window.session_id << ',';
             out << "\"recording_start_us\":" << cam.recording_start_us << ',';
             out << "\"recording_window_start_global_us\":" << cam.recording_window.start_global_us << ',';
@@ -704,6 +709,7 @@ public:
         out << "\"segment_seconds\":" << config_.segment_seconds << ',';
         out << "\"segment_keyframe_lead_ms\":" << config_.segment_keyframe_lead_ms << ',';
         out << "\"recording_start_lead_ms\":" << config_.recording_start_lead_ms << ',';
+        out << "\"recording_stop_drain_timeout_ms\":" << config_.recording_stop_drain_timeout_ms << ',';
         out << "\"task_audio_enabled\":" << (config_.task_audio.enabled ? "true" : "false") << ',';
         out << "\"task_audio_finalize_wait_ms\":" << config_.task_audio.finalize_wait_ms << ',';
         out << "\"task_audio_notify_port\":" << config_.task_audio.notify_port << ',';
@@ -1064,12 +1070,6 @@ public:
             return;
         }
 
-        bool allow_segment_rotate = true;
-        {
-            std::lock_guard<std::mutex> record_lock(cam->record_mutex);
-            allow_segment_rotate = !cam->record_finalizing;
-        }
-
         try {
             bool segment_active = false;
             std::string segment_dir;
@@ -1079,7 +1079,9 @@ public:
             uint64_t segment_window_end_global_us = 0;
             {
                 std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
-                rotate_record_segment_async(cam, job, *record_packet, allow_segment_rotate);
+                // Queued and late tail packets still belong to their capture-time
+                // slices, even after the stop request has entered finalization.
+                rotate_record_segment_async(cam, job, *record_packet, true);
                 cam->segment->write_packet(config_, *record_packet, job.sender_id, job.camera_id, job.camera_name, job.storage_key,
                                            job.file_prefix, job.announce_json, job.recording_window, logger_, false);
                 segment_active = cam->segment->active();
@@ -1827,6 +1829,7 @@ public:
         if(!task.cam) {
             return;
         }
+        const std::string tail_warning = wait_record_tail(task.cam);
         wait_record_queue_idle(task.cam, reason);
         std::unique_ptr<SegmentWriter> replacement;
         std::unique_ptr<SegmentWriter> detached;
@@ -1846,6 +1849,9 @@ public:
                     detached->mark_end_us(now_us());
                     if(task.recording_end_global_us > 0) {
                         detached->mark_recording_window_end_global_us(task.recording_end_global_us);
+                    }
+                    if(!tail_warning.empty()) {
+                        detached->mark_incomplete(tail_warning);
                     }
                     directory = detached->directory();
                     task.cam->segment = std::move(replacement);
@@ -2082,6 +2088,78 @@ public:
         return out.str();
     }
 
+    // Caller owns mutex_. Freeze old task routing separately from a pending
+    // start request so late packets cannot inherit a new session or file prefix.
+    void prepare_record_stop_locked(const std::shared_ptr<CameraState> &cam,
+                                    uint64_t end_us, bool begin_drain) {
+        if(cam->record_tail.active()) {
+            return;
+        }
+        bool accepting = false;
+        bool storage_failed = false;
+        {
+            std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+            accepting = cam->record_accepting;
+            storage_failed = cam->record_storage_capacity_failed;
+        }
+        cam->recording_window.end_global_us = end_us;
+        if(begin_drain && accepting && !storage_failed && !recording_fault_stop_requested_.load()
+           && cam->recording_window.session_id != 0
+           && config_.recording_stop_drain_timeout_ms > 0) {
+            const bool rgb = camera_announce_expects_rgb(cam->last_announce_json)
+                             || (cam->last_announce_json.empty() && cam->rgb_packets > 0);
+            const bool depth = json_int_in_object(cam->last_announce_json, "depth_profile", "fps").value_or(0) > 0
+                               || (cam->last_announce_json.empty() && cam->depth_packets > 0);
+            cam->record_tail_window = cam->recording_window;
+            cam->record_tail_file_prefix = cam->recording_file_prefix;
+            cam->record_tail.begin(end_us, rgb, depth, RecordingTailDrain::Clock::now(),
+                                   std::chrono::milliseconds(config_.recording_stop_drain_timeout_ms));
+            return;
+        }
+        set_record_accepting(cam, false);
+    }
+
+    std::string wait_record_tail(const std::shared_ptr<CameraState> &cam) {
+        for(;;) {
+            bool done = false;
+            std::string warning;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(!cam->record_tail.active()) {
+                    return "";
+                }
+                bool storage_failed = false;
+                {
+                    std::lock_guard<std::mutex> record_lock(cam->record_mutex);
+                    storage_failed = cam->record_storage_capacity_failed || !cam->record_accepting;
+                }
+                const bool expired = cam->record_tail.expired(RecordingTailDrain::Clock::now());
+                done = cam->record_tail.complete() || expired || !running_ || storage_failed;
+                if(done) {
+                    if(!cam->record_tail.complete()) {
+                        warning = expired ? "tail drain timed out before all stream watermarks"
+                                          : "tail drain interrupted before all stream watermarks";
+                        if(expired) {
+                            ++cam->record_tail_timeouts;
+                        }
+                    }
+                    cam->record_tail.finish();
+                    set_record_accepting(cam, false);
+                }
+            }
+            if(done) {
+                if(warning.empty()) {
+                    logger_.info("recording tail drained camera=" + cam->key);
+                }
+                else {
+                    logger_.warn("recording " + warning + " camera=" + cam->key);
+                }
+                return warning;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+
     std::string stop_all() {
         std::vector<SegmentCloseTask> close_tasks;
         uint64_t recording_start_us = 0;
@@ -2109,12 +2187,11 @@ public:
             for(auto &item : cameras_) {
                 const bool already_finalizing = item.second->segment_finalizing || item.second->record_finalizing;
                 const bool needs_close = item.second->recording_requested || item.second->segment_active;
+                prepare_record_stop_locked(item.second, recording_end_global_us, needs_close && !already_finalizing);
                 item.second->recording_requested = false;
                 item.second->recording_start_pending = false;
-                item.second->recording_window.end_global_us = recording_end_global_us;
                 item.second->recording_start_us = 0;
                 item.second->recording_file_prefix.clear();
-                set_record_accepting(item.second, false);
                 if(already_finalizing) {
                     finalizing = true;
                 }
@@ -2274,12 +2351,11 @@ public:
                 }
                 ++stopped_count;
                 finalizing = true;
+                prepare_record_stop_locked(cam, recording_end_global_us, needs_close && !already_finalizing);
                 cam->recording_requested = false;
                 cam->recording_start_pending = false;
-                cam->recording_window.end_global_us = recording_end_global_us;
                 cam->recording_start_us = 0;
                 cam->recording_file_prefix.clear();
-                set_record_accepting(cam, false);
                 if(needs_close && !already_finalizing) {
                     cam->segment_finalizing = true;
                     set_record_finalizing(cam, true);
@@ -2403,15 +2479,14 @@ public:
             const bool needs_close = cam->recording_requested || cam->segment_active;
             finalizing = already_finalizing || needs_close;
             schedule_close = needs_close && !already_finalizing;
+            prepare_record_stop_locked(cam, recording_end_global_us, schedule_close);
             cam->recording_requested = false;
             cam->recording_start_pending = false;
-            cam->recording_window.end_global_us = recording_end_global_us;
             if(schedule_close) {
                 cam->segment_finalizing = true;
             }
             cam->recording_start_us = 0;
             cam->recording_file_prefix.clear();
-            set_record_accepting(cam, false);
             if(schedule_close) {
                 set_record_finalizing(cam, true);
             }
@@ -4473,6 +4548,17 @@ private:
 
             should_record = !drop_rgb_until_idr && (recording_all_ || cam->recording_requested)
                             && (packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw);
+            const bool tail_packet = cam->record_tail.active();
+            if(tail_packet) {
+                const bool main_media = packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw;
+                if(main_media) {
+                    cam->record_tail.observe(packet.stream_type == StreamType::rgb,
+                                             packet.global_timestamp_us, now_us());
+                }
+                should_record = main_media && !drop_rgb_until_idr
+                                && packet.global_timestamp_us >= cam->record_tail_window.start_global_us
+                                && packet.global_timestamp_us <= cam->record_tail_window.end_global_us;
+            }
             if(should_record) {
                 {
                     std::lock_guard<std::mutex> record_lock(cam->record_mutex);
@@ -4485,7 +4571,7 @@ private:
                 }
             }
             if(should_record) {
-                if(cam->recording_start_us == 0) {
+                if(!tail_packet && cam->recording_start_us == 0) {
                     cam->recording_start_us = recording_all_ ? recording_all_start_us_ : now_us();
                     if(cam->recording_window.session_id == 0) {
                         cam->recording_window = {next_recording_session_id_locked(), cam->recording_start_us, 0};
@@ -4496,9 +4582,9 @@ private:
                 record_camera_id = cam->camera_id;
                 record_camera_name = cam->camera_name;
                 record_storage_key = cam->storage_key();
-                record_file_prefix = cam->recording_file_prefix;
+                record_file_prefix = tail_packet ? cam->record_tail_file_prefix : cam->recording_file_prefix;
                 record_announce_json = cam->last_announce_live ? cam->last_announce_json : "";
-                record_window = cam->recording_window;
+                record_window = tail_packet ? cam->record_tail_window : cam->recording_window;
             }
         }
         if(rgb_recovery_keyframe_target) {
