@@ -208,6 +208,8 @@ systemctl --user start gwv3-gemini-receiver.service
 1. **52d2ef0c 尚未通过实时稳定性复核。** 采集/发送心跳约 30 FPS，但两个窗口 receiver 实收 RGB 均低于 30，第二窗口某采样点 RGB receive age 为 784 ms。receiver 日志 17:24:12 记录 `capture_to_receiver_us=18508008`，即采集到接收约 18.5 秒；Depth 同时约 4.6 秒。检查 TCP 时 receiver Recv-Q 为 0，没有录制队列阻塞，未看到该会话新增重连。这些证据指向该设备接收前链路存在积压，尚不能仅凭 receiver 数据判定是 Wi-Fi、sender 排队还是其他原因。保留续传避免主动断连，但不能增加链路带宽；缺乏发送端 socket/无线增量证据前，不声称根因已修复。
 2. **e8cc0cb3 仍有少量 RGB 丢帧。** 两个窗口分别新增 2、3 帧 RGB 丢弃，`last_error` 为 `corrupt rgb mjpeg frame dropped`。52d2ef0c 也留有同类历史告警，但两窗口该计数没有增加。旧版本已存在 JPEG SOI/EOI 完整性检查，因此不能把告警文字出现本身当成新增缺陷证据；仍需采集相机原始 MJPEG、USB 与 sender 日志核对具体原因。本次没有放宽坏帧校验来掩盖问题。
 
+17:27:29 最后补查：六路仍运行目标版本且 live，receiver 仍为 `idle`，NAS 无待交付任务。但 52d2ef0c 的 `rgb_receive_delay_us` 已达到 57,036,156（约 57 秒），Depth 当时为 35,257 us；e8cc0cb3 的累计 RGB 丢弃达到 27 帧。52d2ef0c 的 RGB 积压风险尚在扩大，不能依据 clock model 有效、在线或无 send failure 就建议直接做稳定长录。其余五路当时 RGB 采集至接收估计延迟约 12 至 60 ms。本次未通过重启清队列掩盖该问题，也未将旧缺录风险版本重新作为正式修复版。
+
 结论：**六个发送端和接收端版本已统一、启动与续传用例通过；六路长录稳定性尚未全部验收通过。** 下一次正式验收需单独处理上述两台风险，再做真实相机短录/长录，复核最终 CSV、实际视频帧数和质量状态；不能只凭本次无发送失败就宣称不缺录。
 
 ## 未验证与限制
