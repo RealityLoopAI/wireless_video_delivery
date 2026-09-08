@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -340,6 +341,176 @@ async def rgb_h264_frames(
     )
 
 
+async def _open_admin_stream(path: str) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    parsed_url = urllib.parse.urlsplit(ADMIN_BASE.rstrip("/") + path)
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(parsed_url.hostname or "127.0.0.1", parsed_url.port or 80),
+            timeout=3,
+        )
+        target = parsed_url.path or "/"
+        if parsed_url.query:
+            target += "?" + parsed_url.query
+        writer.write(
+            (
+                f"GET {target} HTTP/1.1\r\n"
+                f"Host: {parsed_url.hostname or '127.0.0.1'}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+        )
+        await writer.drain()
+        header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+        status_line = header.split(b"\r\n", 1)[0].decode("iso-8859-1")
+        status_parts = status_line.split(" ", 2)
+        status_code = int(status_parts[1]) if len(status_parts) > 1 else 502
+        if status_code != 200:
+            raise HTTPException(status_code=503, detail="RGB preview stream is warming up")
+        return reader, writer
+    except Exception:
+        if writer is not None:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        raise
+
+
 @app.get("/api/preview/rgb-video")
-def rgb_video(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
-    raise HTTPException(status_code=410, detail="mp4 rgb preview fallback disabled; refresh the page to use jpeg fallback")
+async def rgb_video(sender_id: str = Query(...), camera_id: str = Query(...)) -> StreamingResponse:
+    if not PREVIEW_STREAM_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="preview stream capacity reached")
+
+    upstream_writer = None
+    actual_quality = "preview"
+    try:
+        for attempt in range(2):
+            query = urllib.parse.urlencode(
+                {"sender_id": sender_id, "camera_id": camera_id, "quality": "preview", "metadata": "legacy"}
+            )
+            try:
+                reader, upstream_writer = await _open_admin_stream(f"/api/preview/rgb-h264-frames?{query}")
+                break
+            except Exception:
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+        else:
+            actual_quality = "main"
+            query = urllib.parse.urlencode(
+                {"sender_id": sender_id, "camera_id": camera_id, "quality": "main", "metadata": "legacy"}
+            )
+            reader, upstream_writer = await _open_admin_stream(f"/api/preview/rgb-h264-frames?{query}")
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "+genpts+nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-r",
+            "30",
+            "-f",
+            "h264",
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "copy",
+            "-movflags",
+            "frag_every_frame+empty_moov+default_base_moof+omit_tfhd_offset",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except Exception:
+        if upstream_writer is not None:
+            upstream_writer.close()
+            with contextlib.suppress(Exception):
+                await upstream_writer.wait_closed()
+        PREVIEW_STREAM_SLOTS.release()
+        raise
+
+    async def feed_h264() -> None:
+        pending = bytearray()
+        try:
+            while True:
+                chunk = await reader.read(64 * 1024)
+                if not chunk:
+                    break
+                pending.extend(chunk)
+                while len(pending) >= 12:
+                    if pending[:4] != b"GWHP":
+                        raise RuntimeError("invalid RGB preview frame magic")
+                    header_size = int.from_bytes(pending[6:8], "little")
+                    payload_size = int.from_bytes(pending[8:12], "little")
+                    if header_size < 40 or header_size > 64 or payload_size > 16 * 1024 * 1024:
+                        raise RuntimeError("invalid RGB preview frame size")
+                    total_size = header_size + payload_size
+                    if len(pending) < total_size:
+                        break
+                    if proc.stdin is None:
+                        return
+                    proc.stdin.write(bytes(pending[header_size:total_size]))
+                    del pending[:total_size]
+                    await proc.stdin.drain()
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+
+    async def stop_process() -> None:
+        upstream_writer.close()
+        with contextlib.suppress(Exception):
+            await upstream_writer.wait_closed()
+        if proc.stdin is not None:
+            proc.stdin.close()
+            with contextlib.suppress(Exception):
+                await proc.stdin.wait_closed()
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+        else:
+            await proc.wait()
+
+    async def body():
+        feeder = asyncio.create_task(feed_h264())
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = await proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            feeder.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await feeder
+            try:
+                await stop_process()
+            finally:
+                PREVIEW_STREAM_SLOTS.release()
+
+    return StreamingResponse(
+        body(),
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+            "X-GWV3-Rgb-Stream": actual_quality,
+        },
+    )

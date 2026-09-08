@@ -12,6 +12,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     sender = read_component_sources(root, "01_sender_linux")
     receiver = read_component_sources(root, "02_receiver_linux")
+    web_server = (root / "09_web_monitor" / "server.py").read_text(encoding="utf-8")
     frontend = (root / "09_web_monitor" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "config.web_rgb_preview.fps >= camera.config.rgb_profile.fps" in sender
@@ -42,6 +43,11 @@ def main():
     assert "const THUMB_RGB_REFRESH_MS = MAIN_RGB_REFRESH_MS" in frontend
     assert "root.dataset[`${kind}Loading`] === '1'" in frontend
     assert "const preferH264 = kind === 'rgb' && Number(c.rgb_packets || 0) > 0" in frontend
+    assert "rgbMp4PreviewSupported()" in frontend
+    assert "ensureRgbMp4Preview(root, c, false)" in frontend
+    assert "RGB_MP4_STALE_MS = 3000" in frontend
+    assert "trimRgbVideoLatency(video)" in frontend
+    assert "stopRgbPreview(node)" in frontend
     assert "const MAIN_DEPTH_REFRESH_MS = 180" in frontend
     assert "const THUMB_DEPTH_REFRESH_MS = 1000" in frontend
     assert "this.markFailed('RGB 视频重连')" in frontend
@@ -51,6 +57,15 @@ def main():
     assert "/api/audio/status" in frontend
     assert "/api/audio/start-all" in frontend
     assert "/api/audio/stop-sender" in frontend
+    assert "async def rgb_video" in web_server
+    assert "asyncio.create_subprocess_exec" in web_server
+    assert 'actual_quality = "main"' in web_server
+    assert '{"sender_id": sender_id, "camera_id": camera_id, "quality": "main"' in web_server
+    assert '"-c:v",\n            "copy"' in web_server
+    assert "frag_every_frame+empty_moov+default_base_moof+omit_tfhd_offset" in web_server
+    assert 'pending[:4] != b"GWHP"' in web_server
+    assert "PREVIEW_STREAM_SLOTS.release()" in web_server
+    assert "await stop_process()" in web_server
     print("web preview low-latency guard test passed")
 
 

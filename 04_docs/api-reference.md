@@ -234,6 +234,14 @@ POST /api/preview/main-target?sender_id=...&camera_id=...
 
 这些接口返回当前最新图像快照，只用于监控。客户端应设置 no-cache 并允许 404/503，不能因预览暂时不可用判定正式录制失败。
 
+网页内部还使用以下普通 HTTP 兼容接口：
+
+```http
+GET /api/preview/rgb-video?sender_id=...&camera_id=...
+```
+
+该接口优先把低码率 H.264 预览流实时重封装为 fragmented MP4；预览流启动失败时自动复用主 H.264。视频内容不解码、不重编码。它用于不开放 WebCodecs 的普通 HTTP 浏览器，并受 Web Monitor 预览并发上限保护；下游数据程序仍应优先调用下面的带时间戳 H.264 Frames 接口。
+
 ## Live H.264 Frames
 
 ```http

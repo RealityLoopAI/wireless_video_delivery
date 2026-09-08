@@ -584,6 +584,7 @@
     let receiverPreviewEnabled = true;
     let audioArchiveStatus = null;
     let previewSlotCounter = 0;
+    let rgbMp4SupportCache = null;
     const rgbPreviewPlayers = new Map();
 
     const STATUS_REFRESH_MS = 250;
@@ -602,6 +603,11 @@
     const H264_TIMESTAMP_DISCONTINUITY_US = 5 * 1000 * 1000;
     const H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000;
     const H264_STALE_RECONNECT_MS = 250;
+    const RGB_MP4_RETRY_MS = 1000;
+    const RGB_MP4_STALE_MS = 3000;
+    const RGB_VIDEO_TARGET_LAG_SEC = 0.12;
+    const RGB_VIDEO_FAST_LAG_SEC = 0.30;
+    const RGB_VIDEO_JUMP_LAG_SEC = 0.75;
     const ENABLE_THUMB_RGB_PREVIEW = true;
     const DEFAULT_MAIN_CAMERA_KEY = 'raspberrypi-01_cam01';
 
@@ -730,6 +736,12 @@
     }
     function rgbH264PreviewSupported() {
       return 'VideoDecoder' in window && 'EncodedVideoChunk' in window;
+    }
+    function rgbMp4PreviewSupported() {
+      if (rgbMp4SupportCache !== null) return rgbMp4SupportCache;
+      const video = document.createElement('video');
+      rgbMp4SupportCache = video.canPlayType('video/mp4; codecs="avc1.42E01E"') !== '';
+      return rgbMp4SupportCache;
     }
     function codecFromAnnexB(data) {
       const hex = (value) => value.toString(16).padStart(2, '0').toUpperCase();
@@ -1017,11 +1029,45 @@
       if (canvas) canvas.remove();
       const video = root.querySelector('video[data-rgb-fallback-video]');
       if (video) {
+        video.onloadeddata = null;
+        video.ontimeupdate = null;
+        video.onprogress = null;
+        video.onerror = null;
         video.pause();
         video.removeAttribute('src');
         video.load();
         video.remove();
       }
+    }
+    function trimRgbVideoLatency(video) {
+      if (!video || video.readyState < 2 || !video.buffered.length) return;
+      const last = video.buffered.length - 1;
+      const start = video.buffered.start(last);
+      const end = video.buffered.end(last);
+      const lag = end - video.currentTime;
+      if (!Number.isFinite(lag) || lag < 0) return;
+      if (lag > RGB_VIDEO_JUMP_LAG_SEC) {
+        video.currentTime = Math.max(start, end - RGB_VIDEO_TARGET_LAG_SEC);
+        video.playbackRate = 1;
+      }
+      else {
+        video.playbackRate = lag > RGB_VIDEO_FAST_LAG_SEC ? 1.08 : 1;
+      }
+      if (video.paused) video.play().catch(() => {});
+    }
+    function markRgbMp4Failed(root, video, c, message) {
+      root.dataset.rgbMp4Failed = '1';
+      root.dataset.rgbMp4FailedKey = c.camera_key;
+      root.dataset.rgbMp4FailedAt = String(Date.now());
+      video.onloadeddata = null;
+      video.ontimeupdate = null;
+      video.onprogress = null;
+      video.onerror = null;
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.style.display = 'none';
+      setPlaceholder(root, 'rgb', message || 'RGB 视频中断');
     }
     function ensureRgbMp4Preview(root, c, high = false) {
       const slot = rootSlot(root);
@@ -1049,20 +1095,41 @@
         video.style.display = 'none';
         root.appendChild(video);
       }
+      if (video.dataset.previewKey === key && video.getAttribute('src')) {
+        const currentTime = Number(video.currentTime || 0);
+        const previousTime = Number(root.dataset.rgbMp4CurrentTime || '-1');
+        if (Math.abs(currentTime - previousTime) > 0.001) {
+          root.dataset.rgbMp4CurrentTime = String(currentTime);
+          root.dataset.rgbMp4ProgressAt = String(Date.now());
+        }
+        else if (video.readyState >= 2 &&
+                 Date.now() - Number(root.dataset.rgbMp4ProgressAt || Date.now()) > RGB_MP4_STALE_MS) {
+          markRgbMp4Failed(root, video, c, 'RGB 视频重连');
+          return;
+        }
+        trimRgbVideoLatency(video);
+        return;
+      }
       if (video.dataset.previewKey !== key || !video.getAttribute('src')) {
         video.dataset.previewKey = key;
+        root.dataset.rgbMp4CurrentTime = '-1';
+        root.dataset.rgbMp4ProgressAt = String(Date.now());
+        video.onloadeddata = () => {
+          root.dataset.rgbMp4Failed = '0';
+          root.dataset.rgbMp4FailedKey = '';
+          root.dataset.rgbMp4FailedAt = '0';
+          root.dataset.rgbMp4ProgressAt = String(Date.now());
+          video.style.display = 'block';
+          setPlaceholder(root, 'rgb', '', false);
+          video.play().catch(() => {});
+        };
+        video.ontimeupdate = () => trimRgbVideoLatency(video);
+        video.onprogress = () => trimRgbVideoLatency(video);
+        video.onerror = () => markRgbMp4Failed(root, video, c, 'RGB 视频中断');
         video.src = mp4PreviewUrl(c);
         video.load();
         video.play().catch(() => {});
       }
-      video.onloadeddata = () => {
-        video.style.display = 'block';
-        setPlaceholder(root, 'rgb', '', false);
-      };
-      video.onerror = () => {
-        video.style.display = 'none';
-        setPlaceholder(root, 'rgb', 'RGB 视频中断');
-      };
       setPlaceholder(root, 'rgb', '等待 RGB 视频');
     }
     function ensureRgbVideoPreview(root, c, high = false) {
@@ -1146,7 +1213,7 @@
     function previewAvailable(c, kind, high = false) {
       if (!receiverPreviewEnabled || !isLive(c)) return false;
       if (kind === 'rgb') {
-        return high ? (rgbJpegFresh(c, true) || rgbH264Fresh(c) || c.rgb_packets > 0) : (rgbH264Fresh(c) || rgbJpegFresh(c));
+        return rgbJpegFresh(c, high) || rgbH264Fresh(c) || Number(c.rgb_packets || 0) > 0;
       }
       return c.depth_preview_available && previewFresh(c.depth_preview_age_ms);
     }
@@ -1291,6 +1358,16 @@
         root.dataset[`${kind}Loading`] = '0';
         // The recording stream may intentionally queue during network stalls; UI preview must stay live.
         ensureRgbVideoPreview(root, c, false);
+        return;
+      }
+      const mp4FailedForCamera = root.dataset.rgbMp4Failed === '1' &&
+        root.dataset.rgbMp4FailedKey === c.camera_key;
+      const mp4RetryDue = !mp4FailedForCamera ||
+        Date.now() - Number(root.dataset.rgbMp4FailedAt || '0') >= RGB_MP4_RETRY_MS;
+      if (preferH264 && !high && !rgbH264PreviewSupported() &&
+          rgbMp4PreviewSupported() && mp4RetryDue) {
+        root.dataset[`${kind}Loading`] = '0';
+        ensureRgbMp4Preview(root, c, false);
         return;
       }
       if (kind === 'rgb') {
@@ -1465,7 +1542,12 @@
     function syncDomList(containerId, prefix, items) {
       const liveIds = new Set(items.map((c) => cardId(prefix, c.camera_key)));
       document.querySelectorAll(`#${containerId} > [id^="${prefix}-"]`).forEach((node) => {
-        if (!liveIds.has(node.id)) node.remove();
+        if (!liveIds.has(node.id)) {
+          if (node.querySelector('video[data-rgb-fallback-video], canvas[data-rgb-video]')) {
+            stopRgbPreview(node);
+          }
+          node.remove();
+        }
       });
     }
     async function load() {
