@@ -602,6 +602,7 @@
     const H264_TIMESTAMP_DISCONTINUITY_US = 5 * 1000 * 1000;
     const H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000;
     const H264_STALE_RECONNECT_MS = 250;
+    const RGB_VIDEO_RETRY_MS = 30 * 1000;
     const RGB_MP4_STALE_MS = 3000;
     const RGB_VIDEO_TARGET_LAG_SEC = 0.12;
     const RGB_VIDEO_FAST_LAG_SEC = 0.30;
@@ -1100,13 +1101,14 @@
       if (video.dataset.previewKey === key && video.getAttribute('src')) {
         const currentTime = Number(video.currentTime || 0);
         const previousTime = Number(root.dataset.rgbMp4CurrentTime || '-1');
+        const stalledForMs = Date.now() - Number(root.dataset.rgbMp4ProgressAt || Date.now());
         if (Math.abs(currentTime - previousTime) > 0.001) {
           root.dataset.rgbMp4CurrentTime = String(currentTime);
           root.dataset.rgbMp4ProgressAt = String(Date.now());
         }
-        else if (video.readyState >= 2 &&
-                 Date.now() - Number(root.dataset.rgbMp4ProgressAt || Date.now()) > RGB_MP4_STALE_MS) {
-          markRgbMp4Failed(root, video, c, 'RGB 视频重连');
+        else if (stalledForMs > RGB_MP4_STALE_MS) {
+          markRgbMp4Failed(root, video, c,
+            video.readyState >= 2 ? 'RGB 视频重连' : 'RGB 视频启动超时');
           return;
         }
         trimRgbVideoLatency(video);
@@ -1356,7 +1358,9 @@
       // A failed stream is kept on the JPEG fallback until status confirms that
       // the sender's dedicated preview stream is available again. Fast blind
       // retries make unsupported/older senders continuously blank their tile.
-      const h264RetryDue = !h264FailedForCamera || rgbH264Fresh(c);
+      const h264RetryDue = !h264FailedForCamera ||
+        (rgbH264Fresh(c) &&
+         Date.now() - Number(root.dataset.rgbH264FailedAt || '0') >= RGB_VIDEO_RETRY_MS);
       if (preferH264 && rgbH264PreviewSupported() &&
           h264RetryDue) {
         root.dataset[`${kind}Loading`] = '0';
@@ -1366,7 +1370,9 @@
       }
       const mp4FailedForCamera = root.dataset.rgbMp4Failed === '1' &&
         root.dataset.rgbMp4FailedKey === c.camera_key;
-      const mp4RetryDue = !mp4FailedForCamera || rgbH264Fresh(c);
+      const mp4RetryDue = !mp4FailedForCamera ||
+        (rgbH264Fresh(c) &&
+         Date.now() - Number(root.dataset.rgbMp4FailedAt || '0') >= RGB_VIDEO_RETRY_MS);
       if (preferH264 && !high && !rgbH264PreviewSupported() &&
           rgbMp4PreviewSupported() && mp4RetryDue) {
         root.dataset[`${kind}Loading`] = '0';
