@@ -623,13 +623,21 @@ def exercise_rgb_session_keyframe_gate(ports: dict) -> None:
     raise AssertionError("RGB ingress did not recover after an IDR")
 
 
+def child_process_ids(parent_pid: int) -> list[int]:
+    # children is per Linux task, not a process-wide list. Media worker
+    # threads spawn FFmpeg; checking only the main thread misses them.
+    result = set()
+    for children_path in Path(f"/proc/{parent_pid}/task").glob("*/children"):
+        try:
+            result.update(int(value) for value in children_path.read_text(encoding="ascii").split())
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return sorted(result)
+
+
 def direct_ffmpeg_children(parent_pid: int) -> list[int]:
-    children_path = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
-    if not children_path.exists():
-        return []
     result = []
-    for value in children_path.read_text(encoding="ascii").split():
-        pid = int(value)
+    for pid in child_process_ids(parent_pid):
         try:
             command = Path(f"/proc/{pid}/comm").read_text(encoding="ascii").strip()
         except FileNotFoundError:
@@ -644,9 +652,8 @@ def assert_no_deleted_recording_fds(receiver_pid: int, recording_root: Path) -> 
     frontier = [receiver_pid]
     while frontier:
         parent = frontier.pop()
-        children_path = Path(f"/proc/{parent}/task/{parent}/children")
         try:
-            children = [int(value) for value in children_path.read_text(encoding="ascii").split()]
+            children = child_process_ids(parent)
         except (FileNotFoundError, PermissionError, ValueError):
             continue
         for child in children:

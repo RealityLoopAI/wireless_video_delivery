@@ -11,6 +11,7 @@ import time
 
 from test_receiver_hardening import (
     assert_recording_output,
+    child_process_ids,
     create_ffmpeg_test_wrappers,
     depth_packet,
     free_port,
@@ -26,8 +27,7 @@ def assert_preview_child_did_not_inherit_recording_files(receiver_pid: int, hidd
     deadline = time.monotonic() + 5
     preview_pids = []
     while time.monotonic() < deadline:
-        children_path = Path(f"/proc/{receiver_pid}/task/{receiver_pid}/children")
-        child_ids = children_path.read_text(encoding="ascii").split() if children_path.exists() else []
+        child_ids = child_process_ids(receiver_pid)
         preview_pids = []
         for child_id in child_ids:
             try:
