@@ -167,6 +167,7 @@ curl -X POST 'http://<receiver_ip>:8080/api/preview/main-target?sender_id=<sende
 7. 若多路 prequeue delay 同时跃增，检查 receiver 全局锁内是否发生磁盘 I/O，并核对运行 `build_source_hash`。
 8. 若出现少量 Depth-only 小段，查看 `segment_prestart_depth_drops` 和是否在首个可解码 RGB 前错误建段。
 9. 若历史 `media TCP connect failed` 仍显示，但媒体 age 很小且 FPS 正常，区分当前状态和未清理历史错误。
+   单独检查 `rgb_receive_age_ms`、`depth_receive_age_ms` 与对应 `*_receive_delay_us`；Depth 连续或 sender 发送约 30 FPS，都不代表 RGB 没有积压。几十秒延迟后重连造成大缺口的证据和修复见 [recording-gap-recovery.md](recording-gap-recovery.md)。
 10. finalizer 持续数十秒且 `ffprobe` 在读取整段大 fMP4，说明运行的仍是旧版全文件扫描路径；核对组件版本。
 11. 最终 fMP4 应有 `moov`、`moof`、尾部 `mfra`，且 ready marker 声明 `rgb_container_format=fragmented_mp4`。
 12. 按 uploader 的 pending、active phase、capture queue 与发布日志排查；不得手工伪造 ready marker。

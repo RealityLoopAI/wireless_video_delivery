@@ -22,6 +22,7 @@
 | 调用端口、REST、视频流和读取文件 | [api-reference.md](api-reference.md) |
 | 查询 Sender 永久 MAC、系统日期和在线状态 | [device-info-api.md](device-info-api.md) |
 | 理解分片、fMP4、完成标记和 NAS | [recording-and-nas.md](recording-and-nas.md) |
+| 理解 TCP 积压导致的缺录、续传修复与验证边界 | [recording-gap-recovery.md](recording-gap-recovery.md) |
 | 使用 chrony、CLOCK_SYNC 和统一时间轴 | [clock-sync.md](clock-sync.md) |
 | 部署音频、语音拍照、按键和 LED | [audio-and-controls.md](audio-and-controls.md) |
 | 按现象诊断相机、网络、预览和录制 | [troubleshooting.md](troubleshooting.md) |

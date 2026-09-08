@@ -63,6 +63,7 @@
 | Tool | Purpose |
 | --- | --- |
 | `analyze_segment_fps.py` | 分析单段媒体/CSV 帧率和完整性 |
+| `audit_recording_gaps.py` | 只读核对 RGB/Depth 时间缺口、视频索引和接收积压 |
 | `sync_input_guard.py` | 多机对齐前检查输入完整性与时间字段 |
 | `analyze_rgb_timestamp_sync.py` | 分析多路 RGB 时间差 |
 | `build_rgb_sync_manifest.py` | 生成 RGB 对齐清单 |
