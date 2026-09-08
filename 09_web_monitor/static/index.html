@@ -717,6 +717,10 @@
       }
       return root.dataset.previewSlot;
     }
+    function rgbSurface(root) {
+      const image = root.querySelector('[data-preview="rgb"]');
+      return image ? image.parentElement : root;
+    }
     function setPlaceholder(root, kind, message, visible = true) {
       const placeholder = root.querySelector(`[data-placeholder="${kind}"]`);
       if (!placeholder) return;
@@ -782,7 +786,7 @@
           this.canvas = document.createElement('canvas');
           this.canvas.dataset.rgbVideo = '1';
           this.canvas.style.display = 'none';
-          root.appendChild(this.canvas);
+          rgbSurface(root).appendChild(this.canvas);
         }
         this.ctx = this.canvas.getContext('2d', {alpha: false});
       }
@@ -1091,7 +1095,7 @@
         video.playsInline = true;
         video.controls = false;
         video.style.display = 'none';
-        root.appendChild(video);
+        rgbSurface(root).appendChild(video);
       }
       if (video.dataset.previewKey === key && video.getAttribute('src')) {
         const currentTime = Number(video.currentTime || 0);
