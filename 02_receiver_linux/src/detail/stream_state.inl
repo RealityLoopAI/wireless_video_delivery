@@ -187,6 +187,17 @@ struct CameraState {
     uint64_t sender_depth_send_failures = 0;
     bool sender_publish_warmup_active = false;
     uint64_t sender_publish_warmup_drops = 0;
+    uint32_t device_info_version = 0;
+    std::string sender_host_name;
+    std::string wifi_interface;
+    std::string wifi_permanent_mac;
+    bool mac_is_permanent = false;
+    std::string mac_source;
+    std::string device_date;
+    std::string device_time;
+    uint64_t device_system_time_us = 0;
+    std::string device_timezone;
+    uint64_t device_info_received_us = 0;
     std::string last_announce_json;
     bool last_announce_live = false;
     uint64_t last_announce_received_us = 0;
@@ -240,4 +251,3 @@ struct CameraState {
         return camera_name.empty() ? key : camera_name;
     }
 };
-

@@ -62,6 +62,7 @@ add_executable(gemini_sender
     src/application.cpp
     src/clock_sync_client.cpp
     src/config.cpp
+    src/device_identity.cpp
     src/gst_h264_encoder.cpp
     src/gst_h264_rtp_sender.cpp
     src/logger.cpp
@@ -235,6 +236,15 @@ if(BUILD_TESTING)
     target_include_directories(scheduled_keyframe_test PRIVATE include)
     target_compile_options(scheduled_keyframe_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME scheduled_keyframe COMMAND scheduled_keyframe_test)
+
+    add_executable(device_identity_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_device_identity.cpp"
+        src/device_identity.cpp
+    )
+    target_include_directories(device_identity_test PRIVATE include)
+    target_compile_features(device_identity_test PRIVATE cxx_std_17)
+    target_compile_options(device_identity_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME device_identity COMMAND device_identity_test)
 
     add_test(
         NAME sender_config_validation

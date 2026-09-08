@@ -1,6 +1,6 @@
 # API And Data Format Reference
 
-更新时间：2026-09-03
+更新时间：2026-09-08
 
 本文是当前对外端口、媒体协议、REST API 和落盘字段的查表文档。配置字段见 [configuration.md](configuration.md)。
 
@@ -197,6 +197,18 @@ GET /api/config
 | `recording_start_block_reason` | NAS 或本地空间门禁阻止录制时的原因 |
 | `recording_storage` | Receiver 本地暂存盘容量、剩余比例及 20% 警告/10% 硬门槛状态 |
 | `recording_uploader.nas_mount_ready` | uploader 是否允许访问 NAS；为 false 时只保留本地数据 |
+
+## Device Information
+
+```http
+GET /api/device-info
+GET /api/device-info?sender_id=...
+GET /api/device-info?mac=...
+```
+
+该只读接口按 Sender 聚合 `wlan0` 永久 MAC、Sender 当前系统日期/时间、时区、在线状态、相机列表和来源 IP。无需 token，并允许局域网浏览器跨域 GET。调用方必须通过 `mac_is_permanent` 判断驱动是否成功提供永久地址；不能把回退的当前 MAC 当成硬件永久身份。
+
+完整字段、返回示例和调用代码见 [device-info-api.md](device-info-api.md)。
 
 ## Recording
 

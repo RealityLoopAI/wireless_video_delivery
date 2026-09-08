@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,97 @@ def status(response: FastAPIResponse) -> Any:
         STATUS_CACHE_MONOTONIC = time.monotonic()
     response.headers["X-GWV3-Receiver-Status"] = "live"
     return current
+
+
+def _build_device_info(status_data: dict[str, Any], sender_id: str | None, mac: str | None) -> dict[str, Any]:
+    devices: dict[str, dict[str, Any]] = {}
+    for camera in status_data.get("cameras", []):
+        if not isinstance(camera, dict):
+            continue
+        current_sender_id = str(camera.get("sender_id", ""))
+        if not current_sender_id:
+            continue
+        received_us = int(camera.get("device_info_received_us", 0) or 0)
+        device = devices.get(current_sender_id)
+        if device is None:
+            device = {
+                "sender_id": current_sender_id,
+                "device_info_available": False,
+                "device_info_version": 0,
+                "host_name": "",
+                "wifi_interface": "wlan0",
+                "wifi_permanent_mac": "",
+                "mac_is_permanent": False,
+                "mac_source": "unavailable",
+                "device_date": "",
+                "device_time": "",
+                "device_system_time_us": 0,
+                "timezone": "",
+                "device_info_received_us": 0,
+                "online": False,
+                "camera_ids": [],
+                "source_ips": [],
+            }
+            devices[current_sender_id] = device
+        device["online"] = bool(device["online"] or camera.get("online", False))
+        camera_id = str(camera.get("camera_id", ""))
+        if camera_id and camera_id not in device["camera_ids"]:
+            device["camera_ids"].append(camera_id)
+        source_ip = str(camera.get("sender_source_ip", ""))
+        if source_ip and source_ip not in device["source_ips"]:
+            device["source_ips"].append(source_ip)
+        if received_us < int(device["device_info_received_us"]):
+            continue
+        version = int(camera.get("device_info_version", 0) or 0)
+        device.update({
+            "device_info_available": version > 0,
+            "device_info_version": version,
+            "host_name": str(camera.get("host_name", "")),
+            "wifi_interface": str(camera.get("wifi_interface", "wlan0")),
+            "wifi_permanent_mac": str(camera.get("wifi_permanent_mac", "")).lower(),
+            "mac_is_permanent": bool(camera.get("mac_is_permanent", False)),
+            "mac_source": str(camera.get("mac_source", "unavailable")),
+            "device_date": str(camera.get("device_date", "")),
+            "device_time": str(camera.get("device_time", "")),
+            "device_system_time_us": int(camera.get("device_system_time_us", 0) or 0),
+            "timezone": str(camera.get("timezone", "")),
+            "device_info_received_us": received_us,
+        })
+
+    now_us = time.time_ns() // 1000
+    result = []
+    normalized_mac = mac.strip().lower() if mac else None
+    for device in devices.values():
+        if sender_id is not None and device["sender_id"] != sender_id:
+            continue
+        if normalized_mac is not None and device["wifi_permanent_mac"] != normalized_mac:
+            continue
+        received_us = int(device["device_info_received_us"])
+        device["device_info_age_ms"] = max(0, (now_us - received_us) // 1000) if received_us > 0 else None
+        device["camera_ids"].sort()
+        device["source_ips"].sort()
+        result.append(device)
+    result.sort(key=lambda item: item["sender_id"])
+    return {
+        "ok": True,
+        "protocol_version": "1.0",
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "receiver_admin_stale": bool(status_data.get("receiver_admin_stale", False)),
+        "device_count": len(result),
+        "devices": result,
+    }
+
+
+@app.get("/api/device-info")
+def device_info(
+    response: FastAPIResponse,
+    sender_id: str | None = Query(None, max_length=64),
+    mac: str | None = Query(None, max_length=32),
+) -> Any:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    status_response = FastAPIResponse()
+    return _build_device_info(status(status_response), sender_id, mac)
 
 
 @app.get("/api/config")

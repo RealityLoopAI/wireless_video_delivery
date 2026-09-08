@@ -523,6 +523,17 @@ public:
             out << "\"storage_key\":\"" << json_escape(cam.storage_key()) << "\",";
             out << "\"camera_file_prefix\":\"" << json_escape(cam.camera_file_prefix) << "\",";
             out << "\"sender_source_ip\":\"" << json_escape(socket_endpoint_ip(cam.status_endpoint)) << "\",";
+            out << "\"device_info_version\":" << cam.device_info_version << ',';
+            out << "\"host_name\":\"" << json_escape(cam.sender_host_name) << "\",";
+            out << "\"wifi_interface\":\"" << json_escape(cam.wifi_interface) << "\",";
+            out << "\"wifi_permanent_mac\":\"" << json_escape(cam.wifi_permanent_mac) << "\",";
+            out << "\"mac_is_permanent\":" << (cam.mac_is_permanent ? "true" : "false") << ',';
+            out << "\"mac_source\":\"" << json_escape(cam.mac_source) << "\",";
+            out << "\"device_date\":\"" << json_escape(cam.device_date) << "\",";
+            out << "\"device_time\":\"" << json_escape(cam.device_time) << "\",";
+            out << "\"device_system_time_us\":" << cam.device_system_time_us << ',';
+            out << "\"timezone\":\"" << json_escape(cam.device_timezone) << "\",";
+            out << "\"device_info_received_us\":" << cam.device_info_received_us << ',';
             out << "\"online\":" << (cam.online ? "true" : "false") << ',';
             out << "\"status_live\":" << (status_live ? "true" : "false") << ',';
             out << "\"media_live\":" << (media_live ? "true" : "false") << ',';
@@ -3993,6 +4004,27 @@ private:
             cam.sender_build_source_hash = json_string_value(root, "build_source_hash", cam.sender_build_source_hash);
             if(root["build_dirty"].isBool()) {
                 cam.sender_build_dirty = root["build_dirty"].asBool();
+            }
+            const auto device_info_version = json_uint64_value(root, "device_info_version").value_or(0);
+            if(device_info_version > 0 && device_info_version <= std::numeric_limits<uint32_t>::max()) {
+                const auto bounded_string = [&root](const char *field, size_t max_size, const std::string &fallback) {
+                    const auto value = json_string_value(root, field);
+                    return value.size() <= max_size ? value : fallback;
+                };
+                cam.device_info_version = static_cast<uint32_t>(device_info_version);
+                cam.sender_host_name = bounded_string("host_name", 255, cam.sender_host_name);
+                cam.wifi_interface = bounded_string("wifi_interface", 32, cam.wifi_interface);
+                cam.wifi_permanent_mac = bounded_string("wifi_permanent_mac", 32, cam.wifi_permanent_mac);
+                if(root["mac_is_permanent"].isBool()) {
+                    cam.mac_is_permanent = root["mac_is_permanent"].asBool();
+                }
+                cam.mac_source = bounded_string("mac_source", 64, cam.mac_source);
+                cam.device_date = bounded_string("device_date", 16, cam.device_date);
+                cam.device_time = bounded_string("device_time", 64, cam.device_time);
+                cam.device_system_time_us =
+                    json_uint64_value(root, "device_system_time_us").value_or(cam.device_system_time_us);
+                cam.device_timezone = bounded_string("timezone", 128, cam.device_timezone);
+                cam.device_info_received_us = received_us;
             }
             if(type == "heartbeat") {
                 cam.sender_rgb_input_fps = json_double_value(root, "rgb_measured_fps").value_or(cam.sender_rgb_input_fps);

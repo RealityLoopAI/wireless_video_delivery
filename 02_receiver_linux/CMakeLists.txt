@@ -143,6 +143,11 @@ if(BUILD_TESTING)
     )
     set_tests_properties(web_preview_low_latency_unit PROPERTIES TIMEOUT 10)
     add_test(
+        NAME device_info_api_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_device_info_api.py
+    )
+    set_tests_properties(device_info_api_unit PROPERTIES TIMEOUT 10)
+    add_test(
         NAME recording_button_service_unit
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_button_service.py
     )

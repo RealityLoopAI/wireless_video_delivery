@@ -686,6 +686,8 @@ void log_time_sync(CameraRuntime &camera, Logger &logger, const std::shared_ptr<
 }
 
 Json::Value base_message(const AppConfig &config, const std::string &type) {
+    static const DeviceIdentity identity = read_device_identity("wlan0");
+    const auto device_clock = current_device_clock();
     Json::Value msg;
     msg["protocol_version"] = kProtocolVersion;
     msg["message_type"] = type;
@@ -697,6 +699,16 @@ Json::Value base_message(const AppConfig &config, const std::string &type) {
                                    + std::to_string(ob_get_patch_version());
     msg["orbbec_sdk_version_number"] = ob_get_version();
     msg["timestamp_us"] = Json::UInt64(now_us());
+    msg["device_info_version"] = identity.version;
+    msg["host_name"] = identity.host_name;
+    msg["wifi_interface"] = identity.wifi_interface;
+    msg["wifi_permanent_mac"] = identity.wifi_permanent_mac;
+    msg["mac_is_permanent"] = identity.mac_is_permanent;
+    msg["mac_source"] = identity.mac_source;
+    msg["device_date"] = device_clock.date;
+    msg["device_time"] = device_clock.time_iso8601;
+    msg["device_system_time_us"] = Json::UInt64(device_clock.system_time_us);
+    msg["timezone"] = device_clock.timezone;
     return msg;
 }
 
@@ -2709,4 +2721,3 @@ cv::Mat depth_to_color(const std::shared_ptr<ob::DepthFrame> &frame) {
     color.setTo(cv::Scalar(24, 16, 12), depth == 0);
     return color;
 }
-
