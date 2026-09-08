@@ -117,8 +117,9 @@ public:
     }
 
     bool active() const {
-        std::lock_guard<std::mutex> lock(process_mutex_);
-        return running_ && stdin_fd_ >= 0;
+        // The writer may be polling a full pipe while holding process_mutex_.
+        // Media ingress must not wait for that disposable preview work.
+        return running_.load();
     }
 
     void stop() {
@@ -1637,4 +1638,3 @@ pid_t spawn_shell_process(const std::string &command, int child_stdin, int child
     error_code = posix_spawn(&pid, argv[0], &actions, nullptr, const_cast<char *const *>(argv), environ);
     return error_code == 0 ? pid : -1;
 }
-

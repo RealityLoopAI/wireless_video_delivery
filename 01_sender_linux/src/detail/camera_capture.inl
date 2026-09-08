@@ -748,6 +748,7 @@ template <typename Sender>
 void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger &logger, std::mutex &transport_mutex,
                        const std::atomic<bool> *path_running = nullptr, bool reliable_retry = false) {
     auto next_idle_close_log = std::chrono::steady_clock::now();
+    auto next_backpressure_log = std::chrono::steady_clock::now();
     std::optional<MediaPacketJob> retry_job;
     std::optional<std::chrono::steady_clock::time_point> drain_deadline;
     while(true) {
@@ -786,7 +787,12 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             continue;
         }
 
-        if(job->stream_type == StreamType::rgb
+        bool resuming_packet = false;
+        {
+            std::lock_guard<std::mutex> lock(transport_mutex);
+            resuming_packet = transport.media_retry_pending();
+        }
+        if(!resuming_packet && job->stream_type == StreamType::rgb
            && decide_rgb_keyframe_send(*job->camera, job->rgb_keyframe, std::chrono::steady_clock::now(), logger)
                   == RgbTransportRecovery::SendDecision::drop) {
             continue;
@@ -794,11 +800,13 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
 
         const auto send_started = std::chrono::steady_clock::now();
         bool sent = false;
+        bool retry_pending = false;
         std::string error;
         const auto packet = job->view();
         try {
             std::lock_guard<std::mutex> lock(transport_mutex);
             sent = transport.send_media(packet);
+            retry_pending = transport.media_retry_pending();
             if(!sent) {
                 error = transport.last_error();
             }
@@ -811,6 +819,17 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         }
         const auto send_ended = std::chrono::steady_clock::now();
         const double send_ms = elapsed_ms(send_started, send_ended);
+        if(!sent && retry_pending) {
+            if(send_ended >= next_backpressure_log) {
+                logger.warn("media TCP retaining pending packet camera_id=" + job->camera->config.camera_id
+                            + " stream=" + stream_type_name(job->stream_type)
+                            + "; backpressure has not dropped this packet");
+                next_backpressure_log = send_ended + std::chrono::seconds(5);
+            }
+            retry_job = std::move(*job);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         if(sent) {
             record_media_send_success(*job->camera, job->stream_type, job->total_size(), send_ms);
             if(job->stream_type == StreamType::rgb) {
@@ -1994,4 +2013,3 @@ void camera_worker_thread_entry(const AppConfig &config, CameraRuntime &camera, 
         }
     }
 }
-

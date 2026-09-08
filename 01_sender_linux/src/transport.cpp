@@ -441,16 +441,26 @@ bool Transport::send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes,
 bool Transport::ensure_media_tcp_connected() {
     const auto target = receiver_target_->snapshot();
     if(media_tcp_fd_ >= 0 && media_target_generation_ != target.generation) {
+        const bool interrupted = pending_media_.has_value();
         close_media_socket();
         last_media_connect_attempt_ = {};
+        if(interrupted) {
+            set_error("media TCP receiver changed while a packet was pending");
+            return false;
+        }
     }
     if(media_tcp_fd_ >= 0) {
         if(!tcp_peer_closed(media_tcp_fd_)) {
             receiver_target_->mark_success(target.generation);
             return true;
         }
+        const bool interrupted = pending_media_.has_value();
         close_media_socket();
         last_media_connect_attempt_ = {};
+        if(interrupted) {
+            set_error("media TCP peer closed while a packet was pending");
+            return false;
+        }
     }
     if(!can_retry_media_connect()) {
         return false;
@@ -504,73 +514,47 @@ bool Transport::ensure_media_tcp_connected() {
     return true;
 }
 
-Transport::SendResult Transport::send_all(int fd, const uint8_t *data, size_t size) {
-    size_t offset = 0;
-    const int timeout_ms = config_.recording_buffer.enabled ? std::max(5000, config_.transport.send_timeout_ms)
-                                                            : config_.transport.send_timeout_ms;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while(offset < size) {
-        const ssize_t sent = send(fd, data + offset, size - offset, MSG_NOSIGNAL);
-        if(sent > 0) {
-            offset += static_cast<size_t>(sent);
-            continue;
-        }
-        if(sent == 0) {
-            set_error("media TCP send failed: peer closed connection");
-            return SendResult::failed;
-        }
-        if(errno == EINTR) {
-            continue;
-        }
-        if(errno == EAGAIN || errno == EWOULDBLOCK) {
-            const auto now = std::chrono::steady_clock::now();
-            if(now >= deadline) {
-                if(offset == 0) {
-                    set_error("media TCP packet dropped under backpressure before write");
-                    return SendResult::dropped_backpressure;
-                }
-                set_error("media TCP send timed out after partial write under backpressure");
-                return SendResult::failed;
-            }
-
-            fd_set wfds;
-            FD_ZERO(&wfds);
-            FD_SET(fd, &wfds);
-            const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
-            timeval timeout{};
-            timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
-            timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
-            const int rc = select(fd + 1, nullptr, &wfds, nullptr, &timeout);
-            if(rc > 0) {
-                continue;
-            }
-            if(rc < 0 && errno == EINTR) {
-                continue;
-            }
-            if(rc == 0 && offset == 0) {
-                set_error("media TCP packet dropped under backpressure before write");
-                return SendResult::dropped_backpressure;
-            }
-            set_error(rc == 0 ? "media TCP send timed out after partial write under backpressure"
-                              : std::string("media TCP send select failed: ") + std::strerror(errno));
-            return SendResult::failed;
-        }
-        else {
-            set_error(std::string("media TCP send failed: ") + std::strerror(errno));
-            return SendResult::failed;
-        }
-    }
-    return SendResult::sent;
-}
-
 Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet) {
     const size_t total_size = packet.total_size();
-    size_t offset = 0;
-    const int timeout_ms = config_.recording_buffer.enabled ? std::max(5000, config_.transport.send_timeout_ms)
-                                                            : config_.transport.send_timeout_ms;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto started = std::chrono::steady_clock::now();
+    const bool main_media = packet.header_size >= 9 && read_le32(packet.header_data) == kMediaMagic
+                            && (packet.header_data[8] == static_cast<uint8_t>(StreamType::rgb)
+                                || packet.header_data[8] == static_cast<uint8_t>(StreamType::depth_raw));
+    const bool reliable = config_.recording_buffer.enabled && main_media;
+    if(pending_media_ && (pending_media_->packet.header_data != packet.header_data
+                         || pending_media_->packet.header_size != packet.header_size
+                         || pending_media_->packet.payload_data != packet.payload_data
+                         || pending_media_->packet.payload_size != packet.payload_size)) {
+        set_error("media TCP pending packet replaced before completion");
+        return SendResult::failed;
+    }
+    if(reliable && !pending_media_) {
+        pending_media_ = PendingMedia{packet, 0, started};
+    }
+    size_t offset = pending_media_ ? pending_media_->offset : 0;
+    // Yield to the send worker without losing the byte offset or the packet
+    // owner. Reconnecting here would discard the old receiver socket's backlog.
+    const int timeout_ms = reliable ? 100 : config_.transport.send_timeout_ms;
+    const auto deadline = started + std::chrono::milliseconds(timeout_ms);
+    const auto yield_backpressure = [&]() {
+        if(reliable) {
+            if(std::chrono::steady_clock::now() - pending_media_->started >= std::chrono::seconds(60)) {
+                set_error("media TCP reliable packet stalled for 60 seconds; reconnect required");
+                return SendResult::failed;
+            }
+            pending_media_->offset = offset;
+            set_error("media TCP backpressure; retaining packet on existing connection");
+            return SendResult::pending_backpressure;
+        }
+        set_error(offset == 0 ? "media TCP packet dropped under backpressure before write"
+                              : "media TCP send timed out after partial write under backpressure");
+        return offset == 0 ? SendResult::dropped_backpressure : SendResult::failed;
+    };
 
     while(offset < total_size) {
+        if(std::chrono::steady_clock::now() >= deadline) {
+            return yield_backpressure();
+        }
         std::array<iovec, 2> iovs{};
         int iov_count = 0;
         size_t remaining_offset = offset;
@@ -607,12 +591,7 @@ Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet)
         if(errno == EAGAIN || errno == EWOULDBLOCK) {
             const auto now = std::chrono::steady_clock::now();
             if(now >= deadline) {
-                if(offset == 0) {
-                    set_error("media TCP packet dropped under backpressure before write");
-                    return SendResult::dropped_backpressure;
-                }
-                set_error("media TCP send timed out after partial write under backpressure");
-                return SendResult::failed;
+                return yield_backpressure();
             }
 
             fd_set wfds;
@@ -629,22 +608,22 @@ Transport::SendResult Transport::send_all(int fd, const MediaPacketView &packet)
             if(rc < 0 && errno == EINTR) {
                 continue;
             }
-            if(rc == 0 && offset == 0) {
-                set_error("media TCP packet dropped under backpressure before write");
-                return SendResult::dropped_backpressure;
+            if(rc == 0) {
+                return yield_backpressure();
             }
-            set_error(rc == 0 ? "media TCP send timed out after partial write under backpressure"
-                              : std::string("media TCP send select failed: ") + std::strerror(errno));
+            set_error(std::string("media TCP send select failed: ") + std::strerror(errno));
             return SendResult::failed;
         }
 
         set_error(std::string("media TCP send failed: ") + std::strerror(errno));
         return SendResult::failed;
     }
+    pending_media_.reset();
     return SendResult::sent;
 }
 
 void Transport::close_media_socket() {
+    pending_media_.reset();
     if(media_tcp_fd_ >= 0) {
         close(media_tcp_fd_);
         media_tcp_fd_ = -1;

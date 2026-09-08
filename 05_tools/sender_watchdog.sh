@@ -291,6 +291,18 @@ while [[ "$stopping" -eq 0 ]]; do
     fi
   fi
 
+  # Legacy services launch this watchdog directly and bypass the installer's
+  # chrony preparation. Bound the wait so offline capture still starts.
+  if command -v chronyc >/dev/null 2>&1; then
+    if timeout --kill-after=1s 32s env GEMINI_CHRONY_WAITSYNC_TRIES=30 \
+      GEMINI_CHRONY_WAITSYNC_INTERVAL_S=1 \
+      bash "$ROOT_DIR/05_tools/wait_chrony_sync.sh" 0.010 >> "$WATCHDOG_LOG_FILE" 2>&1; then
+      log_watchdog "startup system clock synchronized before camera capture"
+    else
+      log_watchdog "startup clock not synchronized after bounded wait; capture will start in degraded mode, check CLOCK_SYNC before alignment"
+    fi
+  fi
+
   gemini_sender_orbbec_prepare_runtime
 
   child_log_offset="$(health_log_size)"

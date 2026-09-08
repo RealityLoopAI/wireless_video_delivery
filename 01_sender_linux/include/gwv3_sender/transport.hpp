@@ -30,15 +30,19 @@ public:
 
     bool send_status(const std::string &json_message);
     std::optional<std::string> receive_status_control(int timeout_ms);
+    // While media_retry_pending() is true the caller must retain the packet
+    // owner and retry this exact view before submitting any other packet.
     bool send_media(const std::vector<uint8_t> &packet);
     bool send_media(const MediaPacketView &packet);
     bool close_if_media_peer_closed();
+    bool media_retry_pending() const { return pending_media_.has_value(); }
     std::string last_error() const;
 
 private:
     enum class SendResult {
         sent,
         dropped_backpressure,
+        pending_backpressure,
         failed,
     };
 
@@ -48,7 +52,6 @@ private:
     bool send_fragmented_udp_packet(int fd, uint16_t port, int mtu_bytes, const MediaPacketView &packet, const char *label);
     bool ensure_udp_socket(int &fd, const char *label);
     bool ensure_media_tcp_connected();
-    SendResult send_all(int fd, const uint8_t *data, size_t size);
     SendResult send_all(int fd, const MediaPacketView &packet);
     void close_media_socket();
     void close_udp_socket(int &fd);
@@ -71,6 +74,12 @@ private:
     uint32_t consecutive_media_backpressure_drops_ = 0;
     std::chrono::steady_clock::time_point last_media_connect_attempt_{};
     std::string last_error_;
+    struct PendingMedia {
+        MediaPacketView packet;
+        size_t offset = 0;
+        std::chrono::steady_clock::time_point started;
+    };
+    std::optional<PendingMedia> pending_media_;
 };
 
 class NullTransport {
@@ -80,6 +89,7 @@ public:
     bool send_media(const std::vector<uint8_t> &) { return true; }
     bool send_media(const MediaPacketView &) { return true; }
     bool close_if_media_peer_closed() { return false; }
+    bool media_retry_pending() const { return false; }
     std::string last_error() const { return {}; }
 };
 

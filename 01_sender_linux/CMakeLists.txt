@@ -246,6 +246,17 @@ if(BUILD_TESTING)
     target_compile_options(device_identity_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME device_identity COMMAND device_identity_test)
 
+    add_executable(transport_backpressure_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_transport_backpressure.cpp"
+        src/transport.cpp src/network_utils.cpp src/receiver_target.cpp
+    )
+    target_include_directories(transport_backpressure_test PRIVATE include "${CMAKE_SOURCE_DIR}/03_common_core/include")
+    target_link_libraries(transport_backpressure_test PRIVATE pthread)
+    target_compile_features(transport_backpressure_test PRIVATE cxx_std_17)
+    target_compile_options(transport_backpressure_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME transport_backpressure COMMAND transport_backpressure_test)
+    set_tests_properties(transport_backpressure PROPERTIES TIMEOUT 40)
+
     add_test(
         NAME sender_config_validation
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_config.py"

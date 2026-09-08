@@ -495,6 +495,33 @@ def exercise_runtime_state_save_isolation(ports: dict, state_path: Path) -> None
         state_path.write_bytes(persisted_payloads[0] if persisted_payloads else b"{}\n")
 
 
+def exercise_media_read_pause(ports: dict) -> None:
+    sender = "read-pause-sender"
+    packet = depth_packet(sender, "cam01", 1, 64, 48, int(time.time() * 1_000_000))
+    with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+        # Pause once inside the header and once inside the payload. Neither
+        # pause may trigger the socket's two-second shutdown polling timeout.
+        media.sendall(packet[:20])
+        time.sleep(2.5)
+        assert request(ports["admin"], "GET", "/api/status", timeout=1)[0] == 200
+        media.sendall(packet[20:200])
+        time.sleep(2.5)
+        media.sendall(packet[200:])
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            status = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+            cam = next((c for c in status["cameras"] if c["sender_id"] == sender), {})
+            if cam.get("depth_packets") == 1:
+                assert cam["depth_receive_age_ms"] >= 0
+                assert cam["rgb_receive_age_ms"] == -1
+                assert cam["depth_receive_delay_us"] == -1  # No clock model.
+                print("partial header/payload pauses preserved: one complete packet, admin responsive")
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("media read timeout discarded the partial packet")
+
+
 def exercise_media_session_fencing(ports: dict) -> None:
     sender_id = "session-fence-test"
     camera_id = "cam01"
@@ -1413,6 +1440,7 @@ def run(args) -> None:
             assert udp_status["media_udp_stats"]["active_assemblies"] <= 256
             exercise_media_session_fencing(ports)
             exercise_rgb_session_keyframe_gate(ports)
+            exercise_media_read_pause(ports)
             if shutil.which("ffmpeg"):
                 exercise_preview_decoder_cleanup(ports, receiver.pid)
 

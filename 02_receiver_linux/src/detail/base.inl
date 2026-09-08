@@ -471,6 +471,7 @@ uint64_t read_le64(const uint8_t *data) {
 bool read_exact(int fd, void *data, size_t size) {
     auto *ptr = static_cast<uint8_t *>(data);
     size_t offset = 0;
+    auto last_progress = std::chrono::steady_clock::now();
     while(offset < size && g_running) {
         const ssize_t got = recv(fd, ptr + offset, size - offset, 0);
         if(got == 0) {
@@ -480,9 +481,16 @@ bool read_exact(int fd, void *data, size_t size) {
             if(errno == EINTR) {
                 continue;
             }
+            // SO_RCVTIMEO is a short shutdown polling interval, not a reason
+            // to destroy an in-flight recording packet during a Wi-Fi pause.
+            if((errno == EAGAIN || errno == EWOULDBLOCK)
+               && std::chrono::steady_clock::now() - last_progress < std::chrono::seconds(60)) {
+                continue;
+            }
             return false;
         }
         offset += static_cast<size_t>(got);
+        last_progress = std::chrono::steady_clock::now();
     }
     return offset == size;
 }
@@ -1162,4 +1170,3 @@ PreviewImage build_depth_preview_bmp(const std::vector<uint8_t> &payload,
 
     return build_bmp_from_rgb_pixels(rgb, image.width, image.height);
 }
-

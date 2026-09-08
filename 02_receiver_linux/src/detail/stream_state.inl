@@ -137,6 +137,12 @@ struct CameraState {
     uint64_t last_status_us = 0;
     std::string status_endpoint;
     uint64_t last_media_us = 0;
+    uint64_t last_rgb_receive_us = 0;
+    uint64_t last_depth_receive_us = 0;
+    int64_t rgb_receive_delay_us = -1;
+    int64_t depth_receive_delay_us = -1;
+    uint64_t last_rgb_transport_warning_us = 0;
+    uint64_t last_depth_transport_warning_us = 0;
     uint64_t last_media_session_id = 0;
     uint64_t rgb_ingress_session_id = 0;
     bool rgb_ingress_waiting_for_idr = false;

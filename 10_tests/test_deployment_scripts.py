@@ -87,6 +87,9 @@ printf '%s\n' "$value"
 
     def test_watchdog_monitors_application_log_with_monotonic_time(self):
         text = (SOURCE_ROOT / "05_tools/sender_watchdog.sh").read_text(encoding="utf-8")
+        self.assertIn("timeout --kill-after=1s 32s", text)
+        self.assertIn('bash "$ROOT_DIR/05_tools/wait_chrony_sync.sh"', text)
+        self.assertIn("capture will start in degraded mode", text)
         self.assertIn('APP_LOG_FILE="${GEMINI_SENDER_HEALTH_LOG_FILE', text)
         self.assertIn('tail -c "$new_bytes" "$APP_LOG_FILE"', text)
         self.assertIn("/proc/uptime", text)

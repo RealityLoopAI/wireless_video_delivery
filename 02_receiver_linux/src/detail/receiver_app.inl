@@ -573,6 +573,10 @@ public:
             out << "\"sender_rgb_input_fps\":" << cam.sender_rgb_input_fps << ',';
             out << "\"sender_depth_input_fps\":" << cam.sender_depth_input_fps << ',';
             out << "\"sender_rgb_sent_fps\":" << cam.sender_rgb_sent_fps << ',';
+            out << "\"rgb_receive_age_ms\":" << age_ms_or_negative(now, cam.last_rgb_receive_us) << ',';
+            out << "\"depth_receive_age_ms\":" << age_ms_or_negative(now, cam.last_depth_receive_us) << ',';
+            out << "\"rgb_receive_delay_us\":" << cam.rgb_receive_delay_us << ',';
+            out << "\"depth_receive_delay_us\":" << cam.depth_receive_delay_us << ',';
             out << "\"sender_depth_sent_fps\":" << cam.sender_depth_sent_fps << ',';
             out << "\"sender_rgb_dropped_frames\":" << cam.sender_rgb_dropped_frames << ',';
             out << "\"sender_depth_dropped_frames\":" << cam.sender_depth_dropped_frames << ',';
@@ -4373,6 +4377,25 @@ private:
             }
             cam->last_media_us = packet_receive_us;
             cam->last_media_session_id = media_session_id;
+            if(packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw) {
+                const bool rgb = packet.stream_type == StreamType::rgb;
+                uint64_t &last_receive = rgb ? cam->last_rgb_receive_us : cam->last_depth_receive_us;
+                int64_t &delay = rgb ? cam->rgb_receive_delay_us : cam->depth_receive_delay_us;
+                uint64_t &last_warning = rgb ? cam->last_rgb_transport_warning_us : cam->last_depth_transport_warning_us;
+                const uint64_t receive_gap = last_receive > 0 && packet_receive_us >= last_receive
+                                                 ? packet_receive_us - last_receive : 0;
+                last_receive = packet_receive_us;
+                delay = packet.clock_sync_valid && packet_receive_us >= packet.global_timestamp_us
+                            ? static_cast<int64_t>(packet_receive_us - packet.global_timestamp_us) : -1;
+                if((receive_gap > 500'000 || delay > 500'000)
+                   && (last_warning == 0 || packet_receive_us > last_warning + 5'000'000)) {
+                    last_warning = packet_receive_us;
+                    logger_.warn("media arrival delayed camera=" + cam->key + " stream=" + stream_type_name(packet.stream_type)
+                                 + " receive_gap_us=" + std::to_string(receive_gap)
+                                 + " capture_to_receiver_us=" + std::to_string(delay)
+                                 + " session=" + std::to_string(media_session_id));
+                }
+            }
             if(packet.stream_type == StreamType::rgb) {
                 cam->rgb_packets++;
                 cam->rgb_bytes += packet.payload_size;
