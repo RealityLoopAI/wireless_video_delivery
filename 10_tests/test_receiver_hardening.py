@@ -1452,7 +1452,27 @@ def run(args) -> None:
                 exercise_preview_decoder_cleanup(ports, receiver.pid)
 
             exercise_sender_scoped_recording_control(ports)
-            assert request(ports["admin"], "POST", "/api/record/start-all")[0] == 200
+            malformed_sender = "malformed-layout-test"
+            malformed_cases = {
+                "cam01": compressed_depth_bomb_packet,
+                "cam02": overlapping_plz4_packet,
+            }
+            for camera_id in malformed_cases:
+                status_message(ports["status"], {
+                    "protocol_version": "3.0", "message_type": "camera_announce",
+                    "sender_id": malformed_sender, "camera_id": camera_id,
+                    "depth_profile": {"width": 64, "height": 48, "fps": 30, "depth_scale": 1},
+                })
+            start_code, _, start_body = request(ports["admin"], "POST", "/api/record/start-all")
+            assert start_code == 200
+            malformed_start_us = int(json.loads(start_body)["recording_start_us"])
+            start_deadline = time.monotonic() + 8
+            while malformed_start_us == 0 and time.monotonic() < start_deadline:
+                time.sleep(0.05)
+                start_state = json.loads(request(ports["admin"], "GET", "/api/status")[2])
+                malformed_start_us = int(start_state.get("recording_start_us", 0))
+            assert malformed_start_us > 0, "malformed-input test recording did not activate"
+            time.sleep(max(0.0, malformed_start_us / 1_000_000 - time.time() + 0.1))
             stop_one = json.loads(
                 request(
                     ports["admin"],
@@ -1461,14 +1481,18 @@ def run(args) -> None:
                 )[2]
             )
             assert stop_one.get("ok") is False, "single-camera stop must not race an active start-all recording"
-            with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-                media.sendall(compressed_depth_bomb_packet("test-sender", "cam01", int(time.time() * 1_000_000)))
-                media.sendall(overlapping_plz4_packet("test-sender", "cam01", int(time.time() * 1_000_000)))
+            # A write failure may discard that camera's queued jobs. Isolate
+            # each malformed layout so both decoders must reject their input.
+            for camera_id, make_packet in malformed_cases.items():
+                with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
+                    media.sendall(make_packet(malformed_sender, camera_id, int(time.time() * 1_000_000)))
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 current = json.loads(request(ports["admin"], "GET", "/api/status")[2])
-                cameras = [camera for camera in current.get("cameras", []) if camera.get("sender_id") == "test-sender"]
-                if cameras and int(cameras[0].get("record_write_errors", 0)) >= 2:
+                cameras = [camera for camera in current.get("cameras", []) if camera.get("sender_id") == malformed_sender]
+                if len(cameras) == len(malformed_cases) and all(
+                    int(camera.get("record_write_errors", 0)) >= 1 for camera in cameras
+                ):
                     break
                 time.sleep(0.05)
             else:
