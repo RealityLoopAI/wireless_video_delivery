@@ -230,6 +230,10 @@ POST /api/record/stop?sender_id=...&camera_id=...
 同一相机立即重开会进入 `start_pending`，等旧任务尾帧接收和 writer 分离后才激活，
 不是同时把同一帧写入两个任务。重复停止不延长正在收尾的旧任务边界。
 
+Receiver 的关键帧/预览控制和拍照 ACK 从状态监听 socket 返回，默认源端口 `50011`，
+目标为 sender 心跳的实际来源端点，兼容地址/端口受限 NAT。UDP 仍为尽力交付，
+`control sent` 只代表发送调用成功，不能单独作为 sender 已执行的证明。
+
 GPIO 录制按键调用 sender 级接口，只控制该物理 sender 的全部相机。
 
 ## Camera Naming
