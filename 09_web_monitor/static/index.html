@@ -595,7 +595,6 @@
     const HIDDEN_REFRESH_MS = 1000;
     const PREVIEW_LOAD_TIMEOUT_MS = 1200;
     const PREVIEW_PROBE_INTERVAL_MS = 1500;
-    const H264_PREVIEW_RETRY_MS = 1000;
     const PREVIEW_STALE_MS = 5000;
     const H264_MAX_DECODE_QUEUE = 2;
     const H264_MAX_INPUT_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -603,7 +602,6 @@
     const H264_TIMESTAMP_DISCONTINUITY_US = 5 * 1000 * 1000;
     const H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000;
     const H264_STALE_RECONNECT_MS = 250;
-    const RGB_MP4_RETRY_MS = 1000;
     const RGB_MP4_STALE_MS = 3000;
     const RGB_VIDEO_TARGET_LAG_SEC = 0.12;
     const RGB_VIDEO_FAST_LAG_SEC = 0.30;
@@ -1351,8 +1349,10 @@
       const preferH264 = kind === 'rgb' && Number(c.rgb_packets || 0) > 0;
       const h264FailedForCamera = root.dataset.rgbH264Failed === '1' &&
         root.dataset.rgbH264FailedKey === c.camera_key;
-      const h264RetryDue = !h264FailedForCamera ||
-        Date.now() - Number(root.dataset.rgbH264FailedAt || '0') >= H264_PREVIEW_RETRY_MS;
+      // A failed stream is kept on the JPEG fallback until status confirms that
+      // the sender's dedicated preview stream is available again. Fast blind
+      // retries make unsupported/older senders continuously blank their tile.
+      const h264RetryDue = !h264FailedForCamera || rgbH264Fresh(c);
       if (preferH264 && rgbH264PreviewSupported() &&
           h264RetryDue) {
         root.dataset[`${kind}Loading`] = '0';
@@ -1362,8 +1362,7 @@
       }
       const mp4FailedForCamera = root.dataset.rgbMp4Failed === '1' &&
         root.dataset.rgbMp4FailedKey === c.camera_key;
-      const mp4RetryDue = !mp4FailedForCamera ||
-        Date.now() - Number(root.dataset.rgbMp4FailedAt || '0') >= RGB_MP4_RETRY_MS;
+      const mp4RetryDue = !mp4FailedForCamera || rgbH264Fresh(c);
       if (preferH264 && !high && !rgbH264PreviewSupported() &&
           rgbMp4PreviewSupported() && mp4RetryDue) {
         root.dataset[`${kind}Loading`] = '0';
