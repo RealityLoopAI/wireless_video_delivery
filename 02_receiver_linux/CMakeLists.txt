@@ -47,6 +47,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_tail_drain.py
                 --receiver $<TARGET_FILE:gemini_receiver>)
     set_tests_properties(receiver_tail_drain_integration PROPERTIES TIMEOUT 60)
+    add_test(NAME receiver_status_reply_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_status_reply.py
+                --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_status_reply_integration PROPERTIES TIMEOUT 30)
     add_executable(test_receiver_target
         ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_target.cpp
         ${CMAKE_SOURCE_DIR}/01_sender_linux/src/receiver_target.cpp

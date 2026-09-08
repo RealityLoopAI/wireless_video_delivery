@@ -687,18 +687,13 @@ std::string socket_endpoint_ip(const std::string &endpoint) {
     return inet_ntop(AF_INET, &parsed->sin_addr, ip, sizeof(ip)) ? std::string(ip) : std::string{};
 }
 
-bool send_udp_text_to_endpoint(const std::string &endpoint, const std::string &payload) {
+bool send_udp_text_to_endpoint(int fd, const std::string &endpoint, const std::string &payload) {
     const auto addr = parse_socket_endpoint(endpoint);
-    if(!addr) {
+    if(fd < 0 || !addr) {
         return false;
     }
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if(fd < 0) {
-        return false;
-    }
-    set_fd_cloexec(fd);
-    const auto sent = sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr *>(&*addr), sizeof(*addr));
-    close(fd);
+    const auto sent = sendto(fd, payload.data(), payload.size(), MSG_DONTWAIT,
+                             reinterpret_cast<const sockaddr *>(&*addr), sizeof(*addr));
     return sent >= 0 && static_cast<size_t>(sent) == payload.size();
 }
 

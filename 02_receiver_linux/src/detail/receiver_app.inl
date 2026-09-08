@@ -866,7 +866,7 @@ public:
                 payload << ",\"target_global_us\":" << effective_target_global_us;
             }
             payload << '}';
-            if(send_udp_text_to_endpoint(target.endpoint, payload.str())) {
+            if(send_status_control(target.endpoint, payload.str())) {
                 logger_.info("force_rgb_keyframe control sent sender=" + target.sender_id + " camera=" + target.camera_id
                              + " endpoint=" + target.endpoint + " reason=" + reason
                              + (effective_target_global_us > 0
@@ -917,7 +917,7 @@ public:
                     << "\"active\":true,"
                     << "\"lease_ms\":" << kWebRgbPreviewControlLeaseMs << ','
                     << "\"request_us\":" << request_us << "}";
-            if(!send_udp_text_to_endpoint(target.endpoint, payload.str())) {
+            if(!send_status_control(target.endpoint, payload.str())) {
                 logger_.warn("web rgb preview control send failed sender=" + target.sender_id + " camera=" + target.camera_id
                              + " endpoint=" + target.endpoint);
             }
@@ -3267,7 +3267,7 @@ private:
 
         bool sent = false;
         for(int attempt = 0; attempt < 3; ++attempt) {
-            sent = send_udp_text_to_endpoint(job.status_endpoint, payload) || sent;
+            sent = send_status_control(job.status_endpoint, payload) || sent;
             if(attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -4887,6 +4887,13 @@ private:
         }
     }
 
+    bool send_status_control(const std::string &endpoint, const std::string &payload) {
+        // Reply from the heartbeat tuple, including its source port. A new UDP
+        // socket silently loses controls behind address/port-restricted NAT.
+        std::lock_guard<std::mutex> lock(status_socket_mutex_);
+        return send_udp_text_to_endpoint(status_socket_fd_, endpoint, payload);
+    }
+
     void udp_loop() {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if(fd < 0) {
@@ -4905,6 +4912,15 @@ private:
             close(fd);
             return;
         }
+        {
+            std::lock_guard<std::mutex> lock(status_socket_mutex_);
+            status_socket_fd_ = fd;
+        }
+        ScopeExit close_status_socket([this, fd] {
+            std::lock_guard<std::mutex> lock(status_socket_mutex_);
+            status_socket_fd_ = -1;
+            close(fd);
+        });
         status_udp_ready_ = true;
 
         std::vector<char> buffer(65536);
@@ -4927,7 +4943,6 @@ private:
                 logger_.warn(std::string("status UDP packet rejected: ") + e.what());
             }
         }
-        close(fd);
     }
 
     void preview_udp_loop() {
@@ -5367,6 +5382,8 @@ private:
     std::mutex client_threads_mutex_;
     std::mutex decoder_cleanup_mutex_;
     std::mutex status_cache_mutex_;
+    std::mutex status_socket_mutex_;
+    int status_socket_fd_ = -1;
     std::mutex recording_maintenance_mutex_;
     std::mutex uploader_status_mutex_;
     std::mutex photo_capture_mutex_;
