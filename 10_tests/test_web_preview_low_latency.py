@@ -38,6 +38,11 @@ def main():
     assert "H264_MAX_TIMELINE_LAG_US = 400 * 1000" in frontend
     assert "H264_TIMELINE_REBASE_INTERVAL_MS = 30 * 1000" in frontend
     assert "H264_STALE_RECONNECT_MS = 250" in frontend
+    assert "const MAIN_RGB_REFRESH_MS = 33" in frontend
+    assert "const THUMB_RGB_REFRESH_MS = MAIN_RGB_REFRESH_MS" in frontend
+    assert "root.dataset[`${kind}Loading`] === '1'" in frontend
+    assert "const MAIN_DEPTH_REFRESH_MS = 180" in frontend
+    assert "const THUMB_DEPTH_REFRESH_MS = 1000" in frontend
     assert "this.markFailed('RGB 视频重连')" in frontend
     assert "if (!this.stopped)" in frontend
     assert "this.frameIsStale(timestampUs)" in frontend
