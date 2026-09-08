@@ -2,6 +2,8 @@
 
 日期：2026-09-08，北京时间 UTC+8。
 
+最新状态：17:24 完成全体在线设备复核，六个 sender 与 receiver 均运行 `b031e8ee2aed`。下文 16:33 的两端上线记录保留作为历史；五台远端补齐情况及尚未通过的稳定性项目见「全体发送端补齐与复核」。上线完成不等于六路长录验收通过。
+
 ## 范围与版本
 
 用户确认停止录制后，本次在 16:33 完成以下两端更新：
@@ -13,7 +15,7 @@
 
 `b031e8ee2aed219f6f9c98ce5c0a2a8efb72e744` 包含 `ccd3981` TCP 抗回压修复。先前代码虽然提交，但生产进程一直是 12:11 启动的旧程序，所以 14:20 的录制仍受旧超时断连策略影响。
 
-本次没有合入独立审查分支，没有更新其他五个发送端，也没有替用户开始生产录制。其他发送端自动重连到了新接收端，但其发送端保留重试能力不能视为已经升级。
+16:33 这一阶段没有合入独立审查分支，没有更新其他五个发送端，也没有替用户开始生产录制。其他发送端当时自动重连到了新接收端，但其发送端保留重试能力不能视为当时已经升级。随后用户要求全部升级，执行情况见后文。
 
 ## 修改的实际行为
 
@@ -121,10 +123,97 @@ systemctl --user start gwv3-gemini-receiver.service
 
 回退后必须再次检查运行版本、双流接收和录制状态；旧版本也会重新带回本次修复的断流风险。
 
+## 全体发送端补齐与复核
+
+### 操作边界
+
+用户要求「都升级吧」后，先只读检查并准备发布。最初仍有六路录制，直到 16:56:22 确认 receiver 为 `idle`、录制队列与收尾任务为 0 后才开始逐台替换。没有调用生产录制的开始或停止接口。
+
+所有新程序来自干净提交 `b031e8ee2aed219f6f9c98ce5c0a2a8efb72e744`，在各发送端独立目录 `/home/<user>/wvd-releases/clock-backpressure-b031e8e` 本机编译，没有覆盖现场工作区的源码改动。原账号、systemd 服务名、相机身份、分辨率、旋转、曝光、白平衡、压缩参数和音频程序保持原样。
+
+本次在线范围为六个 sender，不包含已关机或不在本次 receiver 状态列表中的历史设备。
+
+| sender_id | 本次确认的 SSH 地址 | SDK | 最终运行版本 |
+| --- | --- | --- | --- |
+| rk3588-ubuntu | 本机，192.168.5.4 | 1.10.27 | b031e8ee2aed |
+| orangepi5pro-ab748372 | 192.168.1.147 | 1.10.27 | b031e8ee2aed |
+| orangepi5pro-b439137c | 192.168.1.125 | 1.10.27 | b031e8ee2aed |
+| orangepi5pro-fe0f7222 | 192.168.5.5 | 1.10.27 | b031e8ee2aed |
+| lubancat-52d2ef0c | 192.168.0.105 | 2.8.6 | b031e8ee2aed |
+| lubancat-e8cc0cb3 | 192.168.0.109 | 2.8.6 | b031e8ee2aed |
+
+表中 IP 仅为此次现场观测，不是相机身份或固定部署配置。两台 LubanCat 位于 `TP-LINK_5G_215E` 的 NAT 后，receiver 看到的来源均为 `192.168.1.159`。本机临时停发并切入该 AP 才完成 SSH 部署，保持 SSH host key 校验，没有修改路由器。17:14:39 已恢复本机原来的 `88888888` 网络与 sender；自动恢复安全计时器已关闭，未增加新的开机任务。
+
+### 编译、启动与回退材料
+
+三个 Orange Pi 使用 SDK 1.10.27 构建。两个 LubanCat 使用 SDK 2.8.6，运行时 SONAME 为 `libOrbbecSDK.so.2`，不能因名称不是 `.so.2.8` 就误判 SDK 版本。LubanCat 链接期间出现 vendor `libmali.so.1` 的 `.dynsym` 警告，构建仍成功，随后实际启动并使用 MPP 编码；本次没有修改 Mali 驱动或库。
+
+五台均保留以下目录，权限为 700：
+
+- Orange Pi：`/home/orangepi/wvd-rollout-backups/fleet-clock-backpressure-20260908`。
+- LubanCat：`/home/cat/wvd-rollout-backups/fleet-clock-backpressure-20260908`。
+
+每份包含 `gemini_sender.before`、`sender.json.before`、`sender_watchdog.sh.before` 与 `manifest.json`。manifest 记录原路径、配置哈希、旧程序哈希、新程序哈希和实际运行 PID。LubanCat 另保留现场 tracked diff，不将可能包含现场凭据的原始备份提交到 Git。
+
+三个 Orange Pi 和 52d2ef0c 安装发布版 watchdog；e8cc0cb3 原 watchdog 含现场 Wi-Fi 恢复改动，保留该脚本，只在实际采集启动前补入有界 chrony 等待，使用其原有 `LOG_FILE` 变量。执行 `bash -n` 后才替换，未用整份新脚本覆盖现场定制。
+
+实际运行 `/proc/<pid>/exe` SHA-256 校验：
+
+| 设备 | SHA-256 |
+| --- | --- |
+| ab748372、b439137c、fe0f7222 | 2edc7f04a41b3a0cb598b7011dbd8c068d4bbf2ee3f8fa2dea544dcc928b2327 |
+| 52d2ef0c | c4fc4dd3f4314386b14dd10a1a2e04cd56b1be894535a33349f36404556a7e1b |
+| e8cc0cb3 | 1fc0acec1afb06870be6c875a538f3e5bc7d4def89da94d581b467d88587023b |
+
+六路 sender 的运行 `build_source_hash` 均为 `367b292522d2194d`。不同构建目录或 SDK 的二进制哈希可以不同，不能要求 ARM 与 x86、SDK v1 与 v2 的程序逐字节相同。
+
+需要回退时，先停止该 sender 对应录制并等待收尾，然后停止 manifest 指定的服务，将备份的二进制和 watchdog 先复制到各自旁路文件，再原子替换正式文件，启动同一服务。三个 Orange Pi 使用 `gwv3-gemini-sender.service`；LubanCat 必须使用各自 `gwv3-gemini-sender-lubancat-<id>.service`，不要误启未使用的通用服务。不要直接覆盖此后可能被现场修改的配置。
+
+### 五台原生停读续传测试
+
+每台运行独立 loopback 的 `transport_backpressure_test`，接收方停读 6 秒，连续两个测试包合计 8,388,796 字节。不使用生产端口或录制目录。
+
+| 设备 | 保留重试次数 | 最大单次 send 调用 | 同一连接且逐字节一致 |
+| --- | --- | --- | --- |
+| b439137c | 95 | 100.312 ms | 通过 |
+| ab748372 | 95 | 100.211 ms | 通过 |
+| fe0f7222 | 95 | 100.286 ms | 通过 |
+| 52d2ef0c | 94 | 101.502 ms | 通过 |
+| e8cc0cb3 | 94 | 101.418 ms | 通过 |
+
+这是五台实际执行的字节续传测试，不是新一轮全仓回归，也不是六路无线加 NAS 长时间录制测试。
+
+### 全系统实收观察与未通过项
+
+使用 receiver `GET /api/status`，每 10 秒只读采样一次，按累计 `rgb_packets`、`depth_packets` 的增量除以单调时钟间隔统计。两个窗口分别为 17:22:33 至 17:23:33，以及 17:23:53 至 17:24:53，均约 60 秒。
+
+| 相机 | 第一窗口 RGB / Depth packets/s | 第二窗口 RGB / Depth packets/s |
+| --- | --- | --- |
+| rk3588-ubuntu_cam01 | 30.00 / 30.08 | 30.00 / 30.06 |
+| orangepi5pro-ab748372_cam01 | 30.01 / 30.08 | 29.98 / 30.06 |
+| orangepi5pro-b439137c_cam02 | 30.01 / 30.08 | 29.99 / 30.04 |
+| orangepi5pro-fe0f7222_cam01 | 30.00 / 30.08 | 30.00 / 30.06 |
+| lubancat-e8cc0cb3_cam01 | 29.98 / 30.01 | 29.96 / 30.00 |
+| lubancat-52d2ef0c_cam01 | 24.58 / 28.18 | 22.71 / 28.93 |
+
+共同确认：
+
+- 六路所有采样点均为 live，且 clock model 有效；采样点中的最大绝对 offset 为 2,298 us。这不等于已经测量或保证画面内容级同步误差。
+- 两窗口发送失败、Depth 丢帧、接收端 RGB 重连恢复、等待关键帧丢弃和录制写入错误计数均无增长。
+- 两窗口 recording 均为 `idle`。录制队列、收尾任务、NAS pending segments/bytes 均为 0，NAS mount ready，接收端 staging 可用空间约 240.8 GB。
+- 本机及三个 Orange Pi 两窗口 RGB 丢弃计数无增长，实收约 30 FPS。
+
+不能忽略的剩余问题：
+
+1. **52d2ef0c 尚未通过实时稳定性复核。** 采集/发送心跳约 30 FPS，但两个窗口 receiver 实收 RGB 均低于 30，第二窗口某采样点 RGB receive age 为 784 ms。receiver 日志 17:24:12 记录 `capture_to_receiver_us=18508008`，即采集到接收约 18.5 秒；Depth 同时约 4.6 秒。检查 TCP 时 receiver Recv-Q 为 0，没有录制队列阻塞，未看到该会话新增重连。这些证据指向该设备接收前链路存在积压，尚不能仅凭 receiver 数据判定是 Wi-Fi、sender 排队还是其他原因。保留续传避免主动断连，但不能增加链路带宽；缺乏发送端 socket/无线增量证据前，不声称根因已修复。
+2. **e8cc0cb3 仍有少量 RGB 丢帧。** 两个窗口分别新增 2、3 帧 RGB 丢弃，`last_error` 为 `corrupt rgb mjpeg frame dropped`。52d2ef0c 也留有同类历史告警，但两窗口该计数没有增加。旧版本已存在 JPEG SOI/EOI 完整性检查，因此不能把告警文字出现本身当成新增缺陷证据；仍需采集相机原始 MJPEG、USB 与 sender 日志核对具体原因。本次没有放宽坏帧校验来掩盖问题。
+
+结论：**六个发送端和接收端版本已统一、启动与续传用例通过；六路长录稳定性尚未全部验收通过。** 下一次正式验收需单独处理上述两台风险，再做真实相机短录/长录，复核最终 CSV、实际视频帧数和质量状态；不能只凭本次无发送失败就宣称不缺录。
+
 ## 未验证与限制
 
 - 本次没有进行新的真实相机长时间录制，也没有对现场 AP 故意注入断网。
 - 测试通过不能保证无限回压、队列耗尽、真实 TCP 断开或设备断电时不丢帧。
 - 原有 14:20 缺录无法靠本次上线恢复。NAS 的 `ready=true` 仍只表示完成交付，不能覆盖 `partial` 质量状态。
-- 其他五个发送端仍需按各自架构、SDK 和现场登录路径分别安排升级，不得称为“全设备已经部署”。
+- 本次在线六路已全部升级；未上线历史设备不在本次覆盖范围。52d2ef0c 积压与 e8cc0cb3 坏帧仍需独立诊断，见上文。
 - 相机校准参数读取告警不在本次修改范围，不能将本次传输恢复当作内外参已验证。
