@@ -1278,7 +1278,10 @@
         clearPreview(root, kind, kind === 'rgb' ? 'RGB' : 'Depth');
         return;
       }
-      const preferH264 = kind === 'rgb' && (high ? Number(c.rgb_packets || 0) > 0 : rgbH264Fresh(c));
+      // Opening the persistent preview stream is also the on-demand request that
+      // makes the sender start producing it. Do not wait for status to report a
+      // stream that has not been requested yet.
+      const preferH264 = kind === 'rgb' && Number(c.rgb_packets || 0) > 0;
       const h264FailedForCamera = root.dataset.rgbH264Failed === '1' &&
         root.dataset.rgbH264FailedKey === c.camera_key;
       const h264RetryDue = !h264FailedForCamera ||

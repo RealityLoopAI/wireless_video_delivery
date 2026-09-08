@@ -39,7 +39,7 @@ Web Monitor 是 receiver 管理 API 的 FastAPI 网页和局域网 REST 代理�
 
 - 页面可查看 sender/camera 在线状态、RGB/Depth 预览、录制状态和关键诊断指标。
 - RGB/Depth 图片接口是最新帧快照，允许丢帧；主 H.264 接口需要客户端持续读取。
-- 页面可见时，主画面与 RGB 小窗口均以 33 ms 周期请求最新帧。每个窗口最多保留一个在途请求，网络变慢时自动丢过期预览而不堆积；Depth 保持较低刷新率以控制接收端负载。
+- 页面可见时，主画面与 RGB 小窗口均以 30 FPS 为目标。支持 WebCodecs 的浏览器复用 Sender 的低码率 H.264 预览流；旧浏览器按 33 ms 周期请求最新 JPEG，且每个窗口最多保留一个在途请求。网络变慢时预览会丢过期帧而不堆积；Depth 保持较低刷新率以控制接收端负载。
 - admin 短时超时时，只读 status 可使用有限缓存；写操作不会用缓存伪造成功。
 - 页面显示时间使用北京时间 UTC+8、精确到秒；原始 `*_timestamp_us` 保持 Unix epoch microseconds。
 - Web 预览卡顿或消失不等于正式录制失败，必须结合 receiver 队列、媒体 age 和 NAS 完成标记判断。

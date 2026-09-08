@@ -41,6 +41,7 @@ def main():
     assert "const MAIN_RGB_REFRESH_MS = 33" in frontend
     assert "const THUMB_RGB_REFRESH_MS = MAIN_RGB_REFRESH_MS" in frontend
     assert "root.dataset[`${kind}Loading`] === '1'" in frontend
+    assert "const preferH264 = kind === 'rgb' && Number(c.rgb_packets || 0) > 0" in frontend
     assert "const MAIN_DEPTH_REFRESH_MS = 180" in frontend
     assert "const THUMB_DEPTH_REFRESH_MS = 1000" in frontend
     assert "this.markFailed('RGB 视频重连')" in frontend
