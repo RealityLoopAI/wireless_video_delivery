@@ -2111,7 +2111,7 @@ RgbTransportRecovery::SendDecision decide_rgb_keyframe_send(CameraRuntime &camer
                 log_drop = true;
             }
         }
-        if(camera.rgb_transport_recovery.waiting()) {
+        if(camera.rgb_transport_recovery.waiting() && !is_keyframe) {
             const auto monotonic_now_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                                                                      now.time_since_epoch())
                                                                      .count());

@@ -17,7 +17,6 @@ public:
         const bool newly_armed = !waiting_for_keyframe_;
         if(newly_armed) {
             dropped_frames_ = 0;
-            last_keyframe_request_us_ = 0;
         }
         waiting_for_keyframe_ = true;
         return newly_armed;
@@ -58,7 +57,10 @@ public:
             return std::nullopt;
         }
         const uint64_t dropped = dropped_frames_;
-        reset();
+        // A full queue can re-arm immediately. Keep the request cooldown
+        // across recoveries so congestion cannot generate an IDR storm.
+        waiting_for_keyframe_ = false;
+        dropped_frames_ = 0;
         return dropped;
     }
 

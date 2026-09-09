@@ -49,10 +49,19 @@ int main() {
     expect(recovery.dropped_frames() == 0, "completion should reset drop count");
 
     recovery.arm();
+    expect(!recovery.keyframe_request_due(1'002'000, 1'000'000),
+           "successful recovery and re-arm must not bypass the request cooldown");
     expect(recovery.before_send(true) == Recovery::SendDecision::send_recovery_keyframe,
            "keyframe should be retried after a new transport loss");
     recovery.arm();
     expect(recovery.waiting(), "failed keyframe send must leave recovery armed");
     expect(recovery.complete_successful_send(true).has_value(), "later successful keyframe should recover");
+    recovery.arm();
+    expect(recovery.keyframe_request_due(2'001'000, 1'000'000),
+           "a later recovery must still be able to request a keyframe");
+    recovery.reset();
+    recovery.arm();
+    expect(recovery.keyframe_request_due(10, 1'000'000),
+           "explicit camera reset must clear cooldown from the previous lifecycle");
     return failures == 0 ? 0 : 1;
 }
