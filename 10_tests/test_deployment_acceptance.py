@@ -19,6 +19,10 @@ class State:
     completed = 3
     calls = []
     tail_deadline = 0.0
+    session_id = 0
+    replace_after_stop = False
+    replace_before_stop = False
+    started_checks = 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -35,6 +39,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         State.calls.append(("GET", self.path))
+        if State.recording:
+            State.started_checks += 1
+            if State.replace_before_stop and State.started_checks >= 2:
+                State.session_id = 456
         if State.tail_deadline and time.monotonic() >= State.tail_deadline:
             State.tail_deadline = 0.0
             State.completed += 1
@@ -42,6 +50,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "recording_state": "recording" if State.recording else "idle",
                 "recording_all": State.recording,
+                "recording_session_id": State.session_id,
                 "recording_start_ready": not State.recording,
                 "record_finalize_outstanding_segments": 0,
                 "record_queue_total_bytes": 0,
@@ -64,10 +73,15 @@ class Handler(BaseHTTPRequestHandler):
         State.calls.append(("POST", self.path))
         if self.path == "/api/record/start-all":
             State.recording = True
+            State.session_id = 123
+            State.started_checks = 0
         elif self.path == "/api/record/stop-all":
             State.recording = False
             # Stop acknowledges before delayed media completes the segment.
             State.tail_deadline = time.monotonic() + 0.4
+            if State.replace_after_stop:
+                State.recording = True
+                State.session_id = 456
         self._send({"ok": True, "recording_session_id": 123})
 
 
@@ -142,6 +156,24 @@ def main():
             assert unknown.returncode != 0 and unknown_report["ok"] is False
             assert "unknown" in unknown_report["error"]
             assert segment.exists(), "legacy metadata is not proof of complete capture"
+            for before_stop in (False, True):
+                State.calls = []
+                State.recording = False
+                State.replace_after_stop = not before_stop
+                State.replace_before_stop = before_stop
+                changed = subprocess.run(command, text=True, capture_output=True,
+                                         env=environment, timeout=5)
+                changed_report = json.loads(changed.stdout)
+                assert changed.returncode != 0, changed.stdout
+                assert "recording session changed" in changed_report["error"], changed.stdout
+                stops = State.calls.count(("POST", "/api/record/stop-all"))
+                assert stops == (0 if before_stop else 1), State.calls
+                assert State.recording and State.session_id == 456
+                assert segment.exists(), "session replacement must not delete evidence"
+            State.replace_after_stop = False
+            State.replace_before_stop = False
+            State.recording = False
+            State.session_id = 0
             (segment / "deployment_canaryrecording_ready.json").write_text(
                 json.dumps({"recording_session_id": 123, "ready": True,
                             "recording_complete": True, "recording_quality_status": "complete"}), encoding="utf-8"

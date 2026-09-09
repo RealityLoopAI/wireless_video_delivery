@@ -1,0 +1,792 @@
+{
+  "checked_at_us": 1788947711433666,
+  "results": [
+    {
+      "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam01",
+        "depth_coverage_ratio": 0.995417,
+        "depth_end_frame_lag_us": 23111,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 642628,
+        "depth_max_frame_gap_us": 47189,
+        "depth_media_duration_us": 118346325,
+        "depth_receive_duration_us": 118311176,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947172781913,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": false,
+        "recording_quality_reason": "rgb first frame is late; depth first frame is late",
+        "recording_quality_status": "partial",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033713101,
+        "recording_window_first_valid_global_us": 1788947033712295,
+        "recording_window_first_valid_rgb_global_us": 1788947033712295,
+        "recording_window_last_valid_depth_global_us": 1788947152059426,
+        "recording_window_last_valid_global_us": 1788947152059426,
+        "recording_window_last_valid_rgb_global_us": 1788947152058619,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3554,
+        "recording_window_valid_rgb_frames": 3554,
+        "recording_window_valid_rows": 7108,
+        "relative_path": "lubancat-52d2ef0c_cam01/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.995417,
+        "rgb_depth_duration_delta_us": 1,
+        "rgb_end_frame_lag_us": 23918,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 641822,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 46928,
+        "rgb_media_duration_us": 118346324,
+        "rgb_receive_duration_us": 118307190,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152124436,
+        "segment_start_us": 1788947033763003,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "lubancat-52d2ef0c",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3554,
+          "first_global_us": 1788947033712295,
+          "last_global_us": 1788947152058619,
+          "first_frame_id": 2129,
+          "last_frame_id": 5682,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 46928,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 64951,
+          "timeline_fps": 30.022056282880403,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1280,
+                "height": 800,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.466667"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3554,
+          "first_global_us": 1788947033713101,
+          "last_global_us": 1788947152059426,
+          "first_frame_id": 2131,
+          "last_frame_id": 5684,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 47189,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 85363,
+          "timeline_fps": 30.022056029200737,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.466000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam01",
+        "depth_coverage_ratio": 0.997378,
+        "depth_end_frame_lag_us": 17739,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 415164,
+        "depth_max_frame_gap_us": 37007,
+        "depth_media_duration_us": 118579161,
+        "depth_receive_duration_us": 118574964,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947172782729,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": true,
+        "recording_quality_reason": "all expected streams passed coverage and continuity checks",
+        "recording_quality_status": "complete",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033485637,
+        "recording_window_first_valid_global_us": 1788947033451648,
+        "recording_window_first_valid_rgb_global_us": 1788947033451648,
+        "recording_window_last_valid_depth_global_us": 1788947152064798,
+        "recording_window_last_valid_global_us": 1788947152064798,
+        "recording_window_last_valid_rgb_global_us": 1788947152064057,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3561,
+        "recording_window_valid_rgb_frames": 3562,
+        "recording_window_valid_rows": 7123,
+        "relative_path": "lubancat-e8cc0cb3_cam01/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.997658,
+        "rgb_depth_duration_delta_us": 33248,
+        "rgb_end_frame_lag_us": 18480,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 381175,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 36469,
+        "rgb_media_duration_us": 118612409,
+        "rgb_receive_duration_us": 118609292,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152184664,
+        "segment_start_us": 1788947033517458,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "lubancat-e8cc0cb3",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3562,
+          "first_global_us": 1788947033451648,
+          "last_global_us": 1788947152064057,
+          "first_frame_id": 2099,
+          "last_frame_id": 5660,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 36469,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 107898,
+          "timeline_fps": 30.022153921517603,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1280,
+                "height": 800,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.733333"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3561,
+          "first_global_us": 1788947033485637,
+          "last_global_us": 1788947152064798,
+          "first_frame_id": 2102,
+          "last_frame_id": 5662,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 37007,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 105940,
+          "timeline_fps": 30.02213854422532,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.700000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam01",
+        "depth_coverage_ratio": 0.999899,
+        "depth_end_frame_lag_us": 15778,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 289977,
+        "depth_max_frame_gap_us": 41805,
+        "depth_media_duration_us": 118706309,
+        "depth_receive_duration_us": 118728312,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947172772634,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": true,
+        "recording_quality_reason": "all expected streams passed coverage and continuity checks",
+        "recording_quality_status": "complete",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033360450,
+        "recording_window_first_valid_global_us": 1788947033360450,
+        "recording_window_first_valid_rgb_global_us": 1788947033393567,
+        "recording_window_last_valid_depth_global_us": 1788947152066759,
+        "recording_window_last_valid_global_us": 1788947152071770,
+        "recording_window_last_valid_rgb_global_us": 1788947152071770,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3570,
+        "recording_window_valid_rgb_frames": 3562,
+        "recording_window_valid_rows": 7132,
+        "relative_path": "orangepi5pro-ab748372_cam01/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.997658,
+        "rgb_depth_duration_delta_us": 28106,
+        "rgb_end_frame_lag_us": 10767,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 323094,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 60045,
+        "rgb_media_duration_us": 118678203,
+        "rgb_receive_duration_us": 118670677,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152186452,
+        "segment_start_us": 1788947033420158,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "orangepi5pro-ab748372",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3562,
+          "first_global_us": 1788947033393567,
+          "last_global_us": 1788947152071770,
+          "first_frame_id": 1352,
+          "last_frame_id": 4913,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 60045,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 65767,
+          "timeline_fps": 30.00550994187197,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.733333"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3570,
+          "first_global_us": 1788947033360450,
+          "last_global_us": 1788947152066759,
+          "first_frame_id": 1357,
+          "last_frame_id": 4926,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 41805,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 164514,
+          "timeline_fps": 30.065798777384277,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "119.000000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam02",
+        "depth_coverage_ratio": 0.995137,
+        "depth_end_frame_lag_us": 1461,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 871615,
+        "depth_max_frame_gap_us": 41804,
+        "depth_media_duration_us": 118138988,
+        "depth_receive_duration_us": 118124566,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947162515861,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": false,
+        "recording_quality_reason": "rgb first frame is late; depth first frame is late",
+        "recording_quality_status": "partial",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033942088,
+        "recording_window_first_valid_global_us": 1788947033942088,
+        "recording_window_first_valid_rgb_global_us": 1788947033965229,
+        "recording_window_last_valid_depth_global_us": 1788947152081076,
+        "recording_window_last_valid_global_us": 1788947152081076,
+        "recording_window_last_valid_rgb_global_us": 1788947152079690,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3553,
+        "recording_window_valid_rgb_frames": 3544,
+        "recording_window_valid_rows": 7097,
+        "relative_path": "orangepi5pro-b439137c_cam02/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.992616,
+        "rgb_depth_duration_delta_us": 24527,
+        "rgb_end_frame_lag_us": 2847,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 894756,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 64032,
+        "rgb_media_duration_us": 118114461,
+        "rgb_receive_duration_us": 118073249,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152204992,
+        "segment_start_us": 1788947034016705,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "orangepi5pro-b439137c",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3544,
+          "first_global_us": 1788947033965229,
+          "last_global_us": 1788947152079690,
+          "first_frame_id": 1330,
+          "last_frame_id": 4874,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 64032,
+          "missing_source_ids": 1,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 438953,
+          "timeline_fps": 29.99632703738114,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.133333"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3553,
+          "first_global_us": 1788947033942088,
+          "last_global_us": 1788947152081076,
+          "first_frame_id": 1335,
+          "last_frame_id": 4887,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 41804,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 467595,
+          "timeline_fps": 30.06628091312243,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.433000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam01",
+        "depth_coverage_ratio": 1.00186,
+        "depth_end_frame_lag_us": 9566,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 74431,
+        "depth_max_frame_gap_us": 41852,
+        "depth_media_duration_us": 118928067,
+        "depth_receive_duration_us": 118907488,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947162521794,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": true,
+        "recording_quality_reason": "all expected streams passed coverage and continuity checks",
+        "recording_quality_status": "complete",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033144904,
+        "recording_window_first_valid_global_us": 1788947033144904,
+        "recording_window_first_valid_rgb_global_us": 1788947033164228,
+        "recording_window_last_valid_depth_global_us": 1788947152072971,
+        "recording_window_last_valid_global_us": 1788947152078573,
+        "recording_window_last_valid_rgb_global_us": 1788947152078573,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3577,
+        "recording_window_valid_rgb_frames": 3569,
+        "recording_window_valid_rows": 7146,
+        "relative_path": "orangepi5pro-fe0f7222_cam01/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.999619,
+        "rgb_depth_duration_delta_us": 13722,
+        "rgb_end_frame_lag_us": 3964,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 93755,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 64111,
+        "rgb_media_duration_us": 118914345,
+        "rgb_receive_duration_us": 118863168,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152164507,
+        "segment_start_us": 1788947033225337,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "orangepi5pro-fe0f7222",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3569,
+          "first_global_us": 1788947033164228,
+          "last_global_us": 1788947152078573,
+          "first_frame_id": 1263,
+          "last_frame_id": 4832,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 64111,
+          "missing_source_ids": 1,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 288508,
+          "timeline_fps": 30.004790422888004,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.966667"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3577,
+          "first_global_us": 1788947033144904,
+          "last_global_us": 1788947152072971,
+          "first_frame_id": 1268,
+          "last_frame_id": 4844,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 41852,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 336697,
+          "timeline_fps": 30.06859600265764,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "119.233000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/174353",
+      "ready": {
+        "camera_id": "cam01",
+        "depth_coverage_ratio": 0.998778,
+        "depth_end_frame_lag_us": 32967,
+        "depth_file": "depth.mkv",
+        "depth_first_frame_lag_us": 410715,
+        "depth_max_frame_gap_us": 59055,
+        "depth_media_duration_us": 118568382,
+        "depth_receive_duration_us": 118554504,
+        "depth_stream_expected": true,
+        "depth_timestamp_out_of_order_count": 0,
+        "finalized_at_us": 1788947162518864,
+        "finalized_by": "gwv3_recording_uploader_nas_first",
+        "frames_file": "frames.csv",
+        "global_segment_index": 0,
+        "meta_file": "meta.json",
+        "ready": true,
+        "ready_file": "recording_ready.json",
+        "recording_complete": true,
+        "recording_quality_reason": "all expected streams passed coverage and continuity checks",
+        "recording_quality_status": "complete",
+        "recording_quality_version": 2,
+        "recording_quality_window_duration_us": 119012064,
+        "recording_quality_window_end_global_us": 1788947152082537,
+        "recording_quality_window_start_global_us": 1788947033070473,
+        "recording_session_id": 1788947032070473,
+        "recording_window_end_global_us": 1788947152082537,
+        "recording_window_first_valid_depth_global_us": 1788947033481188,
+        "recording_window_first_valid_global_us": 1788947033481188,
+        "recording_window_first_valid_rgb_global_us": 1788947033498560,
+        "recording_window_last_valid_depth_global_us": 1788947152049570,
+        "recording_window_last_valid_global_us": 1788947152049925,
+        "recording_window_last_valid_rgb_global_us": 1788947152049925,
+        "recording_window_start_global_us": 1788947033070473,
+        "recording_window_valid_depth_frames": 3566,
+        "recording_window_valid_rgb_frames": 3555,
+        "recording_window_valid_rows": 7121,
+        "relative_path": "rk3588-ubuntu_cam01/2026-09-09/174353",
+        "rgb_container_format": "fragmented_mp4",
+        "rgb_coverage_ratio": 0.995697,
+        "rgb_depth_duration_delta_us": 17017,
+        "rgb_end_frame_lag_us": 32612,
+        "rgb_file": "rgb.mp4",
+        "rgb_first_frame_lag_us": 428087,
+        "rgb_fragmented": true,
+        "rgb_frame_index_mode": "frames_csv_rgb_recorded_columns",
+        "rgb_max_frame_gap_us": 64012,
+        "rgb_media_duration_us": 118551365,
+        "rgb_receive_duration_us": 118556239,
+        "rgb_stream_expected": true,
+        "rgb_timestamp_out_of_order_count": 0,
+        "schema": "gwv3_recording_ready_v1",
+        "segment_end_us": 1788947152164596,
+        "segment_start_us": 1788947033538601,
+        "segment_window_end_global_us": 1788947933070473,
+        "segment_window_start_global_us": 1788947033070473,
+        "sender_id": "rk3588-ubuntu",
+        "task_audio_file": "audio.opus",
+        "task_audio_meta_file": "audio_meta.json",
+        "task_audio_ready_file": "audio_ready.json",
+        "task_audio_timing_file": "audio_timing.csv"
+      },
+      "streams": {
+        "rgb": {
+          "frames": 3555,
+          "first_global_us": 1788947033498560,
+          "last_global_us": 1788947152049925,
+          "first_frame_id": 2102,
+          "last_frame_id": 5656,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 64012,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 76735,
+          "timeline_fps": 29.978566674453727,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.500000"
+            }
+          },
+          "probe_errors": ""
+        },
+        "depth": {
+          "frames": 3566,
+          "first_global_us": 1788947033481188,
+          "last_global_us": 1788947152049570,
+          "first_frame_id": 2110,
+          "last_frame_id": 5675,
+          "regressions": 0,
+          "duplicates": 0,
+          "gaps_over_500ms": 0,
+          "max_gap_us": 59055,
+          "missing_source_ids": 0,
+          "invalid_clock_rows": 0,
+          "indices_contiguous": true,
+          "max_receive_delay_us": 104448,
+          "timeline_fps": 30.0670376019806,
+          "probe_exit": 0,
+          "probe": {
+            "programs": [],
+            "streams": [
+              {
+                "codec_name": "ffv1",
+                "width": 320,
+                "height": 200,
+                "avg_frame_rate": "30/1"
+              }
+            ],
+            "format": {
+              "duration": "118.866000"
+            }
+          },
+          "probe_errors": ""
+        }
+      }
+    }
+  ],
+  "boundaries": []
+}

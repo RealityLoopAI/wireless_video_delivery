@@ -51,6 +51,12 @@ ctest --test-dir 12_build_sender --output-on-failure
 
 测试脚本不得连接生产端口、停止生产 service 或写正式 NAS 目录。并行测试使用临时目录、随机端口和模拟 sender。
 
+MPP 插件或关键帧调度改动必须额外验证重复请求，不能只检查一次 IDR 或事件入队。
+`GWV3_TEST_MPP_HARDWARE` 默认关闭；在有硬件的目标机按实际档位启用
+`mpp_keyframe_repeat_*` 三种路径。测试会占用编码硬件，不应与正式录制同时运行。
+插件升级还需核对运行进程 maps 中的实际插件路径和 SHA256，仅主程序 commit 不够。
+定向补丁、实测边界和回退步骤见 [MPP 验证说明](mpp-keyframe-recovery-20260909.md)。
+
 ## Pre-Deployment Gate
 
 1. 工作区无非预期改动。

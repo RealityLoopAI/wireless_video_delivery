@@ -48,6 +48,15 @@ def wait_status(base_url, description, predicate, timeout_seconds, poll_seconds=
     raise TimeoutError(f"timed out waiting for {description}; latest={latest}")
 
 
+def require_same_session(status, expected_session_id):
+    current = int(status.get("recording_session_id") or 0)
+    if current and expected_session_id and current != expected_session_id:
+        raise RuntimeError(
+            f"recording session changed from {expected_session_id} to {current}; "
+            "refusing to control or validate the replacement session"
+        )
+
+
 def recording_roots(config_path: Path) -> list[Path]:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     roots = [Path(str(config.get("nas_root") or ""))]
@@ -219,6 +228,7 @@ def main() -> int:
         report["recording_session_id"] = recording_session_id
 
         def all_started(status):
+            require_same_session(status, recording_session_id)
             cameras = camera_map(status)
             return not status.get("recording_start_pending") and all(
                 bool(cameras.get(key, {}).get("recording"))
@@ -229,6 +239,7 @@ def main() -> int:
         wait_status(args.admin, "all live cameras to start", all_started, args.start_timeout)
         time.sleep(args.record_seconds)
 
+        require_same_session(request_json(args.admin, "GET", "/api/status"), recording_session_id)
         report["stop_requested_at_us"] = int(time.time() * 1_000_000)
         stop_started = time.monotonic()
         stop_response = request_json(args.admin, "POST", "/api/record/stop-all")
@@ -237,6 +248,7 @@ def main() -> int:
         started_by_this_process = False
 
         def finalized(status):
+            require_same_session(status, recording_session_id)
             cameras = camera_map(status)
             # Idle only means new recording input stopped; tail drain can still
             # precede both finalizer registration and uploader discovery.
@@ -315,6 +327,7 @@ def main() -> int:
         report["finished_at_us"] = int(time.time() * 1_000_000)
         if started_by_this_process:
             try:
+                require_same_session(request_json(args.admin, "GET", "/api/status"), recording_session_id)
                 request_json(args.admin, "POST", "/api/record/stop-all")
                 report["emergency_stop_requested"] = True
             except Exception as stop_exc:

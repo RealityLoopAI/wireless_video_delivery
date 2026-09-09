@@ -1,0 +1,24 @@
+diff --git a/gst/rockchipmpp/gstmppenc.c b/gst/rockchipmpp/gstmppenc.c
+index a75125f..d8bcda3 100644
+--- a/gst/rockchipmpp/gstmppenc.c
++++ b/gst/rockchipmpp/gstmppenc.c
+@@ -997,6 +997,7 @@ gst_mpp_enc_poll_packet_locked (GstVideoEncoder * encoder)
+   MppMeta meta;
+   MppBuffer mbuf;
+   gint pkt_size;
++  RK_S32 intra = 0;
+
+   self->mpi->encode_get_packet (self->mpp_ctx, &mpkt);
+   if (!mpkt)
+@@ -1049,5 +1050,11 @@ gst_mpp_enc_poll_packet_locked (GstVideoEncoder * encoder)
+   gst_buffer_replace (&frame->output_buffer, buffer);
+   gst_buffer_unref (buffer);
+
++  /* Complete forced-key-unit requests only for an actual intra output. */
++  if (!mpp_meta_get_s32 (meta, KEY_OUTPUT_INTRA, &intra) && intra)
++    GST_VIDEO_CODEC_FRAME_SET_SYNC_POINT (frame);
++  else
++    GST_VIDEO_CODEC_FRAME_UNSET_SYNC_POINT (frame);
++
+   GST_DEBUG_OBJECT (self, "finish frame ts=%" GST_TIME_FORMAT,
+       GST_TIME_ARGS (frame->pts));

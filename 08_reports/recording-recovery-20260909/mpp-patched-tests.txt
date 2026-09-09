@@ -1,0 +1,19 @@
+[OUTPUT]
+Internal ctest changing into directory: /home/linaro/wvd-build-wifi-check
+
+[HANDLER_OUTPUT]
+Test project /home/linaro/wvd-build-wifi-check
+
+    Start 1: mpp_keyframe_repeat_single
+1/3 Test #1: mpp_keyframe_repeat_single .......   Passed   16.80 sec
+    Start 2: mpp_keyframe_repeat_dual
+2/3 Test #2: mpp_keyframe_repeat_dual .........   Passed   16.80 sec
+    Start 3: mpp_keyframe_repeat_bgr
+3/3 Test #3: mpp_keyframe_repeat_bgr ..........   Passed   16.80 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Label Time Summary:
+hardware    =  50.40 sec*proc (3 tests)
+
+Total Test time (real) =  50.40 sec

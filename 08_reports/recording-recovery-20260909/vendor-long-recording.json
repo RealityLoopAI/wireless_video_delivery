@@ -1,0 +1,159 @@
+{
+  "admin": "http://127.0.0.1:18080",
+  "camera_keys": [
+    "lubancat-52d2ef0c_cam01",
+    "lubancat-e8cc0cb3_cam01",
+    "orangepi5pro-ab748372_cam01",
+    "orangepi5pro-b439137c_cam02",
+    "orangepi5pro-fe0f7222_cam01",
+    "rk3588-ubuntu_cam01"
+  ],
+  "camera_results": {
+    "lubancat-52d2ef0c_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    },
+    "lubancat-e8cc0cb3_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    },
+    "orangepi5pro-ab748372_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    },
+    "orangepi5pro-b439137c_cam02": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    },
+    "orangepi5pro-fe0f7222_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    },
+    "rk3588-ubuntu_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 2
+    }
+  },
+  "error": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/164639: partial: rgb coverage below 98 percent; rgb contains a gap over 500 ms; depth contains a gap over 500 ms; /home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/164639: partial: rgb first frame is late; depth first frame is late; /home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/170139: partial: rgb coverage below 98 percent; rgb first frame is late; depth coverage below 98 percent",
+  "failures": [],
+  "finished_at_us": 1788944555688863,
+  "ok": false,
+  "record_seconds": 920.0,
+  "recording_files": {
+    "directories": [
+      {
+        "depth_bytes": 316877288,
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/164639",
+        "frames_csv_lines": 54038,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 676671440
+      },
+      {
+        "depth_bytes": 6582363,
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/170139",
+        "frames_csv_lines": 1141,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 14131713
+      },
+      {
+        "depth_bytes": 181627747,
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/164639",
+        "frames_csv_lines": 54041,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 676087243
+      },
+      {
+        "depth_bytes": 3824532,
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/170139",
+        "frames_csv_lines": 1142,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 14155801
+      },
+      {
+        "depth_bytes": 443232397,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/164639",
+        "frames_csv_lines": 53102,
+        "quality_passed": false,
+        "recording_quality_status": "partial",
+        "rgb_bytes": 1304155679
+      },
+      {
+        "depth_bytes": 9477031,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/170139",
+        "frames_csv_lines": 1143,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 28142512
+      },
+      {
+        "depth_bytes": 321269960,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/164639",
+        "frames_csv_lines": 54061,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 1350981184
+      },
+      {
+        "depth_bytes": 6668504,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/170139",
+        "frames_csv_lines": 1145,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 28327759
+      },
+      {
+        "depth_bytes": 323618637,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/164639",
+        "frames_csv_lines": 54069,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 1351645358
+      },
+      {
+        "depth_bytes": 6788421,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/170139",
+        "frames_csv_lines": 1142,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 28113013
+      },
+      {
+        "depth_bytes": 219135965,
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/164639",
+        "frames_csv_lines": 54045,
+        "quality_passed": false,
+        "recording_quality_status": "partial",
+        "rgb_bytes": 1350021786
+      },
+      {
+        "depth_bytes": 4466078,
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/170139",
+        "frames_csv_lines": 1113,
+        "quality_passed": false,
+        "recording_quality_status": "partial",
+        "rgb_bytes": 27297314
+      }
+    ],
+    "quality_failures": [
+      "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/164639: partial: rgb coverage below 98 percent; rgb contains a gap over 500 ms; depth contains a gap over 500 ms",
+      "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/164639: partial: rgb first frame is late; depth first frame is late",
+      "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/170139: partial: rgb coverage below 98 percent; rgb first frame is late; depth coverage below 98 percent"
+    ],
+    "quality_passed": false
+  },
+  "recording_session_id": 1788943598441389,
+  "require_complete_recording": true,
+  "started_at_us": 1788943598421935,
+  "stop_requested_at_us": 1788944518446767,
+  "stop_to_delivery_status_ms": 25945.054
+}

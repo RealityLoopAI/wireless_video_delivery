@@ -1,0 +1,100 @@
+{
+  "admin": "http://127.0.0.1:18080",
+  "camera_keys": [
+    "lubancat-52d2ef0c_cam01",
+    "lubancat-e8cc0cb3_cam01",
+    "orangepi5pro-ab748372_cam01",
+    "orangepi5pro-b439137c_cam02",
+    "orangepi5pro-fe0f7222_cam01"
+  ],
+  "camera_results": {
+    "lubancat-52d2ef0c_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "lubancat-e8cc0cb3_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-ab748372_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-b439137c_cam02": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-fe0f7222_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    }
+  },
+  "failures": [],
+  "finished_at_us": 1788945589463178,
+  "ok": true,
+  "record_seconds": 60.0,
+  "recording_files": {
+    "directories": [
+      {
+        "depth_bytes": 16676277,
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/171832",
+        "frames_csv_lines": 3543,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 44222567
+      },
+      {
+        "depth_bytes": 11870701,
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/171832",
+        "frames_csv_lines": 3543,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 44185233
+      },
+      {
+        "depth_bytes": 29551105,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/171832",
+        "frames_csv_lines": 3546,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 88220020
+      },
+      {
+        "depth_bytes": 22078154,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/171832",
+        "frames_csv_lines": 3545,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 88232569
+      },
+      {
+        "depth_bytes": 20799684,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/171832",
+        "frames_csv_lines": 3545,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 88331591
+      },
+      {
+        "depth_bytes": 14111095,
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/171832",
+        "frames_csv_lines": 3545,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 88208793
+      }
+    ],
+    "quality_failures": [],
+    "quality_passed": true
+  },
+  "recording_session_id": 1788945511298986,
+  "require_complete_recording": true,
+  "started_at_us": 1788945511271613,
+  "stop_requested_at_us": 1788945571306418,
+  "stop_to_delivery_status_ms": 18156.721
+}

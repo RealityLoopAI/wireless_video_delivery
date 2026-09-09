@@ -1,0 +1,120 @@
+{
+  "ok": true,
+  "validation_kind": "offline_session_files",
+  "recording_session_id": 1788948524730137,
+  "record_seconds": 920,
+  "camera_keys": [
+    "lubancat-52d2ef0c_cam01",
+    "lubancat-e8cc0cb3_cam01",
+    "orangepi5pro-ab748372_cam01",
+    "orangepi5pro-b439137c_cam02",
+    "orangepi5pro-fe0f7222_cam01",
+    "rk3588-ubuntu_cam01"
+  ],
+  "recording_files": {
+    "directories": [
+      {
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/180845",
+        "frames_csv_lines": 54030,
+        "rgb_bytes": 676670478,
+        "depth_bytes": 278128177,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-09/182345",
+        "frames_csv_lines": 1149,
+        "rgb_bytes": 14090360,
+        "depth_bytes": 20171394,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/180845",
+        "frames_csv_lines": 54036,
+        "rgb_bytes": 676085778,
+        "depth_bytes": 196768438,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-09/182345",
+        "frames_csv_lines": 1145,
+        "rgb_bytes": 14081400,
+        "depth_bytes": 4262763,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/180845",
+        "frames_csv_lines": 54064,
+        "rgb_bytes": 1350634721,
+        "depth_bytes": 460606217,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-09/182345",
+        "frames_csv_lines": 1142,
+        "rgb_bytes": 28157693,
+        "depth_bytes": 9733972,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/180845",
+        "frames_csv_lines": 54067,
+        "rgb_bytes": 1351229602,
+        "depth_bytes": 324700123,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-09/182345",
+        "frames_csv_lines": 1142,
+        "rgb_bytes": 28192213,
+        "depth_bytes": 7286180,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/180845",
+        "frames_csv_lines": 54062,
+        "rgb_bytes": 1351612324,
+        "depth_bytes": 317066839,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-09/182345",
+        "frames_csv_lines": 1143,
+        "rgb_bytes": 28202003,
+        "depth_bytes": 6267143,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/180845",
+        "frames_csv_lines": 54049,
+        "rgb_bytes": 1349106593,
+        "depth_bytes": 218225880,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      },
+      {
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-09/182345",
+        "frames_csv_lines": 1142,
+        "rgb_bytes": 28233854,
+        "depth_bytes": 4569564,
+        "recording_quality_status": "complete",
+        "quality_passed": true
+      }
+    ],
+    "quality_passed": true,
+    "quality_failures": []
+  },
+  "checked_at_us": 1788949696476423,
+  "stop_to_delivery_status_ms": null,
+  "window_end_to_last_nas_finalize_ms": 28099.806,
+  "validation_note": "Global-idle waiting probe was terminated after another recording session started. No stop request was sent to the new session. This result validates only the listed NAS files."
+}

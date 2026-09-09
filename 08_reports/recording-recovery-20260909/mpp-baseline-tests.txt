@@ -1,0 +1,46 @@
+[OUTPUT]
+Internal ctest changing into directory: /home/linaro/wvd-build-wifi-check
+
+[HANDLER_OUTPUT]
+Test project /home/linaro/wvd-build-wifi-check
+
+    Start 1: mpp_keyframe_repeat_single
+1/2 Test #1: mpp_keyframe_repeat_single .......***Failed   17.53 sec
+request=43 idr_frame=43 observed_at=43
+request=90 idr_frame=104 observed_at=104
+request=137 idr_frame=164 observed_at=164
+request=184 idr_frame=194 observed_at=194
+request=231 idr_frame=254 observed_at=254
+request=278 idr_frame=284 observed_at=284
+request=325 idr_frame=344 observed_at=344
+request=372 idr_frame=374 observed_at=374
+request=419 idr_frame=434 observed_at=434
+request=466 idr_frame=494 observed_at=494
+requests=10 failures=8
+
+    Start 2: mpp_keyframe_repeat_dual
+2/2 Test #2: mpp_keyframe_repeat_dual .........***Failed   16.81 sec
+request=43 idr_frame=43 observed_at=44
+request=90 idr_frame=104 observed_at=113
+request=137 idr_frame=164 observed_at=172
+request=184 idr_frame=194 observed_at=202
+request=231 idr_frame=254 observed_at=262
+request=278 idr_frame=284 observed_at=292
+request=325 idr_frame=344 observed_at=352
+request=372 idr_frame=374 observed_at=382
+request=419 idr_frame=434 observed_at=442
+requests=10 failures=9
+
+
+0% tests passed, 2 tests failed out of 2
+
+Label Time Summary:
+hardware    =  34.33 sec*proc (2 tests)
+
+Total Test time (real) =  34.34 sec
+
+The following tests FAILED:
+	  1 - mpp_keyframe_repeat_single (Failed)
+	  2 - mpp_keyframe_repeat_dual (Failed)
+[ERROR_MESSAGE]
+Errors while running CTest

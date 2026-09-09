@@ -208,6 +208,24 @@ set_target_properties(depth_compression_bench PROPERTIES
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+    add_executable(mpp_keyframe_repeat_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_mpp_keyframe_repeat.cpp"
+        src/gst_h264_encoder.cpp)
+    target_include_directories(mpp_keyframe_repeat_test PRIVATE include ${GSTREAMER_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+    target_link_directories(mpp_keyframe_repeat_test PRIVATE ${GSTREAMER_LIBRARY_DIRS})
+    target_link_libraries(mpp_keyframe_repeat_test PRIVATE ${GSTREAMER_LIBRARIES} ${OpenCV_LIBS} pthread)
+    target_compile_options(mpp_keyframe_repeat_test PRIVATE ${GSTREAMER_CFLAGS_OTHER} -Wall -Wextra -Wpedantic)
+    option(GWV3_TEST_MPP_HARDWARE "Run MPP hardware keyframe tests on this host" OFF)
+    set(GWV3_TEST_MPP_WIDTH 1920 CACHE STRING "MPP test input width, not a production profile")
+    set(GWV3_TEST_MPP_HEIGHT 1080 CACHE STRING "MPP test input height, not a production profile")
+    if(GWV3_TEST_MPP_HARDWARE)
+        foreach(mode single dual bgr)
+            add_test(NAME mpp_keyframe_repeat_${mode} COMMAND mpp_keyframe_repeat_test
+                ${mode} ${GWV3_TEST_MPP_WIDTH} ${GWV3_TEST_MPP_HEIGHT})
+            set_tests_properties(mpp_keyframe_repeat_${mode} PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS hardware)
+        endforeach()
+    endif()
+
     add_executable(gst_keyframe_request_test "${CMAKE_SOURCE_DIR}/10_tests/test_gst_keyframe_request.cpp")
     target_include_directories(gst_keyframe_request_test PRIVATE include ${GSTREAMER_INCLUDE_DIRS})
     target_link_directories(gst_keyframe_request_test PRIVATE ${GSTREAMER_LIBRARY_DIRS})

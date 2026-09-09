@@ -1,0 +1,338 @@
+[
+  {
+    "sender_id": "lubancat-52d2ef0c",
+    "captured_us": 1788948707157303,
+    "kernel": "6.1.99-rk3576",
+    "service": "gwv3-gemini-sender-lubancat-52d2ef0c.service",
+    "pid": 86855,
+    "binary": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+    "binary_sha256": "8749b255b2c4111a63ca12d369ac8340602a60a75fa8fa2c57324f33aab54938",
+    "config_sha256": "ce6588a8d66663a517c9d0c4e184d278545d17eba05ad7cc9982c87cb4e6c9db",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/befff515aedb6eb7/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/cat/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "befff515aedb6eb76aad9495ea9f0be348719299badd548177cbc7db972b7cb4",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "mode=single input=1280x800\nrequest=43 idr_frame=43 observed_at=43\nrequest=90 idr_frame=90 observed_at=90\nrequest=137 idr_frame=137 observed_at=137\nrequest=184 idr_frame=184 observed_at=184\nrequest=231 idr_frame=231 observed_at=231\nrequest=278 idr_frame=278 observed_at=278\nrequest=325 idr_frame=325 observed_at=325\nrequest=372 idr_frame=372 observed_at=372\nrequest=419 idr_frame=419 observed_at=419\nrequest=466 idr_frame=466 observed_at=466\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "mode=dual input=1280x800\nrequest=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "mode=bgr input=1280x800\nrequest=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948260765665
+    },
+    "release_manifest": {
+      "pid": 2329,
+      "binary": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "config": "/home/cat/wireless_video_delivery_release/06_configs/sender_lubancat-52d2ef0c_gemini305.json",
+      "sdk": "/home/cat/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6",
+      "binary_sha256": "9f746b288725f1793d9847f75803ccd9689a26d7b28521212801ab5d6aa79da8",
+      "config_sha256": "ce6588a8d66663a517c9d0c4e184d278545d17eba05ad7cc9982c87cb4e6c9db",
+      "cmdline": [
+        "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+        "--config",
+        "/home/cat/wireless_video_delivery_release/06_configs/sender_lubancat-52d2ef0c_gemini305.json",
+        "--no-local-preview"
+      ],
+      "host": "lubancat",
+      "service": "gwv3-gemini-sender-lubancat-52d2ef0c.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946388343366,
+      "new_binary_sha256": "8749b255b2c4111a63ca12d369ac8340602a60a75fa8fa2c57324f33aab54938",
+      "applied_us": 1788946961396002,
+      "running_pid": 51919
+    }
+  },
+  {
+    "sender_id": "lubancat-e8cc0cb3",
+    "captured_us": 1788948707637194,
+    "kernel": "6.1.99-rk3576",
+    "service": "gwv3-gemini-sender-lubancat-e8cc0cb3.service",
+    "pid": 2375307,
+    "binary": "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender",
+    "binary_sha256": "4ad7b52c8c5cdccc3b25c5888467d505413fae29a826e7b43ce2e8262a7cfb3d",
+    "config_sha256": "c68246cefe56b6f49d561ee152490e3b11d6f1cd69250cd2eb02bf65811cf3a2",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/640637d13e82de03/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/cat/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "mode=single input=1280x800\nrequest=43 idr_frame=43 observed_at=43\nrequest=90 idr_frame=90 observed_at=90\nrequest=137 idr_frame=137 observed_at=137\nrequest=184 idr_frame=184 observed_at=184\nrequest=231 idr_frame=231 observed_at=231\nrequest=278 idr_frame=278 observed_at=278\nrequest=325 idr_frame=325 observed_at=325\nrequest=372 idr_frame=372 observed_at=372\nrequest=419 idr_frame=419 observed_at=419\nrequest=466 idr_frame=466 observed_at=466\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "mode=dual input=1280x800\nrequest=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "mode=bgr input=1280x800\nrequest=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948261744933
+    },
+    "release_manifest": {
+      "pid": 2268218,
+      "binary": "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender",
+      "config": "/home/cat/wireless_video_delivery/06_configs/sender_lubancat-e8cc0cb3_gemini305.json",
+      "sdk": "/home/cat/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6",
+      "binary_sha256": "72858bdf5d207071345991058779c17d59364d0361ee8277533bfdbf5055dd71",
+      "config_sha256": "c68246cefe56b6f49d561ee152490e3b11d6f1cd69250cd2eb02bf65811cf3a2",
+      "cmdline": [
+        "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender",
+        "--config",
+        "/home/cat/wireless_video_delivery/06_configs/sender_lubancat-e8cc0cb3_gemini305.json",
+        "--no-local-preview"
+      ],
+      "host": "lubancat-e8cc0cb3",
+      "service": "gwv3-gemini-sender-lubancat-e8cc0cb3.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946386718333,
+      "new_binary_sha256": "4ad7b52c8c5cdccc3b25c5888467d505413fae29a826e7b43ce2e8262a7cfb3d",
+      "applied_us": 1788946962313708,
+      "running_pid": 2357397
+    }
+  },
+  {
+    "sender_id": "orangepi5pro-ab748372",
+    "captured_us": 1788948708051263,
+    "kernel": "6.1.43-rockchip-rk3588",
+    "service": "gwv3-gemini-sender.service",
+    "pid": 3922333,
+    "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+    "binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+    "config_sha256": "f487860439023006be379bc5aca6df8470218d9c26cee73a7cea99ef1da19eb0",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/4d474cc86abdc7d3/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/orangepi/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "4d474cc86abdc7d381c7d413ae3c4ace7725e1d92a0435e7b74b7d17c2808853",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=43\nrequest=90 idr_frame=90 observed_at=90\nrequest=137 idr_frame=137 observed_at=137\nrequest=184 idr_frame=184 observed_at=184\nrequest=231 idr_frame=231 observed_at=231\nrequest=278 idr_frame=278 observed_at=278\nrequest=325 idr_frame=325 observed_at=325\nrequest=372 idr_frame=372 observed_at=372\nrequest=419 idr_frame=419 observed_at=419\nrequest=466 idr_frame=466 observed_at=466\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948013363410
+    },
+    "release_manifest": {
+      "pid": 3807290,
+      "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "config": "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-ab748372.json",
+      "sdk": "/home/orangepi/Downloads/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK",
+      "binary_sha256": "1ed3c97ec319616faa304ed08dea1f72bf0b81c623c04aa5be9daf7d5bc71682",
+      "config_sha256": "f487860439023006be379bc5aca6df8470218d9c26cee73a7cea99ef1da19eb0",
+      "cmdline": [
+        "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+        "--config",
+        "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-ab748372.json",
+        "--no-local-preview"
+      ],
+      "host": "orangepi5pro-ab748372",
+      "service": "gwv3-gemini-sender.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946246661784,
+      "new_binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+      "applied_us": 1788946989004836,
+      "running_pid": 3905455
+    }
+  },
+  {
+    "sender_id": "orangepi5pro-b439137c",
+    "captured_us": 1788948708430000,
+    "kernel": "6.1.43-rockchip-rk3588",
+    "service": "gwv3-gemini-sender.service",
+    "pid": 2169021,
+    "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+    "binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+    "config_sha256": "f952e86b778a55e56ce2c39d8ee24e5333929370b84fc662938623e69524882f",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/4d474cc86abdc7d3/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/orangepi/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "4d474cc86abdc7d381c7d413ae3c4ace7725e1d92a0435e7b74b7d17c2808853",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948015131158
+    },
+    "release_manifest": {
+      "pid": 2054502,
+      "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "config": "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-b439137c.json",
+      "sdk": "/home/orangepi/Downloads/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK",
+      "binary_sha256": "1ed3c97ec319616faa304ed08dea1f72bf0b81c623c04aa5be9daf7d5bc71682",
+      "config_sha256": "f952e86b778a55e56ce2c39d8ee24e5333929370b84fc662938623e69524882f",
+      "cmdline": [
+        "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+        "--config",
+        "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-b439137c.json",
+        "--no-local-preview"
+      ],
+      "host": "orangepi5pro-b439137c",
+      "service": "gwv3-gemini-sender.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946278811750,
+      "new_binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+      "applied_us": 1788946990289052,
+      "running_pid": 2152191
+    }
+  },
+  {
+    "sender_id": "orangepi5pro-fe0f7222",
+    "captured_us": 1788948708775340,
+    "kernel": "6.1.43-rockchip-rk3588",
+    "service": "gwv3-gemini-sender.service",
+    "pid": 2174695,
+    "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+    "binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+    "config_sha256": "2bfb9eab82b8085e07033a157dcf0c3185a8b8428e8ab9ec4f1e47e483c6aef6",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/4d474cc86abdc7d3/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/orangepi/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "4d474cc86abdc7d381c7d413ae3c4ace7725e1d92a0435e7b74b7d17c2808853",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=43\nrequest=90 idr_frame=90 observed_at=90\nrequest=137 idr_frame=137 observed_at=137\nrequest=184 idr_frame=184 observed_at=184\nrequest=231 idr_frame=231 observed_at=231\nrequest=278 idr_frame=278 observed_at=278\nrequest=325 idr_frame=325 observed_at=325\nrequest=372 idr_frame=372 observed_at=372\nrequest=419 idr_frame=419 observed_at=419\nrequest=466 idr_frame=466 observed_at=466\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948016251617
+    },
+    "release_manifest": {
+      "pid": 2060203,
+      "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "config": "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-fe0f7222.json",
+      "sdk": "/home/orangepi/Downloads/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK",
+      "binary_sha256": "1ed3c97ec319616faa304ed08dea1f72bf0b81c623c04aa5be9daf7d5bc71682",
+      "config_sha256": "2bfb9eab82b8085e07033a157dcf0c3185a8b8428e8ab9ec4f1e47e483c6aef6",
+      "cmdline": [
+        "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+        "--config",
+        "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-fe0f7222.json",
+        "--no-local-preview"
+      ],
+      "host": "orangepi5pro-fe0f7222",
+      "service": "gwv3-gemini-sender.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946278428325,
+      "new_binary_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+      "applied_us": 1788946991696699,
+      "running_pid": 2157814
+    }
+  },
+  {
+    "sender_id": "rk3588-ubuntu",
+    "captured_us": 1788948708960374,
+    "kernel": "5.10.209",
+    "service": "gwv3-gemini-sender.service",
+    "pid": 2184265,
+    "binary": "/home/linaro/wvd-reorg-20260902/12_build/bin/gemini_sender",
+    "binary_sha256": "839c8775ea3366124e07f9e07cb80ebc3b9fef103cd4f20a0532b61a92c39b78",
+    "config_sha256": "7c96912945bf9b4929f0a23846d4b7431e22cc9a5b7351fdce70534d708e9329",
+    "loaded_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/82d14daa4fee99e0/libgstrockchipmpp.so",
+    "plugin_manifest": {
+      "source_commit": "ca829e0dc1d814df01711a5796e7510812af9e85",
+      "plugin": "/home/linaro/wvd-mpp-syncpoint-20260909/build/gst/rockchipmpp/libgstrockchipmpp.so",
+      "plugin_sha256": "82d14daa4fee99e087edc04945ed24a9df9f67b9a42653b21791793fe58087e8",
+      "tests": {
+        "single": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=43\nrequest=90 idr_frame=90 observed_at=90\nrequest=137 idr_frame=137 observed_at=137\nrequest=184 idr_frame=184 observed_at=184\nrequest=231 idr_frame=231 observed_at=231\nrequest=278 idr_frame=278 observed_at=278\nrequest=325 idr_frame=325 observed_at=325\nrequest=372 idr_frame=372 observed_at=372\nrequest=419 idr_frame=419 observed_at=419\nrequest=466 idr_frame=466 observed_at=466\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "dual": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=373\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        },
+        "bgr": {
+          "returncode": 0,
+          "stdout": "request=43 idr_frame=43 observed_at=44\nrequest=90 idr_frame=90 observed_at=91\nrequest=137 idr_frame=137 observed_at=138\nrequest=184 idr_frame=184 observed_at=185\nrequest=231 idr_frame=231 observed_at=232\nrequest=278 idr_frame=278 observed_at=279\nrequest=325 idr_frame=325 observed_at=326\nrequest=372 idr_frame=372 observed_at=374\nrequest=419 idr_frame=419 observed_at=420\nrequest=466 idr_frame=466 observed_at=467\nrequests=10 failures=0\n",
+          "stderr": ""
+        }
+      },
+      "built_and_tested_us": 1788948128359277
+    },
+    "release_manifest": {
+      "pid": 2063871,
+      "binary": "/home/linaro/wvd-reorg-20260902/12_build/bin/gemini_sender",
+      "config": "/etc/gwv3/sender.json",
+      "sdk": "/opt/gwv3/vendor/orbbec/v1-1.10.27",
+      "binary_sha256": "f9b8c8560246126c0c78a1efadcf3d8912cf698c94798a6122163f6f12ca943a",
+      "config_sha256": "7c96912945bf9b4929f0a23846d4b7431e22cc9a5b7351fdce70534d708e9329",
+      "cmdline": [
+        "/home/linaro/wvd-reorg-20260902/12_build/bin/gemini_sender",
+        "--config",
+        "/etc/gwv3/sender.json",
+        "--no-local-preview"
+      ],
+      "host": "rk3588-ubuntu",
+      "service": "gwv3-gemini-sender.service",
+      "user_service": false,
+      "target_commit": "c7423c61789f",
+      "build_completed_us": 1788946286478850,
+      "new_binary_sha256": "839c8775ea3366124e07f9e07cb80ebc3b9fef103cd4f20a0532b61a92c39b78",
+      "applied_us": 1788946964293838,
+      "running_pid": 2128272
+    }
+  }
+]
