@@ -27,6 +27,7 @@
 | 停止时等待网络尾帧、超时标记与 52d2 网络验证 | [recording-tail-drain-20260908.md](recording-tail-drain-20260908.md) |
 | 使用 chrony、CLOCK_SYNC 和统一时间轴 | [clock-sync.md](clock-sync.md) |
 | 分析积压帧的时间映射倒退与 RGB 恢复放大丢帧 | [recording-clock-history.md](recording-clock-history.md) |
+| 核对历史时间映射修复的设备部署、实录结果和残留积压 | [clock-history-deployment.md](clock-history-deployment.md) |
 | 部署音频、语音拍照、按键和 LED | [audio-and-controls.md](audio-and-controls.md) |
 | 按现象诊断相机、网络、预览和录制 | [troubleshooting.md](troubleshooting.md) |
 | 运行测试、长测和发布 | [testing-and-release.md](testing-and-release.md) |

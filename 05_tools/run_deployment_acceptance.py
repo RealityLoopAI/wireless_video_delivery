@@ -193,19 +193,37 @@ def main() -> int:
 
         def all_started(status):
             cameras = camera_map(status)
-            return all(bool(cameras.get(key, {}).get("recording")) for key in before_cameras)
+            return not status.get("recording_start_pending") and all(
+                bool(cameras.get(key, {}).get("recording"))
+                and not cameras.get(key, {}).get("recording_start_pending")
+                for key in before_cameras
+            )
 
         wait_status(args.admin, "all live cameras to start", all_started, args.start_timeout)
         time.sleep(args.record_seconds)
 
+        report["stop_requested_at_us"] = int(time.time() * 1_000_000)
+        stop_started = time.monotonic()
         stop_response = request_json(args.admin, "POST", "/api/record/stop-all")
         if stop_response.get("ok") is not True:
             raise RuntimeError(f"stop-all was rejected: {stop_response}")
         started_by_this_process = False
 
         def finalized(status):
+            cameras = camera_map(status)
+            # Idle only means new recording input stopped; tail drain can still
+            # precede both finalizer registration and uploader discovery.
+            cameras_completed = all(
+                key in cameras
+                and not cameras[key].get("record_tail_draining")
+                and not cameras[key].get("record_finalizing")
+                and int(cameras[key].get("segment_finalize_completed") or 0)
+                > int(old.get("segment_finalize_completed") or 0)
+                for key, old in before_cameras.items()
+            )
             return (
-                status.get("recording_state") == "idle"
+                cameras_completed
+                and status.get("recording_state") == "idle"
                 and not status.get("recording_all")
                 and int(status.get("record_finalize_outstanding_segments") or 0) == 0
                 and int(status.get("record_queue_total_bytes") or 0) == 0
@@ -218,6 +236,7 @@ def main() -> int:
             finalized,
             args.finalize_timeout,
         )
+        report["stop_to_delivery_status_ms"] = round((time.monotonic() - stop_started) * 1000, 3)
         after_cameras = camera_map(after)
         failures = []
         camera_results = {}

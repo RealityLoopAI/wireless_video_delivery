@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -17,6 +18,7 @@ class State:
     recording = False
     completed = 3
     calls = []
+    tail_deadline = 0.0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -33,6 +35,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         State.calls.append(("GET", self.path))
+        if State.tail_deadline and time.monotonic() >= State.tail_deadline:
+            State.tail_deadline = 0.0
+            State.completed += 1
         self._send(
             {
                 "recording_state": "recording" if State.recording else "idle",
@@ -47,6 +52,7 @@ class Handler(BaseHTTPRequestHandler):
                         "camera_key": "sender-a_cam01",
                         "live": True,
                         "recording": State.recording,
+                        "record_tail_draining": bool(State.tail_deadline),
                         "segment_finalize_completed": State.completed,
                         "record_write_errors": 0,
                     }
@@ -60,7 +66,8 @@ class Handler(BaseHTTPRequestHandler):
             State.recording = True
         elif self.path == "/api/record/stop-all":
             State.recording = False
-            State.completed += 1
+            # Stop acknowledges before delayed media completes the segment.
+            State.tail_deadline = time.monotonic() + 0.4
         self._send({"ok": True, "recording_session_id": 123})
 
 
@@ -68,6 +75,7 @@ def main():
     State.recording = False
     State.completed = 3
     State.calls = []
+    State.tail_deadline = 0.0
     with tempfile.TemporaryDirectory(prefix="gwv3-acceptance-test-") as temporary_text:
         temporary = Path(temporary_text)
         session_date = datetime.datetime.fromtimestamp(123 / 1_000_000).strftime(
@@ -126,6 +134,7 @@ def main():
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+        assert result.returncode == 0, result.stdout + result.stderr
         assert not segment.exists()
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout)

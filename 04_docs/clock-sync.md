@@ -2,8 +2,9 @@
 
 更新时间：2026-09-09
 
-本文描述仓库的新实现。2026-09-09 本次修改尚未替换正在录制的现场进程，
-验证及上线边界见 [缺录与时间映射复核](recording-clock-history.md)。
+2026-09-09 已将 `9d2ef259766c` 部署到当时在线的六台 sender 和一台 receiver。
+验证及上线边界见 [缺录与时间映射复核](recording-clock-history.md) 和
+[上线验收记录](clock-history-deployment.md)。上线不等于长录、拥塞或内容级同步验收通过。
 
 当前同步目标是 dataset-grade 软件统一时间轴，不是传感器曝光级硬同步。
 
