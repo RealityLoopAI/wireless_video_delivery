@@ -77,11 +77,16 @@ Receiver 空闲且现场允许明确触发录制时，再执行：
 ```bash
 python3 05_tools/run_deployment_acceptance.py \
   --admin http://127.0.0.1:18080 \
+  --config /etc/gwv3/receiver.json \
+  --require-complete-recording \
   --record-seconds 60 \
   --output 08_reports/deployment-acceptance.json
 ```
 
 脚本拒绝干扰已有录制，只对开始时在线的相机验收。通过条件包括：每路进入录制、停止后 finalizer 清空、录制队列清空、NAS uploader 无 pending/active、每路完成分片计数增加、写错误不增加且相机仍在线。
+上述严格模式还要求每段 ready 元数据确认 `recording_complete=true`、质量为 `complete`；
+partial 或未知质量返回失败并保留测试数据。省略严格选项的旧调用仍只是交付冒烟检查，不代表连续性通过。
+异常退出的 JSON 一律 `ok=false`，详见 [录制间断修复验收](recording-backlog-deployment-20260909.md)。
 
 自动脚本不能替代最终文件抽检。交付前仍需对 NAS 中带 `recording_ready.json` 的目录执行 `ffprobe`、CSV 单调性和实际播放检查，并完成一次整机断电重启与网络恢复抽测。
 

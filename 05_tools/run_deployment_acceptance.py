@@ -92,6 +92,7 @@ def validate_recording_session(config_path: Path, session_id: int, expected_came
             f"recorded session has {len(directories)} published directories for {expected_cameras} cameras"
         )
     results = []
+    quality_failures = []
     for directory in directories:
         ready = list(directory.glob("*recording_ready.json"))
         csv_files = list(directory.glob("*frames.csv"))
@@ -114,15 +115,33 @@ def validate_recording_session(config_path: Path, session_id: int, expected_came
         )
         if probe.returncode != 0 or "video" not in probe.stdout:
             raise RuntimeError(f"RGB recording is not readable by ffprobe: {rgb_files[0]}")
+        metadata = json.loads(ready[0].read_text(encoding="utf-8"))
+        quality_status = str(metadata.get("recording_quality_status") or "unknown")
+        quality_passed = (
+            metadata.get("ready") is True
+            and metadata.get("recording_complete") is True
+            and quality_status == "complete"
+        )
+        if not quality_passed:
+            quality_failures.append(
+                f"{directory}: {quality_status}: "
+                + str(metadata.get("recording_quality_reason") or "completeness was not verified")
+            )
         results.append(
             {
                 "directory": str(directory),
                 "frames_csv_lines": line_count,
                 "rgb_bytes": rgb_files[0].stat().st_size,
                 "depth_bytes": depth_files[0].stat().st_size,
+                "recording_quality_status": quality_status,
+                "quality_passed": quality_passed,
             }
         )
-    return {"directories": results}
+    return {
+        "directories": results,
+        "quality_passed": not quality_failures,
+        "quality_failures": quality_failures,
+    }
 
 
 def cleanup_recording_session(config_path: Path, session_id: int) -> list[str]:
@@ -155,9 +174,16 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cleanup-on-success", action="store_true")
+    parser.add_argument(
+        "--require-complete-recording",
+        action="store_true",
+        help="fail on partial or unverified recording quality, retaining test files",
+    )
     args = parser.parse_args()
     if args.record_seconds <= 0:
         parser.error("--record-seconds must be positive")
+    if args.require_complete_recording and args.config is None:
+        parser.error("--require-complete-recording requires --config")
 
     started_by_this_process = False
     report = {
@@ -165,6 +191,7 @@ def main() -> int:
         "admin": args.admin,
         "record_seconds": args.record_seconds,
         "started_at_us": int(time.time() * 1_000_000),
+        "require_complete_recording": args.require_complete_recording,
     }
     try:
         before = request_json(args.admin, "GET", "/api/status")
@@ -272,6 +299,8 @@ def main() -> int:
             report["recording_files"] = validate_recording_session(
                 args.config, recording_session_id, len(before_cameras)
             )
+            if args.require_complete_recording and not report["recording_files"]["quality_passed"]:
+                raise RuntimeError("; ".join(report["recording_files"]["quality_failures"]))
         if args.cleanup_on_success:
             if args.config is None:
                 raise RuntimeError("--cleanup-on-success requires --config")
@@ -281,6 +310,7 @@ def main() -> int:
                 args.config, recording_session_id
             )
     except Exception as exc:
+        report["ok"] = False
         report["error"] = str(exc)
         report["finished_at_us"] = int(time.time() * 1_000_000)
         if started_by_this_process:

@@ -84,7 +84,9 @@ def main():
         segment = temporary / "nas" / "sender-a_cam01" / session_date / "segment"
         segment.mkdir(parents=True)
         (segment / "deployment_canaryrecording_ready.json").write_text(
-            json.dumps({"recording_session_id": 123}), encoding="utf-8"
+            json.dumps({"recording_session_id": 123, "ready": True,
+                        "recording_complete": False, "recording_quality_status": "partial",
+                        "recording_quality_reason": "rgb contains a gap over 500 ms"}), encoding="utf-8"
         )
         (segment / "frames.csv").write_text("header\nframe1\nframe2\n", encoding="utf-8")
         (segment / "rgb.mp4").write_bytes(b"test-rgb")
@@ -108,26 +110,48 @@ def main():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
+            command = [
+                sys.executable,
+                str(SOURCE_ROOT / "05_tools/run_deployment_acceptance.py"),
+                "--admin",
+                f"http://127.0.0.1:{server.server_port}",
+                "--record-seconds",
+                "0.05",
+                "--start-timeout",
+                "2",
+                "--finalize-timeout",
+                "2",
+                "--config",
+                str(config),
+                "--cleanup-on-success",
+                "--require-complete-recording",
+            ]
+            environment = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+            partial = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=5)
+            partial_report = json.loads(partial.stdout)
+            assert partial.returncode != 0, partial.stdout
+            assert partial_report["ok"] is False, partial.stdout
+            assert partial_report["recording_files"]["quality_passed"] is False
+            assert "rgb contains a gap" in partial_report["error"]
+            assert segment.exists(), "failed quality verification must retain evidence"
+            (segment / "deployment_canaryrecording_ready.json").write_text(
+                json.dumps({"recording_session_id": 123, "ready": True}), encoding="utf-8"
+            )
+            unknown = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=5)
+            unknown_report = json.loads(unknown.stdout)
+            assert unknown.returncode != 0 and unknown_report["ok"] is False
+            assert "unknown" in unknown_report["error"]
+            assert segment.exists(), "legacy metadata is not proof of complete capture"
+            (segment / "deployment_canaryrecording_ready.json").write_text(
+                json.dumps({"recording_session_id": 123, "ready": True,
+                            "recording_complete": True, "recording_quality_status": "complete"}), encoding="utf-8"
+            )
             result = subprocess.run(
-                [
-                    sys.executable,
-                    str(SOURCE_ROOT / "05_tools/run_deployment_acceptance.py"),
-                    "--admin",
-                    f"http://127.0.0.1:{server.server_port}",
-                    "--record-seconds",
-                    "0.05",
-                    "--start-timeout",
-                    "2",
-                    "--finalize-timeout",
-                    "2",
-                    "--config",
-                    str(config),
-                    "--cleanup-on-success",
-                ],
+                command,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                env=environment,
                 timeout=5,
             )
         finally:
