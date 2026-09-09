@@ -31,6 +31,8 @@ ctest --test-dir 12_build_test_sender --output-on-failure
 - sender 配置、曝光控制、关键帧调度、传输恢复和部署脚本。
 - receiver 输入校验、录制队列、fMP4/NAS 发布和并发上传。
 - CLOCK_SYNC 输入检查与 RGB 同步清单。
+- CLOCK_SYNC 数分钟媒体积压、历史模型快照、CSV 诊断一致性及八小时模拟时间推进。
+- RGB 生产端入队与网络消费端关键帧保护分离，避免等待发送期间提前丢弃后续帧。
 - Web 低延迟预览。
 - 音频归档、静音审计、语音 TTS、整句转发和拍照链路。
 - GPIO 录制按钮、电源按钮和状态 LED。

@@ -196,10 +196,13 @@ NAS 故障只形成照片 staging backlog，不阻塞媒体接收、录制收尾
 | `frame_system_timestamp_us` | 发送端绑定到该帧的系统时间 |
 | `receiver_receive_timestamp_us` | 接收端完整收到媒体包并开始处理时的本机时间 |
 | `clock_sync_valid` | 该行写入时是否有有效 CLOCK_SYNC 模型 |
-| `sender_offset_us` | 当前 sender 到 receiver 的时间偏移估计 |
+| `sender_offset_us` | 本帧历史模型的 sender 到 receiver 时间偏移测量 |
 | `sender_delay_us` | 最近一次 clock sync 网络往返延迟估计 |
 | `sender_drift_ppm` | sender clock drift 粗估 |
 | `global_timestamp_us` | 统一时间轴时间戳 |
+| `clock_model_reference_timestamp_us` | 本帧历史模型报告的 sender 同步时间 |
+| `clock_applied_offset_us` | 本帧实际应用的 offset，平滑期间可以不同于测量值 |
+| `clock_mapping_version` | `1` 为按采集时间查询的历史分段平滑模型，旧文件无此列 |
 | `rgb_recorded` | 该 RGB 包是否进入 `rgb.mp4` |
 | `rgb_video_frame_index` | 该 RGB 包在 `rgb.mp4` 中对应的视频帧序号 |
 | `rgb_recorded_payload_size` | 写入视频索引的 RGB payload 大小 |

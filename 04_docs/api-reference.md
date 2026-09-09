@@ -345,6 +345,9 @@ POST /api/audio/stop-sender?sender_id=...
 | `clock_sync_valid` | global time 模型是否有效 |
 | `sender_offset_us` / `sender_delay_us` / `sender_drift_ppm` | 该行 clock model |
 | `global_timestamp_us` | 统一时间轴 |
+| `clock_model_reference_timestamp_us` | 本帧历史模型的 `last_sync_us` |
+| `clock_applied_offset_us` | 有效同步时为 `global_timestamp_us - sender_system_timestamp_us` |
+| `clock_mapping_version` | `1` 表示历史分段及有界平滑；旧录制没有此列 |
 | `rgb_recorded` | RGB 是否进入视频 |
 | `rgb_video_frame_index` | RGB 在 MP4 解码帧序号 |
 | `recording_window_valid` | 是否处于数据集有效窗口 |

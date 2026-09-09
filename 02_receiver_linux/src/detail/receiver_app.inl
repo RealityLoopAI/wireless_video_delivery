@@ -4347,17 +4347,22 @@ private:
         }
         const uint64_t packet_receive_us = now_us();
         packet.receiver_receive_timestamp_us = packet_receive_us;
-        const auto clock_model = clock_sync_manager_.get_model(packet.sender_id);
         const bool sender_system_time_available = (packet.flags & has_system_timestamp) != 0u && packet.system_timestamp_us > 0;
+        const auto mapping = sender_system_time_available
+                                 ? clock_sync_manager_.map_timestamp(packet.sender_id, packet.system_timestamp_us)
+                                 : ClockTimestampMapping{};
+        const auto &clock_model = mapping.model;
         packet.clock_sync_valid = false;
         packet.sender_offset_us = clock_model.offset_us;
         packet.sender_delay_us = clock_model.delay_us;
         packet.sender_drift_ppm = clock_model.drift_ppm;
+        packet.clock_mapping_version = 1;
+        packet.clock_model_reference_timestamp_us = clock_model.last_sync_us;
         // The offset model maps sender system time to receiver time.
         const uint64_t fallback_timestamp_us = sender_system_time_available ? packet.system_timestamp_us : packet.timestamp_us;
         packet.global_timestamp_us = fallback_timestamp_us;
         if(clock_model.valid && sender_system_time_available) {
-            const int64_t candidate = clock_sync_manager_.get_global_timestamp_us(packet.sender_id, packet.system_timestamp_us);
+            const int64_t candidate = mapping.global_timestamp_us;
             if(candidate > 0) {
                 const uint64_t candidate_us = static_cast<uint64_t>(candidate);
                 const uint64_t receiver_skew_us = candidate_us >= packet_receive_us ? candidate_us - packet_receive_us
@@ -4365,6 +4370,7 @@ private:
                 if(receiver_skew_us <= kMaxGlobalTimestampReceiverSkewUs) {
                     packet.clock_sync_valid = true;
                     packet.global_timestamp_us = candidate_us;
+                    packet.clock_applied_offset_us = candidate - static_cast<int64_t>(packet.system_timestamp_us);
                 }
             }
         }

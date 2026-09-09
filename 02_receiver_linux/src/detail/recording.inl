@@ -488,7 +488,8 @@ public:
                        "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
                        "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
                        "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us,"
-                       "rgb_depth_pair_valid,pair_delta_us,pair_delta_source,pair_id_valid\n";
+                       "rgb_depth_pair_valid,pair_delta_us,pair_delta_source,pair_id_valid,"
+                       "clock_model_reference_timestamp_us,clock_applied_offset_us,clock_mapping_version\n";
         rgb_recorded_frames_csv_.open(file_path("rgb_recorded_frames.csv"), std::ios::out | std::ios::trunc);
         if(!rgb_recorded_frames_csv_) {
             throw std::runtime_error("cannot open RGB frame index CSV: " + file_path("rgb_recorded_frames.csv").string());
@@ -501,7 +502,8 @@ public:
                "sender_capture_to_timing_bound_us,sender_timing_bound_to_encode_start_us,sender_encode_duration_us,"
                "sender_encode_done_to_packet_queued_us,sender_packet_queued_to_receiver_us,"
                "sender_id,camera_id,sender_timestamp_us,sender_system_timestamp_us,receiver_receive_timestamp_us,"
-               "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us\n";
+               "clock_sync_valid,sender_offset_us,sender_delay_us,sender_drift_ppm,global_timestamp_us,"
+               "clock_model_reference_timestamp_us,clock_applied_offset_us,clock_mapping_version\n";
 
         if(cfg.write_debug_h264) {
             rgb_debug_path_ = file_path("rgb_debug.h264");
@@ -851,6 +853,7 @@ public:
             const bool pair_id_valid = last_rgb_.valid && last_depth_.valid && last_rgb_.pair_id != 0
                                        && last_rgb_.pair_id == last_depth_.pair_id;
             frames_csv_ << ',' << (pair_id_valid ? 1 : 0);
+            write_clock_mapping_columns(frames_csv_, packet);
             frames_csv_ << '\n';
             if(!frames_csv_) {
                 throw std::runtime_error("frames.csv staging write failed: " + file_path("frames.csv.inprogress").string());
@@ -1097,6 +1100,12 @@ private:
             << ',' << packet.global_timestamp_us;
     }
 
+    static void write_clock_mapping_columns(std::ostream &csv, const MediaPacket &packet) {
+        csv << ',' << packet.clock_model_reference_timestamp_us
+            << ',' << packet.clock_applied_offset_us
+            << ',' << packet.clock_mapping_version;
+    }
+
     static void write_pair_quality_column(std::ostream &csv, const FrameInfo &rgb, const FrameInfo &depth) {
         csv << ',';
         if(!rgb.valid || !depth.valid) {
@@ -1153,6 +1162,7 @@ private:
         rgb_recorded_frames_csv_ << ',' << packet.codec_or_compression;
         write_pipeline_diagnostics_columns(rgb_recorded_frames_csv_, packet, packet_local_us);
         write_clock_sync_columns(rgb_recorded_frames_csv_, packet);
+        write_clock_mapping_columns(rgb_recorded_frames_csv_, packet);
         rgb_recorded_frames_csv_ << '\n';
         if(!rgb_recorded_frames_csv_) {
             throw std::runtime_error("RGB frame index CSV write failed: " + file_path("rgb_recorded_frames.csv").string());

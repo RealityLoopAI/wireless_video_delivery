@@ -434,6 +434,9 @@ struct MediaPacket {
     int64_t sender_delay_us = 0;
     double sender_drift_ppm = 0.0;
     uint64_t global_timestamp_us = 0;
+    uint64_t clock_model_reference_timestamp_us = 0;
+    int64_t clock_applied_offset_us = 0;
+    uint32_t clock_mapping_version = 0;
     std::vector<uint8_t> payload;
 };
 
@@ -672,6 +675,9 @@ void copy_media_packet_metadata(const MediaPacket &src, MediaPacket &dst) {
     dst.sender_delay_us = src.sender_delay_us;
     dst.sender_drift_ppm = src.sender_drift_ppm;
     dst.global_timestamp_us = src.global_timestamp_us;
+    dst.clock_model_reference_timestamp_us = src.clock_model_reference_timestamp_us;
+    dst.clock_applied_offset_us = src.clock_applied_offset_us;
+    dst.clock_mapping_version = src.clock_mapping_version;
     dst.payload.clear();
 }
 
@@ -711,6 +717,9 @@ void reset_media_packet_for_read(MediaPacket &packet) {
     packet.sender_delay_us = 0;
     packet.sender_drift_ppm = 0.0;
     packet.global_timestamp_us = 0;
+    packet.clock_model_reference_timestamp_us = 0;
+    packet.clock_applied_offset_us = 0;
+    packet.clock_mapping_version = 0;
     packet.payload.clear();
 }
 

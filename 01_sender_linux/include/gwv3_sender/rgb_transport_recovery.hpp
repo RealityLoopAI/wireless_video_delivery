@@ -34,6 +34,13 @@ public:
         return SendDecision::drop;
     }
 
+    SendDecision before_enqueue(bool is_keyframe) const noexcept {
+        // An IDR may already be queued ahead of this frame. Only the consumer
+        // knows whether the peer has received it; producer-side dropping also
+        // leaves encoder timing entries unconsumed on the FIFO fallback path.
+        return waiting_for_keyframe_ && is_keyframe ? SendDecision::send_recovery_keyframe : SendDecision::send;
+    }
+
     bool keyframe_request_due(uint64_t monotonic_now_us, uint64_t interval_us) noexcept {
         if(!waiting_for_keyframe_) {
             return false;

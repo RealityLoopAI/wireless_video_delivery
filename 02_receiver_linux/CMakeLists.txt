@@ -39,6 +39,18 @@ set_target_properties(gemini_receiver PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(test_clock_sync_history
+        ${CMAKE_SOURCE_DIR}/10_tests/test_clock_sync_history.cpp src/clock_sync_manager.cpp)
+    target_include_directories(test_clock_sync_history PRIVATE
+        include ${CMAKE_SOURCE_DIR}/03_common_core/include ${JSONCPP_INCLUDE_DIR})
+    target_link_libraries(test_clock_sync_history PRIVATE ${JSONCPP_LIBRARY} pthread)
+    target_compile_options(test_clock_sync_history PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME clock_sync_history_unit COMMAND test_clock_sync_history)
+    set_tests_properties(clock_sync_history_unit PROPERTIES TIMEOUT 20)
+    add_test(NAME receiver_clock_history_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_clock_history.py
+                --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_clock_history_integration PROPERTIES TIMEOUT 30)
     add_executable(test_recording_tail_drain ${CMAKE_SOURCE_DIR}/10_tests/test_recording_tail_drain.cpp)
     target_include_directories(test_recording_tail_drain PRIVATE include)
     target_compile_features(test_recording_tail_drain PRIVATE cxx_std_17)

@@ -105,6 +105,69 @@ void set_socket_timeout(int fd, int seconds) {
 
 }  // namespace
 
+ClockSyncTimeline::ClockSyncTimeline(uint64_t extrapolation_limit_us, size_t max_segments)
+    : extrapolation_limit_us_(extrapolation_limit_us), max_segments_(std::max<size_t>(2, max_segments)) {}
+
+long double ClockSyncTimeline::Segment::offset_at(uint64_t timestamp_us) const {
+    if(timestamp_us <= begin_us || duration_us <= 0) {
+        return start_offset_us;
+    }
+    const auto fraction = std::min(1.0L, static_cast<long double>(timestamp_us - begin_us) / duration_us);
+    return start_offset_us + (static_cast<long double>(model.offset_us) - start_offset_us) * fraction;
+}
+
+void ClockSyncTimeline::add_model(const ClockModel &model) {
+    if(!model.valid || model.last_sync_us == 0 || model.last_sync_us <= last_report_us_
+       || model.last_sync_us >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return;
+    }
+    Segment next;
+    next.model = model;
+    next.begin_us = model.last_sync_us;
+    next.start_offset_us = model.offset_us;
+    if(segments_.empty()) {
+        earliest_timestamp_us_ = next.begin_us > extrapolation_limit_us_ ? next.begin_us - extrapolation_limit_us_ : 1;
+    }
+    else {
+        // A late heartbeat must not alter any timestamp already assigned, even
+        // if another stream has run ahead of a delayed RGB connection.
+        next.begin_us = std::max({next.begin_us, last_mapped_us_ + 1, segments_.back().begin_us + 1});
+        next.start_offset_us = segments_.back().offset_at(next.begin_us);
+        const long double correction_us = std::abs(static_cast<long double>(model.offset_us) - next.start_offset_us);
+        // Slew at at most 1000 ppm, then hold the measured offset. Short-window
+        // drift is diagnostic only; never project it minutes into the past.
+        next.duration_us = std::max(2000000.0L, correction_us * 1000.0L);
+    }
+    last_report_us_ = model.last_sync_us;
+    segments_.push_back(next);
+    while(segments_.size() > max_segments_) {
+        segments_.pop_front();
+        earliest_timestamp_us_ = segments_.front().begin_us;
+    }
+}
+
+ClockTimestampMapping ClockSyncTimeline::map(uint64_t timestamp_us) const {
+    ClockTimestampMapping result;
+    result.global_timestamp_us = static_cast<int64_t>(std::min(
+        timestamp_us, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
+    if(segments_.empty() || timestamp_us < earliest_timestamp_us_
+       || timestamp_us >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+       || (timestamp_us > last_report_us_ && timestamp_us - last_report_us_ > extrapolation_limit_us_)) {
+        return result;
+    }
+    auto it = std::upper_bound(segments_.begin(), segments_.end(), timestamp_us,
+                              [](uint64_t time, const Segment &segment) { return time < segment.begin_us; });
+    if(it != segments_.begin()) --it;
+    const long double global = static_cast<long double>(timestamp_us) + it->offset_at(timestamp_us);
+    if(global <= 0 || global >= static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+        return result;
+    }
+    result.model = it->model;
+    result.global_timestamp_us = static_cast<int64_t>(std::llround(global));
+    last_mapped_us_ = std::max(last_mapped_us_, timestamp_us);
+    return result;
+}
+
 ClockSyncManager::ClockSyncManager(ClockSyncManagerConfig config) : config_(std::move(config)) {
     config_.model_timeout_ms = std::max(1, config_.model_timeout_ms);
 }
@@ -190,6 +253,10 @@ bool ClockSyncManager::update_from_sender_report(const std::string &sender_id,
         entry.last_sync_us = last_sync_us;
         entry.last_update_receiver_us = now_us();
         entry.sample_count++;
+        if(config_.enabled) {
+            auto timeline = clock_timelines_.try_emplace(sender_id, static_cast<uint64_t>(config_.model_timeout_ms) * 1000).first;
+            timeline->second.add_model(entry);
+        }
         model = entry;
     }
 
@@ -216,24 +283,22 @@ ClockModel ClockSyncManager::get_model(const std::string &sender_id) const {
 }
 
 int64_t ClockSyncManager::get_global_timestamp_us(const std::string &sender_id, uint64_t sender_timestamp_us) const {
-    const auto model = get_model(sender_id);
-    if(!model.valid) {
-        return static_cast<int64_t>(sender_timestamp_us);
-    }
-    long double adjusted_offset = static_cast<long double>(model.offset_us);
-    if(model.last_sync_us > 0 && std::isfinite(model.drift_ppm)) {
-        const long double elapsed_us = static_cast<long double>(sender_timestamp_us)
-                                       - static_cast<long double>(model.last_sync_us);
-        adjusted_offset += elapsed_us * model.drift_ppm / 1'000'000.0L;
-    }
-    const long double global = static_cast<long double>(sender_timestamp_us) + adjusted_offset;
-    if(global > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
-        return std::numeric_limits<int64_t>::max();
-    }
-    if(global < static_cast<long double>(std::numeric_limits<int64_t>::min())) {
-        return std::numeric_limits<int64_t>::min();
-    }
-    return static_cast<int64_t>(std::llround(global));
+    return map_timestamp(sender_id, sender_timestamp_us).global_timestamp_us;
+}
+
+ClockTimestampMapping ClockSyncManager::map_timestamp(const std::string &sender_id, uint64_t sender_timestamp_us) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ClockTimestampMapping result;
+    result.global_timestamp_us = static_cast<int64_t>(std::min(
+        sender_timestamp_us, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
+    const auto model = clock_models_.find(sender_id);
+    const auto timeline = clock_timelines_.find(sender_id);
+    if(!config_.enabled || model == clock_models_.end() || timeline == clock_timelines_.end()) return result;
+    const auto current = apply_timeout_locked(model->second, now_us());
+    if(!current.valid) return result;
+    result = timeline->second.map(sender_timestamp_us);
+    result.model.report_stale = current.report_stale;
+    return result;
 }
 
 bool ClockSyncManager::has_valid_model(const std::string &sender_id) const {

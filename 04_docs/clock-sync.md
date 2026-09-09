@@ -1,6 +1,9 @@
 # Clock Sync And Frame Alignment
 
-更新时间：2026-09-02
+更新时间：2026-09-09
+
+本文描述仓库的新实现。2026-09-09 本次修改尚未替换正在录制的现场进程，
+验证及上线边界见 [缺录与时间映射复核](recording-clock-history.md)。
 
 当前同步目标是 dataset-grade 软件统一时间轴，不是传感器曝光级硬同步。
 
@@ -36,13 +39,27 @@ sender 丢弃身份/sequence 不匹配、负 delay、delay 超过 100 ms、非�
 
 sender 通过 heartbeat/report 上报 offset、delay、drift 和最后同步时间。receiver 只有在该 sender 已从同一来源 IP 完成 probe 后才接受 report，避免错误设备污染模型。
 
+receiver 保留每个 sender 的分段历史，按 **采集系统时间** 查找，而不是按帧到达时的
+最新 heartbeat 取模型。同一帧的 global time 与 CSV 模型信息从一次加锁查询取得。
+
 映射公式：
 
 ```text
-global = sender_system_timestamp
-       + offset
-       + elapsed_since_last_sync * drift_ppm / 1e6
+global = sender_system_timestamp + applied_offset(sender_system_timestamp)
 ```
+
+第一份模型采用常量 offset。后续模型在旧映射上连续衔接，目标为新测得的 offset，
+至少用 2 秒、最多每秒修正 1 ms 的速度接近目标，到达目标后保持。
+新分段不会覆盖已经分配过的时间范围，RGB/Depth 即使到达时间不同也使用同一历史映射。
+窗口估计的 `drift_ppm` 仍上报，但不再向过去数分钟无界外推。
+
+历史每 sender 最多 4096 段，相同 `last_sync_us` 的重复 heartbeat 不新增段。
+缺少历史、历史已淘汰、向未来预测超过 `model_timeout_ms`、有效模型超时或数值越界时，
+不伪造有效同步。初次模型之前只允许 `model_timeout_ms` 范围内的常量 offset 近似。
+历史只在进程内保留，receiver 重启不恢复历史。
+
+`clock_sync_valid=true` 表示有可用映射，不代表已经实测达到 5 ms，也不代表传感器硬同步。
+较大的初始误差需要 chrony 和收敛预热；无线延迟不对称仍会影响 offset 的准确度。
 
 若模型无效或包缺少 sender system timestamp，则不丢包：
 
@@ -74,6 +91,18 @@ rgb_video_frame_index
 recording_window_valid
 recording_session_id
 ```
+
+新版保留全部旧字段，另增加以下诊断列，继续按表头解析：
+
+- `clock_model_reference_timestamp_us`：该历史分段所用报告的 sender `last_sync_us`。
+- `clock_applied_offset_us`：本帧实际使用的修正，有效时严格等于 `global_timestamp_us - sender_system_timestamp_us`。
+- `clock_mapping_version`：`1` 表示历史分段加有界平滑；旧文件没有此列。
+
+`sender_offset_us`、`sender_delay_us`、`sender_drift_ppm` 是该历史分段的测量信息，
+不是最新状态页的值。平滑期间 `sender_offset_us` 与 `clock_applied_offset_us` 可以不同。
+下游直接使用有效的 `global_timestamp_us`，不要再自行叠加 offset 或 drift。
+若 `abs(sender_offset_us - clock_applied_offset_us)` 超过任务允许的对齐误差，
+应判定尚未收敛，不把这一段当作已经校准的多机数据。
 
 RGB 视频帧必须通过 `rgb_video_frame_index` 映射到 CSV，不能假设 CSV 第 N 行就是视频第 N 帧。
 

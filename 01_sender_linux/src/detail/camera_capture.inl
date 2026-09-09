@@ -1047,9 +1047,10 @@ void publish_rgb_encoded_units(const AppConfig &config, CameraRuntime &camera, L
         if(is_key_frame) {
             report_forced_rgb_keyframe(camera, logger);
         }
-        const auto send_decision = decide_rgb_keyframe_send(camera, is_key_frame, frame_now, logger);
-        if(send_decision == RgbTransportRecovery::SendDecision::drop) {
-            continue;
+        RgbTransportRecovery::SendDecision send_decision;
+        {
+            std::lock_guard<std::mutex> lock(camera.mutex);
+            send_decision = camera.rgb_transport_recovery.before_enqueue(is_key_frame);
         }
         const auto timing_resolution = resolve_rgb_encode_timing(camera, encoded, submitted_timing, encoded_has_vcl);
         maybe_log_rgb_timing_resolution(camera, logger, encoded, timing_resolution, frame_now);
