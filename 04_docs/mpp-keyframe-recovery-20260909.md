@@ -70,7 +70,9 @@ RK3576 的 1080p 双分支已通过。本次两台实际相机是 1280x800，复
 这一结果不作为完整 receiver 验收。随后在 x86 receiver 上实际补验
 `receiver_clock_history_integration`、`receiver_tail_drain_integration`、
 `receiver_status_reply_integration`，3/3 通过，耗时约 30.80 秒。
-此前 receiver 33 项回归结果仍见前序部署报告，不混写为本轮重新执行通过。
+随后还在 x86 receiver 重跑完整现有回归，33/33 通过，耗时约 125.67 秒。
+这 33 项运行的是该机已部署版本的测试；本次新增加的验收会话保护另在本机
+`deployment_acceptance_integration` 中实际通过，不混成同一套构建版本。
 
 ## 5. 部署和版本核验
 
@@ -138,7 +140,9 @@ CSV 实测 52d2 RGB 最大到达滞后约 14.34 秒，e8 约 7.48 秒，
 `stop_to_delivery_status_ms=null`，不伪造原探针成功退出或精确点击到交付耗时。
 从该会话元数据窗口结束到最后 NAS finalized 时间约 28.10 秒，是另一种统计口径。
 
-全视频解码在独立低优先级任务中进行，结果完成后补充；不能把 ffprobe 能读当作全帧解码已通过。
+24 个视频均已用低优先级 ffmpeg 全帧解码完成，无解码错误，解码帧数与 CSV 一致。
+证据为 `08_reports/recording-recovery-20260909/mpp-syncpoint-long-decode.json`。
+没有修改原录制文件，也没有因为新会话出现就跳过原批次的逐帧验证。
 
 ### 验收工具的会话保护
 
@@ -163,3 +167,12 @@ CSV 实测 52d2 RGB 最大到达滞后约 14.34 秒，e8 约 7.48 秒，
 已出现过独立 JPEG 不完整帧，不能靠补 EOI、重复帧或改时间戳修复真实内容。
 `complete` 是现行质量阈值结论，不等于零缺帧；小于 500ms 的缺口也必须统计。
 本轮跨片测试不能替代 8 小时或断电/多日漂移验收，更不能恢复历史已经缺失的帧。
+
+另外核查了两台 SDK v2 的采集后端：生产目录旧 `OrbbecSDKConfig_v1.0.xml` 中虽然写着
+V4L2，但当前 SDK v2.8.6 使用 `OrbbecSDKConfig.xml`，其 Gemini305 的 Auto 默认是 LibUVC；
+运行进程实际打开 `/dev/bus/usb/...`，没有 `/dev/video*` 数据句柄。
+52d2 的 `usbfs_memory_mb` 已为 256，并非仍处于很小的缺省缓冲。
+[官方性能说明](https://orbbec.github.io/OrbbecSDK_v2/docs/tutorial/performance_tuning.html)
+将切换 V4L2 列为可测试选项，但同时说明兼容性与重新插拔要求。
+本次没有把这个后端差异直接认定为三帧缺口的根因，也没有未经 RGBD/时间戳实测就全机切换。
+后续原始输入对照应使用真正生效的 SDK v2 配置，而不是继续修改这个旧文件。
