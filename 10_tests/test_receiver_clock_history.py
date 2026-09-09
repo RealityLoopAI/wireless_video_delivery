@@ -12,7 +12,7 @@ import time
 import test_receiver_hardening as h
 
 
-def run(receiver):
+def run(receiver, holdover=False):
     with tempfile.TemporaryDirectory(prefix="gwv3_clock_history_") as tmp:
         root = Path(tmp)
         ports = {name: h.free_port(kind) for name, kind in (
@@ -78,7 +78,7 @@ def run(receiver):
                     start = api("POST", "/api/record/start-all")
                     time.sleep(max(0, start["recording_start_us"] / 1e6 - time.time()) + .05)
                     capture = time.time_ns() // 1000
-                    reference = capture - 1000000
+                    reference = capture - (11000000 if holdover else 1000000)
                     report(reference, 14611, -200)
                     rgbd(2, capture)
                     wait_for(lambda s: s["cameras"][0]["record_enqueued_packets"] >= 2)
@@ -101,15 +101,15 @@ def run(receiver):
                     group = [r for r in rows if r["stream_type"] == stream]
                     assert [r["frame_id"] for r in group] == ["2", "3", "4"], group
                     for row in group:
-                        assert row["clock_sync_valid"] == "1", row
-                        assert row["clock_mapping_version"] == "1", row
+                        assert row["clock_sync_valid"] == ("0" if holdover else "1"), row
+                        assert row["clock_mapping_version"] == "2", row
                         assert int(row["clock_model_reference_timestamp_us"]) == reference, row
                         assert int(row["clock_applied_offset_us"]) == 14611, row
                         assert int(row["global_timestamp_us"]) == int(row["frame_system_timestamp_us"]) + 14611, row
                     assert all(int(b["global_timestamp_us"]) - int(a["global_timestamp_us"]) == 33333
                                for a, b in zip(group, group[1:])), group
                 assert [r["rgb_video_frame_index"] for r in rows if r["stream_type"] == "rgb"] == ["0", "1", "2"]
-                print("PASS final RGBD CSV uses one historical clock snapshot and unchanged frame indexes", flush=True)
+                print(f"PASS final RGBD CSV uses one historical clock snapshot, holdover={holdover}", flush=True)
             except Exception:
                 print((root / "stdout.log").read_text(errors="replace")[-10000:], flush=True)
                 raise
@@ -126,4 +126,6 @@ def run(receiver):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--receiver", required=True)
-    run(parser.parse_args().receiver)
+    receiver = parser.parse_args().receiver
+    run(receiver)
+    run(receiver, holdover=True)

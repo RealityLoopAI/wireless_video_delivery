@@ -139,6 +139,7 @@ struct TransportConfig {
     int connect_timeout_ms = 1500;
     int send_timeout_ms = 80;
     int send_buffer_bytes = 1048576;
+    int tcp_notsent_lowat_bytes = 65536;
     int reconnect_interval_ms = 1000;
 };
 

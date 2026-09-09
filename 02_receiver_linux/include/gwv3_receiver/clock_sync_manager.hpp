@@ -45,6 +45,7 @@ struct ClockModel {
 struct ClockTimestampMapping {
     ClockModel model;
     int64_t global_timestamp_us = 0;
+    bool has_estimate = false;
 };
 
 // Caller owns synchronization. Published ranges are immutable, including when

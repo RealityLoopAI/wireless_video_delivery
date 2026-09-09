@@ -224,18 +224,25 @@ struct StreamRecordStats {
     uint64_t frames = 0;
     uint64_t first_local_us = 0;
     uint64_t last_local_us = 0;
+    uint64_t first_capture_us = 0;
+    uint64_t last_capture_us = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     std::string codec_or_compression;
 
     void add(const MediaPacket &packet, uint64_t local_us) {
+        const uint64_t capture_us = packet.global_timestamp_us > 0 ? packet.global_timestamp_us
+            : packet.system_timestamp_us > 0 ? packet.system_timestamp_us
+            : packet.timestamp_us > 0 ? packet.timestamp_us : local_us;
         if(frames == 0) {
             first_local_us = local_us;
+            first_capture_us = capture_us;
             width = packet.width;
             height = packet.height;
             codec_or_compression = packet.codec_or_compression;
         }
         last_local_us = local_us;
+        last_capture_us = capture_us;
         if(width == 0) {
             width = packet.width;
         }
@@ -249,8 +256,8 @@ struct StreamRecordStats {
     }
 
     double actual_fps() const {
-        if(frames >= 2 && last_local_us > first_local_us) {
-            const double seconds = static_cast<double>(last_local_us - first_local_us) / 1'000'000.0;
+        if(frames >= 2 && last_capture_us > first_capture_us) {
+            const double seconds = static_cast<double>(last_capture_us - first_capture_us) / 1'000'000.0;
             if(seconds > 0.0) {
                 return static_cast<double>(frames - 1) / seconds;
             }
@@ -262,6 +269,8 @@ struct StreamRecordStats {
         frames = 0;
         first_local_us = 0;
         last_local_us = 0;
+        first_capture_us = 0;
+        last_capture_us = 0;
         width = 0;
         height = 0;
         codec_or_compression.clear();
@@ -1476,6 +1485,8 @@ private:
         uint64_t rgb_media_duration_us = 0;
         uint64_t depth_media_duration_us = 0;
         uint64_t rgb_depth_duration_delta_us = 0;
+        uint64_t rgb_receive_duration_us = 0;
+        uint64_t depth_receive_duration_us = 0;
     };
 
     RecordingQualitySummary recording_quality_summary() const {
@@ -1516,11 +1527,18 @@ private:
         };
         quality.rgb_coverage_ratio = coverage(recording_window_valid_rgb_frames_, rgb_nominal_fps_);
         quality.depth_coverage_ratio = coverage(recording_window_valid_depth_frames_, depth_nominal_fps_);
-        quality.rgb_media_duration_us = static_cast<uint64_t>(
-            std::max(0.0, media_duration_seconds(rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_))
+        quality.rgb_receive_duration_us = static_cast<uint64_t>(
+            std::max(0.0, receive_duration_seconds(rgb_recorded_stats_.frames > 0 ? rgb_recorded_stats_ : rgb_stats_))
             * 1'000'000.0);
-        quality.depth_media_duration_us = static_cast<uint64_t>(
-            std::max(0.0, media_duration_seconds(depth_stats_)) * 1'000'000.0);
+        quality.depth_receive_duration_us = static_cast<uint64_t>(
+            std::max(0.0, receive_duration_seconds(depth_stats_)) * 1'000'000.0);
+        const auto capture_span = [](uint64_t first, uint64_t last) {
+            return first > 0 && last >= first ? last - first : uint64_t{0};
+        };
+        quality.rgb_media_duration_us = capture_span(recording_window_first_valid_rgb_global_us_,
+                                                     recording_window_last_valid_rgb_global_us_);
+        quality.depth_media_duration_us = capture_span(recording_window_first_valid_depth_global_us_,
+                                                       recording_window_last_valid_depth_global_us_);
         quality.rgb_depth_duration_delta_us = quality.rgb_media_duration_us >= quality.depth_media_duration_us
                                                   ? quality.rgb_media_duration_us - quality.depth_media_duration_us
                                                   : quality.depth_media_duration_us - quality.rgb_media_duration_us;
@@ -1600,6 +1618,9 @@ private:
         out << "  \"depth_stream_expected\": " << (depth_expected_ ? "true" : "false") << ",\n";
         out << "  \"rgb_coverage_ratio\": " << quality.rgb_coverage_ratio << ",\n";
         out << "  \"depth_coverage_ratio\": " << quality.depth_coverage_ratio << ",\n";
+        out << "  \"recording_quality_version\": 2,\n";
+        out << "  \"rgb_receive_duration_us\": " << quality.rgb_receive_duration_us << ",\n";
+        out << "  \"depth_receive_duration_us\": " << quality.depth_receive_duration_us << ",\n";
         out << "  \"rgb_media_duration_us\": " << quality.rgb_media_duration_us << ",\n";
         out << "  \"depth_media_duration_us\": " << quality.depth_media_duration_us << ",\n";
         out << "  \"rgb_depth_duration_delta_us\": " << quality.rgb_depth_duration_delta_us << ",\n";
@@ -1944,6 +1965,13 @@ private:
     }
 
     static double media_duration_seconds(const StreamRecordStats &stats) {
+        if(stats.frames < 2 || stats.last_capture_us <= stats.first_capture_us) {
+            return 0.0;
+        }
+        return static_cast<double>(stats.last_capture_us - stats.first_capture_us) / 1'000'000.0;
+    }
+
+    static double receive_duration_seconds(const StreamRecordStats &stats) {
         if(stats.frames < 2 || stats.last_local_us <= stats.first_local_us) {
             return 0.0;
         }

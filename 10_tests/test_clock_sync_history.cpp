@@ -10,6 +10,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 void check(bool condition, const char *message) {
@@ -44,6 +45,22 @@ void exercise_timeline() {
     check(timeline.map(base - 10000001).model.valid == false, "pre-history timestamp accepted");
     check(!timeline.map(base + 12000001).model.valid, "unbounded future projection accepted");
     check(!timeline.map(std::numeric_limits<uint64_t>::max()).model.valid, "overflow accepted");
+
+    gwv3::ClockSyncTimeline interrupted;
+    model.last_sync_us = base;
+    model.offset_us = 90000;
+    interrupted.add_model(model);
+    const auto valid_end = interrupted.map(base + 10000000);
+    const auto holdover = interrupted.map(base + 10033333);
+    check(!holdover.model.valid, "expired clock was labelled synchronized");
+    check(holdover.global_timestamp_us - valid_end.global_timestamp_us == 33333,
+          "clock expiry stepped the timeline back to raw sender time");
+    model.last_sync_us = base + 20000000;
+    model.offset_us = -20000;
+    interrupted.add_model(model);
+    const auto repeated = interrupted.map(base + 10033333);
+    check(!repeated.model.valid && repeated.global_timestamp_us == holdover.global_timestamp_us,
+          "late RGB changed the validity or mapping of a Depth holdover frame");
 
     // Simulated eight hours, not an eight-hour hardware soak. Depth is current,
     // RGB trails by six minutes, reports alternate between the drift limits.
@@ -114,6 +131,7 @@ int main() {
         gwv3::ClockSyncManagerConfig config;
         config.bind_ip = "127.0.0.1";
         config.port = port;
+        config.model_timeout_ms = 2000;
         gwv3::ClockSyncManager manager(config);
         check(manager.start(), "manager start");
         Probe probe;
@@ -147,6 +165,11 @@ int main() {
         check(mapping.model.last_sync_us == capture - 1000000 && mapping.model.offset_us == 14611,
               "frame metadata did not use the historical model snapshot");
         check(!manager.map_timestamp("unknown-sender", capture).model.valid, "unknown model accepted");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+        check(!manager.get_model("history-test").valid, "live model did not expire");
+        const auto historical = manager.map_timestamp("history-test", capture);
+        check(historical.model.valid && historical.global_timestamp_us == before,
+              "receive-time report expiry invalidated a previously valid capture");
         manager.stop();
         std::cout << "PASS historical capture timestamps survive drift changes\n";
     }

@@ -36,6 +36,8 @@ int main(int argc, char **argv) {
         require(stall_seconds >= 1 && stall_seconds <= 50, "stall seconds must be 1..50");
         Socket listener{socket(AF_INET, SOCK_STREAM, 0)};
         require(listener.fd >= 0, "listen socket");
+        const int receive_buffer = 65536;
+        setsockopt(listener.fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -51,7 +53,9 @@ int main(int argc, char **argv) {
         config.receiver.media_port = ntohs(address.sin_port);
         config.transport.enabled = true;
         config.transport.media_protocol = "tcp";
-        config.transport.send_buffer_bytes = 4096;
+        // A legacy large SO_SNDBUF must not hide both complete packets in the
+        // kernel while the receiver is stalled.
+        config.transport.send_buffer_bytes = 32 * 1024 * 1024;
         config.transport.send_timeout_ms = 100;
         config.recording_buffer.enabled = true;
         std::vector<uint8_t> header(94, 0);

@@ -57,6 +57,11 @@ def run(args) -> None:
         invalid["recording_buffer"] = {"enabled": True, "rgb_frames_per_slot": 10**9}
         expect_invalid(args.sender, temporary, "unbounded_queue", invalid)
 
+        for lowat in (-1, 4194305):
+            invalid = copy.deepcopy(base)
+            invalid.setdefault("transport", {})["tcp_notsent_lowat_bytes"] = lowat
+            expect_invalid(args.sender, temporary, f"invalid_tcp_lowat_{lowat}", invalid)
+
         invalid = copy.deepcopy(base)
         invalid["cameras"][0]["rgb_profile"]["width"] = 10**9
         expect_invalid(args.sender, temporary, "oversized_profile", invalid)

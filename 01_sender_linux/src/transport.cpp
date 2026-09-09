@@ -177,6 +177,16 @@ int Transport::make_tcp_socket() {
     }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef TCP_NOTSENT_LOWAT
+    // Keep unsent bytes in the bounded application queue, not minutes of
+    // opaque kernel backlog. Partial-packet retries still preserve every byte.
+    if(config_.transport.tcp_notsent_lowat_bytes > 0) {
+        const uint32_t lowat = static_cast<uint32_t>(config_.transport.tcp_notsent_lowat_bytes);
+        if(setsockopt(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, &lowat, sizeof(lowat)) != 0) {
+            set_error(std::string("TCP_NOTSENT_LOWAT unavailable: ") + std::strerror(errno));
+        }
+    }
+#endif
     return fd;
 }
 

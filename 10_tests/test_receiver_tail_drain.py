@@ -13,7 +13,7 @@ import test_receiver_hardening as h
 
 
 def exercise(receiver, scope, timeout=False, restart=False, rgb_only=False,
-             first_in_flight=False, shutdown=False):
+             first_in_flight=False, shutdown=False, delayed_rgb=False):
     with tempfile.TemporaryDirectory(prefix="gwv3_tail_drain_") as tmp:
         root = Path(tmp)
         ports = {"status": h.free_port(socket.SOCK_DGRAM),
@@ -105,13 +105,17 @@ def exercise(receiver, scope, timeout=False, restart=False, rgb_only=False,
                     if not restart:
                         time.sleep(.08)
                         api("POST", "/api/record/stop" + suffix)
+                    if delayed_rgb:
+                        depth(5, late_stamp)
+                        depth(6, end + 1)
+                        time.sleep(.8)
                     rgb(5, late_stamp)
                     rgb(6, end + 1)
                     time.sleep(.12)
-                    if not rgb_only:
+                    if not rgb_only and not delayed_rgb:
                         value = api("GET", "/api/status")["cameras"][0]
                         assert value.get("record_tail_draining"), ("RGB watermark closed a pending depth tail", value)
-                    if not timeout:
+                    if not timeout and not delayed_rgb:
                         depth(5, late_stamp)
                         depth(6, end + 1)
                     value = wait_for(lambda d: not d["cameras"][0].get("record_tail_draining", False)
@@ -142,6 +146,13 @@ def exercise(receiver, scope, timeout=False, restart=False, rgb_only=False,
                     assert ids["depth"] == ([] if rgb_only else initial if timeout else initial + [5]), ids
                     meta = json.loads((old.parent / "meta.json").read_text())
                     assert ("tail drain" in meta["recording_quality_reason"]) == timeout, meta
+                    if delayed_rgb:
+                        assert meta["rgb_depth_duration_delta_us"] < 10000, meta
+                        assert "duration drift" not in meta["recording_quality_reason"], meta
+                        assert meta["recording_quality_version"] == 2, meta
+                        assert meta["rgb_receive_duration_us"] - meta["depth_receive_duration_us"] > 500000, meta
+                        assert abs(meta["rgb_actual_fps"] - meta["depth_actual_fps"]) < 1, meta
+                        assert abs(meta["rgb_target_duration_sec"] - meta["depth_target_duration_sec"]) < .01, meta
                     if restart:
                         new = next(p for p in files if p != old)
                         with new.open(newline="", encoding="utf-8-sig") as f:
@@ -171,3 +182,4 @@ if __name__ == "__main__":
     exercise(args.receiver, "all", rgb_only=True)
     exercise(args.receiver, "all", first_in_flight=True)
     exercise(args.receiver, "all", shutdown=True)
+    exercise(args.receiver, "all", delayed_rgb=True)

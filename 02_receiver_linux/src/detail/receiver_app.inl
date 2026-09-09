@@ -4356,19 +4356,19 @@ private:
         packet.sender_offset_us = clock_model.offset_us;
         packet.sender_delay_us = clock_model.delay_us;
         packet.sender_drift_ppm = clock_model.drift_ppm;
-        packet.clock_mapping_version = 1;
+        packet.clock_mapping_version = 2;
         packet.clock_model_reference_timestamp_us = clock_model.last_sync_us;
         // The offset model maps sender system time to receiver time.
         const uint64_t fallback_timestamp_us = sender_system_time_available ? packet.system_timestamp_us : packet.timestamp_us;
         packet.global_timestamp_us = fallback_timestamp_us;
-        if(clock_model.valid && sender_system_time_available) {
+        if(mapping.has_estimate && sender_system_time_available) {
             const int64_t candidate = mapping.global_timestamp_us;
             if(candidate > 0) {
                 const uint64_t candidate_us = static_cast<uint64_t>(candidate);
                 const uint64_t receiver_skew_us = candidate_us >= packet_receive_us ? candidate_us - packet_receive_us
                                                                                      : packet_receive_us - candidate_us;
                 if(receiver_skew_us <= kMaxGlobalTimestampReceiverSkewUs) {
-                    packet.clock_sync_valid = true;
+                    packet.clock_sync_valid = clock_model.valid;
                     packet.global_timestamp_us = candidate_us;
                     packet.clock_applied_offset_us = candidate - static_cast<int64_t>(packet.system_timestamp_us);
                 }

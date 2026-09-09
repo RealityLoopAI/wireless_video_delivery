@@ -425,6 +425,7 @@ AppConfig load_config(const std::string &path) {
         config.transport.connect_timeout_ms = optional_int(transport, "connect_timeout_ms", config.transport.connect_timeout_ms);
         config.transport.send_timeout_ms = optional_int(transport, "send_timeout_ms", config.transport.send_timeout_ms);
         config.transport.send_buffer_bytes = optional_int(transport, "send_buffer_bytes", config.transport.send_buffer_bytes);
+        config.transport.tcp_notsent_lowat_bytes = optional_int(transport, "tcp_notsent_lowat_bytes", config.transport.tcp_notsent_lowat_bytes);
         config.transport.reconnect_interval_ms = optional_int(transport, "reconnect_interval_ms", config.transport.reconnect_interval_ms);
     }
 
@@ -609,6 +610,9 @@ void validate_config(const AppConfig &config) {
     }
     if(config.transport.send_buffer_bytes < 0 || config.transport.send_buffer_bytes > 256 * 1024 * 1024) {
         throw std::runtime_error("transport.send_buffer_bytes must be in range [0, 268435456]");
+    }
+    if(config.transport.tcp_notsent_lowat_bytes < 0 || config.transport.tcp_notsent_lowat_bytes > 4 * 1024 * 1024) {
+        throw std::runtime_error("transport.tcp_notsent_lowat_bytes must be in range [0, 4194304]");
     }
     if(config.transport.reconnect_interval_ms <= 0 || config.transport.reconnect_interval_ms > 60000) {
         throw std::runtime_error("transport.reconnect_interval_ms must be in range [1, 60000]");

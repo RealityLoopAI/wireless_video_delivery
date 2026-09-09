@@ -151,8 +151,7 @@ ClockTimestampMapping ClockSyncTimeline::map(uint64_t timestamp_us) const {
     result.global_timestamp_us = static_cast<int64_t>(std::min(
         timestamp_us, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
     if(segments_.empty() || timestamp_us < earliest_timestamp_us_
-       || timestamp_us >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
-       || (timestamp_us > last_report_us_ && timestamp_us - last_report_us_ > extrapolation_limit_us_)) {
+       || timestamp_us >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
         return result;
     }
     auto it = std::upper_bound(segments_.begin(), segments_.end(), timestamp_us,
@@ -163,7 +162,12 @@ ClockTimestampMapping ClockSyncTimeline::map(uint64_t timestamp_us) const {
         return result;
     }
     result.model = it->model;
+    // Validity belongs to the capture's historical segment. A new report must
+    // not retrospectively certify an interval previously emitted as holdover.
+    result.model.valid = it->model.valid && (timestamp_us <= it->model.last_sync_us
+        || timestamp_us - it->model.last_sync_us <= extrapolation_limit_us_);
     result.global_timestamp_us = static_cast<int64_t>(std::llround(global));
+    result.has_estimate = true;
     last_mapped_us_ = std::max(last_mapped_us_, timestamp_us);
     return result;
 }
@@ -295,7 +299,6 @@ ClockTimestampMapping ClockSyncManager::map_timestamp(const std::string &sender_
     const auto timeline = clock_timelines_.find(sender_id);
     if(!config_.enabled || model == clock_models_.end() || timeline == clock_timelines_.end()) return result;
     const auto current = apply_timeout_locked(model->second, now_us());
-    if(!current.valid) return result;
     result = timeline->second.map(sender_timestamp_us);
     result.model.report_stale = current.report_stale;
     return result;

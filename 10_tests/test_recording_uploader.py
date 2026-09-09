@@ -122,6 +122,9 @@ def run(args: argparse.Namespace) -> None:
             "rgb_coverage_ratio": 0.75,
             "recording_window_valid_rgb_frames": 90,
             "rgb_depth_duration_delta_us": 33333,
+            "recording_quality_version": 2,
+            "rgb_receive_duration_us": 35000000,
+            "depth_receive_duration_us": 2900000,
             "task_audio_ready_file": "audio_ready.json",
         }
         quality_ready = uploader_module.build_ready_marker(
@@ -133,6 +136,8 @@ def run(args: argparse.Namespace) -> None:
         assert quality_ready["rgb_coverage_ratio"] == 0.75
         assert quality_ready["recording_window_valid_rgb_frames"] == 90
         assert quality_ready["rgb_depth_duration_delta_us"] == 33333
+        for field in ("recording_quality_version", "rgb_receive_duration_us", "depth_receive_duration_us"):
+            assert quality_ready[field] == quality_source[field]
         assert quality_ready["task_audio_ready_file"] == "audio_ready.json"
 
         incremental_staging = temporary / "incremental-staging"

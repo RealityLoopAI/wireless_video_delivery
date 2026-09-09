@@ -88,6 +88,9 @@ RGB_OUTPUT_MODES = frozenset(
 )
 UPLOADER_PROCESS_LOCK_NAME = ".gwv3_uploader.process.lock"
 RECORDING_QUALITY_FIELDS = (
+    "recording_quality_version",
+    "rgb_receive_duration_us",
+    "depth_receive_duration_us",
     "recording_quality_status",
     "recording_complete",
     "recording_quality_reason",
