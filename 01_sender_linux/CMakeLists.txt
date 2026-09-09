@@ -208,6 +208,14 @@ set_target_properties(depth_compression_bench PROPERTIES
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+    add_executable(gst_keyframe_request_test "${CMAKE_SOURCE_DIR}/10_tests/test_gst_keyframe_request.cpp")
+    target_include_directories(gst_keyframe_request_test PRIVATE include ${GSTREAMER_INCLUDE_DIRS})
+    target_link_directories(gst_keyframe_request_test PRIVATE ${GSTREAMER_LIBRARY_DIRS})
+    target_link_libraries(gst_keyframe_request_test PRIVATE ${GSTREAMER_LIBRARIES})
+    target_compile_options(gst_keyframe_request_test PRIVATE ${GSTREAMER_CFLAGS_OTHER} -Wall -Wextra -Wpedantic)
+    add_test(NAME gst_keyframe_request COMMAND gst_keyframe_request_test)
+    set_tests_properties(gst_keyframe_request PROPERTIES TIMEOUT 10)
+
     add_executable(adaptive_exposure_controller_test
         "${CMAKE_SOURCE_DIR}/10_tests/test_adaptive_exposure_controller.cpp"
         src/adaptive_exposure_controller.cpp
@@ -270,4 +278,9 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_deployment_scripts.py"
                 --source-root "${CMAKE_SOURCE_DIR}"
     )
+    add_test(
+        NAME sender_wifi_dispatcher
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_wifi_dispatcher.py"
+    )
+    set_tests_properties(sender_wifi_dispatcher PROPERTIES TIMEOUT 30)
 endif()

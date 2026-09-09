@@ -1,0 +1,8 @@
+[Unit]
+Description=GWV3 sender Wi-Fi queue tuning on %I
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gwv3-apply-sender-wifi-tuning %I
+TimeoutStartSec=10

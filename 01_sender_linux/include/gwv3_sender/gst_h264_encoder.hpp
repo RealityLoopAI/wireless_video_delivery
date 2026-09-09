@@ -45,7 +45,7 @@ public:
 
 private:
     std::vector<EncodedH264Frame> encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us);
-    void send_pending_keyframe_event(uint64_t timestamp_us);
+    void send_pending_keyframe_event();
 
     GstElement *pipeline_ = nullptr;
     GstElement *appsrc_ = nullptr;
@@ -81,7 +81,7 @@ public:
 
 private:
     std::vector<EncodedH264Frame> drain_sink(GstElement *sink, GstClockTime first_timeout);
-    void send_pending_keyframe_event(uint64_t timestamp_us, GstElement *sink, bool &pending, uint32_t &count);
+    void send_pending_keyframe_event(GstElement *sink, bool &pending, uint32_t &count);
 
     GstElement *pipeline_ = nullptr;
     GstElement *appsrc_ = nullptr;

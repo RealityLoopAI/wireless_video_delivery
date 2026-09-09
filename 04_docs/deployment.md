@@ -210,7 +210,23 @@ gst-inspect-1.0 mpph264enc
 sudo ./05_tools/install_sender_wifi_tuning.sh
 ```
 
-安装脚本仅对 `rtw_8821cu` 驱动应用 `pfifo limit 128`，其他无线驱动保持不变。服务会在开机联网后、sender 启动前恢复配置。
+安装脚本仅对 `rtw_8821cu` 及定向验证的厂商分支 `rtl8821cu` 应用
+`pfifo limit 128`，其他无线驱动保持不变。它不会安装或更换无线驱动。
+开机服务和 NetworkManager 的 `up` / `reapply` 事件都会恢复配置，因此网卡重新枚举、
+重连后也能生效。事件只异步启动 `gwv3-sender-wifi-tuning@wlan0.service`，不等待驱动调用。
+正确的现有队列不会被重复替换，避免清空在途数据；其他相机和媒体程序不重启。
+这只修复调优设置丢失，不保证无线容量足以承载全部媒体。
+
+```bash
+tc -j qdisc show dev wlan0
+iw dev wlan0 get power_save
+journalctl -u gwv3-sender-wifi-tuning@wlan0.service -n 20
+```
+
+回退此补丁时，删除 `/etc/NetworkManager/dispatcher.d/90-gwv3-sender-wifi-tuning`
+及 `/etc/systemd/system/gwv3-sender-wifi-tuning@.service`，恢复备份的
+`/usr/local/sbin/gwv3-apply-sender-wifi-tuning`，再执行 `sudo systemctl daemon-reload`。
+原有开机调优服务可以保留。
 
 RK3576 镜像需要额外核对 GStreamer 插件 ABI，不能只检查
 `libgstrockchipmpp.so` 文件是否存在。典型错误组合是：

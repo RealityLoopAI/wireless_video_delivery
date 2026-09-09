@@ -1,4 +1,5 @@
 #include "gwv3_sender/gst_h264_encoder.hpp"
+#include "gwv3_sender/gst_keyframe_request.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -154,18 +155,11 @@ void GstH264Encoder::request_keyframe() {
     force_keyframe_pending_ = true;
 }
 
-void GstH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us) {
+void GstH264Encoder::send_pending_keyframe_event() {
     if(!force_keyframe_pending_ || !appsink_) {
         return;
     }
-    force_keyframe_pending_ = false;
-    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GstEvent *event = gst_video_event_new_upstream_force_key_unit(running_time,
-                                                                  TRUE,
-                                                                  force_keyframe_count_++);
-    if(event && !gst_element_send_event(appsink_, event)) {
-        // Ownership is transferred to gst_element_send_event even when it returns false.
-    }
+    force_keyframe_pending_ = !send_immediate_keyframe_request(appsink_, force_keyframe_count_++);
 }
 
 std::vector<EncodedH264Frame> GstH264Encoder::encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us) {
@@ -173,7 +167,7 @@ std::vector<EncodedH264Frame> GstH264Encoder::encode_bytes(const uint8_t *data, 
         throw std::runtime_error("gstreamer encoder is not ready: " + error_);
     }
 
-    send_pending_keyframe_event(timestamp_us);
+    send_pending_keyframe_event();
 
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, data, size);
@@ -329,17 +323,11 @@ void GstJpegDualH264Encoder::request_keyframe() {
     force_main_keyframe_pending_ = true;
 }
 
-void GstJpegDualH264Encoder::send_pending_keyframe_event(uint64_t timestamp_us, GstElement *sink, bool &pending, uint32_t &count) {
+void GstJpegDualH264Encoder::send_pending_keyframe_event(GstElement *sink, bool &pending, uint32_t &count) {
     if(!pending || !sink) {
         return;
     }
-    pending = false;
-    const auto running_time = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GstEvent *event = gst_video_event_new_upstream_force_key_unit(running_time,
-                                                                  TRUE,
-                                                                  count++);
-    if(event && !gst_element_send_event(sink, event)) {
-    }
+    pending = !send_immediate_keyframe_request(sink, count++);
 }
 
 std::vector<EncodedH264Frame> GstJpegDualH264Encoder::drain_sink(GstElement *sink, GstClockTime first_timeout) {
@@ -382,10 +370,10 @@ DualEncodedH264Frames GstJpegDualH264Encoder::encode_jpeg(const void *data, size
     }
     if(preview_active && !preview_active_) {
         bool preview_keyframe_pending = true;
-        send_pending_keyframe_event(timestamp_us, preview_sink_, preview_keyframe_pending, force_preview_keyframe_count_);
+        send_pending_keyframe_event(preview_sink_, preview_keyframe_pending, force_preview_keyframe_count_);
     }
     preview_active_ = preview_active;
-    send_pending_keyframe_event(timestamp_us, main_sink_, force_main_keyframe_pending_, force_main_keyframe_count_);
+    send_pending_keyframe_event(main_sink_, force_main_keyframe_pending_, force_main_keyframe_count_);
 
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, data, size);
