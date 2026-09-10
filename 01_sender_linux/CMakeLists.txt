@@ -162,6 +162,7 @@ add_executable(orbbec_fps_probe
 )
 
 target_include_directories(orbbec_fps_probe PRIVATE
+    include
     "${ORBBEC_SDK_INCLUDE_DIR}"
 )
 
@@ -206,6 +207,9 @@ set_target_properties(depth_compression_bench PROPERTIES
 )
 
 if(BUILD_TESTING)
+    add_executable(rgb_input_audit_test "${CMAKE_SOURCE_DIR}/10_tests/test_rgb_input_audit.cpp")
+    target_include_directories(rgb_input_audit_test PRIVATE include)
+    add_test(NAME rgb_input_audit COMMAND rgb_input_audit_test)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
     add_executable(mpp_keyframe_repeat_test

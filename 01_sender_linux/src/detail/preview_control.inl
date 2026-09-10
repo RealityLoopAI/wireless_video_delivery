@@ -258,6 +258,9 @@ struct RgbEncodeTimingResolution {
     bool non_vcl = false;
     bool queue_empty = false;
     uint64_t pts_delta_us = 0;
+    uint64_t unmatched_inputs = 0;
+    uint64_t unmatched_first_frame_id = 0;
+    uint64_t unmatched_last_frame_id = 0;
 };
 
 void remember_rgb_encode_timing(CameraRuntime &camera, const RgbEncodeTiming &timing) {
@@ -265,6 +268,7 @@ void remember_rgb_encode_timing(CameraRuntime &camera, const RgbEncodeTiming &ti
     camera.rgb_encode_timings.push_back(timing);
     while(camera.rgb_encode_timings.size() > kMaxRgbEncodeTimingFrames) {
         camera.rgb_encode_timings.pop_front();
+        camera.perf.rgb_timing_history_evictions++;
     }
 }
 
@@ -302,6 +306,12 @@ RgbEncodeTimingResolution resolve_rgb_encode_timing(CameraRuntime &camera, const
         if(best != camera.rgb_encode_timings.end() && best_delta_us <= kRgbPtsMatchToleranceUs) {
             resolution.timing = *best;
             resolution.pts_delta_us = best_delta_us;
+            resolution.unmatched_inputs = static_cast<uint64_t>(std::distance(camera.rgb_encode_timings.begin(), best));
+            if(resolution.unmatched_inputs) {
+                resolution.unmatched_first_frame_id = camera.rgb_encode_timings.front().frame_id;
+                resolution.unmatched_last_frame_id = std::prev(best)->frame_id;
+                camera.perf.rgb_encode_unmatched_inputs += resolution.unmatched_inputs;
+            }
             camera.rgb_encode_timings.erase(camera.rgb_encode_timings.begin(), std::next(best));
             return resolution;
         }
@@ -318,6 +328,21 @@ RgbEncodeTimingResolution resolve_rgb_encode_timing(CameraRuntime &camera, const
 
 void maybe_log_rgb_timing_resolution(CameraRuntime &camera, Logger &logger, const EncodedH264Frame &,
                                      const RgbEncodeTimingResolution &resolution, std::chrono::steady_clock::time_point now) {
+    bool log_unmatched = false;
+    if(resolution.unmatched_inputs) {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        if(now >= camera.next_rgb_encode_gap_warning) {
+            log_unmatched = true;
+            camera.next_rgb_encode_gap_warning = now + std::chrono::seconds(1);
+        }
+    }
+    if(log_unmatched) {
+        logger.warn("rgb encode input without matched output camera_id=" + camera.config.camera_id
+                    + " count=" + std::to_string(resolution.unmatched_inputs)
+                    + " first_frame_id=" + std::to_string(resolution.unmatched_first_frame_id)
+                    + " last_frame_id=" + std::to_string(resolution.unmatched_last_frame_id)
+                    + " next_output_frame_id=" + std::to_string(resolution.timing.frame_id));
+    }
     if(!resolution.queue_empty) {
         return;
     }

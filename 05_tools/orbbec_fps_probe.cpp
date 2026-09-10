@@ -4,11 +4,13 @@
 #include "libobsensor/hpp/Frame.hpp"
 #include "libobsensor/hpp/Pipeline.hpp"
 #include "libobsensor/hpp/StreamProfile.hpp"
+#include "gwv3_sender/rgb_input_audit.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -44,6 +46,9 @@ struct Options {
     std::string depth_format = "y16";
     std::string save_prefix;
     int save_after_frames = 30;
+    std::string audit_directory;
+    std::string context_config;
+    int audit_max_files = 8;
 };
 
 void usage(const char *argv0) {
@@ -55,7 +60,8 @@ void usage(const char *argv0) {
                  " [--saturation N] [--gamma N] [--backlight N]"
                  " [--color-width N] [--color-height N] [--depth-width N] [--depth-height N] [--fps N]"
                  " [--color-format mjpg|rgb|yuyv] [--depth-format y16|y12]"
-                 " [--save-prefix PATH] [--save-after-frames N]\n";
+                 " [--save-prefix PATH] [--save-after-frames N]"
+                 " [--audit-directory NEW_DIR] [--audit-max-files 0..32] [--context-config XML]\n";
 }
 
 Options parse_args(int argc, char **argv) {
@@ -149,6 +155,15 @@ Options parse_args(int argc, char **argv) {
         else if(arg == "--save-after-frames") {
             options.save_after_frames = std::stoi(require_value("--save-after-frames"));
         }
+        else if(arg == "--audit-directory") {
+            options.audit_directory = require_value("--audit-directory");
+        }
+        else if(arg == "--audit-max-files") {
+            options.audit_max_files = std::stoi(require_value("--audit-max-files"));
+        }
+        else if(arg == "--context-config") {
+            options.context_config = require_value("--context-config");
+        }
         else if(arg == "--help" || arg == "-h") {
             usage(argv[0]);
             std::exit(0);
@@ -156,6 +171,10 @@ Options parse_args(int argc, char **argv) {
         else {
             throw std::runtime_error("unknown argument: " + arg);
         }
+    }
+    if(options.audit_max_files < 0 || options.audit_max_files > 32
+       || (!options.audit_directory.empty() && (options.seconds < 1 || options.seconds > 3600))) {
+        throw std::runtime_error("audit limits: 1..3600 seconds and 0..32 payload files");
     }
     return options;
 }
@@ -288,7 +307,8 @@ int main(int argc, char **argv) {
         }
 
         ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
-        auto context = std::make_shared<ob::Context>();
+        auto context = options.context_config.empty() ? std::make_shared<ob::Context>()
+                                                      : std::make_shared<ob::Context>(options.context_config.c_str());
         auto devices = context->queryDeviceList();
         std::cout << "devices=" << devices->deviceCount() << "\n";
         for(uint32_t i = 0; i < devices->deviceCount(); ++i) {
@@ -323,6 +343,16 @@ int main(int argc, char **argv) {
                                     : "off")
                   << "\n";
 
+        std::ofstream audit_csv;
+        if(!options.audit_directory.empty()) {
+            if(options.color_format != "mjpg" || !std::filesystem::create_directory(options.audit_directory)) {
+                throw std::runtime_error("audit requires MJPG and a new output directory");
+            }
+            std::filesystem::permissions(options.audit_directory, std::filesystem::perms::owner_all);
+            audit_csv.open(options.audit_directory + "/frames.csv");
+            audit_csv.exceptions(std::ios::badbit | std::ios::failbit);
+            audit_csv << "frame_id,device_timestamp_us,sdk_system_timestamp_us,host_receive_us,bytes,source_gap,soi,sender_accepts,trimmed_bytes,first_eoi_end,last_eoi_end\n";
+        }
         pipeline.start(config);
 
         if(options.auto_exposure == 0) {
@@ -364,8 +394,14 @@ int main(int argc, char **argv) {
         uint64_t last_depth = 0;
         uint64_t last_framesets = 0;
         bool snapshot_saved = false;
+        gwv3::audit::FrameSequence color_sequence;
+        gwv3::audit::FrameSequence depth_sequence;
+        uint64_t rejected_jpeg = 0;
+        int audit_saved = 0;
         while(std::chrono::steady_clock::now() - started < std::chrono::seconds(options.seconds)) {
             auto frameset = pipeline.waitForFrames(200);
+            const auto host_receive_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
             if(!frameset) {
                 ++timeouts;
                 continue;
@@ -374,17 +410,36 @@ int main(int argc, char **argv) {
             auto color = frameset->colorFrame();
             auto depth = frameset->depthFrame();
             if(color) {
+                const auto source_gap = color_sequence.observe(color->index());
                 if(color_count == 0) {
                     color_id_first = color->index();
                 }
                 color_id_last = color->index();
                 ++color_count;
+                if(audit_csv.is_open()) {
+                    const auto envelope = gwv3::audit::inspect_jpeg(color->data(), color->dataSize());
+                    audit_csv << color->index() << ',' << color->timeStampUs() << ',' << color->systemTimeStampUs()
+                              << ',' << host_receive_us << ',' << color->dataSize() << ',' << source_gap << ','
+                              << envelope.soi << ',' << envelope.accepted_by_sender << ',' << envelope.trimmed_size
+                              << ',' << envelope.first_eoi_end << ',' << envelope.last_eoi_end << '\n';
+                    if(!envelope.accepted_by_sender) {
+                        ++rejected_jpeg;
+                        std::cout << "input_rejected frame_id=" << color->index() << " bytes=" << color->dataSize()
+                                  << " soi=" << envelope.soi << " first_eoi_end=" << envelope.first_eoi_end
+                                  << " last_eoi_end=" << envelope.last_eoi_end << '\n';
+                        if(audit_saved < options.audit_max_files && color->dataSize() <= 8 * 1024 * 1024) {
+                            save_color_snapshot(color, options.audit_directory + "/rejected");
+                            ++audit_saved;
+                        }
+                    }
+                }
                 if(!snapshot_saved && !options.save_prefix.empty() && color_count >= static_cast<uint64_t>(std::max(1, options.save_after_frames))) {
                     save_color_snapshot(color, options.save_prefix);
                     snapshot_saved = true;
                 }
             }
             if(depth) {
+                depth_sequence.observe(depth->index());
                 if(depth_count == 0) {
                     depth_id_first = depth->index();
                 }
@@ -413,7 +468,10 @@ int main(int argc, char **argv) {
                   << " both=" << both_count << " timeouts=" << timeouts << " color_fps=" << color_count / seconds
                   << " depth_fps=" << depth_count / seconds << " color_id_delta="
                   << (color_count > 0 ? color_id_last - color_id_first : 0) << " depth_id_delta="
-                  << (depth_count > 0 ? depth_id_last - depth_id_first : 0) << "\n";
+                  << (depth_count > 0 ? depth_id_last - depth_id_first : 0)
+                  << " color_source_missing=" << color_sequence.missing << " color_duplicates=" << color_sequence.duplicates
+                  << " color_resets=" << color_sequence.resets << " depth_source_missing=" << depth_sequence.missing
+                  << " rejected_jpeg=" << rejected_jpeg << " audit_payloads_saved=" << audit_saved << "\n";
         return 0;
     }
     catch(const ob::Error &e) {

@@ -601,6 +601,11 @@ void log_perf(CameraRuntime &camera, Logger &logger, std::chrono::steady_clock::
         << " rgb_corrupt_jpeg_frames=" << perf.rgb_corrupt_jpeg_frames
         << " rgb_timing_mismatch_drops=" << perf.rgb_timing_mismatch_drops
         << " rgb_encoder_lag_resets=" << perf.rgb_encoder_lag_resets
+        << " rgb_source_missing=" << perf.rgb_source_missing
+        << " rgb_source_duplicates=" << perf.rgb_source_duplicates
+        << " rgb_source_resets=" << perf.rgb_source_resets
+        << " rgb_encode_unmatched_inputs=" << perf.rgb_encode_unmatched_inputs
+        << " rgb_timing_history_evictions=" << perf.rgb_timing_history_evictions
         << " rgb_send_failures=" << perf.rgb_send_failures
         << " rgb_preview_send_failures=" << perf.rgb_preview_send_failures
         << " depth_send_failures=" << perf.depth_send_failures;
@@ -1918,9 +1923,12 @@ void mark_corrupt_rgb_jpeg_frame(CameraRuntime &camera, Logger &logger, const st
         }
     }
     if(should_log) {
+        const auto envelope = audit::inspect_jpeg(color->data(), color->dataSize());
         std::ostringstream oss;
         oss << "corrupt rgb mjpeg frame dropped camera_id=" << camera.config.camera_id << " frame_id=" << color->index()
-            << " size=" << color->dataSize() << " reason=\"" << reason << "\"";
+            << " size=" << color->dataSize() << " reason=\"" << reason << "\""
+            << " soi=" << envelope.soi << " trimmed_size=" << envelope.trimmed_size
+            << " first_eoi_end=" << envelope.first_eoi_end << " last_eoi_end=" << envelope.last_eoi_end;
         logger.warn(oss.str());
     }
 }
@@ -2174,20 +2182,41 @@ void record_media_send_failure(CameraRuntime &camera, Logger &logger, StreamType
     }
 }
 
-void record_rgb_input(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color) {
-    std::lock_guard<std::mutex> lock(camera.mutex);
-    camera.perf.rgb_input_frames++;
-    camera.perf.rgb_input_bytes += color->dataSize();
-    camera.perf.note_rgb_frame_id(color->index());
-    camera.last_rgb_frame_at = std::chrono::steady_clock::now();
+void record_rgb_input(CameraRuntime &camera, size_t payload_size, uint64_t frame_id, Logger &logger) {
+    uint64_t previous = 0;
+    uint64_t missing = 0;
+    bool duplicate = false;
+    bool reset = false;
+    bool should_log = false;
+    {
+        std::lock_guard<std::mutex> lock(camera.mutex);
+        auto &sequence = camera.rgb_source_sequence;
+        previous = sequence.last;
+        duplicate = sequence.seen && frame_id == previous;
+        reset = sequence.seen && frame_id < previous;
+        missing = sequence.observe(frame_id);
+        camera.perf.rgb_source_missing += missing;
+        camera.perf.rgb_source_duplicates += duplicate ? 1 : 0;
+        camera.perf.rgb_source_resets += reset ? 1 : 0;
+        camera.perf.rgb_input_frames++;
+        camera.perf.rgb_input_bytes += payload_size;
+        camera.perf.note_rgb_frame_id(frame_id);
+        camera.last_rgb_frame_at = std::chrono::steady_clock::now();
+        if((missing || duplicate || reset) && camera.last_rgb_frame_at >= camera.next_rgb_source_warning) {
+            should_log = true;
+            camera.next_rgb_source_warning = camera.last_rgb_frame_at + std::chrono::seconds(1);
+        }
+    }
+    if(should_log) {
+        logger.warn("rgb input sequence discontinuity camera_id=" + camera.config.camera_id
+                    + " previous_frame_id=" + std::to_string(previous) + " frame_id=" + std::to_string(frame_id)
+                    + " missing=" + std::to_string(missing) + " duplicate=" + bool_text(duplicate)
+                    + " reset=" + bool_text(reset) + " stage=capture_input");
+    }
 }
 
-void record_rgb_input(CameraRuntime &camera, size_t payload_size, uint64_t frame_id) {
-    std::lock_guard<std::mutex> lock(camera.mutex);
-    camera.perf.rgb_input_frames++;
-    camera.perf.rgb_input_bytes += payload_size;
-    camera.perf.note_rgb_frame_id(frame_id);
-    camera.last_rgb_frame_at = std::chrono::steady_clock::now();
+void record_rgb_input(CameraRuntime &camera, const std::shared_ptr<ob::ColorFrame> &color, Logger &logger) {
+    record_rgb_input(camera, color->dataSize(), color->index(), logger);
 }
 
 void record_depth_input(CameraRuntime &camera, const std::shared_ptr<ob::DepthFrame> &depth) {

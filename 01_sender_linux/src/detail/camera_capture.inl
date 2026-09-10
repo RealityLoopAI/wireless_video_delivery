@@ -1222,7 +1222,7 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
             const bool web_preview_due = web_rgb_preview_emit_due(config, camera, frame_now);
             const bool web_preview_can_queue = web_preview_due;
 
-            record_rgb_input(camera, frame.size, frame.frame_id);
+            record_rgb_input(camera, frame.size, frame.frame_id, logger);
             RgbFrameDiagnostics diagnostics;
             RgbEncodeTiming rgb_capture_timing{frame.frame_id,
                                                frame.system_timestamp_us,
@@ -1553,7 +1553,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
         }
         if(warmup_drop) {
             if(color) {
-                record_rgb_input(camera, color);
+                record_rgb_input(camera, color, logger);
                 update_color_metadata(camera, color);
             }
             if(depth) {
@@ -1596,7 +1596,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
 
         cv::Mat bgr;
         if(color) {
-            record_rgb_input(camera, color);
+            record_rgb_input(camera, color, logger);
             update_color_metadata(camera, color);
             const uint64_t rgb_device_timestamp_us = color->timeStampUs();
             const uint64_t rgb_system_timestamp_us = normalize_capture_system_timestamp(

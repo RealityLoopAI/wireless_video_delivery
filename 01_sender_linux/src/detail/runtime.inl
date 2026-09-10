@@ -130,6 +130,11 @@ struct CameraPerfStats {
     double preview_ms = 0.0;
     uint64_t rgb_timing_mismatch_drops = 0;
     uint64_t rgb_encoder_lag_resets = 0;
+    uint64_t rgb_source_missing = 0;
+    uint64_t rgb_source_duplicates = 0;
+    uint64_t rgb_source_resets = 0;
+    uint64_t rgb_encode_unmatched_inputs = 0;
+    uint64_t rgb_timing_history_evictions = 0;
     std::chrono::steady_clock::time_point interval_started = std::chrono::steady_clock::now();
 
     void note_rgb_frame_id(uint64_t frame_id) {
@@ -275,6 +280,9 @@ struct CameraRuntime {
     uint64_t force_rgb_keyframe_target_sender_system_us = 0;
     uint64_t force_rgb_keyframe_target_global_us = 0;
     uint64_t rgb_corrupt_jpeg = 0;
+    audit::FrameSequence rgb_source_sequence;
+    std::chrono::steady_clock::time_point next_rgb_source_warning{};
+    std::chrono::steady_clock::time_point next_rgb_encode_gap_warning{};
     uint64_t rgb_dropped = 0;
     uint64_t rgb_timing_mismatch_drops = 0;
     uint64_t depth_dropped = 0;
@@ -746,4 +754,3 @@ Args parse_args(int argc, char **argv) {
     }
     return args;
 }
-

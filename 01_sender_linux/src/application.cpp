@@ -12,6 +12,7 @@
 #include "gwv3_sender/receiver_discovery_client.hpp"
 #include "gwv3_sender/receiver_target.hpp"
 #include "gwv3_sender/rgb_transport_recovery.hpp"
+#include "gwv3_sender/rgb_input_audit.hpp"
 #include "gwv3_sender/scheduled_keyframe.hpp"
 #include "gwv3_sender/transport.hpp"
 
