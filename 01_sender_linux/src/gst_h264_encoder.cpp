@@ -2,8 +2,11 @@
 #include "gwv3_sender/gst_keyframe_request.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
+#include <utility>
 
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
@@ -12,6 +15,77 @@
 namespace gwv3 {
 
 namespace {
+
+constexpr guint64 kAppsrcMaxBytes = 16 * 1024 * 1024;
+constexpr guint64 kAppsrcMaxBuffers = 8;
+
+std::vector<EncodedH264Frame> pull_encoded_frames(GstElement *sink, GstClockTime first_timeout) {
+    std::vector<EncodedH264Frame> outputs;
+    GstClockTime timeout = first_timeout;
+    while(sink) {
+        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), timeout);
+        if(!sample) break;
+        GstBuffer *encoded = gst_sample_get_buffer(sample);
+        GstMapInfo map{};
+        if(encoded && gst_buffer_map(encoded, &map, GST_MAP_READ)) {
+            EncodedH264Frame frame;
+            frame.data.assign(map.data, map.data + map.size);
+            const GstClockTime pts = GST_BUFFER_PTS(encoded);
+            if(GST_CLOCK_TIME_IS_VALID(pts)) {
+                frame.pts_us = static_cast<uint64_t>(pts / GST_USECOND);
+                frame.has_pts = true;
+            }
+            outputs.push_back(std::move(frame));
+            gst_buffer_unmap(encoded, &map);
+        }
+        gst_sample_unref(sample);
+        timeout = 0;
+    }
+    return outputs;
+}
+
+void append_encoded_frames(std::vector<EncodedH264Frame> &outputs, std::vector<EncodedH264Frame> batch) {
+    outputs.insert(outputs.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+}
+
+void push_encoder_input(GstElement *source, GstElement *sink, const uint8_t *data, size_t size,
+                        uint64_t timestamp_us, int fps, uint64_t frame_index,
+                        std::vector<EncodedH264Frame> &outputs) {
+    if(!data || size == 0 || size > kAppsrcMaxBytes) {
+        throw std::runtime_error("invalid encoder input size (limit 16 MiB)");
+    }
+    // push and pull run on the same thread. Blocking appsrc with a full, non-leaky
+    // appsink deadlocks; admit bounded input and drain output while waiting instead.
+    const bool has_buffer_level = g_object_class_find_property(G_OBJECT_GET_CLASS(source), "current-level-buffers");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while(true) {
+        const auto bytes = gst_app_src_get_current_level_bytes(GST_APP_SRC(source));
+        guint64 buffers = 0;
+        if(has_buffer_level) g_object_get(source, "current-level-buffers", &buffers, nullptr);
+        if(bytes <= kAppsrcMaxBytes - size && buffers < kAppsrcMaxBuffers) break;
+        if(std::chrono::steady_clock::now() >= deadline) {
+            throw std::runtime_error("rgb encoder input backpressure timeout (100 ms); input not submitted");
+        }
+        append_encoded_frames(outputs, pull_encoded_frames(sink, 5 * GST_MSECOND));
+    }
+
+    GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
+    if(!buffer) throw std::runtime_error("failed to allocate encoder input");
+    gst_buffer_fill(buffer, 0, data, size);
+    GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
+    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+    GST_BUFFER_DURATION(buffer) = GST_SECOND / static_cast<uint64_t>(fps);
+    GST_BUFFER_OFFSET(buffer) = frame_index;
+    if(gst_app_src_push_buffer(GST_APP_SRC(source), buffer) != GST_FLOW_OK) {
+        throw std::runtime_error("gst_app_src_push_buffer failed");
+    }
+}
+
+std::string encoder_input_queue(GstH264QueuePolicy policy) {
+    return policy == GstH264QueuePolicy::Preview
+        ? "! queue name=input_queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream "
+        : "! queue name=input_queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=no ";
+}
 
 bool gst_element_supports_property(const std::string &element_name, const char *property_name) {
     GstElement *element = gst_element_factory_make(element_name.c_str(), nullptr);
@@ -41,17 +115,25 @@ std::string h264_encoder_stage(const std::string &encoder_name, int bitrate_bps,
 }
 
 std::string jpeg_decoder_stage(const std::string &encoder_name) {
+    // The SDK/V4L2 input is already one complete JPEG per buffer. jpegparse
+    // regenerates a constant-rate PTS sequence, losing the capture clock/jitter.
     if(encoder_name == "x264enc") {
-        return "! jpegparse ! jpegdec ! videoconvert ";
+        return "! jpegdec ! videoconvert ";
     }
-    return "! jpegparse ! mppjpegdec fast-mode=true format=NV12 ";
+    return "! mppjpegdec fast-mode=true format=NV12 ";
 }
 
 GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
-                               GstH264InputFormat input_format, int output_width, int output_height)
+                               GstH264InputFormat input_format, int output_width, int output_height,
+                               GstH264QueuePolicy queue_policy)
     : fps_(fps), output_width_(output_width > 0 ? output_width : width), output_height_(output_height > 0 ? output_height : height) {
     static std::once_flag gst_init_once;
     std::call_once(gst_init_once, [] { gst_init(nullptr, nullptr); });
+
+    if(width <= 0 || height <= 0 || fps <= 0) {
+        error_ = "invalid encoder dimensions or fps";
+        return;
+    }
 
     const bool scale_output = output_width_ != width || output_height_ != height;
     const std::string scale_stage =
@@ -63,27 +145,30 @@ GstH264Encoder::GstH264Encoder(int width, int height, int fps, int bitrate_bps, 
     std::string pipeline_text;
     if(input_format == GstH264InputFormat::Jpeg) {
         pipeline_text =
-            "appsrc name=src is-live=true block=true format=time do-timestamp=false "
-            "caps=image/jpeg,framerate=" + std::to_string(fps) + "/1 "
-            "! queue max-size-buffers=2 leaky=downstream "
+            "appsrc name=src is-live=true block=false max-bytes=16777216 format=time do-timestamp=false "
+            "caps=image/jpeg,parsed=true,width=" + std::to_string(width) + ",height=" + std::to_string(height)
+            + ",framerate=" + std::to_string(fps) + "/1 "
+            + encoder_input_queue(queue_policy)
             + jpeg_decoder_stage(encoder_name)
             + scale_stage +
             "! " + h264_encoder_stage(encoder_name, bitrate_bps, fps) + " "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "
-            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
+            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop="
+            + (queue_policy == GstH264QueuePolicy::Preview ? "true" : "false");
     }
     else {
         pipeline_text =
-            "appsrc name=src is-live=true block=true format=time do-timestamp=false "
+            "appsrc name=src is-live=true block=false max-bytes=16777216 format=time do-timestamp=false "
             "caps=video/x-raw,format=BGR,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 "
-            "! queue max-size-buffers=2 leaky=downstream "
+            + encoder_input_queue(queue_policy) +
             "! videoconvert "
             + scale_stage +
             "! " + h264_encoder_stage(encoder_name, bitrate_bps, fps) + " "
             "! h264parse "
             "! video/x-h264,stream-format=byte-stream,alignment=au "
-            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop=true";
+            "! appsink name=sink emit-signals=false sync=false max-buffers=8 drop="
+            + (queue_policy == GstH264QueuePolicy::Preview ? "true" : "false");
     }
 
     GError *error = nullptr;
@@ -169,42 +254,10 @@ std::vector<EncodedH264Frame> GstH264Encoder::encode_bytes(const uint8_t *data, 
 
     send_pending_keyframe_event();
 
-    GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
-    gst_buffer_fill(buffer, 0, data, size);
-    GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
-    GST_BUFFER_DURATION(buffer) = static_cast<GstClockTime>(1000000000ull / static_cast<uint64_t>(fps_));
-    GST_BUFFER_OFFSET(buffer) = frame_index_++;
-
-    const GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);
-    if(flow != GST_FLOW_OK) {
-        throw std::runtime_error("gst_app_src_push_buffer failed");
-    }
-
-    std::vector<EncodedH264Frame> outputs;
-    GstClockTime timeout = 20 * GST_MSECOND;
-    while(true) {
-        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), timeout);
-        if(!sample) {
-            break;
-        }
-        GstBuffer *encoded = gst_sample_get_buffer(sample);
-        GstMapInfo map{};
-        if(encoded && gst_buffer_map(encoded, &map, GST_MAP_READ)) {
-            EncodedH264Frame frame;
-            frame.data.assign(map.data, map.data + map.size);
-            const GstClockTime pts = GST_BUFFER_PTS(encoded);
-            if(GST_CLOCK_TIME_IS_VALID(pts)) {
-                frame.pts_us = static_cast<uint64_t>(pts / GST_USECOND);
-                frame.has_pts = true;
-            }
-            outputs.push_back(std::move(frame));
-            gst_buffer_unmap(encoded, &map);
-        }
-        gst_sample_unref(sample);
-        timeout = 0;
-    }
-    return outputs;
+    // Keep any outputs drained during admission if this input times out.
+    push_encoder_input(appsrc_, appsink_, data, size, timestamp_us, fps_, frame_index_++, ready_outputs_);
+    append_encoded_frames(ready_outputs_, pull_encoded_frames(appsink_, 20 * GST_MSECOND));
+    return std::exchange(ready_outputs_, {});
 }
 
 GstJpegDualH264Encoder::GstJpegDualH264Encoder(int width, int height, int fps, int main_bitrate_bps, const std::string &encoder_name,
@@ -218,7 +271,7 @@ GstJpegDualH264Encoder::GstJpegDualH264Encoder(int width, int height, int fps, i
     static std::once_flag gst_init_once;
     std::call_once(gst_init_once, [] { gst_init(nullptr, nullptr); });
 
-    if(width_ <= 0 || height_ <= 0 || preview_width_ <= 0 || preview_height_ <= 0) {
+    if(width_ <= 0 || height_ <= 0 || preview_width_ <= 0 || preview_height_ <= 0 || fps_ <= 0) {
         error_ = "invalid dual encoder dimensions";
         return;
     }
@@ -241,18 +294,19 @@ GstJpegDualH264Encoder::GstJpegDualH264Encoder(int width, int height, int fps, i
                                      + ",height=" + std::to_string(preview_height_) + ",framerate=" + std::to_string(preview_fps_) + "/1 ";
 
     const std::string pipeline_text =
-        "appsrc name=src is-live=true block=false leaky-type=downstream max-buffers=2 max-bytes=0 format=time do-timestamp=false "
-        "caps=image/jpeg,framerate=" + std::to_string(fps_) + "/1 "
-        "! queue max-size-buffers=2 leaky=downstream "
+        "appsrc name=src is-live=true block=false max-bytes=16777216 format=time do-timestamp=false "
+        "caps=image/jpeg,parsed=true,width=" + std::to_string(width_) + ",height=" + std::to_string(height_)
+        + ",framerate=" + std::to_string(fps_) + "/1 "
+        + encoder_input_queue(GstH264QueuePolicy::Recording)
         + jpeg_decoder_stage(encoder_name)
         + "! " + source_caps
         + "! tee name=t allow-not-linked=true "
-        "t. ! queue max-size-buffers=2 leaky=downstream "
+        "t. ! queue name=main_queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=no "
         "! " + main_encoder_stage + " "
         "! h264parse "
         "! video/x-h264,stream-format=byte-stream,alignment=au "
-        "! appsink name=main_sink emit-signals=false sync=false max-buffers=8 drop=true "
-        "t. ! queue max-size-buffers=2 leaky=downstream "
+        "! appsink name=main_sink emit-signals=false sync=false max-buffers=8 drop=false "
+        "t. ! queue name=preview_queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream "
         "! valve name=preview_valve drop=true drop-mode=transform-to-gap "
         "! videoscale "
         "! " + preview_caps
@@ -331,30 +385,7 @@ void GstJpegDualH264Encoder::send_pending_keyframe_event(GstElement *sink, bool 
 }
 
 std::vector<EncodedH264Frame> GstJpegDualH264Encoder::drain_sink(GstElement *sink, GstClockTime first_timeout) {
-    std::vector<EncodedH264Frame> outputs;
-    GstClockTime timeout = first_timeout;
-    while(sink) {
-        GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), timeout);
-        if(!sample) {
-            break;
-        }
-        GstBuffer *encoded = gst_sample_get_buffer(sample);
-        GstMapInfo map{};
-        if(encoded && gst_buffer_map(encoded, &map, GST_MAP_READ)) {
-            EncodedH264Frame frame;
-            frame.data.assign(map.data, map.data + map.size);
-            const GstClockTime pts = GST_BUFFER_PTS(encoded);
-            if(GST_CLOCK_TIME_IS_VALID(pts)) {
-                frame.pts_us = static_cast<uint64_t>(pts / GST_USECOND);
-                frame.has_pts = true;
-            }
-            outputs.push_back(std::move(frame));
-            gst_buffer_unmap(encoded, &map);
-        }
-        gst_sample_unref(sample);
-        timeout = 0;
-    }
-    return outputs;
+    return pull_encoded_frames(sink, first_timeout);
 }
 
 DualEncodedH264Frames GstJpegDualH264Encoder::encode_jpeg(const void *data, size_t size, uint64_t timestamp_us, bool preview_active) {
@@ -375,20 +406,11 @@ DualEncodedH264Frames GstJpegDualH264Encoder::encode_jpeg(const void *data, size
     preview_active_ = preview_active;
     send_pending_keyframe_event(main_sink_, force_main_keyframe_pending_, force_main_keyframe_count_);
 
-    GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
-    gst_buffer_fill(buffer, 0, data, size);
-    GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(timestamp_us) * GST_USECOND;
-    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
-    GST_BUFFER_DURATION(buffer) = static_cast<GstClockTime>(1000000000ull / static_cast<uint64_t>(fps_));
-    GST_BUFFER_OFFSET(buffer) = frame_index_++;
-
-    const GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);
-    if(flow != GST_FLOW_OK) {
-        throw std::runtime_error("gst_app_src_push_buffer failed");
-    }
-
     DualEncodedH264Frames outputs;
-    outputs.main = drain_sink(main_sink_, 20 * GST_MSECOND);
+    push_encoder_input(appsrc_, main_sink_, static_cast<const uint8_t *>(data), size,
+                       timestamp_us, fps_, frame_index_++, ready_main_outputs_);
+    append_encoded_frames(ready_main_outputs_, drain_sink(main_sink_, 20 * GST_MSECOND));
+    outputs.main = std::exchange(ready_main_outputs_, {});
     outputs.preview = drain_sink(preview_sink_, preview_active ? 5 * GST_MSECOND : 0);
     return outputs;
 }

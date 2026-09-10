@@ -15,6 +15,11 @@ enum class GstH264InputFormat {
     Jpeg,
 };
 
+enum class GstH264QueuePolicy {
+    Recording,
+    Preview,
+};
+
 struct EncodedH264Frame {
     std::vector<uint8_t> data;
     uint64_t pts_us = 0;
@@ -29,7 +34,8 @@ struct DualEncodedH264Frames {
 class GstH264Encoder {
 public:
     GstH264Encoder(int width, int height, int fps, int bitrate_bps, const std::string &encoder_name,
-                   GstH264InputFormat input_format = GstH264InputFormat::Bgr, int output_width = 0, int output_height = 0);
+                   GstH264InputFormat input_format = GstH264InputFormat::Bgr, int output_width = 0, int output_height = 0,
+                   GstH264QueuePolicy queue_policy = GstH264QueuePolicy::Recording);
     ~GstH264Encoder();
 
     GstH264Encoder(const GstH264Encoder &) = delete;
@@ -44,6 +50,7 @@ public:
     int output_height() const { return output_height_; }
 
 private:
+    friend struct GstEncoderTestAccess;
     std::vector<EncodedH264Frame> encode_bytes(const uint8_t *data, size_t size, uint64_t timestamp_us);
     void send_pending_keyframe_event();
 
@@ -51,6 +58,7 @@ private:
     GstElement *appsrc_ = nullptr;
     GstElement *encoder_ = nullptr;
     GstElement *appsink_ = nullptr;
+    std::vector<EncodedH264Frame> ready_outputs_;
     bool ok_ = false;
     std::string error_;
     uint64_t frame_index_ = 0;
@@ -80,6 +88,7 @@ public:
     int preview_output_height() const { return preview_height_; }
 
 private:
+    friend struct GstEncoderTestAccess;
     std::vector<EncodedH264Frame> drain_sink(GstElement *sink, GstClockTime first_timeout);
     void send_pending_keyframe_event(GstElement *sink, bool &pending, uint32_t &count);
 
@@ -90,6 +99,7 @@ private:
     GstElement *preview_valve_ = nullptr;
     GstElement *main_sink_ = nullptr;
     GstElement *preview_sink_ = nullptr;
+    std::vector<EncodedH264Frame> ready_main_outputs_;
     bool ok_ = false;
     std::string error_;
     uint64_t frame_index_ = 0;

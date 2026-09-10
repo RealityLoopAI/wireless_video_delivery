@@ -212,6 +212,20 @@ if(BUILD_TESTING)
     add_test(NAME rgb_input_audit COMMAND rgb_input_audit_test)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+    add_executable(gst_encoder_backpressure_test
+        "${CMAKE_SOURCE_DIR}/10_tests/test_gst_encoder_backpressure.cpp"
+        src/gst_h264_encoder.cpp)
+    target_include_directories(gst_encoder_backpressure_test PRIVATE include ${GSTREAMER_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+    target_link_directories(gst_encoder_backpressure_test PRIVATE ${GSTREAMER_LIBRARY_DIRS})
+    target_link_libraries(gst_encoder_backpressure_test PRIVATE ${GSTREAMER_LIBRARIES} ${OpenCV_LIBS} pthread)
+    target_compile_options(gst_encoder_backpressure_test PRIVATE ${GSTREAMER_CFLAGS_OTHER} -Wall -Wextra -Wpedantic)
+    foreach(mode bgr jpeg dual)
+        foreach(scenario pressure timing timeout preview)
+            add_test(NAME gst_encoder_${mode}_${scenario} COMMAND gst_encoder_backpressure_test x264enc ${mode} ${scenario})
+            set_tests_properties(gst_encoder_${mode}_${scenario} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
+        endforeach()
+    endforeach()
+
     add_executable(mpp_keyframe_repeat_test
         "${CMAKE_SOURCE_DIR}/10_tests/test_mpp_keyframe_repeat.cpp"
         src/gst_h264_encoder.cpp)

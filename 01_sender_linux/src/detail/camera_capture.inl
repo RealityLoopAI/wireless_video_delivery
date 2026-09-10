@@ -1307,14 +1307,16 @@ void v4l2_camera_worker_loop(const AppConfig &config, CameraRuntime &camera, siz
                             std::lock_guard<std::mutex> encoder_lock(g_encoder_create_mutex);
                             camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
                                 frame.width, frame.height, config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
-                                camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height,
+                                GstH264QueuePolicy::Preview);
                             if(!camera.web_preview_encoder->ok()) {
                                 logger.warn("v4l2 jpeg web rgb preview path unavailable, falling back to BGR encode path camera_id="
                                             + camera.config.camera_id + " error=" + camera.web_preview_encoder->error());
                                 input_format = GstH264InputFormat::Bgr;
                                 camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
                                     frame.width, frame.height, config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
-                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height,
+                                    GstH264QueuePolicy::Preview);
                             }
                         }
                         {
@@ -1732,14 +1734,16 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                                 std::lock_guard<std::mutex> encoder_lock(g_encoder_create_mutex);
                                 camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
                                     color->width(), color->height(), config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
-                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                    camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height,
+                                    GstH264QueuePolicy::Preview);
                                 if(!camera.web_preview_encoder->ok() && color_is_mjpg) {
                                     logger.warn("mppjpegdec web rgb preview path unavailable, falling back to BGR encode path: "
                                                 + camera.web_preview_encoder->error());
                                     input_format = GstH264InputFormat::Bgr;
                                     camera.web_preview_encoder = std::make_unique<GstH264Encoder>(
                                         color->width(), color->height(), config.web_rgb_preview.fps, config.web_rgb_preview.bitrate_bps,
-                                        camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height);
+                                        camera.config.rgb_encoding.gstreamer_encoder, input_format, shape.width, shape.height,
+                                        GstH264QueuePolicy::Preview);
                                 }
                             }
                             {
