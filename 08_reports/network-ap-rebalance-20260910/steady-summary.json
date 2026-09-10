@@ -1,0 +1,110 @@
+{
+  "duration_seconds": 89.986532,
+  "sample_count": 46,
+  "first_us": 1789017989742070,
+  "last_us": 1789018079728602,
+  "cameras": {
+    "lubancat-52d2ef0c_cam01": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 30.026715553389703,
+      "received_depth_fps": 30.026715553389703,
+      "rgb_delay_median_ms": 47.958,
+      "rgb_delay_max_ms": 67.147,
+      "depth_delay_median_ms": 18.077,
+      "depth_delay_max_ms": 33.302,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    },
+    "lubancat-e8cc0cb3_cam01": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 30.026715553389703,
+      "received_depth_fps": 30.026715553389703,
+      "rgb_delay_median_ms": 60.249,
+      "rgb_delay_max_ms": 66.073,
+      "depth_delay_median_ms": 27.546,
+      "depth_delay_max_ms": 34.662,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    },
+    "orangepi5pro-ab748372_cam01": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 30.004490005237674,
+      "received_depth_fps": 30.060053875617744,
+      "rgb_delay_median_ms": 49.118,
+      "rgb_delay_max_ms": 64.073,
+      "depth_delay_median_ms": 69.974,
+      "depth_delay_max_ms": 96.672,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    },
+    "orangepi5pro-b439137c_cam02": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 30.004490005237674,
+      "received_depth_fps": 30.071166649693758,
+      "rgb_delay_median_ms": 50.952,
+      "rgb_delay_max_ms": 79.881,
+      "depth_delay_median_ms": 68.284,
+      "depth_delay_max_ms": 93.861,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    },
+    "orangepi5pro-fe0f7222_cam01": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 29.99337723116166,
+      "received_depth_fps": 30.04894110154173,
+      "rgb_delay_median_ms": 49.669,
+      "rgb_delay_max_ms": 65.066,
+      "depth_delay_median_ms": 68.069,
+      "depth_delay_max_ms": 85.492,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    },
+    "rk3588-ubuntu_cam01": {
+      "all_live": true,
+      "all_clock_models_valid": true,
+      "received_rgb_fps": 29.982264457085645,
+      "received_depth_fps": 30.071166649693758,
+      "rgb_delay_median_ms": 42.4,
+      "rgb_delay_max_ms": 48.344,
+      "depth_delay_median_ms": 55.281,
+      "depth_delay_max_ms": 75.664,
+      "counter_deltas": {
+        "sender_rgb_dropped_frames": 0,
+        "sender_depth_dropped_frames": 0,
+        "sender_rgb_send_failures": 0,
+        "sender_depth_send_failures": 0,
+        "record_write_errors": 0
+      }
+    }
+  }
+}

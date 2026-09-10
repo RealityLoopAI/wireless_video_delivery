@@ -1,0 +1,6 @@
+connection.id:                          666666
+connection.uuid:                        3d20d7cf-b978-4392-bd02-255c604cac0f
+connection.autoconnect-priority:        60
+802-11-wireless.band:                   a
+802-11-wireless.bssid:                  14:20:04:7F:74:19
+802-11-wireless.powersave:              2 (disable)

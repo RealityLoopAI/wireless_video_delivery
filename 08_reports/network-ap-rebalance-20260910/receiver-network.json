@@ -1,0 +1,93 @@
+{
+  "host": "loop-Standard-PC-i440FX-PIIX-1996",
+  "started_us": 1789017907218717,
+  "active": {
+    "rc": 0,
+    "out": "NAME                UUID                                  TYPE      DEVICE \nWired connection 1  f4fa7b5e-c1ab-32ef-9e4a-581699481abb  ethernet  ens3   \nlo                  275dbb40-533d-40ec-b7bb-16853dd1d146  loopback  lo     \n",
+    "err": ""
+  },
+  "driver": {
+    "rc": 71,
+    "out": "",
+    "err": "Cannot get driver information: No such device\n"
+  },
+  "power_save": {
+    "error": "[Errno 2] No such file or directory: 'iw'"
+  },
+  "qdisc": {
+    "rc": 1,
+    "out": "",
+    "err": "Cannot find device \"wlan0\"\n"
+  },
+  "measured_seconds": 12.006555057945661,
+  "interface_rates": {
+    "ens4": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    },
+    "ens3": {
+      "delta": {
+        "rx_bytes": 131158802,
+        "tx_bytes": 4384814,
+        "rx_packets": 44786,
+        "tx_packets": 28758,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 2.9216133879122848,
+      "rx_mbps": 87.39146332449599
+    }
+  },
+  "ping_gateway": {
+    "rc": 0,
+    "out": "PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.\n64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=0.880 ms\n64 bytes from 192.168.1.1: icmp_seq=2 ttl=64 time=0.720 ms\n64 bytes from 192.168.1.1: icmp_seq=3 ttl=64 time=0.651 ms\n64 bytes from 192.168.1.1: icmp_seq=4 ttl=64 time=0.744 ms\n64 bytes from 192.168.1.1: icmp_seq=5 ttl=64 time=0.701 ms\n\n--- 192.168.1.1 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 826ms\nrtt min/avg/max/mdev = 0.651/0.739/0.880/0.076 ms\n",
+    "err": ""
+  },
+  "ping_receiver": {
+    "rc": 0,
+    "out": "PING 192.168.1.196 (192.168.1.196) 56(84) bytes of data.\n64 bytes from 192.168.1.196: icmp_seq=1 ttl=64 time=0.007 ms\n64 bytes from 192.168.1.196: icmp_seq=2 ttl=64 time=0.016 ms\n64 bytes from 192.168.1.196: icmp_seq=3 ttl=64 time=0.020 ms\n64 bytes from 192.168.1.196: icmp_seq=4 ttl=64 time=0.025 ms\n64 bytes from 192.168.1.196: icmp_seq=5 ttl=64 time=0.019 ms\n\n--- 192.168.1.196 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 829ms\nrtt min/avg/max/mdev = 0.007/0.017/0.025/0.006 ms\n",
+    "err": ""
+  },
+  "before": {
+    "time": 1789017907.2819686,
+    "mono": 787883.202572569,
+    "link": {
+      "error": "[Errno 2] No such file or directory: 'iw'"
+    },
+    "stations": {
+      "error": "[Errno 2] No such file or directory: 'iw'"
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess\n",
+      "err": ""
+    }
+  },
+  "after": {
+    "time": 1789017919.2885234,
+    "mono": 787895.209127627,
+    "link": {
+      "error": "[Errno 2] No such file or directory: 'iw'"
+    },
+    "stations": {
+      "error": "[Errno 2] No such file or directory: 'iw'"
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess\n",
+      "err": ""
+    }
+  }
+}

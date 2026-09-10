@@ -1,0 +1,103 @@
+{
+  "host": "lubancat",
+  "started_us": 1789017868776010,
+  "active": {
+    "rc": 0,
+    "out": "NAME    UUID                                  TYPE  DEVICE \n666666  3d20d7cf-b978-4392-bd02-255c604cac0f  wifi  wlan0  \n",
+    "err": ""
+  },
+  "driver": {
+    "rc": 0,
+    "out": "driver: rtl8821cu\nversion: v5.12.0.4-1-g9241a6516.20210916\nfirmware-version: 24.8\nexpansion-rom-version: \nbus-info: 3-1.6:1.2\nsupports-statistics: yes\nsupports-test: no\nsupports-eeprom-access: no\nsupports-register-dump: no\nsupports-priv-flags: no\n",
+    "err": ""
+  },
+  "power_save": {
+    "rc": 0,
+    "out": "Power save: off\n",
+    "err": ""
+  },
+  "qdisc": {
+    "rc": 0,
+    "out": "qdisc pfifo 8001: root refcnt 5 limit 128p\n Sent 68090339082 bytes 55044770 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n",
+    "err": ""
+  },
+  "measured_seconds": 20.064396140005556,
+  "interface_rates": {
+    "wlan0": {
+      "delta": {
+        "rx_bytes": 1523151,
+        "tx_bytes": 467758,
+        "rx_packets": 1374,
+        "tx_packets": 2731,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 1,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.18650269730963176,
+      "rx_mbps": 0.6073049951253916
+    },
+    "dummy0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    }
+  },
+  "ping_gateway": {
+    "rc": 0,
+    "out": "PING 192.168.1.1 (192.168.1.1): 56 data bytes\n64 bytes from 192.168.1.1: icmp_seq=0 ttl=64 time=3.834 ms\n64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=2.663 ms\n64 bytes from 192.168.1.1: icmp_seq=2 ttl=64 time=17.496 ms\n64 bytes from 192.168.1.1: icmp_seq=3 ttl=64 time=2.569 ms\n64 bytes from 192.168.1.1: icmp_seq=4 ttl=64 time=4.933 ms\n--- 192.168.1.1 ping statistics ---\n5 packets transmitted, 5 packets received, 0% packet loss\nround-trip min/avg/max/stddev = 2.569/6.299/17.496/5.665 ms\n",
+    "err": ""
+  },
+  "ping_receiver": {
+    "rc": 0,
+    "out": "PING 192.168.1.196 (192.168.1.196): 56 data bytes\n64 bytes from 192.168.1.196: icmp_seq=0 ttl=64 time=2.462 ms\n64 bytes from 192.168.1.196: icmp_seq=1 ttl=64 time=18.167 ms\n64 bytes from 192.168.1.196: icmp_seq=2 ttl=64 time=2.269 ms\n64 bytes from 192.168.1.196: icmp_seq=3 ttl=64 time=2.155 ms\n64 bytes from 192.168.1.196: icmp_seq=4 ttl=64 time=2.377 ms\n--- 192.168.1.196 ping statistics ---\n5 packets transmitted, 5 packets received, 0% packet loss\nround-trip min/avg/max/stddev = 2.155/5.486/18.167/6.341 ms\n",
+    "err": ""
+  },
+  "before": {
+    "time": 1789017869.0544934,
+    "mono": 73001.411712166,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 14:20:04:7f:74:19 (on wlan0)\n\tSSID: 666666\n\tfreq: 5220\n\tsignal: -37 dBm\n\ttx bitrate: 434.0 MBit/s\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State      Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                    \nFIN-WAIT-1 0      1      192.168.0.105:48768 192.168.1.196:8080  rto:0.53 ato:0.04 qack:12 cwnd:10 retrans:5/0 reordering:0\nESTAB      0      224836 192.168.0.105:33726 192.168.1.196:50010 rto:16.12 cwnd:1 ssthresh:49 retrans:5/0 reordering:0     \nESTAB      0      356316 192.168.0.105:33716 192.168.1.196:50010 rto:24.32 cwnd:1 ssthresh:109 retrans:6/0 reordering:0    \nESTAB      0      0      192.168.0.105:54552 192.168.1.196:50010 rto:0.2 cwnd:85 ssthresh:85 reordering:0                  \nESTAB      0      132    192.168.1.156:44770 192.168.1.196:8080  rto:0.2 cwnd:10 reordering:0                              \n",
+      "err": ""
+    }
+  },
+  "after": {
+    "time": 1789017889.1188862,
+    "mono": 73021.476108306,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 14:20:04:7f:74:19 (on wlan0)\n\tSSID: 666666\n\tfreq: 5220\n\tsignal: -37 dBm\n\ttx bitrate: 434.0 MBit/s\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State      Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                    \nFIN-WAIT-1 0      1      192.168.0.105:48768 192.168.1.196:8080  rto:0.53 ato:0.04 qack:12 cwnd:10 retrans:6/0 reordering:0\nESTAB      0      224836 192.168.0.105:33726 192.168.1.196:50010 rto:32.25 cwnd:1 ssthresh:49 retrans:6/0 reordering:0     \nESTAB      0      356316 192.168.0.105:33716 192.168.1.196:50010 rto:24.32 cwnd:1 ssthresh:109 retrans:6/0 reordering:0    \nESTAB      0      0      192.168.0.105:54552 192.168.1.196:50010 rto:0.2 cwnd:85 ssthresh:85 reordering:0                  \n",
+      "err": ""
+    }
+  }
+}

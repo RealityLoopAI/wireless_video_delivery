@@ -1,0 +1,117 @@
+{
+  "host": "lubancat-e8cc0cb3",
+  "started_us": 1789017634410144,
+  "active": {
+    "rc": 0,
+    "out": "NAME             UUID                                  TYPE  DEVICE \nTP-LINK_5G_215E  34f95e7a-7e3c-4361-b0d2-e0ab1cac3b87  wifi  wlan0  \n",
+    "err": ""
+  },
+  "driver": {
+    "rc": 0,
+    "out": "driver: rtw_8821cu\nversion: 6.1.99-rk3576\nfirmware-version: N/A\nexpansion-rom-version: \nbus-info: 1-1.6:1.2\nsupports-statistics: yes\nsupports-test: no\nsupports-eeprom-access: no\nsupports-register-dump: no\nsupports-priv-flags: no\n",
+    "err": ""
+  },
+  "power_save": {
+    "rc": 0,
+    "out": "Power save: off\n",
+    "err": ""
+  },
+  "qdisc": {
+    "rc": 0,
+    "out": "qdisc pfifo 8001: root refcnt 2 limit 128p\n Sent 245865321189 bytes 195632214 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n",
+    "err": ""
+  },
+  "measured_seconds": 12.044927734008525,
+  "interface_rates": {
+    "usb0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    },
+    "wlan0": {
+      "delta": {
+        "rx_bytes": 326275,
+        "tx_bytes": 15233365,
+        "rx_packets": 4731,
+        "tx_packets": 11150,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 10.117696236226646,
+      "rx_mbps": 0.21670532672688203
+    },
+    "dummy0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    }
+  },
+  "ping_gateway": {
+    "rc": 0,
+    "out": "PING 192.168.0.1 (192.168.0.1): 56 data bytes\n64 bytes from 192.168.0.1: icmp_seq=0 ttl=64 time=26.160 ms\n64 bytes from 192.168.0.1: icmp_seq=1 ttl=64 time=109.757 ms\n64 bytes from 192.168.0.1: icmp_seq=2 ttl=64 time=14.768 ms\n64 bytes from 192.168.0.1: icmp_seq=3 ttl=64 time=63.735 ms\n64 bytes from 192.168.0.1: icmp_seq=4 ttl=64 time=39.156 ms\n--- 192.168.0.1 ping statistics ---\n5 packets transmitted, 5 packets received, 0% packet loss\nround-trip min/avg/max/stddev = 14.768/50.715/109.757/33.717 ms\n",
+    "err": ""
+  },
+  "ping_receiver": {
+    "rc": 0,
+    "out": "PING 192.168.1.196 (192.168.1.196): 56 data bytes\n64 bytes from 192.168.1.196: icmp_seq=0 ttl=63 time=104.238 ms\n64 bytes from 192.168.1.196: icmp_seq=1 ttl=63 time=323.480 ms\n64 bytes from 192.168.1.196: icmp_seq=2 ttl=63 time=135.361 ms\n64 bytes from 192.168.1.196: icmp_seq=3 ttl=63 time=88.074 ms\n64 bytes from 192.168.1.196: icmp_seq=4 ttl=63 time=30.808 ms\n--- 192.168.1.196 ping statistics ---\n5 packets transmitted, 5 packets received, 0% packet loss\nround-trip min/avg/max/stddev = 30.808/136.392/323.480/99.518 ms\n",
+    "err": ""
+  },
+  "before": {
+    "time": 1789017634.664303,
+    "mono": 264960.667312195,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 34:f7:16:41:21:60 (on wlan0)\n\tSSID: TP-LINK_5G_215E\n\tfreq: 5745\n\tRX: 179759252 bytes (80863142 packets)\n\tTX: 2234930497 bytes (195632300 packets)\n\tsignal: -47 dBm\n\trx bitrate: 65.0 MBit/s VHT-MCS 7 VHT-NSS 1\n\ttx bitrate: 234.0 MBit/s VHT-MCS 5 80MHz VHT-NSS 1\n\n\tbss flags:\tshort-slot-time\n\tdtim period:\t1\n\tbeacon int:\t100\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "Station 34:f7:16:41:21:60 (on wlan0)\n\tinactive time:\t28 ms\n\trx bytes:\t8769693844\n\trx packets:\t80863142\n\ttx bytes:\t251343041406\n\ttx packets:\t195632307\n\ttx retries:\t0\n\ttx failed:\t0\n\tbeacon loss:\t0\n\tbeacon rx:\t2502377\n\trx drop misc:\t358668\n\tsignal:  \t-47 [-47] dBm\n\tsignal avg:\t-44 [-44] dBm\n\tbeacon signal avg:\t-44 dBm\n\ttx bitrate:\t234.0 MBit/s VHT-MCS 5 80MHz VHT-NSS 1\n\ttx duration:\t0 us\n\trx bitrate:\t65.0 MBit/s VHT-MCS 7 VHT-NSS 1\n\trx duration:\t0 us\n\tauthorized:\tyes\n\tauthenticated:\tyes\n\tassociated:\tyes\n\tpreamble:\tlong\n\tWMM/WME:\tyes\n\tMFP:\t\tno\n\tTDLS peer:\tno\n\tDTIM period:\t1\n\tbeacon interval:100\n\tshort slot time:yes\n\tconnected time:\t264944 seconds\n\tassociated at [boottime]:\t17.686s\n\tassociated at:\t1788752691683 ms\n\tcurrent time:\t1789017634679 ms\n",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                        \nESTAB 0      0      192.168.0.109:55062 192.168.1.196:22    rto:0.64 ato:0.04 qack:13 bidir cwnd:7 ssthresh:7 reordering:0\nESTAB 0      171031 192.168.0.109:33104 192.168.1.196:50010 rto:0.22 cwnd:232 ssthresh:69 reordering:0                    \nESTAB 0      13855  192.168.0.109:33100 192.168.1.196:50010 rto:0.34 cwnd:125 ssthresh:91 reordering:0                    \n",
+      "err": ""
+    }
+  },
+  "after": {
+    "time": 1789017646.7092276,
+    "mono": 264972.712239929,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 34:f7:16:41:21:60 (on wlan0)\n\tSSID: TP-LINK_5G_215E\n\tfreq: 5745\n\tRX: 180281440 bytes (80868051 packets)\n\tTX: 2250164186 bytes (195643452 packets)\n\tsignal: -45 dBm\n\trx bitrate: 13.0 MBit/s VHT-MCS 1 VHT-NSS 1\n\ttx bitrate: 175.5 MBit/s VHT-MCS 4 80MHz VHT-NSS 1\n\n\tbss flags:\tshort-slot-time\n\tdtim period:\t1\n\tbeacon int:\t100\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "Station 34:f7:16:41:21:60 (on wlan0)\n\tinactive time:\t0 ms\n\trx bytes:\t8770216440\n\trx packets:\t80868055\n\ttx bytes:\t251358273522\n\ttx packets:\t195643456\n\ttx retries:\t0\n\ttx failed:\t0\n\tbeacon loss:\t0\n\tbeacon rx:\t2502466\n\trx drop misc:\t358681\n\tsignal:  \t-44 [-44] dBm\n\tsignal avg:\t-44 [-44] dBm\n\tbeacon signal avg:\t-44 dBm\n\ttx bitrate:\t175.5 MBit/s VHT-MCS 4 80MHz VHT-NSS 1\n\ttx duration:\t0 us\n\trx bitrate:\t52.0 MBit/s VHT-MCS 5 VHT-NSS 1\n\trx duration:\t0 us\n\tauthorized:\tyes\n\tauthenticated:\tyes\n\tassociated:\tyes\n\tpreamble:\tlong\n\tWMM/WME:\tyes\n\tMFP:\t\tno\n\tTDLS peer:\tno\n\tDTIM period:\t1\n\tbeacon interval:100\n\tshort slot time:yes\n\tconnected time:\t264956 seconds\n\tassociated at [boottime]:\t17.686s\n\tassociated at:\t1788752691683 ms\n\tcurrent time:\t1789017646732 ms\n",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                        \nESTAB 0      0      192.168.0.109:55062 192.168.1.196:22    rto:0.54 ato:0.04 qack:13 bidir cwnd:7 ssthresh:7 reordering:0\nESTAB 0      104256 192.168.0.109:33104 192.168.1.196:50010 rto:1.28 cwnd:232 ssthresh:174 reordering:0                   \nESTAB 0      88328  192.168.0.109:33100 192.168.1.196:50010 rto:1.8 cwnd:108 ssthresh:94 reordering:0                     \n",
+      "err": ""
+    }
+  }
+}

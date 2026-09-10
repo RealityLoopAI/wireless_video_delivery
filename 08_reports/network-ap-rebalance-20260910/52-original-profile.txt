@@ -1,0 +1,5 @@
+connection.id:                          TP-LINK_5G_215E
+connection.uuid:                        039896f5-089e-47a9-9882-d21abfe7112e
+connection.autoconnect-priority:        50
+802-11-wireless.band:                   a
+802-11-wireless.bssid:                  --

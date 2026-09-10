@@ -1,0 +1,103 @@
+{
+  "host": "lubancat",
+  "started_us": 1789017593672558,
+  "active": {
+    "rc": 0,
+    "out": "NAME             UUID                                  TYPE  DEVICE \nTP-LINK_5G_215E  039896f5-089e-47a9-9882-d21abfe7112e  wifi  wlan0  \n",
+    "err": ""
+  },
+  "driver": {
+    "rc": 0,
+    "out": "driver: rtl8821cu\nversion: v5.12.0.4-1-g9241a6516.20210916\nfirmware-version: 24.8\nexpansion-rom-version: \nbus-info: 3-1.6:1.2\nsupports-statistics: yes\nsupports-test: no\nsupports-eeprom-access: no\nsupports-register-dump: no\nsupports-priv-flags: no\n",
+    "err": ""
+  },
+  "power_save": {
+    "rc": 0,
+    "out": "Power save: off\n",
+    "err": ""
+  },
+  "qdisc": {
+    "rc": 0,
+    "out": "qdisc pfifo 8001: root refcnt 5 limit 128p\n Sent 67842159297 bytes 54846701 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n",
+    "err": ""
+  },
+  "measured_seconds": 12.045928306004498,
+  "interface_rates": {
+    "wlan0": {
+      "delta": {
+        "rx_bytes": 952546,
+        "tx_bytes": 10611940,
+        "rx_packets": 3662,
+        "tx_packets": 8220,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 7.047652770578286,
+      "rx_mbps": 0.6326094433254678
+    },
+    "dummy0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    }
+  },
+  "ping_gateway": {
+    "rc": 0,
+    "out": "PING 192.168.0.1 (192.168.0.1): 56 data bytes\n64 bytes from 192.168.0.1: icmp_seq=1 ttl=64 time=102.800 ms\n64 bytes from 192.168.0.1: icmp_seq=2 ttl=64 time=75.846 ms\n64 bytes from 192.168.0.1: icmp_seq=3 ttl=64 time=217.183 ms\n64 bytes from 192.168.0.1: icmp_seq=4 ttl=64 time=19.360 ms\n--- 192.168.0.1 ping statistics ---\n5 packets transmitted, 4 packets received, 20% packet loss\nround-trip min/avg/max/stddev = 19.360/103.797/217.183/72.056 ms\n",
+    "err": ""
+  },
+  "ping_receiver": {
+    "rc": 0,
+    "out": "PING 192.168.1.196 (192.168.1.196): 56 data bytes\n64 bytes from 192.168.1.196: icmp_seq=0 ttl=63 time=316.427 ms\n64 bytes from 192.168.1.196: icmp_seq=1 ttl=63 time=116.044 ms\n64 bytes from 192.168.1.196: icmp_seq=2 ttl=63 time=82.143 ms\n64 bytes from 192.168.1.196: icmp_seq=3 ttl=63 time=167.479 ms\n64 bytes from 192.168.1.196: icmp_seq=4 ttl=63 time=103.924 ms\n--- 192.168.1.196 ping statistics ---\n5 packets transmitted, 5 packets received, 0% packet loss\nround-trip min/avg/max/stddev = 82.143/157.203/316.427/84.409 ms\n",
+    "err": ""
+  },
+  "before": {
+    "time": 1789017593.893124,
+    "mono": 72726.250343166,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 34:f7:16:41:21:60 (on wlan0)\n\tSSID: TP-LINK_5G_215E\n\tfreq: 5745\n\tsignal: -49 dBm\n\ttx bitrate: 434.0 MBit/s\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State    Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                                     \nESTAB    0      39053  192.168.0.105:33726 192.168.1.196:50010 rto:0.25 cwnd:59 ssthresh:48 reordering:0                                  \nLAST-ACK 0      1      192.168.0.105:36464 192.168.1.196:8080  rto:33.79 ato:0.04 qack:16 cwnd:1 ssthresh:7 retrans:7/0 reordering:0      \nLAST-ACK 0      1      192.168.0.105:41924 192.168.1.196:8080  rto:20.22 ato:0.04 qack:15 bidir cwnd:1 ssthresh:7 retrans:6/0 reordering:0\nLAST-ACK 0      1      192.168.0.105:60730 192.168.1.196:8080  rto:50.49 ato:0.04 qack:15 bidir cwnd:1 ssthresh:7 retrans:4/0 reordering:0\nESTAB    0      134664 192.168.0.105:33716 192.168.1.196:50010 rto:0.27 cwnd:102 ssthresh:43 reordering:0                                 \n",
+      "err": ""
+    }
+  },
+  "after": {
+    "time": 1789017605.939049,
+    "mono": 72738.296271472,
+    "link": {
+      "rc": 0,
+      "out": "Connected to 34:f7:16:41:21:60 (on wlan0)\n\tSSID: TP-LINK_5G_215E\n\tfreq: 5745\n\tsignal: -49 dBm\n\ttx bitrate: 434.0 MBit/s\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State    Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                                                     \nESTAB    0      120184 192.168.0.105:33726 192.168.1.196:50010 rto:0.43 cwnd:59 ssthresh:42 reordering:0                                  \nLAST-ACK 0      1      192.168.0.105:36464 192.168.1.196:8080  rto:67.58 ato:0.04 qack:16 cwnd:1 ssthresh:7 retrans:8/0 reordering:0      \nLAST-ACK 0      1      192.168.0.105:41924 192.168.1.196:8080  rto:40.44 ato:0.04 qack:15 bidir cwnd:1 ssthresh:7 retrans:7/0 reordering:0\nLAST-ACK 0      1      192.168.0.105:60730 192.168.1.196:8080  rto:50.49 ato:0.04 qack:15 bidir cwnd:1 ssthresh:7 retrans:4/0 reordering:0\nESTAB    0      108600 192.168.0.105:33716 192.168.1.196:50010 rto:0.38 cwnd:199 ssthresh:82 reordering:0                                 \n",
+      "err": ""
+    }
+  }
+}

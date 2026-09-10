@@ -1,0 +1,145 @@
+{
+  "host": "rk3588-ubuntu",
+  "started_us": 1789017766876426,
+  "active": {
+    "rc": 0,
+    "out": "NAME      UUID                                  TYPE  DEVICE \n88888888  8b088c5f-7dec-4689-84e3-f3815989bd30  wifi  wlan0  \n",
+    "err": ""
+  },
+  "driver": {
+    "rc": 0,
+    "out": "driver: rtl8821cu\nversion: v5.15.9-37-gbc2446319.20230614_\nfirmware-version: 24.11\nexpansion-rom-version: \nbus-info: 1-1.7:1.2\nsupports-statistics: yes\nsupports-test: no\nsupports-eeprom-access: no\nsupports-register-dump: no\nsupports-priv-flags: no\n",
+    "err": ""
+  },
+  "power_save": {
+    "rc": 0,
+    "out": "Power save: off\n",
+    "err": ""
+  },
+  "qdisc": {
+    "rc": 0,
+    "out": "qdisc mq 0: root \n Sent 1073551699840 bytes 747699203 pkt (dropped 0, overlimits 0 requeues 21) \n backlog 0b 0p requeues 21\nqdisc pfifo_fast 0: parent :4 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\nqdisc pfifo_fast 0: parent :3 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n Sent 1073551531384 bytes 747698185 pkt (dropped 0, overlimits 0 requeues 21) \n backlog 0b 0p requeues 21\nqdisc pfifo_fast 0: parent :2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\nqdisc pfifo_fast 0: parent :1 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n Sent 168456 bytes 1018 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n",
+    "err": ""
+  },
+  "measured_seconds": 12.024885975988582,
+  "interface_rates": {
+    "eth1": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    },
+    "can0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    },
+    "dummy0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    },
+    "wlan0": {
+      "delta": {
+        "rx_bytes": 488762,
+        "tx_bytes": 24747083,
+        "rx_packets": 3860,
+        "tx_packets": 16850,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 16.463911956863615,
+      "rx_mbps": 0.3251669918374046
+    },
+    "eth0": {
+      "delta": {
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0
+      },
+      "tx_mbps": 0.0,
+      "rx_mbps": 0.0
+    }
+  },
+  "ping_gateway": {
+    "rc": 0,
+    "out": "PING 192.168.5.1 (192.168.5.1) 56(84) bytes of data.\n64 bytes from 192.168.5.1: icmp_seq=1 ttl=64 time=4.83 ms\n64 bytes from 192.168.5.1: icmp_seq=2 ttl=64 time=2.82 ms\n64 bytes from 192.168.5.1: icmp_seq=3 ttl=64 time=2.85 ms\n64 bytes from 192.168.5.1: icmp_seq=4 ttl=64 time=2.80 ms\n64 bytes from 192.168.5.1: icmp_seq=5 ttl=64 time=5.77 ms\n\n--- 192.168.5.1 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 803ms\nrtt min/avg/max/mdev = 2.803/3.812/5.771/1.250 ms\n",
+    "err": ""
+  },
+  "ping_receiver": {
+    "rc": 0,
+    "out": "PING 192.168.1.196 (192.168.1.196) 56(84) bytes of data.\n64 bytes from 192.168.1.196: icmp_seq=1 ttl=63 time=3.34 ms\n64 bytes from 192.168.1.196: icmp_seq=2 ttl=63 time=3.63 ms\n64 bytes from 192.168.1.196: icmp_seq=3 ttl=63 time=3.41 ms\n64 bytes from 192.168.1.196: icmp_seq=4 ttl=63 time=4.26 ms\n64 bytes from 192.168.1.196: icmp_seq=5 ttl=63 time=3.71 ms\n\n--- 192.168.1.196 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 803ms\nrtt min/avg/max/mdev = 3.342/3.670/4.257/0.322 ms\n",
+    "err": ""
+  },
+  "before": {
+    "time": 1789017767.0512824,
+    "mono": 760089.479554143,
+    "link": {
+      "rc": 0,
+      "out": "Connected to b4:72:d4:65:6a:d8 (on wlan0)\n\tSSID: 88888888\n\tfreq: 5200\n\tRX: 2516932779 bytes (21160556 packets)\n\tTX: 3545209105 bytes (92421132 packets)\n\tsignal: -31 dBm\n\trx bitrate: 292.5 MBit/s VHT-MCS 7 80MHz VHT-NSS 1\n\ttx bitrate: 433.3 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 1\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                              \nESTAB 0      0        192.168.5.4:44442 192.168.1.196:50010 rto:0.2 cwnd:190 ssthresh:190 reordering:0          \nESTAB 0      0        192.168.5.4:57758 192.168.1.196:22    rto:0.21 ato:0.03 qack:15 bidir cwnd:10 reordering:0\nESTAB 0      0        192.168.5.4:36028 192.168.1.196:50010 rto:0.2 cwnd:14 reordering:0                        \nESTAB 0      0        192.168.5.4:44456 192.168.1.196:50010 rto:0.2 cwnd:317 ssthresh:234 reordering:0          \n",
+      "err": ""
+    }
+  },
+  "after": {
+    "time": 1789017779.0761666,
+    "mono": 760101.504440119,
+    "link": {
+      "rc": 0,
+      "out": "Connected to b4:72:d4:65:6a:d8 (on wlan0)\n\tSSID: 88888888\n\tfreq: 5200\n\tRX: 2517421541 bytes (21164418 packets)\n\tTX: 3569956188 bytes (92437982 packets)\n\tsignal: -30 dBm\n\trx bitrate: 351.0 MBit/s VHT-MCS 8 80MHz VHT-NSS 1\n\ttx bitrate: 433.3 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 1\n",
+      "err": ""
+    },
+    "stations": {
+      "rc": 0,
+      "out": "",
+      "err": ""
+    },
+    "tcp": {
+      "rc": 0,
+      "out": "State Recv-Q Send-Q Local Address:Port   Peer Address:Port Process                                              \nESTAB 0      12185    192.168.5.4:44442 192.168.1.196:50010 rto:0.2 cwnd:190 ssthresh:190 reordering:0          \nESTAB 0      0        192.168.5.4:57758 192.168.1.196:22    rto:0.21 ato:0.03 qack:13 bidir cwnd:10 reordering:0\nESTAB 0      0        192.168.5.4:36028 192.168.1.196:50010 rto:0.2 cwnd:14 reordering:0                        \nESTAB 0      55440    192.168.5.4:44456 192.168.1.196:50010 rto:0.2 cwnd:317 ssthresh:234 reordering:0          \n",
+      "err": ""
+    }
+  }
+}
