@@ -31,6 +31,7 @@
 | 追踪本次缺录的无线驱动对照与六机恢复 | [rtl8821cu-recording-recovery-20260909.md](rtl8821cu-recording-recovery-20260909.md) |
 | 复现重复关键帧失效、构建 MPP 补丁与按机回退 | [mpp-keyframe-recovery-20260909.md](mpp-keyframe-recovery-20260909.md) |
 | 部署音频、语音拍照、按键和 LED | [audio-and-controls.md](audio-and-controls.md) |
+| 音频迟到停止、恢复缺口和归档等待修复 | [audio-task-window-finalization-20260910.md](audio-task-window-finalization-20260910.md) |
 | 按现象诊断相机、网络、预览和录制 | [troubleshooting.md](troubleshooting.md) |
 | 运行测试、长测和发布 | [testing-and-release.md](testing-and-release.md) |
 | 了解已知边界和后续方向 | [roadmap.md](roadmap.md) |

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import csv
 import json
 import socket
 import struct
@@ -180,6 +181,96 @@ def free_port(socket_type):
         return sock.getsockname()[1]
 
 
+def test_task_audio_late_stop_trims_content_and_statistics(module):
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        spec = module.TaskAudioSpec("s", "cam01", directory, 1, 1_000_000, 60_000_000)
+        task = module.TaskAudioSegment(spec, 48000, 111, 9)
+        for index in range(2400):
+            slot_us = 1_000_000 + index * 20_000
+            packet = module.RtpPacket(index, index * 960, 9, 111, False,
+                                      module.OPUS_SILENCE_20_MS, slot_us)
+            task.write_slot(slot_us, 0, 0, packet if index < 100 else None)
+            task.add_discard_counts(1, 2)
+        task.set_window_end(2_500_000)
+        task.set_window_end(3_000_000)  # A stale report must not extend the bound.
+        task.close_to_video_directory("delayed_stop")
+        meta = json.loads((directory / "audio_meta.json").read_text())
+        assert meta["audio_duration_us"] == 1_500_000
+        assert meta["received_packets"] == meta["expected_packets"] == 75
+        assert meta["silence_packets"] == 0
+        assert meta["late_packets"] == 75
+        assert meta["duplicate_packets"] == 150
+        assert meta["outage_intervals"] == []
+        with (directory / "audio_timing.csv").open() as handle:
+            rows = list(csv.DictReader(handle))
+        assert sum(int(row["received_packets"]) for row in rows) == 75
+        data = (directory / "audio.opus").read_bytes()
+        offset, packets, granule = 0, 0, 0
+        while offset < len(data):
+            count = data[offset + 26]
+            lacing = data[offset + 27:offset + 27 + count]
+            packets += sum(value < 255 for value in lacing)
+            granule = struct.unpack_from("<Q", data, offset + 6)[0]
+            page_size = 27 + count + sum(lacing)
+            page = bytearray(data[offset:offset + page_size])
+            crc = struct.unpack_from("<I", page, 22)[0]
+            struct.pack_into("<I", page, 22, 0)
+            assert module.ogg_crc(page) == crc
+            offset += page_size
+        assert packets == 77  # Two headers, 75 encoded audio packets.
+        assert granule == 312 + 75 * 960
+
+
+def test_task_audio_missing_history_is_not_silence(module):
+    with tempfile.TemporaryDirectory() as temp:
+        class App:
+            config = {"max_buffer_seconds": 30, "frame_duration_ms": 20}
+        recorder = module.AudioStreamRecorder(module.StreamConfig(sender_id="s", port=50030, ssrc=9), App())
+        recorder._next_slot = 200
+        for slot in range(150, 200):
+            recorder._resolved_history[slot] = module.RtpPacket(
+                slot, slot * 960, 9, 111, False, module.OPUS_SILENCE_20_MS, slot * 20000)
+        directory = Path(temp)
+        spec = module.TaskAudioSpec("s", "cam01", directory, 1, 1_000_000, 4_000_000)
+        assert recorder.start_task(spec)
+        task = recorder._task_segments[str(directory)]
+        original_close = task.close_to_video_directory
+        def close_without_scheduler_lock(reason):
+            assert recorder._task_lock.acquire(blocking=False)
+            recorder._task_lock.release()
+            assert not recorder.start_task(spec)
+            return original_close(reason)
+        task.close_to_video_directory = close_without_scheduler_lock
+        assert recorder.finalize_task(directory, 4_000_000, "recovery")
+        meta = json.loads((directory / "audio_meta.json").read_text())
+        assert meta["history_unavailable_us"] == 2_000_000
+        assert meta["first_audio_global_us"] == 3_000_000
+        assert meta["audio_duration_us"] == 1_000_000
+        assert meta["received_packets"] == 50
+        assert meta["silence_packets"] == 0
+        assert meta["quality_status"] == "partial"
+        assert meta["audio_valid"] is False
+
+
+def test_task_audio_trim_removes_only_received_tail(module):
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        task = module.TaskAudioSegment(module.TaskAudioSpec(
+            "s", "cam01", directory, 1, 1_000_000, 5_000_000), 48000, 111, 9)
+        for index in range(100):
+            packet = module.RtpPacket(index, index * 960, 9, 111, False,
+                                      module.OPUS_SILENCE_20_MS, 0) if index >= 75 else None
+            task.write_slot(1_000_000 + index * 20_000, 0, 0, packet)
+        task.set_window_end(2_500_000)
+        task.close_to_video_directory("late_stop")
+        meta = json.loads((directory / "audio_meta.json").read_text())
+        assert meta["expected_packets"] == meta["silence_packets"] == 75
+        assert meta["received_packets"] == 0
+        assert meta["quality_status"] == "no_input"
+        assert not (directory / "audio.opus").exists()
+
+
 def test_task_audio_udp_integration(module):
     class StatusHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -254,7 +345,8 @@ def test_task_audio_udp_integration(module):
                     "segment_window_end_global_us": end_us,
                 }
                 sender.sendto(json.dumps(task).encode(), ("127.0.0.1", timing_port))
-                time.sleep(0.1)
+                # Deliver original timestamps 800 ms late: archive, not live playback.
+                time.sleep(max(0, (start_us - module.now_us()) / 1_000_000 + 0.8))
                 for index in range(50):
                     sender.sendto(
                         module.make_rtp(index, index * 960, 9, 111, module.OPUS_SILENCE_20_MS),
@@ -498,6 +590,9 @@ def main():
     test_task_audio_no_input_has_no_false_audio_file(module)
     test_task_audio_reuses_opus_and_reports_quality(module)
     test_task_audio_real_silent_rtp_is_retained(module)
+    test_task_audio_late_stop_trims_content_and_statistics(module)
+    test_task_audio_missing_history_is_not_silence(module)
+    test_task_audio_trim_removes_only_received_tail(module)
     test_task_audio_udp_integration(module)
     test_verified_atomic_nas_publish(module)
     test_local_finalize_is_separate_from_publish(module)

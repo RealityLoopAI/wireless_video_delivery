@@ -11,7 +11,7 @@
   "nas_require_mount": true,
   "nas_low_space_warning_mb": 51200,
   "segment_seconds": 900,
-  "jitter_buffer_ms": 250,
+  "jitter_buffer_ms": 2000,
   "frame_duration_ms": 20,
   "max_buffer_seconds": 30,
   "local_retention_days": 7,

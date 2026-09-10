@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import struct
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -686,6 +687,57 @@ class TaskAudioSegment(OpusSegment):
         self.playback_events: list[dict[str, Any]] = []
         self.current_second: SecondStats | None = None
         self.writer = OggOpusWriter(self.audio_path, sample_rate)
+        # Disk-backed slot journal permits a late stop to trim both media and CSV.
+        # Anonymous file stays on local staging and is never published to NAS.
+        self._journal = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", dir=spec.directory)
+        self._replaying = False
+        self.history_unavailable_us = 0
+
+    def write_slot(self, slot_us: int, output_sequence: int, output_timestamp: int, packet: RtpPacket | None) -> None:
+        if not self.start_slot * 20_000 <= slot_us < self.end_slot * 20_000:
+            return
+        if not self._replaying:
+            fields = None if packet is None else dict(vars(packet), payload=packet.payload.hex())
+            self._journal.write(json.dumps(["slot", slot_us, fields], separators=(",", ":")) + "\n")
+        super().write_slot(slot_us, output_sequence, output_timestamp, packet)
+
+    def add_discard_counts(self, late: int, duplicate: int) -> None:
+        if not self._replaying and (late or duplicate):
+            self._journal.write(json.dumps(["discard", self.last_slot_us, late, duplicate]) + "\n")
+        super().add_discard_counts(late, duplicate)
+
+    def _trim_to_final_window(self) -> None:
+        if self.last_slot_us < self.end_slot * 20_000:
+            return
+        journal = self._journal
+        journal.flush()
+        journal.seek(0)
+        end_us, first_slot_us = self.window_end_us, self.first_slot_us
+        unavailable_us = self.history_unavailable_us
+        events = self.playback_events
+        self.csv_handle.close()
+        self.writer.close()
+        self.__init__(self.spec, self.sample_rate, self.payload_type, self.output_ssrc)
+        self._journal.close()
+        self._journal = journal
+        self._replaying = True
+        self.window_end_us, self.first_slot_us = end_us, first_slot_us
+        self.history_unavailable_us = unavailable_us
+        try:
+            for line in journal:
+                record = json.loads(line)
+                if record[1] >= self.end_slot * 20_000:
+                    break
+                if record[0] == "slot":
+                    fields = record[2]
+                    if fields is not None:
+                        fields["payload"] = bytes.fromhex(fields["payload"])
+                    self.write_slot(record[1], 0, 0, RtpPacket(**fields) if fields else None)
+                else:
+                    self.add_discard_counts(record[2], record[3])
+        finally:
+            self._replaying = False
+        self.playback_events = events
 
     @property
     def start_slot(self) -> int:
@@ -700,11 +752,15 @@ class TaskAudioSegment(OpusSegment):
             self.window_end_us = min(self.window_end_us, end_us)
 
     def close_to_video_directory(self, reason: str) -> dict[str, Any]:
+        self._trim_to_final_window()
+        self.playback_events = [event for event in self.playback_events
+                                if self.window_start_us <= int(event.get("global_timestamp_us", 0)) < self.window_end_us]
         self._finish_missing_run(self.last_slot_us + 20_000 if self.last_slot_us else self.window_end_us)
         self.flush_second()
         self.csv_handle.flush()
         self.csv_handle.close()
         self.writer.close()
+        self._journal.close()
 
         final_audio = self.spec.directory / "audio.opus"
         if self.total_received > 0:
@@ -719,10 +775,14 @@ class TaskAudioSegment(OpusSegment):
             self.total_received,
             self.longest_missing_packets,
         )
-        duration_us = max(0, self.last_slot_us + 20_000 - self.first_slot_us)
+        if self.history_unavailable_us and quality_status == "complete":
+            quality_status, audio_valid = "partial", False
+        duration_us = max(0, self.last_slot_us + 20_000 - self.first_slot_us) if self.total_expected else 0
         meta = {
             "schema_version": 2,
             "task_audio": True,
+            "history_unavailable_us": self.history_unavailable_us,
+            "partial_start": self.first_slot_us > self.window_start_us + 20_000,
             "sender_id": self.spec.sender_id,
             "camera_id": self.spec.camera_id,
             "recording_session_id": self.spec.recording_session_id,
@@ -939,6 +999,7 @@ class AudioStreamRecorder:
         self._slot_collisions = 0
         self._task_lock = threading.Lock()
         self._task_segments: dict[str, TaskAudioSegment] = {}
+        self._closing_tasks: set[str] = set()
         self._resolved_history: dict[int, RtpPacket | None] = {}
         self._discard_history: dict[int, tuple[int, int]] = {}
         self._playback_history: list[dict[str, Any]] = []
@@ -1197,7 +1258,7 @@ class AudioStreamRecorder:
     def start_task(self, spec: TaskAudioSpec) -> bool:
         key = str(spec.directory)
         with self._task_lock:
-            if key in self._task_segments or (spec.directory / "audio_ready.json").exists():
+            if key in self._task_segments or key in self._closing_tasks or (spec.directory / "audio_ready.json").exists():
                 return False
             task = TaskAudioSegment(
                 spec,
@@ -1207,7 +1268,14 @@ class AudioStreamRecorder:
             )
             current_slot = max(self._next_slot if self._next_slot is not None else task.start_slot,
                                max(self._resolved_history, default=task.start_slot-1) + 1)
-            for slot in range(task.start_slot, min(current_slot, task.end_slot)):
+            replay_start = min(task.end_slot, max(task.start_slot,
+                               min(self._resolved_history, default=current_slot)))
+            task.history_unavailable_us = max(0, replay_start - task.start_slot) * self.frame_us
+            task.first_slot_us = replay_start * self.frame_us
+            if task.history_unavailable_us:
+                LOG.warning("task audio history unavailable sender=%s directory=%s duration_us=%d",
+                            spec.sender_id, spec.directory, task.history_unavailable_us)
+            for slot in range(replay_start, min(current_slot, task.end_slot)):
                 task.write_slot(
                     slot * self.frame_us,
                     self._output_sequence,
@@ -1241,23 +1309,28 @@ class AudioStreamRecorder:
             if current_slot < task.end_slot:
                 return False
             del self._task_segments[key]
-            try:
-                ready = task.close_to_video_directory(reason)
-                self.completed_task_segments += 1
-                LOG.info(
-                    "task audio finalized sender=%s camera=%s quality=%s received=%d/%d directory=%s",
-                    task.spec.sender_id,
-                    task.spec.camera_id,
-                    ready["quality_status"],
-                    ready["received_packets"],
-                    ready["expected_packets"],
-                    directory,
-                )
-                return True
-            except Exception as exc:
-                self.last_error = str(exc)
-                LOG.exception("task audio finalize failed sender=%s directory=%s", self.config.sender_id, directory)
-                return False
+            self._closing_tasks.add(key)
+        # Remux, hash and fsync must not stall the continuous audio scheduler.
+        try:
+            ready = task.close_to_video_directory(reason)
+            self.completed_task_segments += 1
+            LOG.info(
+                "task audio finalized sender=%s camera=%s quality=%s received=%d/%d directory=%s",
+                task.spec.sender_id,
+                task.spec.camera_id,
+                ready["quality_status"],
+                ready["received_packets"],
+                ready["expected_packets"],
+                directory,
+            )
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            LOG.exception("task audio finalize failed sender=%s directory=%s", self.config.sender_id, directory)
+            return False
+        finally:
+            with self._task_lock:
+                self._closing_tasks.discard(key)
 
     def finalize_all_tasks(self, reason: str) -> None:
         with self._task_lock:
@@ -2026,7 +2099,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "nas_require_mount": True,
         "nas_low_space_warning_mb": 51200,
         "segment_seconds": 900,
-        "jitter_buffer_ms": 250,
+        "jitter_buffer_ms": 2000,
         "frame_duration_ms": 20,
         "max_buffer_seconds": 30,
         "local_retention_days": 7,
