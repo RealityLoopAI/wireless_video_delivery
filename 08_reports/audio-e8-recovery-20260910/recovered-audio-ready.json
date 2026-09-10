@@ -1,0 +1,26 @@
+{
+  "audio_valid": false,
+  "expected_packets": 45000,
+  "files": {
+    "audio.opus": {
+      "sha256": "d6b5af7098894d7b0585cd6c6e044f08c03a6c60934ce3818aff78dd0754b2c2",
+      "size": 1048337
+    },
+    "audio_meta.json": {
+      "sha256": "c8af50fc849586276bb5b0f16ec73fdf810e7f0ec273a442ed213a67d430bab0",
+      "size": 1288
+    },
+    "audio_timing.csv": {
+      "sha256": "ee409c215a43bd7aa3744a41c05682d9c684c125116af14cf6184dacd9bf8e44",
+      "size": 103592
+    }
+  },
+  "longest_no_input_ms": 680800,
+  "published_receiver_us": 1789020000295090,
+  "quality_status": "partial",
+  "received_packets": 10960,
+  "received_ratio": 0.24355555555555555,
+  "schema_version": 2,
+  "segment_id": "3f743891fd264757b989faf022f483d6",
+  "sender_id": "lubancat-e8cc0cb3"
+}

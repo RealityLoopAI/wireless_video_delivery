@@ -1,0 +1,42 @@
+{
+  "audio_duration_us": 900000000,
+  "audio_valid": false,
+  "channels": 1,
+  "clock_sync_valid_packets": 10960,
+  "close_reason": "wall_clock_boundary",
+  "codec": "opus",
+  "container": "ogg",
+  "created_receiver_us": 1789020000258220,
+  "duplicate_packets": 0,
+  "expected_packets": 45000,
+  "first_audio_global_us": 1789019100000000,
+  "frame_duration_ms": 20,
+  "global_timestamp_source": "sender_system_timestamp_us_plus_clock_offset",
+  "last_audio_global_us": 1789019999980000,
+  "late_packets": 0,
+  "longest_no_input_ms": 680800,
+  "muxer": "gwv3_native_ogg_opus",
+  "outage_intervals": [
+    {
+      "duration_us": 680800000,
+      "end_global_us": 1789019780800000,
+      "start_global_us": 1789019100000000
+    }
+  ],
+  "partial_end": false,
+  "partial_start": false,
+  "payload_type": 111,
+  "playback_events": [],
+  "quality_status": "partial",
+  "received_packets": 10960,
+  "received_ratio": 0.24355555555555555,
+  "sample_rate": 48000,
+  "schema_version": 2,
+  "segment_id": "3f743891fd264757b989faf022f483d6",
+  "segment_window_end_global_us": 1789020000000000,
+  "segment_window_start_global_us": 1789019100000000,
+  "sender_id": "lubancat-e8cc0cb3",
+  "sender_timestamp_origin": "rtp_anchor_estimated_frame_start",
+  "silence_packets": 34040,
+  "ssrc": 3322710864
+}

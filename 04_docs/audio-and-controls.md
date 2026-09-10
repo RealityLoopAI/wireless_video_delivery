@@ -98,3 +98,12 @@ systemctl --user status xiaohuan-wake.service
 - TTS、RTP、录音归档和拍照分别使用有界队列。
 - 提示音与 TTS 必须串行混音，禁止并发访问音箱造成截断。
 - 没有音频包与“收到静音音频”是两种状态，归档时不能混淆。
+
+## Network Migration Check
+
+视频接收端发现成功不代表独立语音服务已经迁网。检查运行中的
+`xiaohuan-wake.service` 启动目录、drop-in 和日志 `audio_archive_target`，
+再验证接收端音频收包计数增长、timing anchor 有效和自然切片实际可播放。
+只检查服务 `active` 或 UDP 发送成功不足以验收。
+
+已发生案例及站点修复见 [e8 音频零输入排查与恢复](audio-e8-recovery-20260910.md)。
