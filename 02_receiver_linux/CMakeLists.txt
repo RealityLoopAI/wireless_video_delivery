@@ -206,6 +206,9 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_audio_archive_receiver.py
     )
     set_tests_properties(audio_archive_receiver_integration PROPERTIES TIMEOUT 20)
+    add_test(NAME audio_retransmit_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_audio_retransmit.py)
+    set_tests_properties(audio_retransmit_integration PROPERTIES TIMEOUT 35)
     add_test(
         NAME audio_capture_rebuild_guard_unit
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_audio_capture_rebuild_guard.py

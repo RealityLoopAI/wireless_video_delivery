@@ -1,0 +1,20 @@
+--- 12_apps/xiaohuan_voice_photo/vosk_wake.py	2026-09-10 16:52:02.462317622 +0800
++++ /tmp/wvd-live-vosk-after.py	2026-09-10 16:53:33.318091978 +0800
+@@ -2188,7 +2188,7 @@
+         action=argparse.BooleanOptionalAction,
+         default=False,
+     )
+-    p_listen.add_argument("--audio-archive-host", default="gwv3-receiver.local")
++    p_listen.add_argument("--audio-archive-host", default="192.168.66.196")
+     p_listen.add_argument("--audio-archive-port", type=udp_port, default=50030)
+     p_listen.add_argument(
+         "--audio-archive-timing-port",
+@@ -2277,7 +2277,7 @@
+     p_listen.add_argument("--energy-fallback-scale", type=float, default=1.35)
+     p_listen.add_argument("--decode-min-seconds", type=float, default=0.70)
+     p_listen.add_argument("--decode-min-rms", type=float, default=0.024)
+-    p_listen.add_argument("--photo-decode-min-seconds", type=float, default=0.30)
++    p_listen.add_argument("--photo-decode-min-seconds", type=float, default=0.45)
+     p_listen.add_argument("--photo-decode-min-rms", type=float, default=0.016)
+     p_listen.add_argument("--decode-noise-margin", type=float, default=0.008)
+     p_listen.add_argument("--skip-log-seconds", type=float, default=20.0)

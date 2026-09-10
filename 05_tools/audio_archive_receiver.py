@@ -295,6 +295,8 @@ class TimingAnchor:
     receiver_receive_us: int
     sample_rate: int
     ssrc: int
+    retransmit_supported: bool = False
+    retransmit_stats: dict | None = None
 
 
 class TimingRegistry:
@@ -307,6 +309,11 @@ class TimingRegistry:
         self.last_admin_error = ""
 
     def update_anchor(self, sender_id: str, data: dict[str, Any], receive_us: int) -> None:
+        stats = data.get('audio_retransmit')
+        counters = {key: stats[key] for key in (
+            'cached', 'evicted', 'requests', 'cache_misses', 'retransmitted',
+            'send_errors', 'forwarded', 'cache_packets', 'cache_bytes')
+            if isinstance(stats, dict) and type(stats.get(key)) is int and 0 <= stats[key] < 2**63}
         anchor = TimingAnchor(
             stream_instance_id=str(data.get("stream_instance_id", "")),
             rtp_timestamp=int(data["rtp_timestamp"]) & 0xFFFFFFFF,
@@ -315,6 +322,8 @@ class TimingRegistry:
             receiver_receive_us=receive_us,
             sample_rate=int(data.get("sample_rate", 48000)),
             ssrc=int(data.get("ssrc", 0)) & 0xFFFFFFFF,
+            retransmit_supported=isinstance(data.get('audio_retransmit'), dict),
+            retransmit_stats=counters,
         )
         with self._lock:
             self._anchors[sender_id] = anchor
@@ -385,6 +394,8 @@ class TimingRegistry:
             and now_us() - model.receiver_update_us <= self.model_timeout_us
         )
         return {
+            "audio_retransmit_supported": bool(anchor and anchor.retransmit_supported),
+            "sender_audio_retransmit": dict(anchor.retransmit_stats or {}) if anchor else {},
             "clock_sync_valid": model.valid and model_fresh and anchor is not None,
             "clock_offset_us": model.offset_us,
             "clock_delay_us": model.delay_us,
@@ -777,6 +788,74 @@ class TaskAudioSegment(OpusSegment):
         return ready
 
 
+class RtpGapRepair:
+    """Track bounded holes by original sequence AND RTP timestamp, not wall clock."""
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.instance = ''
+        self.high = None
+        self.pending = {}
+        self.last_request = -float('inf')
+        self.detected = self.recovered = self.expired = self.requests = self.send_errors = 0
+
+    def observe(self, packet, instance, step):
+        if not instance:
+            return
+        key = (packet.sequence, packet.timestamp, packet.ssrc)
+        with self.lock:
+            now = self.clock()
+            if self.instance != instance:
+                self.pending.clear()
+                self.high = None
+                self.instance = instance
+            if key in self.pending:
+                del self.pending[key]
+                self.recovered += 1
+            if self.high is not None:
+                seq, timestamp, ssrc = self.high
+                delta = (packet.sequence-seq) & 0xffff
+                if delta == 0 or delta >= 32768:
+                    return
+                if ssrc == packet.ssrc and 1 < delta <= 400 and ((packet.timestamp-timestamp)&0xffffffff) == delta*step:
+                    for i in range(1, delta):
+                        missing = ((seq+i)&0xffff, (timestamp+i*step)&0xffffffff, ssrc)
+                        if missing not in self.pending:
+                            self.pending[missing] = (now, -float('inf'))
+                            self.detected += 1
+                elif delta != 1:
+                    self.expired += len(self.pending)
+                    self.pending.clear()
+            self.high = key
+            while len(self.pending) > 400:
+                del self.pending[next(iter(self.pending))]
+                self.expired += 1
+
+    def request(self, sender_id):
+        with self.lock:
+            now = self.clock()
+            for key, (born, _) in list(self.pending.items()):
+                if now-born > 6:
+                    del self.pending[key]
+                    self.expired += 1
+            if now-self.last_request < .2:
+                return None
+            keys = [key for key,(born,last) in self.pending.items() if now-born >= .08 and now-last >= .4][:64]
+            if not keys:
+                return None
+            for key in keys:
+                self.pending[key] = (self.pending[key][0], now)
+            self.last_request = now
+            self.requests += 1
+            return dict(protocol_version='3.0', message_type='audio_retransmit_request',
+                        sender_id=sender_id, stream_instance_id=self.instance, packets=keys)
+
+    def snapshot(self):
+        with self.lock:
+            return dict(detected=self.detected, recovered=self.recovered, expired=self.expired,
+                        pending=len(self.pending), requests=self.requests, send_errors=self.send_errors)
+
+
 @dataclass
 class StreamConfig:
     sender_id: str
@@ -786,6 +865,12 @@ class StreamConfig:
     sample_rate: int = 48000
     control_host: str = ""
     control_port: int = 50131
+    repair_enabled: bool = False
+    repair_wait_ms: int = 8000
+
+    def __post_init__(self):
+        if type(self.repair_enabled) is not bool or not 1000 <= self.repair_wait_ms <= 15000:
+            raise ValueError('invalid audio retransmission settings')
 
 
 class AudioStreamRecorder:
@@ -794,6 +879,7 @@ class AudioStreamRecorder:
         self.app = app
         self.frame_us = app.config["frame_duration_ms"] * 1000
         self.frame_samples = round(config.sample_rate * self.frame_us / 1_000_000)
+        self._repair = RtpGapRepair()
         self._stop = threading.Event()
         self._enabled = True
         self._enabled_lock = threading.Lock()
@@ -868,6 +954,7 @@ class AudioStreamRecorder:
             try:
                 data, _address = sock.recvfrom(65535)
             except socket.timeout:
+                self._request_repair()
                 continue
             except OSError:
                 break
@@ -882,6 +969,11 @@ class AudioStreamRecorder:
             if packet.payload_type != self.config.payload_type:
                 self.payload_type_mismatches += 1
                 continue
+            if self.config.repair_enabled:
+                model = self.app.timing.snapshot(self.config.sender_id)
+                if model.get('audio_retransmit_supported'):
+                    self._repair.observe(packet, model.get('timing_stream_instance_id', ''), self.frame_samples)
+                    self._request_repair()
             packet = self.app.timing.map_packet(self.config.sender_id, packet)
             slot = round(packet.global_us / self.frame_us)
             with self._buffer_lock:
@@ -908,8 +1000,22 @@ class AudioStreamRecorder:
                 )
                 self._outage_started_us = 0
 
+    def _request_repair(self) -> None:
+        if not self.config.repair_enabled or not self._control_host or self._socket is None:
+            return
+        request = self._repair.request(self.config.sender_id)
+        if request is None:
+            return
+        try:
+            self._socket.sendto(json.dumps(request, separators=(',', ':')).encode(),
+                                (self._control_host, self.config.control_port))
+        except OSError:
+            with self._repair.lock:
+                self._repair.send_errors += 1
+
     def _schedule(self) -> None:
-        jitter_us = self.app.config["jitter_buffer_ms"] * 1000
+        jitter_us = max(self.app.config["jitter_buffer_ms"],
+                        self.config.repair_wait_ms if self.config.repair_enabled else 0) * 1000
         while not self._stop.is_set():
             archive_active = self.enabled() and not self.app.storage_blocked()
             if not archive_active:
@@ -1197,6 +1303,9 @@ class AudioStreamRecorder:
         return {
             "sender_id": self.config.sender_id,
             "port": self.config.port,
+            "audio_repair_enabled": self.config.repair_enabled,
+            "audio_repair_wait_ms": self.config.repair_wait_ms if self.config.repair_enabled else 0,
+            "audio_repair": self._repair.snapshot(),
             "ssrc": self.config.ssrc,
             "enabled": self.enabled(),
             "recording": self._segment is not None,
@@ -1847,6 +1956,10 @@ def load_config(path: Path) -> dict[str, Any]:
     config = {**defaults, **raw}
     if not config["streams"]:
         raise ValueError("audio archive config requires at least one stream")
+    for item in config['streams']:
+        stream = StreamConfig(**item)
+        if stream.repair_enabled and config['max_buffer_seconds']*1000 <= stream.repair_wait_ms:
+            raise ValueError('audio history must exceed retransmission wait')
     ports = [int(item["port"]) for item in config["streams"]]
     sender_ids = [str(item["sender_id"]) for item in config["streams"]]
     if len(ports) != len(set(ports)) or len(sender_ids) != len(set(sender_ids)):

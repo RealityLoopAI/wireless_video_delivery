@@ -1,0 +1,14 @@
+[OUTPUT] 
+Internal ctest changing into directory: /tmp/wvd-pts-test-20260910/build
+
+[HANDLER_OUTPUT] 
+Test project /tmp/wvd-pts-test-20260910/build
+
+    Start  1: receiver_rgb_pts_integration
+1/2 Test  #1: receiver_rgb_pts_integration .....   Passed    9.45 sec
+    Start 28: audio_retransmit_integration
+2/2 Test #28: audio_retransmit_integration .....   Passed   12.75 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =  22.20 sec

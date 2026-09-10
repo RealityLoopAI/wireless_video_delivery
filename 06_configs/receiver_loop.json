@@ -89,7 +89,7 @@
   },
   "task_audio": {
     "enabled": true,
-    "finalize_wait_ms": 3000,
+    "finalize_wait_ms": 10000,
     "poll_interval_ms": 25,
     "notify_host": "127.0.0.1",
     "notify_port": 50130,

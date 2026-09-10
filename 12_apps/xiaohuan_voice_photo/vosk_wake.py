@@ -20,6 +20,7 @@ import numpy as np
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 from audio_capture_recovery import CaptureRebuildGuard
+from audio_packet_cache import AudioPacketCache
 from audio_mixer import restore_capture_mixer
 from speech_service import (
     EdgeTtsEngine,
@@ -544,11 +545,14 @@ class UdpPacketGate:
         self._remote_addresses = [
             (socket.gethostbyname(remote_host), remote_port),
         ]
+        self._archive_address = None
         if secondary_remote:
             secondary_host, secondary_port = secondary_remote
             self._remote_addresses.append(
                 (socket.gethostbyname(secondary_host), secondary_port)
             )
+            self._archive_address = self._remote_addresses[-1]
+        self._packet_cache = AudioPacketCache()
         self._timing_address = None
         if timing_remote:
             timing_host, timing_port = timing_remote
@@ -686,6 +690,21 @@ class UdpPacketGate:
                 message = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
+            if not isinstance(message, dict):
+                continue
+            if (message.get('message_type') == 'audio_retransmit_request'
+                    and message.get('sender_id') == self._sender_id
+                    and self._timing_address is not None and self._archive_address is not None
+                    and source[0] == self._timing_address[0]):
+                for packet in self._packet_cache.requested(message):
+                    if self._stop.is_set():
+                        break
+                    try:
+                        self._control_socket.sendto(packet, self._archive_address)
+                        self._packet_cache.count('retransmitted')
+                    except OSError:
+                        self._packet_cache.count('send_errors')
+                continue
             if (
                 message.get("message_type") == "audio_stream_control"
                 and message.get("control") == "rebuild_capture"
@@ -724,10 +743,16 @@ class UdpPacketGate:
                 continue
             sender_send_us = time.time_ns() // 1000
             sender_monotonic_us = time.monotonic_ns() // 1000
+            if self._archive_address is not None:
+                self._packet_cache.put(packet, self._stream_instance_id)
             for remote_address in self._remote_addresses:
                 try:
                     self._output.sendto(packet, remote_address)
+                    if remote_address == self._archive_address:
+                        self._packet_cache.count('forwarded')
                 except OSError:
+                    if remote_address == self._archive_address:
+                        self._packet_cache.count('send_errors')
                     continue
             self._maybe_send_timing(
                 packet,
@@ -756,6 +781,7 @@ class UdpPacketGate:
         report = {
             "protocol_version": "3.0",
             "message_type": "audio_timing_anchor",
+            "audio_retransmit": self._packet_cache.snapshot(),
             "sender_id": self._sender_id,
             "stream_instance_id": self._stream_instance_id,
             "sequence": sequence,

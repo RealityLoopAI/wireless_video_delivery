@@ -1,0 +1,83 @@
+{
+  "audio_duration_us": 59020000,
+  "audio_valid": true,
+  "camera_id": "cam01",
+  "channels": 1,
+  "clock_sync_valid_packets": 2942,
+  "close_reason": "video_segment_finalize",
+  "codec": "opus",
+  "container": "ogg",
+  "created_receiver_us": 1789030906320791,
+  "duplicate_packets": 0,
+  "encoded_packet_reuse": true,
+  "expected_packets": 2951,
+  "first_audio_global_us": 1789030839220000,
+  "frame_duration_ms": 20,
+  "global_timestamp_source": "sender_system_timestamp_us_plus_clock_offset",
+  "last_audio_global_us": 1789030898220000,
+  "late_packets": 0,
+  "longest_no_input_ms": 20,
+  "muxer": "gwv3_native_ogg_opus",
+  "outage_intervals": [
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030858860000,
+      "start_global_us": 1789030858840000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030863900000,
+      "start_global_us": 1789030863880000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030867920000,
+      "start_global_us": 1789030867900000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030870960000,
+      "start_global_us": 1789030870940000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030874980000,
+      "start_global_us": 1789030874960000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030885120000,
+      "start_global_us": 1789030885100000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030890180000,
+      "start_global_us": 1789030890160000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030893220000,
+      "start_global_us": 1789030893200000
+    },
+    {
+      "duration_us": 20000,
+      "end_global_us": 1789030897240000,
+      "start_global_us": 1789030897220000
+    }
+  ],
+  "payload_type": 111,
+  "playback_events": [],
+  "quality_status": "complete",
+  "received_packets": 2942,
+  "received_ratio": 0.9969501863774991,
+  "recording_session_id": 1789030838214644,
+  "sample_rate": 48000,
+  "schema_version": 2,
+  "segment_id": "c9c445f7a53342f791c0c1290744d682",
+  "segment_window_end_global_us": 1789030898223828,
+  "segment_window_start_global_us": 1789030839214644,
+  "sender_id": "lubancat-52d2ef0c",
+  "silence_packets": 9,
+  "ssrc": 1389555468,
+  "task_audio": true
+}

@@ -29,6 +29,8 @@
   "streams": [
     {
       "sender_id": "lubancat-52d2ef0c",
+      "repair_enabled": true,
+      "repair_wait_ms": 8000,
       "port": 50030,
       "ssrc": 1389555468,
       "payload_type": 111,

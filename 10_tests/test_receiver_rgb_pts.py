@@ -33,7 +33,7 @@ def exercise(receiver, mode="fragmented_mp4", recovery=False):
             "recording_staging": {"enabled": False, "idle_finalize_ms": 10000,
                                   "rgb_output_mode": mode},
             "write_debug_h264": recovery,
-            "task_audio": {"enabled": False},
+            "task_audio": {"enabled": False, "finalize_wait_ms": 10000},
         }
         if recovery:
             wrapper = root / "ffmpeg_fail_live.py"
