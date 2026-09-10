@@ -1,0 +1,12 @@
+Sep 10 18:30:49 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:30:49 [INFO] clock_sync sender_id=rk3588-ubuntu offset_us=-373 delay_us=2632 drift_ppm=-14.2108 samples=10 healthy=true
+Sep 10 18:30:51 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:30:51 [WARN] clock_sync probe timeout or invalid response sender_id=rk3588-ubuntu receiver=192.168.1.196:50012
+Sep 10 18:30:51 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:30:51 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet
+Sep 10 18:30:59 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:30:59 [INFO] clock_sync sender_id=rk3588-ubuntu offset_us=-402 delay_us=2632 drift_ppm=28.9537 samples=10 healthy=true
+Sep 10 18:31:00 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:00 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet
+Sep 10 18:31:01 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:01 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet
+Sep 10 18:31:05 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:05 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet
+Sep 10 18:31:05 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:05 [WARN] clock_sync probe timeout or invalid response sender_id=rk3588-ubuntu receiver=192.168.1.196:50012
+Sep 10 18:31:06 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:06 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet
+Sep 10 18:31:10 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:10 [INFO] clock_sync sender_id=rk3588-ubuntu offset_us=-414 delay_us=2632 drift_ppm=-0.633954 samples=10 healthy=true
+Sep 10 18:31:10 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:10 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet
+Sep 10 18:31:20 rk3588-ubuntu gwv3-sender-service-launcher[1677049]: 2026-09-10 18:31:20 [INFO] clock_sync sender_id=rk3588-ubuntu offset_us=-330 delay_us=2591 drift_ppm=13.1214 samples=10 healthy=true
