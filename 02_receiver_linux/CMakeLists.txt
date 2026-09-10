@@ -3,9 +3,12 @@ add_executable(gemini_receiver
     src/clock_sync_manager.cpp
     src/main.cpp
     src/receiver_discovery_server.cpp
+    src/timestamped_h264_writer.cpp
 )
 
 find_package(ZLIB REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
 find_path(JSONCPP_INCLUDE_DIR NAMES json/json.h PATH_SUFFIXES jsoncpp)
 find_library(JSONCPP_LIBRARY NAMES jsoncpp)
 if(NOT JSONCPP_INCLUDE_DIR OR NOT JSONCPP_LIBRARY)
@@ -28,6 +31,7 @@ target_compile_options(gemini_receiver PRIVATE
 
 target_link_libraries(gemini_receiver PRIVATE
     ZLIB::ZLIB
+    PkgConfig::AVFORMAT
     ${JSONCPP_LIBRARY}
     ${CMAKE_DL_LIBS}
     pthread
@@ -39,6 +43,18 @@ set_target_properties(gemini_receiver PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME receiver_rgb_pts_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_rgb_pts.py
+            --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_rgb_pts_integration PROPERTIES TIMEOUT 60)
+    add_executable(test_timestamped_h264_writer
+        ${CMAKE_SOURCE_DIR}/10_tests/test_timestamped_h264_writer.cpp src/timestamped_h264_writer.cpp)
+    target_include_directories(test_timestamped_h264_writer PRIVATE include)
+    target_link_libraries(test_timestamped_h264_writer PRIVATE PkgConfig::AVFORMAT)
+    add_test(NAME timestamped_h264_writer_unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_timestamped_h264_writer.py
+            --writer $<TARGET_FILE:test_timestamped_h264_writer>)
+    set_tests_properties(timestamped_h264_writer_unit PROPERTIES TIMEOUT 40)
     add_test(NAME receiver_prestart_depth_integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_prestart_depth.py
             --receiver $<TARGET_FILE:gemini_receiver>)

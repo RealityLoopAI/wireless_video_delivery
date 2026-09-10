@@ -886,12 +886,12 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
     start_response = json.loads(start_body)
     recording_start_us = int(start_response.get("recording_start_us", 0))
     assert recording_start_us > 0
-    fixture = generate_h264_fixture(60)
+    fixture = generate_h264_fixture(1)
     time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
     timestamp = int(time.time() * 1_000_000)
     with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-        media.sendall(rgb_packet(sender_id, camera_id, 1, 64, 48, timestamp, fixture))
         for frame_id in range(45):
+            media.sendall(rgb_packet(sender_id, camera_id, frame_id, 64, 48, timestamp + frame_id * 33333, fixture))
             media.sendall(depth_packet(sender_id, camera_id, frame_id, 64, 48, timestamp + frame_id * 33333))
 
     deadline = time.monotonic() + 15
@@ -919,8 +919,8 @@ def exercise_media_idle_finalize_and_resume(ports: dict, nas_root: Path) -> None
 
     second_timestamp = timestamp + 3_000_000
     with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-        media.sendall(rgb_packet(sender_id, camera_id, 100, 64, 48, second_timestamp, fixture))
         for frame_id in range(45):
+            media.sendall(rgb_packet(sender_id, camera_id, 100 + frame_id, 64, 48, second_timestamp + frame_id * 33333, fixture))
             media.sendall(depth_packet(sender_id, camera_id, 100 + frame_id, 64, 48, second_timestamp + frame_id * 33333))
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -1179,7 +1179,22 @@ def assert_recording_output(
         rgb_record_fps = float(meta.get("rgb_record_fps", 0))
         assert abs(rgb_record_fps - 30.0) < 0.001, "RGB container FPS did not use the announced profile"
         expected_duration = float(meta.get("rgb_container_expected_duration_sec", 0))
-        assert abs(expected_duration - rgb_frames / rgb_record_fps) < 0.001
+        assert meta.get("rgb_timestamp_mode") == "capture_global_vfr_v1", meta
+        origin = int(meta["rgb_pts_origin_global_us"])
+        frame_path = meta_file.parent / meta.get("frames_file", "frames.csv")
+        with frame_path.open(newline="") as handle:
+            recorded = [row for row in csv.DictReader(handle)
+                        if row["stream_type"] == "rgb" and row["rgb_recorded"] == "1"]
+        assert len(recorded) == rgb_frames
+        expected_pts = [(int(row["global_timestamp_us"])-origin)/1e6 for row in recorded]
+        assert abs(expected_duration - (expected_pts[-1]+1/rgb_record_fps)) < .001
+        packet_probe = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_packets",
+             "-show_entries", "packet=pts_time", "-of", "json",
+             str(meta_file.parent / meta.get("rgb_file", "rgb.mp4"))], timeout=10)
+        actual_pts = [float(packet["pts_time"]) for packet in json.loads(packet_probe)["packets"]]
+        assert len(actual_pts) == len(expected_pts), (len(actual_pts), len(expected_pts))
+        assert all(abs(a-b) < .001 for a,b in zip(actual_pts, expected_pts)), (actual_pts, expected_pts)
         if meta.get("recording_quality_reason") == "recording window is unavailable":
             assert meta.get("recording_quality_status") == "partial"
             assert meta.get("recording_complete") is False
@@ -1522,10 +1537,10 @@ def run(args) -> None:
                 assert recording_start_us >= int(time.time() * 1_000_000) + 500_000
                 time.sleep(max(0.0, recording_start_us / 1_000_000 - time.time() + 0.05))
                 start_timestamp = int(time.time() * 1_000_000)
-                h264_fixture = generate_h264_fixture()
+                h264_fixture = generate_h264_fixture(1)
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-                    media.sendall(rgb_packet("test-sender", "cam01", 1, 64, 48, start_timestamp, h264_fixture))
                     for frame_id in range(70):
+                        media.sendall(rgb_packet("test-sender", "cam01", frame_id, 64, 48, start_timestamp + frame_id * 33333, h264_fixture))
                         media.sendall(depth_packet("test-sender", "cam01", frame_id, 64, 48, start_timestamp + frame_id * 33333))
                         time.sleep(1 / 30)
                 deadline = time.monotonic() + 3
@@ -1565,8 +1580,8 @@ def run(args) -> None:
                 time.sleep(max(0.0, second_start_us / 1_000_000 - time.time() + 0.05))
                 second_timestamp = int(time.time() * 1_000_000)
                 with socket.create_connection(("127.0.0.1", ports["media"]), timeout=3) as media:
-                    media.sendall(rgb_packet("test-sender", "cam01", 10_000, 64, 48, second_timestamp, h264_fixture))
                     for frame_id in range(70):
+                        media.sendall(rgb_packet("test-sender", "cam01", 10_000 + frame_id, 64, 48, second_timestamp + frame_id * 33333, h264_fixture))
                         media.sendall(
                             depth_packet(
                                 "test-sender", "cam01", 10_000 + frame_id, 64, 48,

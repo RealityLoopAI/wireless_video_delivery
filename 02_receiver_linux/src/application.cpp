@@ -4,6 +4,7 @@
 #include "gwv3_receiver/clock_sync_manager.hpp"
 #include "gwv3_receiver/receiver_discovery_server.hpp"
 #include "gwv3_receiver/recording_tail_drain.hpp"
+#include "gwv3_receiver/timestamped_h264_writer.hpp"
 
 #include <algorithm>
 #include <atomic>

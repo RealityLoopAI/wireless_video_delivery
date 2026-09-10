@@ -1,6 +1,6 @@
 # Recording And NAS
 
-更新时间：2026-09-03
+更新时间：2026-09-10
 
 本文是录制、切片、文件收尾和 NAS 发布的唯一正式说明。
 
@@ -71,6 +71,28 @@ window_start + N * segment_seconds
 | `recording_ready.json` | 该最终目录可交付的唯一完成标记 |
 
 fMP4 可由 VLC、mpv、ffplay 和 FFmpeg 系列工具直接播放与定位。极旧播放器如果不支持 fragmented MP4，可在非生产环境切换 `conventional_mp4`，代价是停止后整文件重封装时间显著增加。
+
+## RGB Capture Timeline
+
+2026-09-10 新增 RGB 采集时间轴封装。现场是否启用必须核对部署版本，不能据本文推断已上线。
+`meta.json` 包含 `rgb_timestamp_mode=capture_global_vfr_v1` 的新分片使用：
+
+```text
+RGB MP4 sample PTS (us) = global_timestamp_us - rgb_pts_origin_global_us
+```
+
+帧间缺口和首帧晚到偏移会保留；不再把所有已收到帧连续排列成固定 30fps。
+最后一帧只保留一个标称帧周期，不凭空补齐尾部缺录。播放器可能停留在上一帧，
+不代表该缺口真的采集到了画面。正式对齐仍应通过 CSV 及有效性字段选择真实帧。
+
+实现仅在 receiver 内部用 NUT 将逐帧 PTS 传给 FFmpeg，再无重编码封装到 MP4，
+不修改 TCP 媒体协议。普通 MP4 收尾与调试恢复也保留时间戳。
+`write_debug_h264=true` 时额外生成 `rgb_recovery.nut`，用于带时间轴恢复；默认不开启该副本。
+接收端编译新增 `libavformat-dev`、`libavcodec-dev`、`libavutil-dev` 依赖。
+
+旧分片不会自动改写；Depth 当前仍使用原有封装路径，不能用 Depth 播放进度替代 CSV 时间。
+本修复不恢复网络或采集已丢失的帧，也不改变 CLOCK_SYNC 的可信度判定。
+详细验证与回退见 [RGB Recording PTS](rgb-recording-pts-vfr-20260910.md)。
 
 ## Atomic Visibility
 

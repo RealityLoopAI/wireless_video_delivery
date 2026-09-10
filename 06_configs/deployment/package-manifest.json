@@ -41,6 +41,9 @@
       "pkg-config",
       "zlib1g-dev",
       "libjsoncpp-dev",
+      "libavformat-dev",
+      "libavcodec-dev",
+      "libavutil-dev",
       "cifs-utils",
       "arp-scan",
       "smbclient"
