@@ -23,6 +23,27 @@ audio = load_module()
 
 
 def unit():
+    grid = audio.RtpSlotMapper(20000, 960)
+    def mapped(i, jitter=0, epoch='one'):
+        p = audio.parse_rtp(audio.make_rtp(i & 65535, (0xffff0000+i*960)&0xffffffff,
+                                         9, 111, audio.OPUS_SILENCE_20_MS), 0)
+        p.global_us = 20000000 + i*20000 + jitter
+        return grid.assign(p, epoch)
+    # Independent rounding alternates between a skipped and occupied slot.
+    for i in range(200):
+        assert mapped(i, 11000 if i % 2 else 9000) == 1000+i
+    assert mapped(199) is None  # Actual duplicate, not a grid collision.
+    assert mapped(203, 9000) == 1203  # Real missing packets stay missing.
+    assert mapped(201, 9000) == 1201  # Retransmission/reordering remains placeable.
+    assert mapped(204, 200000) == 1214  # Do not hide a real clock discontinuity.
+    assert grid.rebases == 1
+    assert mapped(0, 0, 'two') == 1000  # Restart with the same SSRC.
+    # Long-term clock drift is bounded, never silently pinned to the first anchor.
+    grid = audio.RtpSlotMapper(20000, 960)
+    for i in range(10000):
+        slot = mapped(i, i*10)
+        assert abs(slot*20000-(20000000+i*20000+i*10)) <= 20000
+    assert grid.rebases > 0 and len(grid.seen) <= 1500
     receiver_config=json.loads((ROOT/'06_configs/receiver_loop.json').read_text())
     audio_config=json.loads((ROOT/'06_configs/audio_archive_receiver.json').read_text())
     wait=receiver_config['task_audio']['finalize_wait_ms']
@@ -91,6 +112,12 @@ def integration():
             streams=[dict(sender_id='s',ssrc=9,port=port,control_host='127.0.0.1',
                           control_port=control,repair_enabled=True)])))
         service=audio.AudioArchiveService(audio.load_config(cfg))
+        original_map = service.timing.map_packet
+        def jittered_map(sender, packet):
+            packet = original_map(sender, packet)
+            packet.global_us += 11000 if packet.sequence % 2 else 9000
+            return packet
+        service.timing.map_packet = jittered_map
         proxy=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
         proxy.bind(('127.0.0.1',0)); proxy.settimeout(.1)
         sink=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
@@ -125,6 +152,8 @@ def integration():
                     source.sendto(audio.make_rtp(i,i*960,9,111,audio.OPUS_SILENCE_20_MS),
                                   ('127.0.0.1',gate.local_port))
                     time.sleep(.002)
+                source.sendto(audio.make_rtp(199,199*960,9,111,audio.OPUS_SILENCE_20_MS),
+                              ('127.0.0.1',gate.local_port))
             deadline=time.monotonic()+18
             while time.monotonic()<deadline:
                 if service.streams['s'].finalize_task(directory,start+4000000,'test'):
@@ -132,9 +161,21 @@ def integration():
                 time.sleep(.05)
             meta=json.loads((directory/'audio_meta.json').read_text())
             assert meta['received_packets']==200 and meta['silence_packets']==0,meta
+            assert meta['duplicate_packets'] >= 1, meta
+            grid_status = service.streams['s'].status()['audio_slot_mapping']
+            assert grid_status['jitter_adjusted_packets'] > 0, grid_status
+            assert grid_status['distinct_packet_collisions'] == 0, grid_status
+            replay_directory = root/'video/replay'; replay_directory.mkdir()
+            replay = audio.TaskAudioSpec(sender_id='s',camera_id='cam02',recording_session_id=99,
+                directory=replay_directory,window_start_us=start,window_end_us=start+4000000)
+            service.streams['s'].start_task(replay)
+            assert service.streams['s'].finalize_task(replay_directory,start+4000000,'test')
+            replay_meta = json.loads((replay_directory/'audio_meta.json').read_text())
+            for key in ('received_packets', 'silence_packets', 'duplicate_packets', 'late_packets'):
+                assert replay_meta[key] == meta[key], (key, replay_meta, meta)
             assert service.streams['s']._repair.snapshot()['recovered']==120
             assert gate._packet_cache.snapshot()['retransmitted']>=120
-            print('PASS real UDP: 120 dropped packets recovered; task audio 200/200; zero filled silence')
+            print('PASS real UDP: jitter, duplicates, replay counters, 120 dropped packets recovered; 200/200')
         finally:
             stop.set(); thread.join(1); gate.stop(); proxy.close(); sink.close(); service.stop()
             assert not thread.is_alive()

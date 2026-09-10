@@ -873,6 +873,55 @@ class StreamConfig:
             raise ValueError('invalid audio retransmission settings')
 
 
+class RtpSlotMapper:
+    """Preserve RTP spacing across bounded anchor jitter, not across clock steps.
+
+    Listener-owned; callers serialize assign/snapshot with the buffer lock.
+    Original packet timestamps are never changed. Placement error is at most
+    one frame; larger clock movement rebases explicitly instead of accumulating.
+    """
+
+    def __init__(self, frame_us: int, frame_samples: int):
+        self.frame_us = frame_us
+        self.frame_samples = frame_samples
+        self.epoch = None
+        self.reference = None
+        self.seen = {}
+        self.rebases = 0
+        self.jitter_adjusted = 0
+        self.max_placement_error_us = 0
+
+    def assign(self, packet: RtpPacket, epoch: str) -> int | None:
+        identity = (epoch, packet.ssrc)
+        if identity != self.epoch:
+            self.epoch = identity
+            self.reference = None
+            self.seen.clear()
+        key = (packet.sequence, packet.timestamp)
+        if key in self.seen:
+            return None
+        raw_slot = round(packet.global_us / self.frame_us)
+        slot = raw_slot
+        delta = 0
+        if self.reference is not None:
+            timestamp, reference_slot = self.reference
+            delta = signed_rtp_delta(packet.timestamp, timestamp)
+            expected = reference_slot + delta // self.frame_samples
+            if delta % self.frame_samples == 0 and abs(expected*self.frame_us-packet.global_us) <= self.frame_us:
+                slot = expected
+                self.jitter_adjusted += int(slot != raw_slot)
+            elif delta > 0:
+                self.rebases += 1
+        if self.reference is None or delta > 0:
+            self.reference = (packet.timestamp, slot)
+        self.seen[key] = slot
+        if len(self.seen) > 1500:
+            del self.seen[next(iter(self.seen))]
+        self.max_placement_error_us = max(self.max_placement_error_us,
+                                        abs(slot*self.frame_us-packet.global_us))
+        return slot
+
+
 class AudioStreamRecorder:
     def __init__(self, config: StreamConfig, app: "AudioArchiveService"):
         self.config = config
@@ -885,9 +934,13 @@ class AudioStreamRecorder:
         self._enabled_lock = threading.Lock()
         self._buffer_lock = threading.Lock()
         self._buffer: dict[int, RtpPacket] = {}
+        self._discard_buffer: dict[int, tuple[int, int]] = {}
+        self._slot_mapper = RtpSlotMapper(self.frame_us, self.frame_samples)
+        self._slot_collisions = 0
         self._task_lock = threading.Lock()
         self._task_segments: dict[str, TaskAudioSegment] = {}
         self._resolved_history: dict[int, RtpPacket | None] = {}
+        self._discard_history: dict[int, tuple[int, int]] = {}
         self._playback_history: list[dict[str, Any]] = []
         self._duplicate_pending = 0
         self._late_pending = 0
@@ -944,6 +997,18 @@ class AudioStreamRecorder:
         with self._enabled_lock:
             return self._enabled
 
+    def _count_discard(self, slot: int, *, duplicate: bool) -> None:
+        # Called under _buffer_lock. Future packets belong to their media slot,
+        # not the earlier scheduler cursor while the repair buffer fills.
+        slot = max(slot, self._next_slot) if self._next_slot is not None else slot
+        late, duplicates = self._discard_buffer.get(slot, (0, 0))
+        self._discard_buffer[slot] = (late + int(not duplicate), duplicates + int(duplicate))
+        if len(self._discard_buffer) > 1500:
+            old = min(self._discard_buffer)
+            late, duplicates = self._discard_buffer.pop(old)
+            self._late_pending += late
+            self._duplicate_pending += duplicates
+
     def _listen(self) -> None:
         sock = self._socket
         if sock is None:
@@ -975,15 +1040,22 @@ class AudioStreamRecorder:
                     self._repair.observe(packet, model.get('timing_stream_instance_id', ''), self.frame_samples)
                     self._request_repair()
             packet = self.app.timing.map_packet(self.config.sender_id, packet)
-            slot = round(packet.global_us / self.frame_us)
+            epoch = self.app.timing.snapshot(self.config.sender_id).get('timing_stream_instance_id', '')
             with self._buffer_lock:
+                slot = self._slot_mapper.assign(packet, epoch)
+                if slot is None:
+                    original_slot = self._slot_mapper.seen[(packet.sequence, packet.timestamp)]
+                    self._count_discard(original_slot, duplicate=True)
+                    continue
                 if self._next_slot is not None and slot < self._next_slot:
-                    self._late_pending += 1
+                    self._count_discard(slot, duplicate=False)
                     continue
                 if slot in self._buffer:
-                    self._duplicate_pending += 1
-                    if packet.receiver_receive_us >= self._buffer[slot].receiver_receive_us:
-                        continue
+                    # Distinct source packets can collide after a real clock step.
+                    # Report a timeline discard, never call this an RTP duplicate.
+                    self._slot_collisions += 1
+                    self._count_discard(slot, duplicate=False)
+                    continue
                 self._buffer[slot] = packet
                 newest_allowed = slot - self.app.config["max_buffer_seconds"] * 1_000_000 // self.frame_us
                 for old_slot in [value for value in self._buffer if value < newest_allowed]:
@@ -1058,28 +1130,35 @@ class AudioStreamRecorder:
                     continue
             with self._buffer_lock:
                 packet = self._buffer.pop(slot, None)
-                late = self._late_pending
-                duplicate = self._duplicate_pending
+                late, duplicate = self._discard_buffer.pop(slot, (0, 0))
+                late += self._late_pending
+                duplicate += self._duplicate_pending
                 self._late_pending = 0
                 self._duplicate_pending = 0
+                for old_slot in [value for value in self._discard_buffer if value < slot]:
+                    old_late, old_duplicate = self._discard_buffer.pop(old_slot)
+                    late += old_late
+                    duplicate += old_duplicate
                 stale = [value for value in self._buffer if value < slot]
                 for old_slot in stale:
                     del self._buffer[old_slot]
                     late += 1
             try:
                 if self._segment is not None:
-                    self._segment.add_discard_counts(late, duplicate)
                     self._segment.write_slot(
                         slot_us,
                         self._output_sequence,
                         self._output_timestamp,
                         packet,
                     )
+                    self._segment.add_discard_counts(late, duplicate)
                 with self._task_lock:
                     self._resolved_history[slot] = packet
+                    self._discard_history[slot] = (late, duplicate)
                     oldest_slot = slot - self.app.config["max_buffer_seconds"] * 1_000_000 // self.frame_us
                     for old_slot in [value for value in self._resolved_history if value < oldest_slot]:
                         del self._resolved_history[old_slot]
+                        self._discard_history.pop(old_slot, None)
                     for task in self._task_segments.values():
                         if task.start_slot <= slot < task.end_slot:
                             task.write_slot(
@@ -1088,6 +1167,7 @@ class AudioStreamRecorder:
                                 self._output_timestamp,
                                 packet,
                             )
+                            task.add_discard_counts(late, duplicate)
                 self._output_sequence = (self._output_sequence + 1) & 0xFFFF
                 self._output_timestamp = (self._output_timestamp + self.frame_samples) & 0xFFFFFFFF
                 self._next_slot += 1
@@ -1125,7 +1205,8 @@ class AudioStreamRecorder:
                 self.config.payload_type,
                 self.config.ssrc,
             )
-            current_slot = self._next_slot if self._next_slot is not None else task.start_slot
+            current_slot = max(self._next_slot if self._next_slot is not None else task.start_slot,
+                               max(self._resolved_history, default=task.start_slot-1) + 1)
             for slot in range(task.start_slot, min(current_slot, task.end_slot)):
                 task.write_slot(
                     slot * self.frame_us,
@@ -1133,6 +1214,7 @@ class AudioStreamRecorder:
                     self._output_timestamp,
                     self._resolved_history.get(slot),
                 )
+                task.add_discard_counts(*self._discard_history.get(slot, (0, 0)))
             for event in self._playback_history:
                 event_us = int(event.get("global_timestamp_us", 0))
                 if spec.window_start_us <= event_us < spec.window_end_us:
@@ -1154,7 +1236,8 @@ class AudioStreamRecorder:
             if task is None:
                 return (directory / "audio_ready.json").exists()
             task.set_window_end(end_us)
-            current_slot = self._next_slot if self._next_slot is not None else 0
+            current_slot = max(self._next_slot if self._next_slot is not None else 0,
+                               max(self._resolved_history, default=-1) + 1)
             if current_slot < task.end_slot:
                 return False
             del self._task_segments[key]
@@ -1290,6 +1373,12 @@ class AudioStreamRecorder:
     def status(self) -> dict[str, Any]:
         with self._buffer_lock:
             buffered = len(self._buffer)
+            grid_status = {
+                'rebases': self._slot_mapper.rebases,
+                'jitter_adjusted_packets': self._slot_mapper.jitter_adjusted,
+                'max_placement_error_us': self._slot_mapper.max_placement_error_us,
+                'distinct_packet_collisions': self._slot_collisions,
+            }
         with self._control_lock:
             control_status = {
                 "rebuild_requests": self.rebuild_requests,
@@ -1306,6 +1395,7 @@ class AudioStreamRecorder:
             "audio_repair_enabled": self.config.repair_enabled,
             "audio_repair_wait_ms": self.config.repair_wait_ms if self.config.repair_enabled else 0,
             "audio_repair": self._repair.snapshot(),
+            "audio_slot_mapping": grid_status,
             "ssrc": self.config.ssrc,
             "enabled": self.enabled(),
             "recording": self._segment is not None,
