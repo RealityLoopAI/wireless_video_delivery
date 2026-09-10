@@ -1,0 +1,16 @@
+[OUTPUT] 
+Internal ctest changing into directory: /tmp/wvd-prestart-build
+
+[HANDLER_OUTPUT] 
+Test project /tmp/wvd-prestart-build
+
+    Start 1: receiver_prestart_depth_integration
+    Test #1: receiver_prestart_depth_integration ...   Passed    8.71 sec
+    Start 1: receiver_prestart_depth_integration
+    Test #1: receiver_prestart_depth_integration ...   Passed    8.76 sec
+    Start 1: receiver_prestart_depth_integration
+1/1 Test #1: receiver_prestart_depth_integration ...   Passed    8.77 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  26.25 sec

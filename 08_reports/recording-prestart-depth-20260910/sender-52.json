@@ -1,0 +1,26 @@
+{
+  "unit": "gwv3-gemini-sender-lubancat-52d2ef0c.service",
+  "since": "2026-09-10 11:51:59",
+  "until": "2026-09-10 11:56:59",
+  "perf_intervals": 299,
+  "counter_totals": {
+    "rgb_corrupt_jpeg_frames": 0,
+    "rgb_timing_mismatch_drops": 0,
+    "rgb_encoder_lag_resets": 0,
+    "rgb_source_missing": 0,
+    "rgb_source_duplicates": 0,
+    "rgb_source_resets": 0,
+    "rgb_encode_unmatched_inputs": 0,
+    "rgb_timing_history_evictions": 0,
+    "rgb_send_failures": 0,
+    "depth_send_failures": 0
+  },
+  "event_count": 5,
+  "events": [
+    "2026-09-10 11:53:06 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:53:16 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:53:17 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet",
+    "2026-09-10 11:53:45 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:53:46 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-52d2ef0c receiver=192.168.1.196:50012"
+  ]
+}

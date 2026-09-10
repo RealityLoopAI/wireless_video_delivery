@@ -1,0 +1,4 @@
+2026-09-10 11:53:07 [WARN] media arrival delayed camera=lubancat-52d2ef0c_cam01 stream=rgb receive_gap_us=349303 capture_to_receiver_us=631137 session=1
+2026-09-10 11:53:17 [WARN] media arrival delayed camera=lubancat-52d2ef0c_cam01 stream=rgb receive_gap_us=307647 capture_to_receiver_us=520417 session=1
+2026-09-10 11:53:17 [WARN] media arrival delayed camera=lubancat-52d2ef0c_cam01 stream=depth receive_gap_us=541364 capture_to_receiver_us=535998 session=7
+2026-09-10 11:53:45 [WARN] media arrival delayed camera=lubancat-e8cc0cb3_cam01 stream=rgb receive_gap_us=147609 capture_to_receiver_us=524279 session=12

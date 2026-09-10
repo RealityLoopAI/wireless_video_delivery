@@ -1,0 +1,24 @@
+{
+  "unit": "gwv3-gemini-sender-lubancat-e8cc0cb3.service",
+  "since": "2026-09-10 11:51:59",
+  "until": "2026-09-10 11:56:59",
+  "perf_intervals": 299,
+  "counter_totals": {
+    "rgb_corrupt_jpeg_frames": 0,
+    "rgb_timing_mismatch_drops": 0,
+    "rgb_encoder_lag_resets": 0,
+    "rgb_source_missing": 0,
+    "rgb_source_duplicates": 0,
+    "rgb_source_resets": 0,
+    "rgb_encode_unmatched_inputs": 0,
+    "rgb_timing_history_evictions": 0,
+    "rgb_send_failures": 0,
+    "depth_send_failures": 0
+  },
+  "event_count": 3,
+  "events": [
+    "2026-09-10 11:53:06 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:53:16 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:53:44 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet"
+  ]
+}
