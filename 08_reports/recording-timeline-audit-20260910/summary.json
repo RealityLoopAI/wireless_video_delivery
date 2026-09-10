@@ -1,0 +1,370 @@
+[
+  {
+    "path": "/tmp/wvd-52-131120.csv",
+    "streams": {
+      "rgb": {
+        "frames": 11266,
+        "clock_invalid": 1208,
+        "global_regressions": 0,
+        "max_global_gap_us": 1532753,
+        "source_id_missing": 8050,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {
+          "min": 14,
+          "p50": 44,
+          "p95": 69,
+          "max": 7677
+        },
+        "sender_timing_bound_to_encode_start_us": {
+          "min": 3486,
+          "p50": 7787,
+          "p95": 18614,
+          "max": 38816
+        },
+        "sender_encode_duration_us": {
+          "min": 10014,
+          "p50": 33586,
+          "p95": 45497,
+          "max": 65290
+        },
+        "sender_packet_queued_to_receiver_us": {
+          "min": 3680,
+          "p50": 27248159,
+          "p95": 30513097,
+          "max": 32106217
+        },
+        "receiver_minus_frame_system_us": {
+          "min": 40176,
+          "p50": 27294635,
+          "p95": 30560400,
+          "max": 32154917
+        },
+        "sender_delay_us": {
+          "min": 2543,
+          "p50": 16834,
+          "p95": 37650,
+          "max": 47499
+        },
+        "valid_model_age_us": {
+          "min": 3167,
+          "p50": 2807086,
+          "p95": 8366199,
+          "max": 9996852
+        },
+        "invalid_model_age_us": {
+          "min": 10001552,
+          "p50": 13615024,
+          "p95": 26836368,
+          "max": 31432760
+        }
+      },
+      "depth": {
+        "frames": 19316,
+        "clock_invalid": 2799,
+        "global_regressions": 0,
+        "max_global_gap_us": 48588,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {},
+        "sender_timing_bound_to_encode_start_us": {},
+        "sender_encode_duration_us": {},
+        "sender_packet_queued_to_receiver_us": {},
+        "receiver_minus_frame_system_us": {
+          "min": 12986,
+          "p50": 951716,
+          "p95": 16443334,
+          "max": 18677504
+        },
+        "sender_delay_us": {
+          "min": 2543,
+          "p50": 19598,
+          "p95": 37650,
+          "max": 47499
+        },
+        "valid_model_age_us": {
+          "min": 1631,
+          "p50": 3087430,
+          "p95": 8632710,
+          "max": 9997611
+        },
+        "invalid_model_age_us": {
+          "min": 10002409,
+          "p50": 13650073,
+          "p95": 26970580,
+          "max": 31633257
+        }
+      }
+    }
+  },
+  {
+    "path": "/tmp/wvd-e8-131120.csv",
+    "streams": {
+      "rgb": {
+        "frames": 15551,
+        "clock_invalid": 5717,
+        "global_regressions": 0,
+        "max_global_gap_us": 2331816,
+        "source_id_missing": 3766,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {
+          "min": 18,
+          "p50": 25,
+          "p95": 32,
+          "max": 480
+        },
+        "sender_timing_bound_to_encode_start_us": {
+          "min": 14939,
+          "p50": 19186,
+          "p95": 22182,
+          "max": 25463
+        },
+        "sender_encode_duration_us": {
+          "min": 25964,
+          "p50": 34554,
+          "p95": 38297,
+          "max": 45093
+        },
+        "sender_packet_queued_to_receiver_us": {
+          "min": 2971,
+          "p50": 23406929,
+          "p95": 30237519,
+          "max": 32444094
+        },
+        "receiver_minus_frame_system_us": {
+          "min": 55727,
+          "p50": 23463836,
+          "p95": 30294412,
+          "max": 32500823
+        },
+        "sender_delay_us": {
+          "min": 1939,
+          "p50": 10520,
+          "p95": 28657,
+          "max": 33650
+        },
+        "valid_model_age_us": {
+          "min": 323,
+          "p50": 2953774,
+          "p95": 9009066,
+          "max": 9995423
+        },
+        "invalid_model_age_us": {
+          "min": 10004352,
+          "p50": 17109227,
+          "p95": 33044185,
+          "max": 42570513
+        }
+      },
+      "depth": {
+        "frames": 19317,
+        "clock_invalid": 7236,
+        "global_regressions": 0,
+        "max_global_gap_us": 37679,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {},
+        "sender_timing_bound_to_encode_start_us": {},
+        "sender_encode_duration_us": {},
+        "sender_packet_queued_to_receiver_us": {},
+        "receiver_minus_frame_system_us": {
+          "min": 22596,
+          "p50": 477573,
+          "p95": 3873987,
+          "max": 8729714
+        },
+        "sender_delay_us": {
+          "min": 1939,
+          "p50": 10520,
+          "p95": 30559,
+          "max": 33650
+        },
+        "valid_model_age_us": {
+          "min": 743,
+          "p50": 3227995,
+          "p95": 9030971,
+          "max": 9996275
+        },
+        "invalid_model_age_us": {
+          "min": 10004952,
+          "p50": 17036639,
+          "p95": 31279777,
+          "max": 42571266
+        }
+      }
+    }
+  },
+  {
+    "path": "/tmp/wvd-52-133814.csv",
+    "streams": {
+      "rgb": {
+        "frames": 27020,
+        "clock_invalid": 0,
+        "global_regressions": 0,
+        "max_global_gap_us": 45817,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {
+          "min": 14,
+          "p50": 43,
+          "p95": 67,
+          "max": 4769
+        },
+        "sender_timing_bound_to_encode_start_us": {
+          "min": 3491,
+          "p50": 7528,
+          "p95": 17250,
+          "max": 29250
+        },
+        "sender_encode_duration_us": {
+          "min": 11979,
+          "p50": 33537,
+          "p95": 44300,
+          "max": 60111
+        },
+        "sender_packet_queued_to_receiver_us": {
+          "min": 2009,
+          "p50": 3930,
+          "p95": 15538,
+          "max": 2256541
+        },
+        "receiver_minus_frame_system_us": {
+          "min": 33477,
+          "p50": 48929,
+          "p95": 63833,
+          "max": 2306845
+        },
+        "sender_delay_us": {
+          "min": 1890,
+          "p50": 2899,
+          "p95": 3125,
+          "max": 4099
+        },
+        "valid_model_age_us": {
+          "min": 871,
+          "p50": 1487010,
+          "p95": 2551801,
+          "max": 4861546
+        },
+        "invalid_model_age_us": {}
+      },
+      "depth": {
+        "frames": 27022,
+        "clock_invalid": 0,
+        "global_regressions": 0,
+        "max_global_gap_us": 45625,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {},
+        "sender_timing_bound_to_encode_start_us": {},
+        "sender_encode_duration_us": {},
+        "sender_packet_queued_to_receiver_us": {},
+        "receiver_minus_frame_system_us": {
+          "min": 7177,
+          "p50": 20625,
+          "p95": 36012,
+          "max": 1678061
+        },
+        "sender_delay_us": {
+          "min": 1890,
+          "p50": 2899,
+          "p95": 3125,
+          "max": 4099
+        },
+        "valid_model_age_us": {
+          "min": 855,
+          "p50": 1488522,
+          "p95": 2553313,
+          "max": 4862027
+        },
+        "invalid_model_age_us": {}
+      }
+    }
+  },
+  {
+    "path": "/tmp/wvd-e8-133814.csv",
+    "streams": {
+      "rgb": {
+        "frames": 27020,
+        "clock_invalid": 0,
+        "global_regressions": 0,
+        "max_global_gap_us": 52523,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {
+          "min": 17,
+          "p50": 25,
+          "p95": 29,
+          "max": 236
+        },
+        "sender_timing_bound_to_encode_start_us": {
+          "min": 14291,
+          "p50": 18916,
+          "p95": 22013,
+          "max": 26855
+        },
+        "sender_encode_duration_us": {
+          "min": 22156,
+          "p50": 34491,
+          "p95": 37963,
+          "max": 56514
+        },
+        "sender_packet_queued_to_receiver_us": {
+          "min": 1570,
+          "p50": 4885,
+          "p95": 12091,
+          "max": 241149
+        },
+        "receiver_minus_frame_system_us": {
+          "min": 50689,
+          "p50": 60774,
+          "p95": 68067,
+          "max": 293099
+        },
+        "sender_delay_us": {
+          "min": 1501,
+          "p50": 1926,
+          "p95": 2063,
+          "max": 2124
+        },
+        "valid_model_age_us": {
+          "min": 243,
+          "p50": 1480206,
+          "p95": 2541167,
+          "max": 2991718
+        },
+        "invalid_model_age_us": {}
+      },
+      "depth": {
+        "frames": 27021,
+        "clock_invalid": 0,
+        "global_regressions": 0,
+        "max_global_gap_us": 50673,
+        "source_id_missing": 0,
+        "video_index_gaps": 0,
+        "sender_capture_to_timing_bound_us": {},
+        "sender_timing_bound_to_encode_start_us": {},
+        "sender_encode_duration_us": {},
+        "sender_packet_queued_to_receiver_us": {},
+        "receiver_minus_frame_system_us": {
+          "min": 20137,
+          "p50": 28145,
+          "p95": 36052,
+          "max": 293118
+        },
+        "sender_delay_us": {
+          "min": 1501,
+          "p50": 1926,
+          "p95": 2063,
+          "max": 2124
+        },
+        "valid_model_age_us": {
+          "min": 463,
+          "p50": 1480487,
+          "p95": 2541873,
+          "max": 2992489
+        },
+        "invalid_model_age_us": {}
+      }
+    }
+  }
+]
