@@ -1,0 +1,78 @@
+Start testing: Sep 10 17:20 CST
+----------------------------------------------------------
+7/37 Testing: receiver_tail_drain_integration
+7/37 Test: receiver_tail_drain_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_tail_drain_integration" start time: Sep 10 17:20 CST
+Output:
+----------------------------------------------------------
+PASS all timeout False restart True rgb_only False first_in_flight False
+PASS all timeout True restart False rgb_only False first_in_flight False
+PASS sender timeout False restart True rgb_only False first_in_flight False
+PASS sender timeout True restart False rgb_only False first_in_flight False
+PASS camera timeout False restart True rgb_only False first_in_flight False
+PASS camera timeout True restart False rgb_only False first_in_flight False
+PASS all timeout False restart False rgb_only True first_in_flight False
+PASS all timeout False restart False rgb_only False first_in_flight True
+PASS shutdown during tail drain
+PASS all timeout False restart False rgb_only False first_in_flight False
+<end of output>
+Test time =  24.56 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_tail_drain_integration" end time: Sep 10 17:20 CST
+"receiver_tail_drain_integration" time elapsed: 00:00:24
+----------------------------------------------------------
+
+7/37 Testing: receiver_tail_drain_integration
+7/37 Test: receiver_tail_drain_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_tail_drain_integration" start time: Sep 10 17:20 CST
+Output:
+----------------------------------------------------------
+PASS all timeout False restart True rgb_only False first_in_flight False
+PASS all timeout True restart False rgb_only False first_in_flight False
+PASS sender timeout False restart True rgb_only False first_in_flight False
+PASS sender timeout True restart False rgb_only False first_in_flight False
+PASS camera timeout False restart True rgb_only False first_in_flight False
+PASS camera timeout True restart False rgb_only False first_in_flight False
+PASS all timeout False restart False rgb_only True first_in_flight False
+PASS all timeout False restart False rgb_only False first_in_flight True
+PASS shutdown during tail drain
+PASS all timeout False restart False rgb_only False first_in_flight False
+<end of output>
+Test time =  24.24 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_tail_drain_integration" end time: Sep 10 17:21 CST
+"receiver_tail_drain_integration" time elapsed: 00:00:24
+----------------------------------------------------------
+
+7/37 Testing: receiver_tail_drain_integration
+7/37 Test: receiver_tail_drain_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_tail_drain_integration" start time: Sep 10 17:21 CST
+Output:
+----------------------------------------------------------
+PASS all timeout False restart True rgb_only False first_in_flight False
+PASS all timeout True restart False rgb_only False first_in_flight False
+PASS sender timeout False restart True rgb_only False first_in_flight False
+PASS sender timeout True restart False rgb_only False first_in_flight False
+PASS camera timeout False restart True rgb_only False first_in_flight False
+PASS camera timeout True restart False rgb_only False first_in_flight False
+PASS all timeout False restart False rgb_only True first_in_flight False
+PASS all timeout False restart False rgb_only False first_in_flight True
+PASS shutdown during tail drain
+PASS all timeout False restart False rgb_only False first_in_flight False
+<end of output>
+Test time =  24.41 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_tail_drain_integration" end time: Sep 10 17:21 CST
+"receiver_tail_drain_integration" time elapsed: 00:00:24
+----------------------------------------------------------
+
+End testing: Sep 10 17:21 CST

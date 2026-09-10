@@ -1,0 +1,735 @@
+Start testing: Sep 10 17:17 CST
+----------------------------------------------------------
+1/37 Testing: receiver_rgb_pts_integration
+1/37 Test: receiver_rgb_pts_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_rgb_pts.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_rgb_pts_integration" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS RGB real PTS, one-second gap, delayed start and CSV index fragmented_mp4 False [0.2, 0.233333, 0.266666, 1.266666, 1.299999]
+PASS RGB real PTS, one-second gap, delayed start and CSV index conventional_mp4 False [0.2, 0.233333, 0.266666, 1.266666, 1.299999]
+PASS RGB real PTS, one-second gap, delayed start and CSV index fragmented_mp4 True [0.2, 0.233333, 0.266666, 1.266666, 1.299999]
+<end of output>
+Test time =   9.61 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_rgb_pts_integration" end time: Sep 10 17:17 CST
+"receiver_rgb_pts_integration" time elapsed: 00:00:09
+----------------------------------------------------------
+
+2/37 Testing: timestamped_h264_writer_unit
+2/37 Test: timestamped_h264_writer_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_timestamped_h264_writer.py" "--writer" "/tmp/wvd-pts-test-20260910/build/02_receiver_linux/test_timestamped_h264_writer"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"timestamped_h264_writer_unit" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS timestamped writer timestamps
+PASS timestamped writer multiple
+PASS timestamped writer sequence
+PASS timestamped writer bframes
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"timestamped_h264_writer_unit" end time: Sep 10 17:17 CST
+"timestamped_h264_writer_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/37 Testing: receiver_prestart_depth_integration
+3/37 Test: receiver_prestart_depth_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_prestart_depth.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_prestart_depth_integration" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS prestart depth delayed
+PASS prestart depth bounded
+PASS prestart depth restart
+<end of output>
+Test time =   8.98 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_prestart_depth_integration" end time: Sep 10 17:17 CST
+"receiver_prestart_depth_integration" time elapsed: 00:00:08
+----------------------------------------------------------
+
+4/37 Testing: clock_sync_history_unit
+4/37 Test: clock_sync_history_unit
+Command: "/tmp/wvd-pts-test-20260910/build/02_receiver_linux/test_clock_sync_history"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"clock_sync_history_unit" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS eight-hour simulated clock timeline and history bounds
+PASS historical capture timestamps survive drift changes
+<end of output>
+Test time =   3.27 sec
+----------------------------------------------------------
+Test Passed.
+"clock_sync_history_unit" end time: Sep 10 17:17 CST
+"clock_sync_history_unit" time elapsed: 00:00:03
+----------------------------------------------------------
+
+5/37 Testing: receiver_clock_history_integration
+5/37 Test: receiver_clock_history_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_clock_history.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_clock_history_integration" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS final RGBD CSV uses one historical clock snapshot, holdover=False
+PASS final RGBD CSV uses one historical clock snapshot, holdover=True
+<end of output>
+Test time =   3.55 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_clock_history_integration" end time: Sep 10 17:17 CST
+"receiver_clock_history_integration" time elapsed: 00:00:03
+----------------------------------------------------------
+
+6/37 Testing: recording_tail_drain_unit
+6/37 Test: recording_tail_drain_unit
+Command: "/tmp/wvd-pts-test-20260910/build/02_receiver_linux/test_recording_tail_drain"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"recording_tail_drain_unit" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"recording_tail_drain_unit" end time: Sep 10 17:17 CST
+"recording_tail_drain_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/37 Testing: receiver_tail_drain_integration
+7/37 Test: receiver_tail_drain_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_tail_drain_integration" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS all timeout False restart True rgb_only False first_in_flight False
+PASS all timeout True restart False rgb_only False first_in_flight False
+2026-09-10 17:17:58 [WARN] recording segment quality=partial directory=/tmp/gwv3_tail_drain_7frrqc28/nas/.gwv3_direct_inprogress/tail-test_cam01/2026-09-10/171757 reason=rgb coverage below 98 percent; depth coverage below 98 percent
+
+Traceback (most recent call last):
+  File "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py", line 180, in <module>
+    exercise(args.receiver, scope, restart=True)
+  File "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_tail_drain.py", line 137, in exercise
+    assert len(files) == (2 if restart else 1), files
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: [PosixPath('/tmp/gwv3_tail_drain_7frrqc28/nas/tail-test_cam01/2026-09-10/171757/frames.csv')]
+<end of output>
+Test time =   7.45 sec
+----------------------------------------------------------
+Test Failed.
+"receiver_tail_drain_integration" end time: Sep 10 17:17 CST
+"receiver_tail_drain_integration" time elapsed: 00:00:07
+----------------------------------------------------------
+
+8/37 Testing: receiver_status_reply_integration
+8/37 Test: receiver_status_reply_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_status_reply.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_status_reply_integration" start time: Sep 10 17:17 CST
+Output:
+----------------------------------------------------------
+PASS status control uses original UDP peer ('127.0.0.1', 48448)
+<end of output>
+Test time =   1.31 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_status_reply_integration" end time: Sep 10 17:18 CST
+"receiver_status_reply_integration" time elapsed: 00:00:01
+----------------------------------------------------------
+
+9/37 Testing: receiver_target_unit
+9/37 Test: receiver_target_unit
+Command: "/tmp/wvd-pts-test-20260910/build/02_receiver_linux/test_receiver_target"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_target_unit" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+receiver target unit test passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_target_unit" end time: Sep 10 17:18 CST
+"receiver_target_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/37 Testing: receiver_discovery_client_integration
+10/37 Test: receiver_discovery_client_integration
+Command: "/tmp/wvd-pts-test-20260910/build/02_receiver_linux/test_receiver_discovery_client"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_discovery_client_integration" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+receiver discovery client integration test passed
+<end of output>
+Test time =   0.21 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_discovery_client_integration" end time: Sep 10 17:18 CST
+"receiver_discovery_client_integration" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/37 Testing: receiver_discovery_integration
+11/37 Test: receiver_discovery_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_discovery.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_discovery_integration" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+receiver discovery integration test passed
+<end of output>
+Test time =   1.21 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_discovery_integration" end time: Sep 10 17:18 CST
+"receiver_discovery_integration" time elapsed: 00:00:01
+----------------------------------------------------------
+
+12/37 Testing: nas_discovery_integration
+12/37 Test: nas_discovery_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_nas_discovery.py" "--beacon" "/tmp/wvd-pts-test-20260910/05_tools/nas_discovery_beacon.py" "--manager" "/tmp/wvd-pts-test-20260910/05_tools/nas_mount_manager.py" "--uploader" "/tmp/wvd-pts-test-20260910/05_tools/recording_uploader.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"nas_discovery_integration" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+NAS discovery integration test passed
+<end of output>
+Test time =   1.68 sec
+----------------------------------------------------------
+Test Passed.
+"nas_discovery_integration" end time: Sep 10 17:18 CST
+"nas_discovery_integration" time elapsed: 00:00:01
+----------------------------------------------------------
+
+13/37 Testing: receiver_hardening_integration
+13/37 Test: receiver_hardening_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_hardening.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver" "--source-root" "/tmp/wvd-pts-test-20260910"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_hardening_integration" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+partial header/payload pauses preserved: one complete packet, admin responsive
+receiver hardening integration test passed
+<end of output>
+Test time =  44.64 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_hardening_integration" end time: Sep 10 17:18 CST
+"receiver_hardening_integration" time elapsed: 00:00:44
+----------------------------------------------------------
+
+14/37 Testing: sync_input_guard_unit
+14/37 Test: sync_input_guard_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_sync_input_guard.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"sync_input_guard_unit" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.003s
+
+OK
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"sync_input_guard_unit" end time: Sep 10 17:18 CST
+"sync_input_guard_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/37 Testing: rgb_sync_manifest_unit
+15/37 Test: rgb_sync_manifest_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_build_rgb_sync_manifest.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"rgb_sync_manifest_unit" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"rgb_sync_manifest_unit" end time: Sep 10 17:18 CST
+"rgb_sync_manifest_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/37 Testing: recording_uploader_fault_injection
+16/37 Test: recording_uploader_fault_injection
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_recording_uploader.py" "--python" "/usr/bin/python3" "--uploader" "/tmp/wvd-pts-test-20260910/05_tools/recording_uploader.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"recording_uploader_fault_injection" start time: Sep 10 17:18 CST
+Output:
+----------------------------------------------------------
+recording incremental mirror updated source=/tmp/gwv3_uploader_test_gzd4npsl/incremental-staging/camera-incremental/2026-07-30/120000 bytes=5242880 destination=/tmp/gwv3_uploader_test_gzd4npsl/incremental-nas/.gwv3_capture_queue/.gwv3-mirroring-13dfdb949dabdddcd74d9474
+recording incremental finalize source=/tmp/gwv3_uploader_test_gzd4npsl/incremental-staging/camera-incremental/2026-07-30/120000/incremental_depth.mkv fast_path=false verified_bytes=2097152 written_bytes=1048610
+recording incremental finalize source=/tmp/gwv3_uploader_test_gzd4npsl/incremental-staging/camera-incremental/2026-07-30/120000/incremental_rgb.mp4 fast_path=false verified_bytes=3145728 written_bytes=1048606
+recording upload metadata preservation skipped source=/tmp/gwv3_uploader_test_gzd4npsl/metadata_source.bin destination=/tmp/gwv3_uploader_test_gzd4npsl/metadata_destination.bin error=[Errno 14] simulated CIFS metadata failure
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/interrupt-staging/camera/2026-07-24/120000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording capture interrupted source=/tmp/gwv3_uploader_test_gzd4npsl/interrupt-staging/camera/2026-07-24/120000 error=simulated service stop
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-staging/camera-recovery/2026-07-24/130000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording capture completed source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-staging/camera-recovery/2026-07-24/130000 destination=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/.gwv3_capture_queue/50e03d8c9cb04ba6592cf27a duration_ms=9 local_cache_retained=true
+recording NAS finalization failed source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/.gwv3_capture_queue/50e03d8c9cb04ba6592cf27a error=RuntimeError: simulated NAS-side remux failure
+Traceback (most recent call last):
+  File "/tmp/wvd-pts-test-20260910/05_tools/recording_uploader.py", line 4578, in process_capture_one
+    ready, finalized_path, remux_source = finalize_captured_segment(
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/wvd-pts-test-20260910/10_tests/test_recording_uploader.py", line 721, in fail_nas_finalize
+    raise RuntimeError("simulated NAS-side remux failure")
+RuntimeError: simulated NAS-side remux failure
+recording NAS finalization interrupted source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/.gwv3_capture_queue/50e03d8c9cb04ba6592cf27a error=simulated stop after NAS remux
+recording NAS finalization interrupted source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/.gwv3_capture_queue/50e03d8c9cb04ba6592cf27a error=simulated stop after final directory move
+recording final publish recovered journal=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/.gwv3_capture_queue/.gwv3-publish-50e03d8c9cb04ba6592cf27a.json destination=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/camera-recovery/2026-07-24/130000
+recording local capture cache released source=/tmp/gwv3_uploader_test_gzd4npsl/recovery-staging/camera-recovery/2026-07-24/130000 destination=/tmp/gwv3_uploader_test_gzd4npsl/recovery-nas/camera-recovery/2026-07-24/130000 reason=final_published
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-0/2026-07-24/140000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-1/2026-07-24/140000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording capture completed source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-0/2026-07-24/140000 destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/.gwv3_capture_queue/34a7d50e9ea44cbbe44f97ac duration_ms=12 local_cache_retained=true
+recording capture completed source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-1/2026-07-24/140000 destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/.gwv3_capture_queue/c74e96295448be39616b3dcd duration_ms=12 local_cache_retained=true
+recording local capture cache released source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-0/2026-07-24/140000 destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/camera-parallel-0/2026-07-24/140000 reason=final_published
+recording final publish completed source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/.gwv3_capture_queue/34a7d50e9ea44cbbe44f97ac destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/camera-parallel-0/2026-07-24/140000 remux_source=local finalize_ms=504 publish_ms=4 total_ms=512 parallel=true
+recording local capture cache released source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-staging/camera-parallel-1/2026-07-24/140000 destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/camera-parallel-1/2026-07-24/140000 reason=final_published
+recording final publish completed source=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/.gwv3_capture_queue/c74e96295448be39616b3dcd destination=/tmp/gwv3_uploader_test_gzd4npsl/parallel-nas/camera-parallel-1/2026-07-24/140000 remux_source=local finalize_ms=507 publish_ms=8 total_ms=522 parallel=true
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/fallback-staging/camera-fallback/2026-07-24/150000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording local capture cache released source=/tmp/gwv3_uploader_test_gzd4npsl/fallback-staging/camera-fallback/2026-07-24/150000 destination= reason=disk_high_watermark
+recording capture completed source=/tmp/gwv3_uploader_test_gzd4npsl/fallback-staging/camera-fallback/2026-07-24/150000 destination=/tmp/gwv3_uploader_test_gzd4npsl/fallback-nas/.gwv3_capture_queue/d69bb1e7d7ab9c09f4e5f585 duration_ms=12 local_cache_retained=true
+recording final publish completed source=/tmp/gwv3_uploader_test_gzd4npsl/fallback-nas/.gwv3_capture_queue/d69bb1e7d7ab9c09f4e5f585 destination=/tmp/gwv3_uploader_test_gzd4npsl/fallback-nas/camera-fallback/2026-07-24/150000 remux_source=nas finalize_ms=509 publish_ms=6 total_ms=517
+recording capture planned source=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-staging/camera-fragmented/2026-07-24/160000 mirror_reuse_percent=0.00 full_copy_slot=true shared_bandwidth_limit_mbps=0
+recording capture completed source=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-staging/camera-fragmented/2026-07-24/160000 destination=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-nas/.gwv3_capture_queue/94edc9394f6dd18e7eb2cf6b duration_ms=14 local_cache_retained=true
+recording local capture cache released source=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-staging/camera-fragmented/2026-07-24/160000 destination=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-nas/camera-fragmented/2026-07-24/160000 reason=final_published
+recording final publish completed source=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-nas/.gwv3_capture_queue/94edc9394f6dd18e7eb2cf6b destination=/tmp/gwv3_uploader_test_gzd4npsl/fragmented-nas/camera-fragmented/2026-07-24/160000 remux_source=fragmented_passthrough finalize_ms=1 publish_ms=5 total_ms=9
+<end of output>
+Test time =  21.74 sec
+----------------------------------------------------------
+Test Passed.
+"recording_uploader_fault_injection" end time: Sep 10 17:19 CST
+"recording_uploader_fault_injection" time elapsed: 00:00:21
+----------------------------------------------------------
+
+17/37 Testing: recording_uploader_concurrency
+17/37 Test: recording_uploader_concurrency
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_recording_uploader_concurrency.py" "--uploader" "/tmp/wvd-pts-test-20260910/05_tools/recording_uploader.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"recording_uploader_concurrency" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+recording uploader already running lock=/tmp/gwv3_uploader_concurrency_a3okusl1/staging/.gwv3_uploader.process.lock
+recording direct copy completed source=/tmp/gwv3_uploader_concurrency_a3okusl1/direct-source.bin bytes=8388731 elapsed_ms=101 rate_mbps=666.73
+recording uploader concurrency and incremental fast-path test passed
+<end of output>
+Test time =   1.55 sec
+----------------------------------------------------------
+Test Passed.
+"recording_uploader_concurrency" end time: Sep 10 17:19 CST
+"recording_uploader_concurrency" time elapsed: 00:00:01
+----------------------------------------------------------
+
+18/37 Testing: receiver_staging_pipeline_integration
+18/37 Test: receiver_staging_pipeline_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_staging_pipeline.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver" "--python" "/usr/bin/python3" "--uploader" "/tmp/wvd-pts-test-20260910/05_tools/recording_uploader.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_staging_pipeline_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =  10.69 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_staging_pipeline_integration" end time: Sep 10 17:19 CST
+"receiver_staging_pipeline_integration" time elapsed: 00:00:10
+----------------------------------------------------------
+
+19/37 Testing: receiver_direct_nas_integration
+19/37 Test: receiver_direct_nas_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_receiver_direct_nas.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"receiver_direct_nas_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   2.96 sec
+----------------------------------------------------------
+Test Passed.
+"receiver_direct_nas_integration" end time: Sep 10 17:19 CST
+"receiver_direct_nas_integration" time elapsed: 00:00:02
+----------------------------------------------------------
+
+20/37 Testing: photo_uploader_fault_injection
+20/37 Test: photo_uploader_fault_injection
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_photo_uploader.py" "--uploader" "/tmp/wvd-pts-test-20260910/05_tools/photo_uploader.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"photo_uploader_fault_injection" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+photo published request_id=request-a destination=/tmp/gwv3_photo_uploader_test_cd8l5j3v/nas/voice_photos/sender_cam01/2026-07-28/12-00-00/20260728_120000.jpg
+photo published request_id=request-b destination=/tmp/gwv3_photo_uploader_test_cd8l5j3v/nas/voice_photos/sender_cam01/2026-07-28/12-00-00/20260728_120000.jpg
+photo published request_id=request-c destination=/tmp/gwv3_photo_uploader_test_cd8l5j3v/nas/voice_photos/sender_cam01/2026-07-28/12-00-00/20260728_120000_001.jpg
+photo publish failed request_id=request-corrupt retry_seconds=1 error=staged JPEG integrity mismatch: size=20/20 crc32=127692277/0
+photo publish failed request_id=request-traversal retry_seconds=1 error=unsafe relative_path: '../outside.jpg'
+photo uploader tests passed
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"photo_uploader_fault_injection" end time: Sep 10 17:19 CST
+"photo_uploader_fault_injection" time elapsed: 00:00:00
+----------------------------------------------------------
+
+21/37 Testing: voice_photo_pipeline_integration
+21/37 Test: voice_photo_pipeline_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_voice_photo_pipeline.py" "--receiver" "/tmp/wvd-pts-test-20260910/build/bin/gemini_receiver"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"voice_photo_pipeline_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+voice photo receiver pipeline test passed
+<end of output>
+Test time =   1.34 sec
+----------------------------------------------------------
+Test Passed.
+"voice_photo_pipeline_integration" end time: Sep 10 17:19 CST
+"voice_photo_pipeline_integration" time elapsed: 00:00:01
+----------------------------------------------------------
+
+22/37 Testing: voice_photo_burst_unit
+22/37 Test: voice_photo_burst_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_voice_photo_burst.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"voice_photo_burst_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+photo capture completed source=unit-test text=拍照 queue_wait_ms=0 elapsed_ms=51 paths=['/nas/test.jpg']
+photo capture completed source=unit-test text=拍照 queue_wait_ms=51 elapsed_ms=51 paths=['/nas/test.jpg']
+photo request queued: request_id=xiaohuan_photo_20260910_171927_793693_01of03 camera_id=cam01 storage_target=receiver_nas
+photo request queued: request_id=xiaohuan_photo_20260910_171927_793693_02of03 camera_id=cam01 storage_target=receiver_nas
+photo request queued: request_id=xiaohuan_photo_20260910_171927_793693_03of03 camera_id=cam01 storage_target=receiver_nas
+photo burst captured index=1/3 path=/nas/xiaohuan_photo_20260910_171927_793693_01of03.jpg
+photo burst captured index=2/3 path=/nas/xiaohuan_photo_20260910_171927_793693_02of03.jpg
+photo burst captured index=3/3 path=/nas/xiaohuan_photo_20260910_171927_793693_03of03.jpg
+photo request queued: request_id=xiaohuan_photo_20260910_171927_796069_01of03 camera_id=cam01 storage_target=receiver_nas
+photo request queued: request_id=xiaohuan_photo_20260910_171927_796069_02of03 camera_id=cam01 storage_target=receiver_nas
+photo request queued: request_id=xiaohuan_photo_20260910_171927_796069_03of03 camera_id=cam01 storage_target=receiver_nas
+photo burst captured index=1/3 path=/nas/first.jpg
+voice photo burst test passed
+<end of output>
+Test time =   0.92 sec
+----------------------------------------------------------
+Test Passed.
+"voice_photo_burst_unit" end time: Sep 10 17:19 CST
+"voice_photo_burst_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/37 Testing: web_preview_low_latency_unit
+23/37 Test: web_preview_low_latency_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_web_preview_low_latency.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"web_preview_low_latency_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+web preview low-latency guard test passed
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"web_preview_low_latency_unit" end time: Sep 10 17:19 CST
+"web_preview_low_latency_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+24/37 Testing: device_info_api_unit
+24/37 Test: device_info_api_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_device_info_api.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"device_info_api_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+device info API unit test passed
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"device_info_api_unit" end time: Sep 10 17:19 CST
+"device_info_api_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+25/37 Testing: recording_button_service_unit
+25/37 Test: recording_button_service_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_recording_button_service.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"recording_button_service_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+recording action failed sender=sender-a action=start attempt=1/3 error=response lost
+recording action rejected before cue sender=sender-a action=start error=receiver status is stale
+simultaneous button hold ignored buttons=maskrom,recovery
+recording button service tests passed
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"recording_button_service_unit" end time: Sep 10 17:19 CST
+"recording_button_service_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/37 Testing: deployment_acceptance_integration
+26/37 Test: deployment_acceptance_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_deployment_acceptance.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"deployment_acceptance_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+deployment acceptance test passed
+<end of output>
+Test time =   2.76 sec
+----------------------------------------------------------
+Test Passed.
+"deployment_acceptance_integration" end time: Sep 10 17:19 CST
+"deployment_acceptance_integration" time elapsed: 00:00:02
+----------------------------------------------------------
+
+27/37 Testing: audio_archive_receiver_integration
+27/37 Test: audio_archive_receiver_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_audio_archive_receiver.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"audio_archive_receiver_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+audio RTP input missing sender=sender-a age_ms=6000
+audio capture rebuild requested sender=sender-a request_id=audio-rebuild-sender-a-100000000-e71d0faa target=127.0.0.1:54014 receiver_input_age_ms=6000
+audio capture rebuild result sender=sender-a request_id=audio-rebuild-sender-a-100000000-e71d0faa accepted=false reason=local_capture_healthy local_packet_age_ms=20.0
+audio archive receiver tests passed
+<end of output>
+Test time =   2.70 sec
+----------------------------------------------------------
+Test Passed.
+"audio_archive_receiver_integration" end time: Sep 10 17:19 CST
+"audio_archive_receiver_integration" time elapsed: 00:00:02
+----------------------------------------------------------
+
+28/37 Testing: audio_retransmit_integration
+28/37 Test: audio_retransmit_integration
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_audio_retransmit.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"audio_retransmit_integration" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+task audio receiver status unavailable: <urlopen error [Errno 111] Connection refused>
+PASS cache bounds, malformed requests, 16/32-bit wrap, 2.4s gap, epoch, expiry
+PASS real UDP: jitter, duplicates, replay counters, 120 dropped packets recovered; 200/200
+<end of output>
+Test time =  12.77 sec
+----------------------------------------------------------
+Test Passed.
+"audio_retransmit_integration" end time: Sep 10 17:19 CST
+"audio_retransmit_integration" time elapsed: 00:00:12
+----------------------------------------------------------
+
+29/37 Testing: audio_capture_rebuild_guard_unit
+29/37 Test: audio_capture_rebuild_guard_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_audio_capture_rebuild_guard.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"audio_capture_rebuild_guard_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+audio capture rebuild guard test passed
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"audio_capture_rebuild_guard_unit" end time: Sep 10 17:19 CST
+"audio_capture_rebuild_guard_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/37 Testing: audio_archive_audit_unit
+30/37 Test: audio_archive_audit_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_audio_archive_audit.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"audio_archive_audit_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+audio archive audit test passed
+<end of output>
+Test time =   0.17 sec
+----------------------------------------------------------
+Test Passed.
+"audio_archive_audit_unit" end time: Sep 10 17:19 CST
+"audio_archive_audit_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+31/37 Testing: recording_led_service_unit
+31/37 Test: recording_led_service_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_recording_led_service.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"recording_led_service_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+OK
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"recording_led_service_unit" end time: Sep 10 17:19 CST
+"recording_led_service_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+32/37 Testing: power_button_service_unit
+32/37 Test: power_button_service_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_power_button_service.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"power_button_service_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+cue submission failed cue=shutdown error=speech unavailable
+shutdown cue unavailable after 3.0s; continuing poweroff
+power button service tests passed
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"power_button_service_unit" end time: Sep 10 17:19 CST
+"power_button_service_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/37 Testing: gwv3_provision_unit
+33/37 Test: gwv3_provision_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_gwv3_provision.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"gwv3_provision_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+GWV3 provisioning unit test passed
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"gwv3_provision_unit" end time: Sep 10 17:19 CST
+"gwv3_provision_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+34/37 Testing: chrony_receiver_watch_unit
+34/37 Test: chrony_receiver_watch_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_chrony_receiver_watch.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"chrony_receiver_watch_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+Chrony receiver watch unit test passed
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"chrony_receiver_watch_unit" end time: Sep 10 17:19 CST
+"chrony_receiver_watch_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+35/37 Testing: voice_tts_service_unit
+35/37 Test: voice_tts_service_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_voice_tts_service.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"voice_tts_service_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+online TTS loaded backend=edge-tts voice=zh-CN-XiaoyiNeural timeout_seconds=4.0 memory_cache_entries=64 disk_cache=/tmp/gwv3_edge_cache_tlk8hcim/cache disk_cache_max_bytes=268435456
+online TTS generated backend=edge-tts voice=zh-CN-XiaoyiNeural chars=4 seconds=0.000 audio_seconds=0.000
+online TTS cache hit backend=edge-tts voice=zh-CN-XiaoyiNeural chars=4
+online TTS loaded backend=edge-tts voice=zh-CN-XiaoyiNeural timeout_seconds=4.0 memory_cache_entries=64 disk_cache=/tmp/gwv3_edge_cache_tlk8hcim/cache disk_cache_max_bytes=268435456
+online TTS disk cache hit backend=edge-tts voice=zh-CN-XiaoyiNeural chars=4
+online TTS loaded backend=edge-tts voice=zh-CN-XiaoyiNeural timeout_seconds=4.0 memory_cache_entries=64 disk_cache=/tmp/gwv3_edge_cache_tlk8hcim/failing-cache disk_cache_max_bytes=268435456
+online TTS failed backend=edge-tts voice=zh-CN-XiaoyiNeural error=injected Edge failure; retry_after_seconds=30.0; dropping task
+online TTS loaded backend=edge-tts voice=zh-CN-XiaoyiNeural timeout_seconds=4.0 memory_cache_entries=64 disk_cache=/tmp/gwv3_edge_cache_tlk8hcim/limited-cache disk_cache_max_bytes=10
+speech HTTP listening http://127.0.0.1:45901 endpoints=/api/tts/speak,/api/audio/cue,/api/audio/status queue_capacity=2
+speech HTTP 127.0.0.1 "GET /healthz HTTP/1.1" 200 -
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 400 -
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 202 -
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 202 -
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 202 -
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 429 -
+speech task finished task_id=49dd35a6f6d449e882fb3c0d6e691208 source=http success=true outstanding=1
+speech task finished task_id=9c6aebc307da4e5d9505e2fdd01eb656 source=http success=true outstanding=0
+speech HTTP 127.0.0.1 "POST /api/tts/speak HTTP/1.1" 202 -
+speech HTTP listening http://127.0.0.1:33129 endpoints=/api/tts/speak,/api/audio/cue,/api/audio/status queue_capacity=100
+speech HTTP 127.0.0.1 "GET /healthz HTTP/1.1" 200 -
+speech cue queued cue=ding task_id=d0483865dc37452fab7ae3ab1cbb4cea queue_position=1
+speech HTTP 127.0.0.1 "POST /api/audio/cue HTTP/1.1" 202 -
+speech HTTP 127.0.0.1 "GET /api/audio/status?request_id=cue-1 HTTP/1.1" 200 -
+speech task finished task_id=d0483865dc37452fab7ae3ab1cbb4cea source=http-cue:ding success=true outstanding=0
+speech HTTP 127.0.0.1 "GET /api/audio/status?request_id=cue-1 HTTP/1.1" 200 -
+speech HTTP 127.0.0.1 "POST /api/audio/cue HTTP/1.1" 202 -
+speech HTTP 127.0.0.1 "POST /api/audio/cue HTTP/1.1" 400 -
+speech HTTP 127.0.0.1 "GET /api/audio/status?request_id=missing HTTP/1.1" 404 -
+speech prompt queued source=wake-response task_id=d82dad85149141dc9307230c3a9ae2ee queue_position=1
+speech task finished task_id=d82dad85149141dc9307230c3a9ae2ee source=wake-response success=true outstanding=1
+speech task finished task_id=b481b60c80134d69b0ff02f1678b5084 source=http success=true outstanding=0
+speech prompt queued source=photo-cue task_id=1aaee5f873bb4f1087866195d3159b4c queue_position=2
+speech task finished task_id=1aaee5f873bb4f1087866195d3159b4c source=photo-cue success=true outstanding=1
+speech task finished task_id=bc820d205aff449aa0b587701530f05d source=http success=true outstanding=0
+speaker playback retry attempt=1 remaining=0.0s error=injected speaker failure
+speaker unavailable after 0.1s: injected speaker failure
+voice TTS service test passed
+<end of output>
+Test time =   1.30 sec
+----------------------------------------------------------
+Test Passed.
+"voice_tts_service_unit" end time: Sep 10 17:19 CST
+"voice_tts_service_unit" time elapsed: 00:00:01
+----------------------------------------------------------
+
+36/37 Testing: voice_utterance_forward_unit
+36/37 Test: voice_utterance_forward_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_voice_utterance_forward.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"voice_utterance_forward_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+utterance queued bytes=6444 queue_depth=1
+audio accepted path=/tmp/gwv3_audio_receiver_3haj0wl1/2026-09-10/20260910_171948_180667_2dd2a6a0.wav bytes=6444 duration=0.200s
+HTTP 127.0.0.1 "POST /api/audio HTTP/1.1" 202 -
+utterance delivered endpoint=http://127.0.0.1:44355/api/audio bytes=6444 attempts=1 elapsed_ms=51
+utterance queued bytes=6444 queue_depth=1
+utterance delivery retry attempt=1 remaining=3 delay=0.01s error=<urlopen error injected failure>
+utterance delivery retry attempt=2 remaining=2 delay=0.02s error=<urlopen error injected failure>
+utterance delivered endpoint=http://127.0.0.1:1/api/audio bytes=6444 attempts=3 elapsed_ms=30
+utterance queued bytes=3244 queue_depth=1
+utterance queued bytes=3564 queue_depth=1
+utterance queued bytes=3884 queue_depth=2
+utterance queue full; dropped oldest audio bytes=3564
+utterance queued bytes=4204 queue_depth=2
+utterance delivered endpoint=http://127.0.0.1:1/api/audio bytes=3244 attempts=1 elapsed_ms=0
+utterance delivered endpoint=http://127.0.0.1:1/api/audio bytes=3884 attempts=1 elapsed_ms=0
+utterance delivered endpoint=http://127.0.0.1:1/api/audio bytes=4204 attempts=1 elapsed_ms=0
+voice utterance forward test passed
+<end of output>
+Test time =   0.66 sec
+----------------------------------------------------------
+Test Passed.
+"voice_utterance_forward_unit" end time: Sep 10 17:19 CST
+"voice_utterance_forward_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+37/37 Testing: voice_audio_mixer_unit
+37/37 Test: voice_audio_mixer_unit
+Command: "/usr/bin/python3" "/tmp/wvd-pts-test-20260910/10_tests/test_voice_audio_mixer.py"
+Directory: /tmp/wvd-pts-test-20260910/build/02_receiver_linux
+"voice_audio_mixer_unit" start time: Sep 10 17:19 CST
+Output:
+----------------------------------------------------------
+voice audio mixer tests passed
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"voice_audio_mixer_unit" end time: Sep 10 17:19 CST
+"voice_audio_mixer_unit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 10 17:19 CST
