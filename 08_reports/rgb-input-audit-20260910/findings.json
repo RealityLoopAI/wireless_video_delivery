@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-10",
+  "timezone": "Asia/Shanghai",
+  "diagnostic_commit": "f9f5411dee7e",
+  "sender_source_hash": "1d8f7d0e0ec20cb3",
+  "pure_sdk_test": {
+    "sender_id": "lubancat-52d2ef0c",
+    "seconds": 300.002,
+    "rgb_frames": 8990,
+    "depth_frames": 8992,
+    "source_id_missing": 0,
+    "rejected_by_sender_envelope_rule": 0,
+    "startup_wait_timeouts": 2,
+    "device_rgb_interval_us": [33308, 33309],
+    "sdk_system_rgb_interval_us": [24085, 42661],
+    "host_receive_rgb_interval_us": [19880, 47085],
+    "raw_bad_payloads_saved": 0,
+    "production_equivalent_load": false
+  },
+  "encoder_events": [
+    {
+      "sender_id": "lubancat-52d2ef0c",
+      "logged_at": "2026-09-10 10:27:45",
+      "input_without_matched_output": 1402,
+      "next_output_frame_id": 1403,
+      "during_recording_test": false
+    },
+    {
+      "sender_id": "orangepi5pro-fe0f7222",
+      "logged_at": "2026-09-10 10:32:35",
+      "input_without_matched_output": 6513,
+      "next_output_frame_id": 6514,
+      "during_recording_test": true,
+      "capture_source_missing_in_interval": 0,
+      "encode_unmatched_inputs_in_interval": 1,
+      "nas_source_id_before": 6512,
+      "nas_source_id_after": 6514,
+      "nas_video_frame_index_before": 4947,
+      "nas_video_frame_index_after": 4948,
+      "global_us_before": 1789007554975341,
+      "global_us_after": 1789007555039217,
+      "global_gap_us": 63876
+    }
+  ],
+  "historical_frames_not_conclusively_localized": {
+    "lubancat-52d2ef0c": [1397],
+    "orangepi5pro-fe0f7222": [18125]
+  },
+  "recording_session_id": 1789007389109700,
+  "recording_video_count": 12,
+  "recording_decoded_frames": 64503,
+  "recording_source_id_missing": 1,
+  "recording_max_gap_us": 67968,
+  "recording_global_regressions": 0,
+  "recording_clock_invalid_rows": 0,
+  "stop_to_delivery_status_ms": 28690.691,
+  "internal_encoder_drop_stage_proven": false,
+  "all_frame_loss_fixed": false
+}

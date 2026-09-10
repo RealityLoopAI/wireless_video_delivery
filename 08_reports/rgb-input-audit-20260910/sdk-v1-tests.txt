@@ -1,0 +1,182 @@
+Start testing: Sep 10 10:27 CST
+----------------------------------------------------------
+1/11 Testing: rgb_input_audit
+1/11 Test: rgb_input_audit
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/rgb_input_audit_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"rgb_input_audit" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+RGB input audit tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"rgb_input_audit" end time: Sep 10 10:27 CST
+"rgb_input_audit" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/11 Testing: gst_keyframe_request
+2/11 Test: gst_keyframe_request
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/gst_keyframe_request_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"gst_keyframe_request" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"gst_keyframe_request" end time: Sep 10 10:27 CST
+"gst_keyframe_request" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/11 Testing: adaptive_exposure_controller
+3/11 Test: adaptive_exposure_controller
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/adaptive_exposure_controller_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"adaptive_exposure_controller" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+adaptive exposure controller test passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"adaptive_exposure_controller" end time: Sep 10 10:27 CST
+"adaptive_exposure_controller" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/11 Testing: rgb_transport_recovery
+4/11 Test: rgb_transport_recovery
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/rgb_transport_recovery_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"rgb_transport_recovery" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"rgb_transport_recovery" end time: Sep 10 10:27 CST
+"rgb_transport_recovery" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/11 Testing: media_outage_guard
+5/11 Test: media_outage_guard
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/media_outage_guard_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"media_outage_guard" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"media_outage_guard" end time: Sep 10 10:27 CST
+"media_outage_guard" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/11 Testing: scheduled_keyframe
+6/11 Test: scheduled_keyframe
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/scheduled_keyframe_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"scheduled_keyframe" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"scheduled_keyframe" end time: Sep 10 10:27 CST
+"scheduled_keyframe" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/11 Testing: device_identity
+7/11 Test: device_identity
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/device_identity_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"device_identity" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"device_identity" end time: Sep 10 10:27 CST
+"device_identity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/11 Testing: transport_backpressure
+8/11 Test: transport_backpressure
+Command: "/tmp/wvd-rgb-diagnostics-build/01_sender_linux/transport_backpressure_test"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"transport_backpressure" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+6-second stalled reader: bytes=8388796 retries=54 max_send_call_ms=100.336 connections=1 byte_exact=true
+<end of output>
+Test time =   6.04 sec
+----------------------------------------------------------
+Test Passed.
+"transport_backpressure" end time: Sep 10 10:27 CST
+"transport_backpressure" time elapsed: 00:00:06
+----------------------------------------------------------
+
+9/11 Testing: sender_config_validation
+9/11 Test: sender_config_validation
+Command: "/usr/bin/python3.10" "/tmp/wvd-rgb-diagnostics-src/10_tests/test_sender_config.py" "--sender" "/tmp/wvd-rgb-diagnostics-build/bin/gemini_sender" "--source-root" "/tmp/wvd-rgb-diagnostics-src"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"sender_config_validation" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+sender config validation test passed
+<end of output>
+Test time =   6.00 sec
+----------------------------------------------------------
+Test Passed.
+"sender_config_validation" end time: Sep 10 10:27 CST
+"sender_config_validation" time elapsed: 00:00:05
+----------------------------------------------------------
+
+10/11 Testing: deployment_scripts
+10/11 Test: deployment_scripts
+Command: "/usr/bin/python3.10" "/tmp/wvd-rgb-diagnostics-src/10_tests/test_deployment_scripts.py" "--source-root" "/tmp/wvd-rgb-diagnostics-src"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"deployment_scripts" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+...........
+----------------------------------------------------------------------
+Ran 11 tests in 0.031s
+
+OK
+<end of output>
+Test time =   0.13 sec
+----------------------------------------------------------
+Test Passed.
+"deployment_scripts" end time: Sep 10 10:27 CST
+"deployment_scripts" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/11 Testing: sender_wifi_dispatcher
+11/11 Test: sender_wifi_dispatcher
+Command: "/usr/bin/python3.10" "/tmp/wvd-rgb-diagnostics-src/10_tests/test_sender_wifi_dispatcher.py"
+Directory: /tmp/wvd-rgb-diagnostics-build/01_sender_linux
+"sender_wifi_dispatcher" start time: Sep 10 10:27 CST
+Output:
+----------------------------------------------------------
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.344s
+
+OK
+<end of output>
+Test time =   0.43 sec
+----------------------------------------------------------
+Test Passed.
+"sender_wifi_dispatcher" end time: Sep 10 10:27 CST
+"sender_wifi_dispatcher" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 10 10:27 CST

@@ -1,0 +1,28 @@
+{
+  "code_commit": "f9f5411dee7e",
+  "sender_source_hash": "1d8f7d0e0ec20cb3",
+  "receiver_changed": false,
+  "camera_configuration_changed": false,
+  "nodes": [
+    {
+      "sender_id": "lubancat-52d2ef0c",
+      "sdk": "2.8.6",
+      "build_and_tests": "native ARM64, 11/11 passed",
+      "sha256": "0d3b3be47c04a8e5ef54e62395e2f5994a5f75c2d997725b24c365c64d870e9b",
+      "backup_sha256": "8749b255b2c4111a63ca12d369ac8340602a60a75fa8fa2c57324f33aab54938",
+      "binary": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "backup": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender.before-rgb-audit-20260910",
+      "mpp_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/befff515aedb6eb7/libgstrockchipmpp.so"
+    },
+    {
+      "sender_id": "orangepi5pro-fe0f7222",
+      "sdk": "1.10.27",
+      "build_and_tests": "native ARM64, 11/11 passed",
+      "sha256": "0f909d9bb558ee75eb92018ffa4d1a2b107170108340dbb6e895801088388e13",
+      "backup_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+      "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+      "backup": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender.before-rgb-audit-20260910",
+      "mpp_plugin": "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/4d474cc86abdc7d3/libgstrockchipmpp.so"
+    }
+  ]
+}

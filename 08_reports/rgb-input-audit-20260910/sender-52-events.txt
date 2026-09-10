@@ -1,0 +1,5 @@
+2026-09-10 10:22:09 [WARN] corrupt rgb mjpeg frame dropped camera_id=cam01 frame_id=6633 size=139588 reason="missing jpeg soi/eoi marker"
+2026-09-10 10:25:14 [WARN] corrupt rgb mjpeg frame dropped camera_id=cam01 frame_id=12182 size=139588 reason="missing jpeg soi/eoi marker"
+2026-09-10 10:26:53 [INFO] camera summary camera_id=cam01 rgb_frames=15050 depth_frames=15050 hardware_encoder=true depth_scale=0.1 disconnects=0 last_error=corrupt rgb mjpeg frame dropped
+2026-09-10 10:27:02 [WARN] rgb input sequence discontinuity camera_id=cam01 previous_frame_id=74 frame_id=109 missing=34 duplicate=false reset=false stage=capture_input
+2026-09-10 10:27:45 [WARN] rgb encode input without matched output camera_id=cam01 count=1 first_frame_id=1402 last_frame_id=1402 next_output_frame_id=1403
