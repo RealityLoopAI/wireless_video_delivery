@@ -39,6 +39,10 @@ set_target_properties(gemini_receiver PROPERTIES
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME receiver_prestart_depth_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_prestart_depth.py
+            --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_prestart_depth_integration PROPERTIES TIMEOUT 60)
     add_executable(test_clock_sync_history
         ${CMAKE_SOURCE_DIR}/10_tests/test_clock_sync_history.cpp src/clock_sync_manager.cpp)
     target_include_directories(test_clock_sync_history PRIVATE

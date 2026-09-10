@@ -1,0 +1,30 @@
+[OUTPUT] 
+Internal ctest changing into directory: /tmp/wvd-rgb-audit-build
+
+[HANDLER_OUTPUT] 
+Test project /tmp/wvd-rgb-audit-build
+
+    Start 2: gst_encoder_backpressure_bgr
+1/3 Test #2: gst_encoder_backpressure_bgr .....***Failed    3.35 sec
+codec=x264enc mode=bgr submitted=8 received=3 missing=5
+
+    Start 3: gst_encoder_backpressure_jpeg
+2/3 Test #3: gst_encoder_backpressure_jpeg ....***Failed    3.29 sec
+codec=x264enc mode=jpeg submitted=8 received=3 missing=5
+
+    Start 4: gst_encoder_backpressure_dual
+3/3 Test #4: gst_encoder_backpressure_dual ....***Failed    3.35 sec
+codec=x264enc mode=dual submitted=8 received=4 missing=4
+
+
+0% tests passed, 3 tests failed out of 3
+
+Total Test time (real) =   9.99 sec
+
+The following tests FAILED:
+	  2 - gst_encoder_backpressure_bgr (Failed)
+	  3 - gst_encoder_backpressure_jpeg (Failed)
+	  4 - gst_encoder_backpressure_dual (Failed)
+[ERROR_MESSAGE] 
+Errors while running CTest
+

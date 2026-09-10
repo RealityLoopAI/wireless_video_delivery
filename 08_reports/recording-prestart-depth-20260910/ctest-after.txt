@@ -1,0 +1,78 @@
+[OUTPUT] 
+Internal ctest changing into directory: /tmp/wvd-prestart-build
+
+[HANDLER_OUTPUT] 
+Test project /tmp/wvd-prestart-build
+
+      Start  1: receiver_prestart_depth_integration
+ 1/34 Test  #1: receiver_prestart_depth_integration .....   Passed    8.73 sec
+      Start  2: clock_sync_history_unit
+ 2/34 Test  #2: clock_sync_history_unit .................   Passed    3.31 sec
+      Start  3: receiver_clock_history_integration
+ 3/34 Test  #3: receiver_clock_history_integration ......   Passed    3.41 sec
+      Start  4: recording_tail_drain_unit
+ 4/34 Test  #4: recording_tail_drain_unit ...............   Passed    0.00 sec
+      Start  5: receiver_tail_drain_integration
+ 5/34 Test  #5: receiver_tail_drain_integration .........   Passed   23.84 sec
+      Start  6: receiver_status_reply_integration
+ 6/34 Test  #6: receiver_status_reply_integration .......   Passed    1.31 sec
+      Start  7: receiver_target_unit
+ 7/34 Test  #7: receiver_target_unit ....................   Passed    0.00 sec
+      Start  8: receiver_discovery_client_integration
+ 8/34 Test  #8: receiver_discovery_client_integration ...   Passed    0.21 sec
+      Start  9: receiver_discovery_integration
+ 9/34 Test  #9: receiver_discovery_integration ..........   Passed    1.13 sec
+      Start 10: nas_discovery_integration
+10/34 Test #10: nas_discovery_integration ...............   Passed    1.66 sec
+      Start 11: receiver_hardening_integration
+11/34 Test #11: receiver_hardening_integration ..........   Passed   40.15 sec
+      Start 12: sync_input_guard_unit
+12/34 Test #12: sync_input_guard_unit ...................   Passed    0.07 sec
+      Start 13: rgb_sync_manifest_unit
+13/34 Test #13: rgb_sync_manifest_unit ..................   Passed    0.07 sec
+      Start 14: recording_uploader_fault_injection
+14/34 Test #14: recording_uploader_fault_injection ......   Passed   21.60 sec
+      Start 15: recording_uploader_concurrency
+15/34 Test #15: recording_uploader_concurrency ..........   Passed    1.54 sec
+      Start 16: receiver_staging_pipeline_integration
+16/34 Test #16: receiver_staging_pipeline_integration ...   Passed   10.63 sec
+      Start 17: receiver_direct_nas_integration
+17/34 Test #17: receiver_direct_nas_integration .........   Passed    2.71 sec
+      Start 18: photo_uploader_fault_injection
+18/34 Test #18: photo_uploader_fault_injection ..........   Passed    0.06 sec
+      Start 19: voice_photo_pipeline_integration
+19/34 Test #19: voice_photo_pipeline_integration ........   Passed    1.34 sec
+      Start 20: voice_photo_burst_unit
+20/34 Test #20: voice_photo_burst_unit ..................   Passed    0.88 sec
+      Start 21: web_preview_low_latency_unit
+21/34 Test #21: web_preview_low_latency_unit ............   Passed    0.02 sec
+      Start 22: device_info_api_unit
+22/34 Test #22: device_info_api_unit ....................   Passed    0.03 sec
+      Start 23: recording_button_service_unit
+23/34 Test #23: recording_button_service_unit ...........   Passed    0.06 sec
+      Start 24: deployment_acceptance_integration
+24/34 Test #24: deployment_acceptance_integration .......   Passed    2.64 sec
+      Start 25: audio_archive_receiver_integration
+25/34 Test #25: audio_archive_receiver_integration ......   Passed    2.64 sec
+      Start 26: audio_capture_rebuild_guard_unit
+26/34 Test #26: audio_capture_rebuild_guard_unit ........   Passed    0.03 sec
+      Start 27: audio_archive_audit_unit
+27/34 Test #27: audio_archive_audit_unit ................   Passed    0.06 sec
+      Start 28: recording_led_service_unit
+28/34 Test #28: recording_led_service_unit ..............   Passed    0.07 sec
+      Start 29: power_button_service_unit
+29/34 Test #29: power_button_service_unit ...............   Passed    0.06 sec
+      Start 30: gwv3_provision_unit
+30/34 Test #30: gwv3_provision_unit .....................   Passed    0.04 sec
+      Start 31: chrony_receiver_watch_unit
+31/34 Test #31: chrony_receiver_watch_unit ..............   Passed    0.03 sec
+      Start 32: voice_tts_service_unit
+32/34 Test #32: voice_tts_service_unit ..................   Passed    1.25 sec
+      Start 33: voice_utterance_forward_unit
+33/34 Test #33: voice_utterance_forward_unit ............   Passed    0.61 sec
+      Start 34: voice_audio_mixer_unit
+34/34 Test #34: voice_audio_mixer_unit ..................   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 34
+
+Total Test time (real) = 130.22 sec

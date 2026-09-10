@@ -1,0 +1,8 @@
+
+Traceback (most recent call last):
+  File "/tmp/test_receiver_prestart_depth.py", line 144, in <module>
+    exercise(args.receiver, scenario)
+  File "/tmp/test_receiver_prestart_depth.py", line 84, in exercise
+    assert cam.get("record_prestart_depth_packets", 0) > 0, "depth was discarded while RGB was delayed"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: depth was discarded while RGB was delayed

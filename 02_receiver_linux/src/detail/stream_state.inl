@@ -226,6 +226,10 @@ struct CameraState {
     std::atomic<uint64_t> segment_rotation_keyframe_requests{0};
     std::atomic<uint64_t> segment_prestart_depth_drops{0};
     std::atomic<uint64_t> segment_prestart_rgb_drops{0};
+    std::deque<RecordJob> prestart_depth_jobs;  // Protected by segment_mutex; compressed payloads only.
+    std::atomic<size_t> prestart_depth_bytes{0};
+    std::atomic<size_t> prestart_depth_packets{0};
+    std::atomic<uint64_t> prestart_depth_replay_attempts{0};
     std::atomic<uint64_t> media_idle_finalizations{0};
     std::unique_ptr<SegmentWriter> segment = std::make_unique<SegmentWriter>();
     std::atomic<size_t> segment_finalize_pending{0};

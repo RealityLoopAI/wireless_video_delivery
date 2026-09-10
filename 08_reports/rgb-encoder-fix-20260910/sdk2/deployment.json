@@ -1,0 +1,79 @@
+{
+  "sender_id": "lubancat-52d2ef0c",
+  "tests": [
+    {
+      "name": "native-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-bgr-pressure",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-bgr-timing",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-bgr-timeout",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-bgr-preview",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-jpeg-pressure",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-jpeg-timing",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-jpeg-timeout",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-jpeg-preview",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-dual-pressure",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-dual-timing",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-dual-timeout",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-dual-preview",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-keyframe-single",
+      "exit_code": 0
+    },
+    {
+      "name": "mpp-keyframe-bgr",
+      "exit_code": 0
+    }
+  ],
+  "old_sha256": "0d3b3be47c04a8e5ef54e62395e2f5994a5f75c2d997725b24c365c64d870e9b",
+  "new_sha256": "eaa953d881e7901a59043fcca40bcc516d3a63302c6d53a39519e0ff27718883",
+  "backup": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender.before-encoder-pts-20260910",
+  "deployed": true,
+  "cameras": [
+    {
+      "camera_key": "lubancat-52d2ef0c_cam01",
+      "sender_build_commit": "8c174858d674",
+      "sender_build_source_hash": "d76da5bfbf9ccb75",
+      "sender_rgb_input_fps": 29.9591,
+      "sender_depth_input_fps": 29.9591,
+      "sender_rgb_sent_fps": 0
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+[OUTPUT] 
+Internal ctest changing into directory: /tmp/wvd-rgb-audit-build
+
+[HANDLER_OUTPUT] 
+Test project /tmp/wvd-rgb-audit-build
+
+      Start  1: rgb_input_audit
+ 1/23 Test  #1: rgb_input_audit ..................   Passed    0.00 sec
+      Start  2: gst_encoder_bgr_pressure
+ 2/23 Test  #2: gst_encoder_bgr_pressure .........   Passed    0.31 sec
+      Start  3: gst_encoder_bgr_timing
+ 3/23 Test  #3: gst_encoder_bgr_timing ...........   Passed    0.25 sec
+      Start  4: gst_encoder_bgr_timeout
+ 4/23 Test  #4: gst_encoder_bgr_timeout ..........   Passed    0.54 sec
+      Start  5: gst_encoder_bgr_preview
+ 5/23 Test  #5: gst_encoder_bgr_preview ..........   Passed    3.28 sec
+      Start  6: gst_encoder_jpeg_pressure
+ 6/23 Test  #6: gst_encoder_jpeg_pressure ........   Passed    0.32 sec
+      Start  7: gst_encoder_jpeg_timing
+ 7/23 Test  #7: gst_encoder_jpeg_timing ..........   Passed    0.24 sec
+      Start  8: gst_encoder_jpeg_timeout
+ 8/23 Test  #8: gst_encoder_jpeg_timeout .........   Passed    0.54 sec
+      Start  9: gst_encoder_jpeg_preview
+ 9/23 Test  #9: gst_encoder_jpeg_preview .........   Passed    3.30 sec
+      Start 10: gst_encoder_dual_pressure
+10/23 Test #10: gst_encoder_dual_pressure ........   Passed    0.35 sec
+      Start 11: gst_encoder_dual_timing
+11/23 Test #11: gst_encoder_dual_timing ..........   Passed    0.34 sec
+      Start 12: gst_encoder_dual_timeout
+12/23 Test #12: gst_encoder_dual_timeout .........   Passed    0.51 sec
+      Start 13: gst_encoder_dual_preview
+13/23 Test #13: gst_encoder_dual_preview .........   Passed    0.33 sec
+      Start 14: gst_keyframe_request
+14/23 Test #14: gst_keyframe_request .............   Passed    0.04 sec
+      Start 15: adaptive_exposure_controller
+15/23 Test #15: adaptive_exposure_controller .....   Passed    0.00 sec
+      Start 16: rgb_transport_recovery
+16/23 Test #16: rgb_transport_recovery ...........   Passed    0.00 sec
+      Start 17: media_outage_guard
+17/23 Test #17: media_outage_guard ...............   Passed    0.00 sec
+      Start 18: scheduled_keyframe
+18/23 Test #18: scheduled_keyframe ...............   Passed    0.00 sec
+      Start 19: device_identity
+19/23 Test #19: device_identity ..................   Passed    0.01 sec
+      Start 20: transport_backpressure
+20/23 Test #20: transport_backpressure ...........   Passed    6.08 sec
+      Start 21: sender_config_validation
+21/23 Test #21: sender_config_validation .........   Passed    6.56 sec
+      Start 22: deployment_scripts
+22/23 Test #22: deployment_scripts ...............   Passed    0.11 sec
+      Start 23: sender_wifi_dispatcher
+23/23 Test #23: sender_wifi_dispatcher ...........   Passed    0.39 sec
+
+100% tests passed, 0 tests failed out of 23
+
+Total Test time (real) =  23.54 sec

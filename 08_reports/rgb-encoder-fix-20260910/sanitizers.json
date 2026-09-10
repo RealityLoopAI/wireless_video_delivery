@@ -1,0 +1,110 @@
+[
+  {
+    "mode": "bgr",
+    "scenario": "pressure",
+    "chunk_id": "a39a8b",
+    "wall_time_seconds": 0.669621879,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=bgr scenario=pressure submitted=8 received=8 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "bgr",
+    "scenario": "timing",
+    "chunk_id": "bb2a93",
+    "wall_time_seconds": 0.469666342,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=bgr scenario=timing submitted=64 received=64 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "bgr",
+    "scenario": "timeout",
+    "chunk_id": "726094",
+    "wall_time_seconds": 0.765629074,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=bgr scenario=timeout submitted=14 received=14 missing=0 timed_out=1\n"
+  },
+  {
+    "mode": "bgr",
+    "scenario": "preview",
+    "chunk_id": "087c53",
+    "wall_time_seconds": 3.5350492190000002,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=bgr scenario=preview submitted=8 received=3 missing=5 timed_out=0\n"
+  },
+  {
+    "mode": "jpeg",
+    "scenario": "pressure",
+    "chunk_id": "2c22bd",
+    "wall_time_seconds": 0.572521485,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=jpeg scenario=pressure submitted=8 received=8 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "jpeg",
+    "scenario": "timing",
+    "chunk_id": "2f2599",
+    "wall_time_seconds": 0.473697292,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=jpeg scenario=timing submitted=64 received=64 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "jpeg",
+    "scenario": "timeout",
+    "chunk_id": "5a6bd9",
+    "wall_time_seconds": 0.791232898,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=jpeg scenario=timeout submitted=14 received=14 missing=0 timed_out=1\n"
+  },
+  {
+    "mode": "jpeg",
+    "scenario": "preview",
+    "chunk_id": "7b0bf6",
+    "wall_time_seconds": 3.553705926,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=jpeg scenario=preview submitted=8 received=3 missing=5 timed_out=0\n"
+  },
+  {
+    "mode": "dual",
+    "scenario": "pressure",
+    "chunk_id": "fe3fc6",
+    "wall_time_seconds": 0.652993189,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=dual scenario=pressure submitted=8 received=8 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "dual",
+    "scenario": "timing",
+    "chunk_id": "c89ccd",
+    "wall_time_seconds": 0.760294628,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=dual scenario=timing submitted=64 received=64 missing=0 timed_out=0\n"
+  },
+  {
+    "mode": "dual",
+    "scenario": "timeout",
+    "chunk_id": "9f1f20",
+    "wall_time_seconds": 0.74125991,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=dual scenario=timeout submitted=10 received=10 missing=0 timed_out=1\n"
+  },
+  {
+    "mode": "dual",
+    "scenario": "preview",
+    "chunk_id": "eaab52",
+    "wall_time_seconds": 0.608967748,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "codec=x264enc mode=dual scenario=preview submitted=8 received=8 missing=0 timed_out=0\n"
+  }
+]

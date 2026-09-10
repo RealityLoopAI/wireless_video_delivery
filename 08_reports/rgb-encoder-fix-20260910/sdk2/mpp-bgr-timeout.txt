@@ -1,0 +1,1 @@
+codec=mpph264enc mode=bgr scenario=timeout submitted=14 received=14 missing=0 timed_out=1

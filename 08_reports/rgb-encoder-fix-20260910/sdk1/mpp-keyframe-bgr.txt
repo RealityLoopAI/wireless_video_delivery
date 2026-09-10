@@ -1,0 +1,12 @@
+mode=bgr input=1920x1080
+request=43 idr_frame=43 observed_at=44
+request=90 idr_frame=90 observed_at=91
+request=137 idr_frame=137 observed_at=138
+request=184 idr_frame=184 observed_at=185
+request=231 idr_frame=231 observed_at=232
+request=278 idr_frame=278 observed_at=279
+request=325 idr_frame=325 observed_at=326
+request=372 idr_frame=372 observed_at=373
+request=419 idr_frame=419 observed_at=420
+request=466 idr_frame=466 observed_at=467
+requests=10 failures=0

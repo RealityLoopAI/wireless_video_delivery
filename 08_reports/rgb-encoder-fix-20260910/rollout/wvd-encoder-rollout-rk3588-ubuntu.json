@@ -1,0 +1,31 @@
+{
+  "sender_id": "rk3588-ubuntu",
+  "tests": [
+    {
+      "mode": "bgr",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=bgr scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    },
+    {
+      "mode": "jpeg",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=jpeg scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    }
+  ],
+  "backup": "/home/linaro/wvd-reorg-20260902/12_build/bin/gemini_sender.before-encoder-pts-20260910",
+  "old_sha256": "839c8775ea3366124e07f9e07cb80ebc3b9fef103cd4f20a0532b61a92c39b78",
+  "new_sha256": "c86058a3e11e4c94fe3588ac9c29f9fa535b39897a45d1fde1afa274bfcbbda3",
+  "config_sha256": "7c96912945bf9b4929f0a23846d4b7431e22cc9a5b7351fdce70534d708e9329",
+  "deployed": true,
+  "cameras": [
+    {
+      "camera_key": "rk3588-ubuntu_cam01",
+      "sender_build_commit": "8c174858d674",
+      "sender_build_source_hash": "d76da5bfbf9ccb75",
+      "sender_rgb_sent_fps": 30.8478,
+      "sender_depth_sent_fps": 30.8478
+    }
+  ]
+}

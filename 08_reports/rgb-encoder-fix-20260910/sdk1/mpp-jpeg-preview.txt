@@ -1,0 +1,1 @@
+codec=mpph264enc mode=jpeg scenario=preview submitted=8 received=4 missing=4 timed_out=0

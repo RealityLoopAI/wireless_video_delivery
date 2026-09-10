@@ -1,0 +1,1 @@
+codec=mpph264enc mode=jpeg scenario=timing submitted=64 received=64 missing=0 timed_out=0

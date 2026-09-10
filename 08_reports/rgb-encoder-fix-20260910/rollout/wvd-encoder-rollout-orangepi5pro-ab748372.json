@@ -1,0 +1,31 @@
+{
+  "sender_id": "orangepi5pro-ab748372",
+  "tests": [
+    {
+      "mode": "bgr",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=bgr scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    },
+    {
+      "mode": "jpeg",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=jpeg scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    }
+  ],
+  "backup": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender.before-encoder-pts-20260910",
+  "old_sha256": "07f4c4984ed2cc3312b779f2e3420069f366955edd2ecaab549b44daa1b431c9",
+  "new_sha256": "bad58c08beb4717f4d68529392b28ac3200d7fde799b6c083012a3542bc189d0",
+  "config_sha256": "f487860439023006be379bc5aca6df8470218d9c26cee73a7cea99ef1da19eb0",
+  "deployed": true,
+  "cameras": [
+    {
+      "camera_key": "orangepi5pro-ab748372_cam01",
+      "sender_build_commit": "8c174858d674",
+      "sender_build_source_hash": "d76da5bfbf9ccb75",
+      "sender_rgb_sent_fps": 30.9277,
+      "sender_depth_sent_fps": 30.9277
+    }
+  ]
+}

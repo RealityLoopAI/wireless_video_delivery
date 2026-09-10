@@ -1,0 +1,34 @@
+{
+  "unit": "gwv3-gemini-sender-lubancat-52d2ef0c.service",
+  "since": "2026-09-10 11:18:03",
+  "until": "2026-09-10 11:23:02",
+  "perf_intervals": 299,
+  "counter_totals": {
+    "rgb_corrupt_jpeg_frames": 0,
+    "rgb_timing_mismatch_drops": 0,
+    "rgb_encoder_lag_resets": 0,
+    "rgb_source_missing": 0,
+    "rgb_source_duplicates": 0,
+    "rgb_source_resets": 0,
+    "rgb_encode_unmatched_inputs": 0,
+    "rgb_timing_history_evictions": 0,
+    "rgb_send_failures": 0,
+    "depth_send_failures": 0
+  },
+  "event_count": 13,
+  "events": [
+    "2026-09-10 11:18:06 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:18:07 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet",
+    "2026-09-10 11:18:07 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-52d2ef0c receiver=192.168.1.196:50012",
+    "2026-09-10 11:18:12 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:18:17 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:18:31 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:18:31 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet",
+    "2026-09-10 11:18:32 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-52d2ef0c receiver=192.168.1.196:50012",
+    "2026-09-10 11:18:36 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:18:36 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet",
+    "2026-09-10 11:19:52 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet",
+    "2026-09-10 11:19:53 [WARN] media TCP retaining pending packet camera_id=cam01 stream=depth; backpressure has not dropped this packet",
+    "2026-09-10 11:20:16 [WARN] media TCP retaining pending packet camera_id=cam01 stream=rgb; backpressure has not dropped this packet"
+  ]
+}

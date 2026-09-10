@@ -362,6 +362,7 @@ public:
         out << "\"media_ingress_superseded_sessions\":" << media_ingress_superseded_sessions_.load() << ',';
         out << "\"media_ingress_stale_packets\":" << media_ingress_stale_packets_.load() << ',';
         out << "\"record_queue_total_bytes\":" << total_record_queue_bytes_.load() << ',';
+        out << "\"record_prestart_depth_total_bytes\":" << total_prestart_depth_bytes_.load() << ',';
         out << "\"record_finalize_max_pending_segments\":" << config_.record_finalize_max_pending_segments << ',';
         out << "\"record_finalize_workers\":" << config_.record_finalize_workers << ',';
         out << "\"record_finalize_outstanding_segments\":" << segment_finalize_outstanding_status_.load() << ',';
@@ -566,6 +567,9 @@ public:
             out << "\"segment_rotation_keyframe_requested_us\":" << cam.segment_rotation_keyframe_requested_us.load() << ',';
             out << "\"segment_rotation_keyframe_requests\":" << cam.segment_rotation_keyframe_requests.load() << ',';
             out << "\"segment_prestart_depth_drops\":" << cam.segment_prestart_depth_drops.load() << ',';
+            out << "\"record_prestart_depth_bytes\":" << cam.prestart_depth_bytes.load() << ',';
+            out << "\"record_prestart_depth_packets\":" << cam.prestart_depth_packets.load() << ',';
+            out << "\"record_prestart_depth_replay_attempts\":" << cam.prestart_depth_replay_attempts.load() << ',';
             out << "\"segment_prestart_rgb_drops\":" << cam.segment_prestart_rgb_drops.load() << ',';
             out << "\"media_idle_finalizations\":" << cam.media_idle_finalizations.load() << ',';
             out << "\"last_media_session_id\":" << cam.last_media_session_id << ',';
@@ -996,6 +1000,52 @@ public:
         return true;
     }
 
+    static bool reserve_bytes(std::atomic<size_t> &used, size_t bytes, size_t limit) {
+        if(bytes > limit) return false;
+        auto current = used.load();
+        while(current <= limit - bytes) {
+            if(used.compare_exchange_weak(current, current + bytes)) return true;
+        }
+        return false;
+    }
+
+    void release_prestart_depth_bytes(CameraState &cam, size_t bytes) {
+        cam.prestart_depth_bytes.fetch_sub(bytes);
+        total_prestart_depth_bytes_.fetch_sub(bytes);
+        total_record_queue_bytes_.fetch_sub(bytes);
+    }
+
+    void clear_prestart_depth_locked(CameraState &cam) {
+        cam.segment_prestart_depth_drops.fetch_add(cam.prestart_depth_jobs.size());
+        release_prestart_depth_bytes(cam, cam.prestart_depth_bytes.load());
+        cam.prestart_depth_jobs.clear();
+        cam.prestart_depth_packets.store(0);
+    }
+
+    bool buffer_prestart_depth_locked(CameraState &cam, RecordJob &job) {
+        const size_t per_camera_limit = std::min<size_t>(16 * 1024 * 1024, config_.record_queue_max_bytes / 4);
+        const size_t total_limit = std::min<size_t>(64 * 1024 * 1024, config_.record_queue_total_max_bytes / 4);
+        const size_t bytes = job.queue_bytes;
+        if(cam.prestart_depth_jobs.size() >= 900 || bytes > per_camera_limit
+           || cam.prestart_depth_bytes.load() > per_camera_limit - bytes) return false;
+        if(!reserve_bytes(total_prestart_depth_bytes_, bytes, total_limit)) return false;
+        if(!reserve_bytes(total_record_queue_bytes_, bytes, config_.record_queue_total_max_bytes)) {
+            total_prestart_depth_bytes_.fetch_sub(bytes);
+            return false;
+        }
+        try {
+            cam.prestart_depth_jobs.push_back(std::move(job));
+        }
+        catch(...) {
+            total_prestart_depth_bytes_.fetch_sub(bytes);
+            total_record_queue_bytes_.fetch_sub(bytes);
+            return false;
+        }
+        cam.prestart_depth_bytes.fetch_add(bytes);
+        cam.prestart_depth_packets.store(cam.prestart_depth_jobs.size());
+        return true;
+    }
+
     void write_record_job(const std::shared_ptr<CameraState> &cam, RecordJob job) {
         if(!job.packet) {
             return;
@@ -1025,6 +1075,25 @@ public:
                                  + std::to_string(queued_packet.frame_id) + ": " + e.what());
                 }
                 return;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+            if(!cam->prestart_depth_jobs.empty()
+               && cam->prestart_depth_jobs.front().recording_window.session_id != job.recording_window.session_id) {
+                clear_prestart_depth_locked(*cam);
+            }
+            // Validate depth before retaining it; keep only the compressed input.
+            // Independent TCP paths can deliver depth before the first RGB IDR.
+            if(cam->segment && !cam->segment->active() && camera_announce_expects_rgb(job.announce_json)
+               && queued_packet.stream_type == StreamType::depth_raw
+               && queued_packet.global_timestamp_us >= job.recording_window.start_global_us) {
+                if(buffer_prestart_depth_locked(*cam, job)) return;
+                if(cam->segment_prestart_depth_drops.load() % 30 == 0) {
+                    logger_.warn("recording prestart depth buffer full camera=" + cam->key
+                                 + "; packet will be counted as a prestart drop");
+                }
             }
         }
 
@@ -1103,6 +1172,10 @@ public:
         }
         catch(const std::exception &e) {
             const std::string write_error = e.what();
+            {
+                std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+                clear_prestart_depth_locked(*cam);
+            }
             const bool storage_capacity_failure =
                 write_error.find("free space") != std::string::npos
                 || write_error.find("storage previously failed") != std::string::npos;
@@ -1141,6 +1214,29 @@ public:
             }
             if(storage_capacity_failure) {
                 abort_recording_after_storage_failure(cam->key, write_error);
+            }
+            return;
+        }
+        if(queued_packet.stream_type == StreamType::rgb) {
+            for(;;) {
+                RecordJob pending;
+                {
+                    std::lock_guard<std::mutex> segment_lock(cam->segment_mutex);
+                    if(!cam->segment || !cam->segment->active() || cam->prestart_depth_jobs.empty()) break;
+                    const auto stamp = cam->prestart_depth_jobs.front().packet->global_timestamp_us;
+                    const auto end = cam->segment->segment_window_end_global_us();
+                    if(end > 0 && stamp >= end) break;
+                    pending = std::move(cam->prestart_depth_jobs.front());
+                    cam->prestart_depth_jobs.pop_front();
+                    release_prestart_depth_bytes(*cam, pending.queue_bytes);
+                    cam->prestart_depth_packets.store(cam->prestart_depth_jobs.size());
+                    if(stamp < cam->segment->segment_window_start_global_us()) {
+                        cam->segment_prestart_depth_drops.fetch_add(1);
+                        continue;
+                    }
+                }
+                cam->prestart_depth_replay_attempts.fetch_add(1);
+                write_record_job(cam, std::move(pending));
             }
         }
     }
@@ -1844,6 +1940,7 @@ public:
             replacement = std::make_unique<SegmentWriter>();
             {
                 std::lock_guard<std::mutex> segment_lock(task.cam->segment_mutex);
+                clear_prestart_depth_locked(*task.cam);
                 if(task.cam->segment && task.cam->segment->active()) {
                     detached = std::move(task.cam->segment);
                     detached->mark_end_us(now_us());
@@ -5369,6 +5466,7 @@ private:
     std::atomic<int> active_media_clients_{0};
     std::atomic<int> active_admin_clients_{0};
     std::atomic<size_t> total_record_queue_bytes_{0};
+    std::atomic<size_t> total_prestart_depth_bytes_{0};
     std::atomic<uint64_t> next_media_session_id_{1};
     std::atomic<uint64_t> media_ingress_superseded_sessions_{0};
     std::atomic<uint64_t> media_ingress_stale_packets_{0};

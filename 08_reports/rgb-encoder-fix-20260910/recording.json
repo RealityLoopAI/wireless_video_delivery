@@ -1,0 +1,110 @@
+{
+  "admin": "http://127.0.0.1:18080",
+  "camera_keys": [
+    "lubancat-52d2ef0c_cam01",
+    "lubancat-e8cc0cb3_cam01",
+    "orangepi5pro-ab748372_cam01",
+    "orangepi5pro-b439137c_cam02",
+    "orangepi5pro-fe0f7222_cam01",
+    "rk3588-ubuntu_cam01"
+  ],
+  "camera_results": {
+    "lubancat-52d2ef0c_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "lubancat-e8cc0cb3_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-ab748372_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-b439137c_cam02": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "orangepi5pro-fe0f7222_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    },
+    "rk3588-ubuntu_cam01": {
+      "live_after": true,
+      "record_write_errors_delta": 0,
+      "segment_finalize_completed_delta": 1
+    }
+  },
+  "error": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-10/111803: partial: depth coverage below 98 percent; depth first frame is late; RGB/depth duration drift exceeds 500 ms; /home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-10/111803: partial: depth first frame is late; RGB/depth duration drift exceeds 500 ms",
+  "failures": [],
+  "finished_at_us": 1789010682246135,
+  "ok": false,
+  "record_seconds": 300.0,
+  "recording_files": {
+    "directories": [
+      {
+        "depth_bytes": 113975051,
+        "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-10/111803",
+        "frames_csv_lines": 17666,
+        "quality_passed": false,
+        "recording_quality_status": "partial",
+        "rgb_bytes": 225618824
+      },
+      {
+        "depth_bytes": 62365357,
+        "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-10/111803",
+        "frames_csv_lines": 17913,
+        "quality_passed": false,
+        "recording_quality_status": "partial",
+        "rgb_bytes": 224542001
+      },
+      {
+        "depth_bytes": 150662425,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-10/111803",
+        "frames_csv_lines": 17964,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 448548283
+      },
+      {
+        "depth_bytes": 102634025,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-10/111803",
+        "frames_csv_lines": 17963,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 449202974
+      },
+      {
+        "depth_bytes": 110635025,
+        "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-10/111803",
+        "frames_csv_lines": 17959,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 448853660
+      },
+      {
+        "depth_bytes": 70332032,
+        "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-10/111803",
+        "frames_csv_lines": 17951,
+        "quality_passed": true,
+        "recording_quality_status": "complete",
+        "rgb_bytes": 447856707
+      }
+    ],
+    "quality_failures": [
+      "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-10/111803: partial: depth coverage below 98 percent; depth first frame is late; RGB/depth duration drift exceeds 500 ms",
+      "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-10/111803: partial: depth first frame is late; RGB/depth duration drift exceeds 500 ms"
+    ],
+    "quality_passed": false
+  },
+  "recording_session_id": 1789010282064717,
+  "require_complete_recording": true,
+  "started_at_us": 1789010282046832,
+  "stop_requested_at_us": 1789010582072855,
+  "stop_to_delivery_status_ms": 28221.826
+}

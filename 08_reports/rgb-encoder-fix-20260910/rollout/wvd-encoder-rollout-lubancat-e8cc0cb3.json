@@ -1,0 +1,31 @@
+{
+  "sender_id": "lubancat-e8cc0cb3",
+  "tests": [
+    {
+      "mode": "bgr",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=bgr scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    },
+    {
+      "mode": "jpeg",
+      "exit_code": 0,
+      "stdout": "codec=mpph264enc mode=jpeg scenario=timing submitted=64 received=64 missing=0 timed_out=0\n",
+      "stderr": ""
+    }
+  ],
+  "backup": "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender.before-encoder-pts-20260910",
+  "old_sha256": "4ad7b52c8c5cdccc3b25c5888467d505413fae29a826e7b43ce2e8262a7cfb3d",
+  "new_sha256": "eaa953d881e7901a59043fcca40bcc516d3a63302c6d53a39519e0ff27718883",
+  "config_sha256": "c68246cefe56b6f49d561ee152490e3b11d6f1cd69250cd2eb02bf65811cf3a2",
+  "deployed": true,
+  "cameras": [
+    {
+      "camera_key": "lubancat-e8cc0cb3_cam01",
+      "sender_build_commit": "8c174858d674",
+      "sender_build_source_hash": "d76da5bfbf9ccb75",
+      "sender_rgb_sent_fps": 29.9809,
+      "sender_depth_sent_fps": 29.9809
+    }
+  ]
+}

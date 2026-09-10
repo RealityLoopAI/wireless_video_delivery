@@ -834,7 +834,8 @@ def exercise_async_segment_rotation(ports: dict, nas_root: Path) -> None:
         ]
         if (
             len(rotation_cameras) == len(camera_ids)
-            and all(int(camera.get("segment_prestart_depth_drops", 0)) >= 1 for camera in rotation_cameras)
+            and all(int(camera.get("record_prestart_depth_packets", 0)) >= 1 for camera in rotation_cameras)
+            and all(not camera.get("segment_active") for camera in rotation_cameras)
         ):
             break
         time.sleep(0.05)
