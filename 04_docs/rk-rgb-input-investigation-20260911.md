@@ -172,3 +172,44 @@ Linux v5.10 上游 UVC 实现中，FID 变化会推进 sequence，即使没有�
 因此这次没有直接切换 LibUVC 或盲目升级 SDK。
 
 证据：`uvc-sched-summary.json`、`uvc-sched-trace.txt.gz`；本轮未重启、未修改生产代码和参数。
+
+## 第三轮：定位 SDK 初始化实现
+
+对实际加载的 ARM64 `libOrbbecSDK.so.1.10.27` 做静态反汇编，没有修改该文件或进程内存。
+SHA256：`711024e08b05f60ce23e31506b799e0ba5a85c93e2f2ff50c5df08aa03923f1e`。
+库已去除内部符号，objdump 显示的邻近导出符号名称不是准确函数名；以下以指令地址、
+ioctl 请求码、参数结构偏移及分支为依据。
+
+### 实现证据
+
+1. `0x1b5298` 到 `0x1b5344`：RGB QUERYBUF/mmap 初始化遍历返回的缓冲区，最多四个，
+   index 来自循环变量，并把映射按 index 存入表中。
+2. `0x1b2e04` 到 `0x1b2e40`：采集线程初始化构造零初始化的 `v4l2_buffer`，
+   type=VIDEO_CAPTURE、memory=MMAP、index=0，仅调用一次 `VIDIOC_QBUF` (`0xc058560f`)。
+   随后进入接收循环，没有初始 index=1/2/3 的入队循环。
+3. `0x1b3080` 到 `0x1b30b0`：后续取帧通过返回 index 选择映射，
+   `0x1b311c` 到 `0x1b3130` 归还取回的缓冲区。因此开始只入队零号，就会一直只轮转零号。
+4. `0x1acc28` 的 ioctl 包装只做 EINTR/EAGAIN 重试，不会代为把其他缓冲区入队。
+
+这与前两轮 QUERYBUF 和 trace 的实际状态吻合，确认当前 SDK 实现存在多缓冲未启用的问题。
+它可以解释对短暂调度延迟的脆弱性，但仍不能证明历史全部缺口都只有这一原因。
+反汇编片段：`08_reports/rk-rgb-input-investigation-20260911/sdk-v1-buffer-disassembly.txt`。
+
+官方开源 SDK v2 的 `captureLoop()` 已在启动处按 index 遍历多个缓冲区逐个 QBUF：
+[ObV4lUvcDevicePort.cpp](https://github.com/orbbec/OrbbecSDK_v2/blob/main/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp)。
+这里只把它作为正确缓冲初始化的参照，不代表 v2 可直接替代本机 SDK v1。
+本次获取的参照源文件 SHA256：`fbbef06861ddfdd51f235cae65ce3f8cc25b0366710d4198a6e1011ee488ff24`。
+
+### 修复路线和验收
+
+- 首选验证适用于该型号的 SDK v1 修正版，或取得厂商修补：启动时逐个入队实际分配的缓冲区，检查入队返回值。
+- 若无可用修正版，再评估项目自有 V4L2 RGB 采集与 SDK Depth 并行的适配，
+  保留身份、RGBD 配对、时间戳、曝光和正式媒体协议；这不是简单切一个配置项。
+- 不采用运行中远程补 QBUF、直接改闭源二进制指令或全局 ioctl 劫持作为生产修复。
+- 不以降低曝光、分辨率或帧率掩盖此问题。
+- 在维护窗口验证实际多 index 轮转；检查正确图像/无重复旧帧/无坏 JPEG，
+  再比对驱动 sequence、SDK 输入、编码输出与 CSV 记录。
+- 在相同桌面负载下观察调度抖动及缺帧；短测通过后再做至少完整十五分钟切片测试。
+  若仍有其他缺口，继续分开定位，不能仅用平均 30 fps 作为通过标准。
+
+本轮只完成原因定位和修复方案收敛，生产修复尚未部署，也未声称修复后测试通过。

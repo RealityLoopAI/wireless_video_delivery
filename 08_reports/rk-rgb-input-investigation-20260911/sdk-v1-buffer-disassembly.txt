@@ -1,0 +1,177 @@
+  1acc28:	a9bc7bfd 	stp	x29, x30, [sp, #-64]!
+  1acc2c:	910003fd 	mov	x29, sp
+  1acc30:	a9025bf5 	stp	x21, x22, [sp, #32]
+  1acc34:	aa0103f6 	mov	x22, x1
+  1acc38:	f9001bf7 	str	x23, [sp, #48]
+  1acc3c:	aa0203f5 	mov	x21, x2
+  1acc40:	2a0003f7 	mov	w23, w0
+  1acc44:	a90153f3 	stp	x19, x20, [sp, #16]
+  1acc48:	528000d3 	mov	w19, #0x6                   	// #6
+  1acc4c:	aa1503e2 	mov	x2, x21
+  1acc50:	aa1603e1 	mov	x1, x22
+  1acc54:	2a1703e0 	mov	w0, w23
+  1acc58:	97fbfe1a 	bl	ac4c0 <ioctl@plt>
+  1acc5c:	2a0003f4 	mov	w20, w0
+  1acc60:	36f80100 	tbz	w0, #31, 1acc80 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x4920>
+  1acc64:	97fbffe7 	bl	acc00 <__errno_location@plt>
+  1acc68:	b9400000 	ldr	w0, [x0]
+  1acc6c:	7100101f 	cmp	w0, #0x4
+  1acc70:	7a4b1804 	ccmp	w0, #0xb, #0x4, ne  // ne = any
+  1acc74:	54000061 	b.ne	1acc80 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x4920>  // b.any
+  1acc78:	71000673 	subs	w19, w19, #0x1
+  1acc7c:	54fffe81 	b.ne	1acc4c <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48ec>  // b.any
+  1acc80:	2a1403e0 	mov	w0, w20
+  1acc84:	f9401bf7 	ldr	x23, [sp, #48]
+  1acc88:	a94153f3 	ldp	x19, x20, [sp, #16]
+  1acc8c:	a9425bf5 	ldp	x21, x22, [sp, #32]
+  1acc90:	a8c47bfd 	ldp	x29, x30, [sp], #64
+  1acc94:	d65f03c0 	ret
+  1b2dc4:	aa0003f4 	mov	x20, x0
+  1b2dc8:	a9025bf5 	stp	x21, x22, [sp, #32]
+  1b2dcc:	b9401020 	ldr	w0, [x1, #16]
+  1b2dd0:	b9408823 	ldr	w3, [x1, #136]
+  1b2dd4:	b9412035 	ldr	w21, [x1, #288]
+  1b2dd8:	6b00007f 	cmp	w3, w0
+  1b2ddc:	b9412422 	ldr	w2, [x1, #292]
+  1b2de0:	1a80a064 	csel	w4, w3, w0, ge  // ge = tcont
+  1b2de4:	a90363f7 	stp	x23, x24, [sp, #48]
+  1b2de8:	6b0402bf 	cmp	w21, w4
+  1b2dec:	f90023f9 	str	x25, [sp, #64]
+  1b2df0:	1a84a2b5 	csel	w21, w21, w4, ge  // ge = tcont
+  1b2df4:	6b0202bf 	cmp	w21, w2
+  1b2df8:	1a82a2b5 	csel	w21, w21, w2, ge  // ge = tcont
+  1b2dfc:	36f82723 	tbz	w3, #31, 1b32e0 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xaf80>
+  1b2e00:	37f80220 	tbnz	w0, #31, 1b2e44 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xaae4>
+  1b2e04:	910803a1 	add	x1, x29, #0x200
+  1b2e08:	910803a3 	add	x3, x29, #0x200
+  1b2e0c:	52800022 	mov	w2, #0x1                   	// #1
+  1b2e10:	a91f7fbf 	stp	xzr, xzr, [x29, #496]
+  1b2e14:	b901f7a2 	str	w2, [x29, #500]
+  1b2e18:	a9027c3f 	stp	xzr, xzr, [x1, #32]
+  1b2e1c:	d28ac1e1 	mov	x1, #0x560f                	// #22031
+  1b2e20:	f2b80b01 	movk	x1, #0xc058, lsl #16
+  1b2e24:	b9022fa2 	str	w2, [x29, #556]
+  1b2e28:	a9007c7f 	stp	xzr, xzr, [x3]
+  1b2e2c:	9107c3a2 	add	x2, x29, #0x1f0
+  1b2e30:	a9017c7f 	stp	xzr, xzr, [x3, #16]
+  1b2e34:	f90123bf 	str	xzr, [x29, #576]
+  1b2e38:	a9037c7f 	stp	xzr, xzr, [x3, #48]
+  1b2e3c:	97ffe77b 	bl	1acc28 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48c8>
+  1b2e40:	f9400281 	ldr	x1, [x20]
+  1b2e44:	d29ef9f8 	mov	x24, #0xf7cf                	// #63439
+  1b2e48:	f0003036 	adrp	x22, 7b9000 <_ZTSSt23_Sp_counted_ptr_inplaceISt15recursive_mutexSaIS0_ELN9__gnu_cxx12_Lock_policyE2EE@@Base+0x2760>
+  1b2e4c:	f2bc6a78 	movk	x24, #0xe353, lsl #16
+  1b2e50:	912322d6 	add	x22, x22, #0x8c8
+  1b2e54:	f2d374b8 	movk	x24, #0x9ba5, lsl #32
+  1b2e58:	9107c3b3 	add	x19, x29, #0x1f0
+  1b2e5c:	910602d6 	add	x22, x22, #0x180
+  1b2e60:	12800017 	mov	w23, #0xffffffff            	// #-1
+  1b2e64:	f2e41898 	movk	x24, #0x20c4, lsl #48
+  1b2e68:	9104e020 	add	x0, x1, #0x138
+  1b2e6c:	08dffc00 	ldarb	w0, [x0]
+  1b2e70:	72001c1f 	tst	w0, #0xff
+  1b2e74:	54001680 	b.eq	1b3144 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xade4>  // b.none
+  1b2e78:	f0003022 	adrp	x2, 7b9000 <_ZTSSt23_Sp_counted_ptr_inplaceISt15recursive_mutexSaIS0_ELN9__gnu_cxx12_Lock_policyE2EE@@Base+0x2760>
+  1b2e7c:	910803a3 	add	x3, x29, #0x200
+  1b3094:	8b000400 	add	x0, x0, x0, lsl #1
+  1b3098:	b9016fa2 	str	w2, [x29, #364]
+  1b309c:	3905e3bf 	strb	wzr, [x29, #376]
+  1b30a0:	8b000c20 	add	x0, x1, x0, lsl #3
+  1b30a4:	390643bf 	strb	wzr, [x29, #400]
+  1b30a8:	3d8057a0 	str	q0, [x29, #336]
+  1b30ac:	f9401400 	ldr	x0, [x0, #40]
+  1b30b0:	f900bba0 	str	x0, [x29, #368]
+  1b30b4:	3d8063a0 	str	q0, [x29, #384]
+  1b30b8:	37f80117 	tbnz	w23, #31, 1b30d8 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xad78>
+  1b30bc:	52800300 	mov	w0, #0x18                  	// #24
+  1b30c0:	b941d3a3 	ldr	w3, [x29, #464]
+  1b30c4:	93407ee2 	sxtw	x2, w23
+  1b30c8:	9b2006e0 	smaddl	x0, w23, w0, x1
+  1b30cc:	b9409804 	ldr	w4, [x0, #152]
+  1b30d0:	6b03009f 	cmp	w4, w3
+  1b30d4:	54001ba0 	b.eq	1b3448 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xb0e8>  // b.none
+  1b30d8:	97fbe282 	bl	abae0 <_ZNSt6chrono3_V212system_clock3nowEv@plt>
+  1b30dc:	9b587c02 	smulh	x2, x0, x24
+  1b30e0:	f9400281 	ldr	x1, [x20]
+  1b30e4:	9347fc42 	asr	x2, x2, #7
+  1b30e8:	f9408023 	ldr	x3, [x1, #256]
+  1b30ec:	cb80fc40 	sub	x0, x2, x0, asr #63
+  1b30f0:	f900afa0 	str	x0, [x29, #344]
+  1b30f4:	b4002ea3 	cbz	x3, 1b36c8 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xb368>
+  1b30f8:	9103c020 	add	x0, x1, #0xf0
+  1b30fc:	f9400c02 	ldr	x2, [x0, #24]
+  1b3100:	910543a1 	add	x1, x29, #0x150
+  1b3104:	d63f0040 	blr	x2
+  1b3108:	f9400281 	ldr	x1, [x20]
+  1b310c:	9104e020 	add	x0, x1, #0x138
+  1b3110:	08dffc00 	ldarb	w0, [x0]
+  1b3114:	72001c1f 	tst	w0, #0xff
+  1b3118:	54ffea80 	b.eq	1b2e68 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xab08>  // b.none
+  1b311c:	b9401020 	ldr	w0, [x1, #16]
+  1b3120:	d28ac1e1 	mov	x1, #0x560f                	// #22031
+  1b3124:	aa1903e2 	mov	x2, x25
+  1b3128:	f2b80b01 	movk	x1, #0xc058, lsl #16
+  1b312c:	97ffe6bf 	bl	1acc28 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48c8>
+  1b3130:	f9400281 	ldr	x1, [x20]
+  1b3134:	9104e020 	add	x0, x1, #0x138
+  1b3138:	08dffc00 	ldarb	w0, [x0]
+  1b313c:	72001c1f 	tst	w0, #0xff
+  1b3140:	54ffe9c1 	b.ne	1b2e78 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xab18>  // b.any
+  1b3144:	a9407bfd 	ldp	x29, x30, [sp]
+  1b3148:	a94153f3 	ldp	x19, x20, [sp, #16]
+  1b527c:	fd00a3a0 	str	d0, [x29, #320]
+  1b5280:	b9401000 	ldr	w0, [x0, #16]
+  1b5284:	97ffde69 	bl	1acc28 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48c8>
+  1b5288:	37f8b440 	tbnz	w0, #31, 1b6910 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xe5b0>
+  1b528c:	b94143a0 	ldr	w0, [x29, #320]
+  1b5290:	f94063a3 	ldr	x3, [x29, #192]
+  1b5294:	340005a0 	cbz	w0, 1b5348 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xcfe8>
+  1b5298:	d28ac13a 	mov	x26, #0x5609                	// #22025
+  1b529c:	910803b5 	add	x21, x29, #0x200
+  1b52a0:	d280001c 	mov	x28, #0x0                   	// #0
+  1b52a4:	52800013 	mov	w19, #0x0                   	// #0
+  1b52a8:	f2b80b1a 	movk	x26, #0xc058, lsl #16
+  1b52ac:	910803a0 	add	x0, x29, #0x200
+  1b52b0:	b90203b3 	str	w19, [x29, #512]
+  1b52b4:	b90207b9 	str	w25, [x29, #516]
+  1b52b8:	aa1503e2 	mov	x2, x21
+  1b52bc:	aa1a03e1 	mov	x1, x26
+  1b52c0:	a900fc1f 	stp	xzr, xzr, [x0, #8]
+  1b52c4:	a901fc1f 	stp	xzr, xzr, [x0, #24]
+  1b52c8:	f9011fbf 	str	xzr, [x29, #568]
+  1b52cc:	f90117bf 	str	xzr, [x29, #552]
+  1b52d0:	f9011bbf 	str	xzr, [x29, #560]
+  1b52d4:	b9023fb9 	str	w25, [x29, #572]
+  1b52d8:	f90123bf 	str	xzr, [x29, #576]
+  1b52dc:	f90127bf 	str	xzr, [x29, #584]
+  1b52e0:	f9012bbf 	str	xzr, [x29, #592]
+  1b52e4:	b9401060 	ldr	w0, [x3, #16]
+  1b52e8:	97ffde50 	bl	1acc28 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48c8>
+  1b52ec:	37f83c40 	tbnz	w0, #31, 1b5a74 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xd714>
+  1b52f0:	f94063bb 	ldr	x27, [x29, #192]
+  1b52f4:	52800023 	mov	w3, #0x1                   	// #1
+  1b52f8:	b9424ba1 	ldr	w1, [x29, #584]
+  1b52fc:	0b030273 	add	w19, w19, w3
+  1b5300:	b94243a5 	ldr	w5, [x29, #576]
+  1b5304:	52800062 	mov	w2, #0x3                   	// #3
+  1b5308:	b9401364 	ldr	w4, [x27, #16]
+  1b530c:	d2800000 	mov	x0, #0x0                   	// #0
+  1b5310:	97fbdd14 	bl	ac760 <mmap@plt>
+  1b5314:	8b1c0781 	add	x1, x28, x28, lsl #1
+  1b5318:	f94063a3 	ldr	x3, [x29, #192]
+  1b531c:	b94143a4 	ldr	w4, [x29, #320]
+  1b5320:	9100079c 	add	x28, x28, #0x1
+  1b5324:	d37df021 	lsl	x1, x1, #3
+  1b5328:	91006062 	add	x2, x3, #0x18
+  1b532c:	8b01037b 	add	x27, x27, x1
+  1b5330:	6b13009f 	cmp	w4, w19
+  1b5334:	7a438a62 	ccmp	w19, #0x3, #0x2, hi  // hi = pmore
+  1b5338:	f9001760 	str	x0, [x27, #40]
+  1b533c:	b9424ba0 	ldr	w0, [x29, #584]
+  1b5340:	b8216840 	str	w0, [x2, x1]
+  1b5344:	54fffb49 	b.ls	1b52ac <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xcf4c>  // b.plast
+  1b5348:	b9401060 	ldr	w0, [x3, #16]
+  1b534c:	52800023 	mov	w3, #0x1                   	// #1
+  1b5350:	d28ac241 	mov	x1, #0x5612                	// #22034
+  1b5354:	9102b3a2 	add	x2, x29, #0xac
+  1b5358:	f2a80081 	movk	x1, #0x4004, lsl #16
