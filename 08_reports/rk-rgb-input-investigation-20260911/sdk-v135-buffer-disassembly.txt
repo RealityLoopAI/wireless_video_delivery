@@ -1,0 +1,49 @@
+  1b6fe0:	a9025bf5 	stp	x21, x22, [sp, #32]
+  1b6fe4:	b9401020 	ldr	w0, [x1, #16]
+  1b6fe8:	b9408823 	ldr	w3, [x1, #136]
+  1b6fec:	b9412035 	ldr	w21, [x1, #288]
+  1b6ff0:	6b00007f 	cmp	w3, w0
+  1b6ff4:	b9412422 	ldr	w2, [x1, #292]
+  1b6ff8:	1a80a064 	csel	w4, w3, w0, ge  // ge = tcont
+  1b6ffc:	a90363f7 	stp	x23, x24, [sp, #48]
+  1b7000:	6b0402bf 	cmp	w21, w4
+  1b7004:	f90023f9 	str	x25, [sp, #64]
+  1b7008:	1a84a2b5 	csel	w21, w21, w4, ge  // ge = tcont
+  1b700c:	6b0202bf 	cmp	w21, w2
+  1b7010:	1a82a2b5 	csel	w21, w21, w2, ge  // ge = tcont
+  1b7014:	36f82723 	tbz	w3, #31, 1b74f8 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xae58>
+  1b7018:	37f80220 	tbnz	w0, #31, 1b705c <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xa9bc>
+  1b701c:	910803a1 	add	x1, x29, #0x200
+  1b7020:	910803a3 	add	x3, x29, #0x200
+  1b7024:	52800022 	mov	w2, #0x1                   	// #1
+  1b7028:	a91f7fbf 	stp	xzr, xzr, [x29, #496]
+  1b702c:	b901f7a2 	str	w2, [x29, #500]
+  1b7030:	a9027c3f 	stp	xzr, xzr, [x1, #32]
+  1b7034:	d28ac1e1 	mov	x1, #0x560f                	// #22031
+  1b7038:	f2b80b01 	movk	x1, #0xc058, lsl #16
+  1b703c:	b9022fa2 	str	w2, [x29, #556]
+  1b7040:	a9007c7f 	stp	xzr, xzr, [x3]
+  1b7044:	9107c3a2 	add	x2, x29, #0x1f0
+  1b7048:	a9017c7f 	stp	xzr, xzr, [x3, #16]
+  1b704c:	f90123bf 	str	xzr, [x29, #576]
+  1b7050:	a9037c7f 	stp	xzr, xzr, [x3, #48]
+  1b7054:	97ffe7c5 	bl	1b0f68 <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0x48c8>
+  1b7058:	f9400281 	ldr	x1, [x20]
+  1b705c:	d29ef9f8 	mov	x24, #0xf7cf                	// #63439
+  1b7060:	f0003036 	adrp	x22, 7be000 <_ZTSSt23_Sp_counted_ptr_inplaceISt15recursive_mutexSaIS0_ELN9__gnu_cxx12_Lock_policyE2EE@@Base+0x29a8>
+  1b7064:	f2bc6a78 	movk	x24, #0xe353, lsl #16
+  1b7068:	912322d6 	add	x22, x22, #0x8c8
+  1b706c:	f2d374b8 	movk	x24, #0x9ba5, lsl #32
+  1b7070:	9107c3b3 	add	x19, x29, #0x1f0
+  1b7074:	910662d6 	add	x22, x22, #0x198
+  1b7078:	12800017 	mov	w23, #0xffffffff            	// #-1
+  1b707c:	f2e41898 	movk	x24, #0x20c4, lsl #48
+  1b7080:	9104e020 	add	x0, x1, #0x138
+  1b7084:	08dffc00 	ldarb	w0, [x0]
+  1b7088:	72001c1f 	tst	w0, #0xff
+  1b708c:	54001680 	b.eq	1b735c <_ZNSt8_Rb_treeIjSt4pairIKj8OBFormatESt10_Select1stIS3_ESt4lessIjESaIS3_EE29_M_get_insert_hint_unique_posESt23_Rb_tree_const_iteratorIS3_ERS1_@@Base+0xacbc>  // b.none
+  1b7090:	f0003022 	adrp	x2, 7be000 <_ZTSSt23_Sp_counted_ptr_inplaceISt15recursive_mutexSaIS0_ELN9__gnu_cxx12_Lock_policyE2EE@@Base+0x29a8>
+  1b7094:	910803a3 	add	x3, x29, #0x200
+  1b7098:	b9401020 	ldr	w0, [x1, #16]
+  1b709c:	3dc1d040 	ldr	q0, [x2, #1856]
+  1b70a0:	a91f7fbf 	stp	xzr, xzr, [x29, #496]

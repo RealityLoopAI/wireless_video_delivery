@@ -1,0 +1,55 @@
+{
+  "sdk": {
+    "frames": 1796,
+    "indices": [
+      0
+    ],
+    "steady_fps": 30.01139259006805,
+    "missing_sequence": 0,
+    "max_interval_ms": 37.29299991391599,
+    "gaps_over_50ms": 0,
+    "errors": 0,
+    "stats": {
+      "start": 1789094517.456658,
+      "end": 1789094578.32183,
+      "cpus": {
+        "cpu7": "entries: 14\noverrun: 0\ncommit overrun: 0\nbytes: 984\noldest event ts: 836852.044438\nnow ts: 836900.750553\ndropped events: 0\nread events: 0\n",
+        "cpu6": "entries: 22\noverrun: 0\ncommit overrun: 0\nbytes: 1536\noldest event ts: 836851.576387\nnow ts: 836900.750618\ndropped events: 0\nread events: 0\n",
+        "cpu5": "entries: 146\noverrun: 0\ncommit overrun: 0\nbytes: 10432\noldest event ts: 836842.616137\nnow ts: 836900.750656\ndropped events: 0\nread events: 0\n",
+        "cpu4": "entries: 60\noverrun: 0\ncommit overrun: 0\nbytes: 4292\noldest event ts: 836842.648107\nnow ts: 836900.750690\ndropped events: 0\nread events: 0\n",
+        "cpu3": "entries: 305\noverrun: 0\ncommit overrun: 0\nbytes: 21680\noldest event ts: 836840.784127\nnow ts: 836900.750723\ndropped events: 0\nread events: 0\n",
+        "cpu2": "entries: 1703\noverrun: 0\ncommit overrun: 0\nbytes: 117640\noldest event ts: 836841.084089\nnow ts: 836900.750756\ndropped events: 0\nread events: 0\n",
+        "cpu1": "entries: 886\noverrun: 0\ncommit overrun: 0\nbytes: 61964\noldest event ts: 836840.916121\nnow ts: 836900.750789\ndropped events: 0\nread events: 0\n",
+        "cpu0": "entries: 457\noverrun: 0\ncommit overrun: 0\nbytes: 32108\noldest event ts: 836840.532355\nnow ts: 836900.750821\ndropped events: 0\nread events: 0\n"
+      }
+    }
+  },
+  "native": {
+    "frames": 1800,
+    "indices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "steady_fps": 30.01076349862515,
+    "missing_sequence": 2,
+    "max_interval_ms": 39.87300000153482,
+    "gaps_over_50ms": 0,
+    "errors": 0,
+    "stats": {
+      "start": 1789094578.370775,
+      "end": 1789094639.2806177,
+      "cpus": {
+        "cpu7": "entries: 10\noverrun: 0\ncommit overrun: 0\nbytes: 704\noldest event ts: 836907.914366\nnow ts: 836961.709348\ndropped events: 0\nread events: 0\n",
+        "cpu6": "entries: 16\noverrun: 0\ncommit overrun: 0\nbytes: 1128\noldest event ts: 836911.978515\nnow ts: 836961.709562\ndropped events: 0\nread events: 0\n",
+        "cpu5": "entries: 152\noverrun: 0\ncommit overrun: 0\nbytes: 10888\noldest event ts: 836902.150270\nnow ts: 836961.709754\ndropped events: 0\nread events: 0\n",
+        "cpu4": "entries: 68\noverrun: 0\ncommit overrun: 0\nbytes: 4860\noldest event ts: 836901.650193\nnow ts: 836961.709819\ndropped events: 0\nread events: 0\n",
+        "cpu3": "entries: 318\noverrun: 0\ncommit overrun: 0\nbytes: 22504\noldest event ts: 836900.809659\nnow ts: 836961.709859\ndropped events: 0\nread events: 0\n",
+        "cpu2": "entries: 1472\noverrun: 0\ncommit overrun: 0\nbytes: 101960\noldest event ts: 836901.750315\nnow ts: 836961.709894\ndropped events: 0\nread events: 0\n",
+        "cpu1": "entries: 1048\noverrun: 0\ncommit overrun: 0\nbytes: 73116\noldest event ts: 836901.582317\nnow ts: 836961.709928\ndropped events: 0\nread events: 0\n",
+        "cpu0": "entries: 520\noverrun: 0\ncommit overrun: 0\nbytes: 36688\noldest event ts: 836901.618284\nnow ts: 836961.709961\ndropped events: 0\nread events: 0\n"
+      }
+    }
+  }
+}
