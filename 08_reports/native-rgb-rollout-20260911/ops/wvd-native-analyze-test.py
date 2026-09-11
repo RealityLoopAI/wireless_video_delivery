@@ -21,6 +21,10 @@ for path in root.glob('*/'+datetime.datetime.now().strftime('%Y-%m-%d')+'/*/meta
         ts=[int(r['global_timestamp_us']) for r in selected]
         gaps=[b-a for a,b in zip(ts,ts[1:])]
         info={'frames':len(selected),'first_global_us':ts[0] if ts else None,'last_global_us':ts[-1] if ts else None,'max_gap_us':max(gaps,default=0),'gaps_over_50ms':sum(g>50000 for g in gaps),'gaps_over_500ms':sum(g>500000 for g in gaps),'nonincreasing':sum(g<=0 for g in gaps),'invalid_clock':sum(r['clock_sync_valid']!='1' for r in selected),'pair_ids_zero':sum(r['pair_id']=='0' for r in selected)}
+        info['outside_segment_window'] = sum(
+            not (int(r['segment_window_start_global_us']) <= int(r['global_timestamp_us'])
+                 < int(r['segment_window_end_global_us']))
+            for r in selected if r.get('segment_window_valid') == '1')
         if stream=='rgb': info['contiguous_video_indices']=all(int(r['rgb_video_frame_index'])==i for i,r in enumerate(selected))
         media=folder/meta[stream+'_file']
         data=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_packets','-show_entries','packet=pts_time,dts_time','-of','json',str(media)],timeout=90))
