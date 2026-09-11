@@ -314,6 +314,7 @@ public:
         out << "\"rgb_output_mode\":\""
             << json_escape(config_.recording_staging.rgb_output_mode) << "\",";
         out << "\"idle_finalize_ms\":" << config_.recording_staging.idle_finalize_ms << ',';
+        out << "\"media_recovery_grace_ms\":" << config_.recording_staging.media_recovery_grace_ms << ',';
         out << "\"direct_publish_hidden_directory\":\""
             << json_escape(config_.recording_staging.direct_publish_hidden_directory) << "\"},";
         out << "\"recording_staging_enabled\":" << (config_.recording_staging.enabled ? "true" : "false") << ',';
@@ -572,6 +573,7 @@ public:
             out << "\"record_prestart_depth_replay_attempts\":" << cam.prestart_depth_replay_attempts.load() << ',';
             out << "\"segment_prestart_rgb_drops\":" << cam.segment_prestart_rgb_drops.load() << ',';
             out << "\"media_idle_finalizations\":" << cam.media_idle_finalizations.load() << ',';
+            out << "\"record_media_stalled\":" << (cam.record_media_stalled ? "true" : "false") << ',';
             out << "\"last_media_session_id\":" << cam.last_media_session_id << ',';
             out << "\"rgb_ingress_session_id\":" << cam.rgb_ingress_session_id << ',';
             out << "\"rgb_ingress_waiting_for_idr\":"
@@ -1701,7 +1703,8 @@ public:
 
     void recording_maintenance_loop() {
         logger_.info("recording maintenance worker started idle_finalize_ms="
-                     + std::to_string(config_.recording_staging.idle_finalize_ms));
+                     + std::to_string(config_.recording_staging.idle_finalize_ms)
+                     + " media_recovery_grace_ms=" + std::to_string(config_.recording_staging.media_recovery_grace_ms));
         auto next_uploader_status_refresh = std::chrono::steady_clock::time_point::min();
         while(running_) {
             const uint64_t current_us = now_us();
@@ -1716,10 +1719,24 @@ public:
                 for(auto &item : cameras_) {
                     auto &cam = item.second;
                     camera_snapshot.push_back(cam);
-                    const uint64_t idle_limit_us = static_cast<uint64_t>(config_.recording_staging.idle_finalize_ms) * 1000ull;
-                    const bool media_idle = cam->segment_active && cam->last_media_us > 0
-                                            && current_us > cam->last_media_us
-                                            && current_us - cam->last_media_us >= idle_limit_us;
+                    // Only formal RGB/Depth advances this clock. Heartbeats,
+                    // previews and wall-clock adjustments cannot hide an outage.
+                    const auto activity = cam->last_record_media_activity;
+                    const auto idle_ms = activity == std::chrono::steady_clock::time_point{}
+                                             ? 0 : std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::steady_clock::now() - activity).count();
+                    const bool stalled = cam->segment_active && idle_ms >= config_.recording_staging.idle_finalize_ms;
+                    if(stalled != cam->record_media_stalled) {
+                        cam->record_media_stalled = stalled;
+                        logger_.info(std::string("recording media ") + (stalled ? "stalled; waiting for recovery" : "recovered or closed")
+                                     + " camera=" + cam->key + " idle_ms=" + std::to_string(idle_ms));
+                    }
+                    const int idle_limit_ms = cam->recording_requested || recording_all_
+                                                  ? std::max(config_.recording_staging.idle_finalize_ms,
+                                                             config_.recording_staging.media_recovery_grace_ms)
+                                                  : config_.recording_staging.idle_finalize_ms;
+                    // Explicit stop has its own bounded tail-drain deadline.
+                    const bool media_idle = stalled && idle_ms >= idle_limit_ms && !cam->record_tail.active();
                     bool storage_capacity_failed = false;
                     {
                         std::lock_guard<std::mutex> record_lock(cam->record_mutex);
@@ -4561,6 +4578,7 @@ private:
             cam->last_media_us = packet_receive_us;
             cam->last_media_session_id = media_session_id;
             if(packet.stream_type == StreamType::rgb || packet.stream_type == StreamType::depth_raw) {
+                cam->last_record_media_activity = std::chrono::steady_clock::now();
                 const bool rgb = packet.stream_type == StreamType::rgb;
                 uint64_t &last_receive = rgb ? cam->last_rgb_receive_us : cam->last_depth_receive_us;
                 int64_t &delay = rgb ? cam->rgb_receive_delay_us : cam->depth_receive_delay_us;

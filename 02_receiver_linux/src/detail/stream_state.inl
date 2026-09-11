@@ -141,6 +141,8 @@ struct CameraState {
     uint64_t last_status_us = 0;
     std::string status_endpoint;
     uint64_t last_media_us = 0;
+    std::chrono::steady_clock::time_point last_record_media_activity{};
+    bool record_media_stalled = false;
     uint64_t last_rgb_receive_us = 0;
     uint64_t last_depth_receive_us = 0;
     int64_t rgb_receive_delay_us = -1;

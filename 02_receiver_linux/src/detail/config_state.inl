@@ -5,6 +5,7 @@ struct Config {
         bool defer_player_compatible_finalize = true;
         std::string rgb_output_mode = "conventional_mp4";
         int idle_finalize_ms = 5000;
+        int media_recovery_grace_ms = 120000;
         std::string direct_publish_hidden_directory = ".gwv3_direct_inprogress";
     };
 
@@ -215,6 +216,8 @@ Config load_config(const std::string &path) {
         string_value(recording_staging, "rgb_output_mode", cfg.recording_staging.rgb_output_mode);
     cfg.recording_staging.idle_finalize_ms =
         int_value(recording_staging, "idle_finalize_ms", cfg.recording_staging.idle_finalize_ms);
+    cfg.recording_staging.media_recovery_grace_ms =
+        int_value(recording_staging, "media_recovery_grace_ms", cfg.recording_staging.media_recovery_grace_ms);
     cfg.recording_staging.direct_publish_hidden_directory =
         string_value(recording_staging, "direct_publish_hidden_directory",
                      cfg.recording_staging.direct_publish_hidden_directory);
@@ -315,6 +318,11 @@ Config load_config(const std::string &path) {
     }
     if(cfg.recording_staging.idle_finalize_ms < 1000 || cfg.recording_staging.idle_finalize_ms > 300000) {
         throw std::runtime_error("recording_staging.idle_finalize_ms must be between 1000 and 300000");
+    }
+    if(cfg.recording_staging.media_recovery_grace_ms < 0 || cfg.recording_staging.media_recovery_grace_ms > 900000
+       || (cfg.recording_staging.media_recovery_grace_ms > 0
+           && cfg.recording_staging.media_recovery_grace_ms < cfg.recording_staging.idle_finalize_ms)) {
+        throw std::runtime_error("recording_staging.media_recovery_grace_ms must be 0 (legacy) or between idle_finalize_ms and 900000");
     }
     if(cfg.recording_staging.rgb_output_mode != "conventional_mp4"
        && cfg.recording_staging.rgb_output_mode != "fragmented_mp4") {

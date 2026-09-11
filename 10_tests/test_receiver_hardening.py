@@ -1340,7 +1340,7 @@ def run(args) -> None:
             "record_queue_max_mb": 16,
             "record_finalize_max_pending_segments": 4,
             "record_finalize_workers": 3,
-            "recording_staging": {"enabled": False, "idle_finalize_ms": 1000},
+            "recording_staging": {"enabled": False, "idle_finalize_ms": 1000, "media_recovery_grace_ms": 0},
             "task_audio": {
                 "enabled": True,
                 "finalize_wait_ms": 100,

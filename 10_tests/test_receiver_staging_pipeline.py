@@ -61,6 +61,7 @@ def run(args: argparse.Namespace) -> None:
                 "defer_player_compatible_finalize": True,
                 "rgb_output_mode": "fragmented_mp4",
                 "idle_finalize_ms": 1000,
+                "media_recovery_grace_ms": 0,
                 "upload_interval_ms": 100,
                 "delete_after_upload": True,
             },

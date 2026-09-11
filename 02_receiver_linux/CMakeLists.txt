@@ -59,6 +59,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_prestart_depth.py
             --receiver $<TARGET_FILE:gemini_receiver>)
     set_tests_properties(receiver_prestart_depth_integration PROPERTIES TIMEOUT 60)
+    add_test(NAME receiver_media_recovery_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_media_recovery.py
+            --receiver $<TARGET_FILE:gemini_receiver>)
+    set_tests_properties(receiver_media_recovery_integration PROPERTIES TIMEOUT 60)
     add_executable(test_clock_sync_history
         ${CMAKE_SOURCE_DIR}/10_tests/test_clock_sync_history.cpp src/clock_sync_manager.cpp)
     target_include_directories(test_clock_sync_history PRIVATE
