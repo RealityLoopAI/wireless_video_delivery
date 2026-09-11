@@ -1085,8 +1085,11 @@ public:
                 clear_prestart_depth_locked(*cam);
             }
             // Validate depth before retaining it; keep only the compressed input.
-            // Independent TCP paths can deliver depth before the first RGB IDR.
-            if(cam->segment && !cam->segment->active() && camera_announce_expects_rgb(job.announce_json)
+            // Independent TCP paths can deliver depth before the first or next
+            // slice's RGB IDR. Never append future-slice depth to the old writer.
+            if(cam->segment && camera_announce_expects_rgb(job.announce_json)
+               && (!cam->segment->active()
+                   || cam->segment->should_rotate_for_timestamp(queued_packet.global_timestamp_us))
                && queued_packet.stream_type == StreamType::depth_raw
                && queued_packet.global_timestamp_us >= job.recording_window.start_global_us) {
                 if(buffer_prestart_depth_locked(*cam, job)) return;
@@ -1094,6 +1097,8 @@ public:
                     logger_.warn("recording prestart depth buffer full camera=" + cam->key
                                  + "; packet will be counted as a prestart drop");
                 }
+                cam->segment_prestart_depth_drops.fetch_add(1);
+                return;
             }
         }
 

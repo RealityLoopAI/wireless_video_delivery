@@ -79,6 +79,9 @@ def read_frames(path: Path, offset_us: int) -> list[Frame]:
                     "rgb_recorded", "recording_window_valid", "segment_window_valid"
                 )):
                     continue
+                # An explicit invalid/unknown clock flag must not enter a trusted match.
+                if "clock_sync_valid" in row and (row.get("clock_sync_valid") or "").strip() != "1":
+                    continue
                 timestamp_us = positive_int(row.get("global_timestamp_us"))
                 if timestamp_us is None:
                     continue

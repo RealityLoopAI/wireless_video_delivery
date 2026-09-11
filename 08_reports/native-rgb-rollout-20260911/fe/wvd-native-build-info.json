@@ -1,0 +1,8 @@
+{
+  "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+  "config": "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-fe0f7222.json",
+  "sdk": "/home/orangepi/Downloads/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_C_C++_v1.10.27_20250925_0549823_linux_arm64_release/OrbbecSDK_v1.10.27/SDK",
+  "source": "/home/orangepi/wvd-native-source-8569b21",
+  "candidate": "/home/orangepi/wvd-native-build-8569b21/bin/gemini_sender",
+  "sender_id": "orangepi5pro-fe0f7222"
+}

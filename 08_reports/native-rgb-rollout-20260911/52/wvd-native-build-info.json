@@ -1,0 +1,8 @@
+{
+  "binary": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+  "config": "/home/cat/wireless_video_delivery_release/06_configs/sender_lubancat-52d2ef0c_gemini305.json",
+  "sdk": "/home/cat/wireless_video_delivery/11_third_party/orbbec/linux_arm64/OrbbecSDK_v2.8.6",
+  "source": "/home/cat/wvd-native-source-8569b21",
+  "candidate": "/home/cat/wvd-native-build-8569b21/bin/gemini_sender",
+  "sender_id": "lubancat-52d2ef0c"
+}

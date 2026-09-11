@@ -1,0 +1,218 @@
+[
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 2.936
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 0.92
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 27020,
+    "expected_frames": 27020,
+    "stderr": "",
+    "passed": true,
+    "seconds": 39.202
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27021,
+    "expected_frames": 27021,
+    "stderr": "",
+    "passed": true,
+    "seconds": 13.619
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 5.359
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 909,
+    "expected_frames": 909,
+    "stderr": "",
+    "passed": true,
+    "seconds": 0.484
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 26850,
+    "expected_frames": 26850,
+    "stderr": "",
+    "passed": true,
+    "seconds": 83.764
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27925,
+    "expected_frames": 27925,
+    "stderr": "",
+    "passed": true,
+    "seconds": 14.383
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 5.251
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1773,
+    "expected_frames": 1773,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.278
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 27012,
+    "expected_frames": 27012,
+    "stderr": "",
+    "passed": true,
+    "seconds": 78.518
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27060,
+    "expected_frames": 27060,
+    "stderr": "",
+    "passed": true,
+    "seconds": 19.29
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 2.755
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.24
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 27017,
+    "expected_frames": 27017,
+    "stderr": "",
+    "passed": true,
+    "seconds": 40.42
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27021,
+    "expected_frames": 27021,
+    "stderr": "",
+    "passed": true,
+    "seconds": 17.958
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 5.51
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.262
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 27012,
+    "expected_frames": 27012,
+    "stderr": "",
+    "passed": true,
+    "seconds": 80.84
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27060,
+    "expected_frames": 27060,
+    "stderr": "",
+    "passed": true,
+    "seconds": 18.94
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 5.198
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1773,
+    "expected_frames": 1773,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.701
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-11/123518/rgb.mp4",
+    "exit_code": 0,
+    "frames": 27012,
+    "expected_frames": 27012,
+    "stderr": "",
+    "passed": true,
+    "seconds": 97.72
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-ab748372_cam01/2026-09-11/123518/depth.mkv",
+    "exit_code": 0,
+    "frames": 27060,
+    "expected_frames": 27060,
+    "stderr": "",
+    "passed": true,
+    "seconds": 41.187
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/125018/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 2.936
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/125018/depth.mkv",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 0.92
+  }
+]

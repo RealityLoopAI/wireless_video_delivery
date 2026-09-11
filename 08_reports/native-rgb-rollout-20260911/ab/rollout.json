@@ -1,0 +1,11 @@
+{
+  "sender_id": "orangepi5pro-ab748372",
+  "unit": "gwv3-gemini-sender.service",
+  "binary": "/home/orangepi/wireless_video_delivery_release/12_build/bin/gemini_sender",
+  "config": "/home/orangepi/wireless_video_delivery_release/06_configs/sender_orangepi5pro-ab748372.json",
+  "native_rgb_capture": true,
+  "backup": "/var/lib/gwv3/native-rollout-8569b21",
+  "old_sha256": "bad58c08beb4717f4d68529392b28ac3200d7fde799b6c083012a3542bc189d0",
+  "candidate_sha256": "adb385267310f687bc718087ea20b78be6df79bf21637874066a5cd623b2b7dd",
+  "deployed": true
+}

@@ -1,0 +1,11 @@
+{
+  "sender_id": "rk3588-ubuntu",
+  "unit": "gwv3-gemini-sender.service",
+  "binary": "/home/linaro/wvd-reorg-20260902/12_build/bin/gemini_sender",
+  "config": "/etc/gwv3/sender.json",
+  "native_rgb_capture": true,
+  "backup": "/var/lib/gwv3/native-rollout-8569b21",
+  "old_sha256": "c86058a3e11e4c94fe3588ac9c29f9fa535b39897a45d1fde1afa274bfcbbda3",
+  "candidate_sha256": "48b268d1a3fa58f9f489d8de51a4fbdfdb2e1f29153e70bc89f42706c1bf058c",
+  "deployed": true
+}

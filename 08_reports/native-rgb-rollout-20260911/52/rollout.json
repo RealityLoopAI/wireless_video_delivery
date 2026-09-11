@@ -1,0 +1,11 @@
+{
+  "sender_id": "lubancat-52d2ef0c",
+  "unit": "gwv3-gemini-sender-lubancat-52d2ef0c.service",
+  "binary": "/home/cat/wireless_video_delivery_release/12_build/bin/gemini_sender",
+  "config": "/home/cat/wireless_video_delivery_release/06_configs/sender_lubancat-52d2ef0c_gemini305.json",
+  "native_rgb_capture": false,
+  "backup": "/var/lib/gwv3/native-rollout-8569b21",
+  "old_sha256": "eaa953d881e7901a59043fcca40bcc516d3a63302c6d53a39519e0ff27718883",
+  "candidate_sha256": "0c8597fb9606a0c0471922c13220cffe269fc0d08fbbbee869cb76635b51c033",
+  "deployed": true
+}

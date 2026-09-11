@@ -25,7 +25,7 @@ def exercise(receiver, scenario):
             "receiver_discovery": {"enabled": False}, "clock_sync": {"enabled": False},
             "nas_auto_mount": {"enabled": False}, "preview_enabled": False,
             "nas_root": str(root / "nas"), "state_path": str(root / "state.json"),
-            "log_directory": str(root / "logs"), "segment_seconds": 900,
+            "log_directory": str(root / "logs"), "segment_seconds": 2 if scenario == "rotation" else 900,
             "recording_start_lead_ms": 0, "recording_stop_drain_timeout_ms": 1000,
             "record_queue_max_mb": 4, "record_queue_total_max_mb": 8,
             "recording_staging": {"enabled": False, "idle_finalize_ms": 10000},
@@ -73,6 +73,38 @@ def exercise(receiver, scenario):
                     wait(lambda s: s["cameras"] and s["cameras"][0]["rgb_packets"] > 0)
                     start = api("POST", "/api/record/start-all")["recording_start_us"]
                     time.sleep(max(0, start / 1e6 - time.time()) + .01)
+                    if scenario == "rotation":
+                        rgb(10, start + 1000)
+                        depth(10, start + 1000)
+                        wait(lambda s: s["cameras"][0]["segment_active"] and s["record_queue_total_bytes"] == 0)
+                        boundary = start + 2000000
+                        time.sleep(max(0, boundary / 1e6 - time.time()) + .05)
+                        depth(20, boundary + 1000)
+                        wait(lambda s: s["cameras"][0]["depth_packets"] >= 3
+                             and s["cameras"][0]["record_active_writes"] == 0)
+                        wait(lambda s: s["cameras"][0]["record_prestart_depth_packets"] == 1, timeout=2)
+                        rgb(20, boundary + 1000)
+                        wait(lambda s: s["cameras"][0]["record_prestart_depth_packets"] == 0
+                             and s["record_queue_total_bytes"] == 0)
+                        end = api("POST", "/api/record/stop-all")["recording_end_global_us"]
+                        rgb(30, end + 1)
+                        depth(30, end + 1)
+                        def published():
+                            return [p.parent / "frames.csv" for p in (root / "nas").rglob("recording_ready.json")
+                                    if not any(part.startswith(".") for part in p.relative_to(root / "nas").parts)]
+                        wait(lambda s: len(published()) == 2)
+                        indices = []
+                        for file in published():
+                            with file.open(newline="") as source:
+                                rows = list(csv.DictReader(source))
+                            index = int(rows[0]["global_segment_index"])
+                            indices.append(index)
+                            expected = (10, 20)[index]
+                            for stream in ("rgb", "depth"):
+                                assert [int(r["frame_id"]) for r in rows if r["stream_type"] == stream] == [expected], rows
+                        assert sorted(indices) == [0, 1], indices
+                        print("PASS delayed RGB slice rotation", flush=True)
+                        return
                     count = 1100 if scenario == "bounded" else 60
                     stamps = [start + 1000 + i * (1 if scenario == "bounded" else 33333) for i in range(count)]
                     for i, stamp in enumerate(stamps):
@@ -144,5 +176,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--receiver", required=True)
     args = parser.parse_args()
-    for scenario in ("delayed", "bounded", "restart"):
+    for scenario in ("rotation", "delayed", "bounded", "restart"):
         exercise(args.receiver, scenario)
