@@ -1,0 +1,132 @@
+{
+  "v4l2_dqbuf": {
+    "count": 3601,
+    "fps": 29.987157500001636,
+    "missing_sequence": 4,
+    "regressions": 0,
+    "errors": 0,
+    "interval_ms": {
+      "count": 3600,
+      "mean": 33.34760888890337,
+      "p99": 36.04999999515712,
+      "max": 60.03000005148351
+    },
+    "gaps_over_50ms": 3,
+    "gaps_over_500ms": 0
+  },
+  "v4l2_qbuf": {
+    "count": 3601,
+    "indices": [
+      0
+    ]
+  },
+  "done_to_dequeue_ms": {},
+  "driver_timestamp_to_dequeue_ms": {
+    "count": 3601,
+    "mean": 28.205558455689356,
+    "p99": 32.054999959655106,
+    "max": 44.33599999174476
+  },
+  "driver_timestamp_interval_ms": {
+    "count": 3600,
+    "mean": 33.347584722222216,
+    "p99": 36.007,
+    "max": 68.001
+  },
+  "dequeue_to_requeue_ms": {
+    "count": 3601,
+    "mean": 0.10176784180723372,
+    "p99": 0.18099998123943806,
+    "max": 2.6569999754428864
+  },
+  "thread_runnable_delay_ms": {
+    "count": 3667,
+    "mean": 0.02217398426120373,
+    "p99": 0.07099995855242014,
+    "max": 16.164999920874834
+  },
+  "thread_delay_over_2ms": [
+    {
+      "t": 835933.215437,
+      "ms": 2.490999992005527
+    },
+    {
+      "t": 835934.829084,
+      "ms": 16.164999920874834
+    },
+    {
+      "t": 835937.015269,
+      "ms": 2.2219999227672815
+    },
+    {
+      "t": 835939.826436,
+      "ms": 13.467999990098178
+    }
+  ],
+  "sequence_gaps": [
+    {
+      "previous": {
+        "t": 835929.72069,
+        "seq": 1013470,
+        "error": false,
+        "timestamp": 835929688637000,
+        "index": 0
+      },
+      "next": {
+        "t": 835929.78072,
+        "seq": 1013473,
+        "error": false,
+        "timestamp": 835929752639000,
+        "index": 0
+      }
+    },
+    {
+      "previous": {
+        "t": 835934.829114,
+        "seq": 1013624,
+        "error": false,
+        "timestamp": 835934784778000,
+        "index": 0
+      },
+      "next": {
+        "t": 835934.880918,
+        "seq": 1013626,
+        "error": false,
+        "timestamp": 835934852779000,
+        "index": 0
+      }
+    },
+    {
+      "previous": {
+        "t": 835939.826479,
+        "seq": 1013774,
+        "error": false,
+        "timestamp": 835939784911000,
+        "index": 0
+      },
+      "next": {
+        "t": 835939.877065,
+        "seq": 1013776,
+        "error": false,
+        "timestamp": 835939848916000,
+        "index": 0
+      }
+    }
+  ],
+  "uvc_before": "frames:  1013447\npackets: 479947972\nempty:   258031371\nerrors:  0\ninvalid: 0\npts: 1 early, 1013447 initial, 1013447 ok\nscr: 1013447 count ok, 1013447 diff ok\nsof: 0 <= sof <= 2047, freq 0.001 kHz\n",
+  "uvc_after": "frames:  1017053\npackets: 480908902\nempty:   258202681\nerrors:  0\ninvalid: 0\npts: 1 early, 1017053 initial, 1017053 ok\nscr: 1017053 count ok, 1017053 diff ok\nsof: 0 <= sof <= 2047, freq 0.001 kHz\n",
+  "trace_stats": {
+    "start_epoch": 1789093606.5050242,
+    "end_epoch": 1789093726.6384656,
+    "cpu_stats": {
+      "cpu7": "entries: 93\noverrun: 0\ncommit overrun: 0\nbytes: 6108\noldest event ts: 835943.777105\nnow ts: 836049.067119\ndropped events: 0\nread events: 0\n",
+      "cpu6": "entries: 164\noverrun: 0\ncommit overrun: 0\nbytes: 10520\noldest event ts: 835937.844883\nnow ts: 836049.067169\ndropped events: 0\nread events: 0\n",
+      "cpu5": "entries: 1057\noverrun: 0\ncommit overrun: 0\nbytes: 68540\noldest event ts: 835929.180749\nnow ts: 836049.067205\ndropped events: 0\nread events: 0\n",
+      "cpu4": "entries: 580\noverrun: 0\ncommit overrun: 0\nbytes: 37748\noldest event ts: 835929.348745\nnow ts: 836049.067239\ndropped events: 0\nread events: 0\n",
+      "cpu3": "entries: 3743\noverrun: 0\ncommit overrun: 0\nbytes: 202744\noldest event ts: 835928.948717\nnow ts: 836049.067271\ndropped events: 0\nread events: 0\n",
+      "cpu2": "entries: 6862\noverrun: 0\ncommit overrun: 0\nbytes: 456476\noldest event ts: 835929.080826\nnow ts: 836049.067303\ndropped events: 0\nread events: 0\n",
+      "cpu1": "entries: 3795\noverrun: 0\ncommit overrun: 0\nbytes: 256124\noldest event ts: 835928.948722\nnow ts: 836049.067336\ndropped events: 0\nread events: 0\n",
+      "cpu0": "entries: 1848\noverrun: 0\ncommit overrun: 0\nbytes: 125196\noldest event ts: 835929.016688\nnow ts: 836049.067367\ndropped events: 0\nread events: 0\n"
+    }
+  }
+}
