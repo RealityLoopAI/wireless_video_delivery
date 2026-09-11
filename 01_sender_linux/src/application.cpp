@@ -4,6 +4,7 @@
 #include "gwv3_sender/adaptive_exposure_controller.hpp"
 #include "gwv3_sender/clock_sync_client.hpp"
 #include "gwv3_sender/config.hpp"
+#include "gwv3_sender/capture_inbox.hpp"
 #include "gwv3_sender/device_identity.hpp"
 #include "gwv3_sender/gst_h264_encoder.hpp"
 #include "gwv3_sender/gst_h264_rtp_sender.hpp"

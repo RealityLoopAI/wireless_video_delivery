@@ -37,6 +37,28 @@ def run(args) -> None:
     with tempfile.TemporaryDirectory(prefix="gwv3_sender_config_") as temporary_text:
         temporary = Path(temporary_text)
 
+        native = copy.deepcopy(base)
+        native_camera = native["cameras"][0]
+        native_camera["native_rgb_capture"] = True
+        native_camera["device_model"] = "SV1301S_U3"
+        native_camera["rotation_degrees"] = 0
+        native_camera["adaptive_exposure"] = {"enabled": False}
+        native_camera["depth_profile"]["enabled"] = True
+        native_camera["rgb_profile"]["format"] = "mjpg"
+        native_path = temporary / "native_rgb.json"
+        native_path.write_text(json.dumps(native), encoding="utf-8")
+        assert validate(args.sender, native_path).returncode == 0
+        for field, value in (("capture_backend", "v4l2"), ("device_model", "Gemini 305"),
+                             ("rotation_degrees", 180), ("adaptive_exposure", {"enabled": True}),
+                             ("native_rgb_capture", "yes"), ("frame_aggregate_mode", "full")):
+            invalid = copy.deepcopy(native)
+            invalid["cameras"][0][field] = value
+            expect_invalid(args.sender, temporary, "native_rgb_" + field, invalid)
+        for field, key, value in (("depth_profile", "enabled", False), ("rgb_profile", "format", "rgb")):
+            invalid = copy.deepcopy(native)
+            invalid["cameras"][0][field][key] = value
+            expect_invalid(args.sender, temporary, "native_rgb_" + field, invalid)
+
         invalid = copy.deepcopy(base)
         invalid["sender_id"] = "../escape"
         expect_invalid(args.sender, temporary, "unsafe_sender_id", invalid)

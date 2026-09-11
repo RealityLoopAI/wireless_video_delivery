@@ -27,6 +27,10 @@ set(ORBBEC_SDK_LIBRARY_DIR "${ORBBEC_SDK_ROOT}/lib")
 include(CheckCXXSourceCompiles)
 set(_GWV3_REQUIRED_INCLUDES_SAVED "${CMAKE_REQUIRED_INCLUDES}")
 set(CMAKE_REQUIRED_INCLUDES "${ORBBEC_SDK_INCLUDE_DIR}")
+unset(GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE CACHE)
+check_cxx_source_compiles(
+    "#include <libobsensor/hpp/Frame.hpp>\nusing F = decltype(ob::FrameHelper::createFrameFromBuffer(OB_FORMAT_MJPG, 1, 1, nullptr, 1, {}, nullptr));\nint main() { return 0; }"
+    GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE)
 unset(GWV3_ORBBEC_HAS_COLOR_AE_MAX_GAIN CACHE)
 unset(GWV3_ORBBEC_HAS_COLOR_MAXIMAL_GAIN CACHE)
 check_cxx_source_compiles(
@@ -108,6 +112,7 @@ target_compile_options(gemini_sender PRIVATE
 )
 
 target_compile_definitions(gemini_sender PRIVATE
+    GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE=$<BOOL:${GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE}>
     GWV3_ORBBEC_MAX_GAIN_PROPERTY=${GWV3_ORBBEC_MAX_GAIN_PROPERTY}
 )
 
@@ -251,6 +256,23 @@ if(BUILD_TESTING)
     target_compile_options(gst_keyframe_request_test PRIVATE ${GSTREAMER_CFLAGS_OTHER} -Wall -Wextra -Wpedantic)
     add_test(NAME gst_keyframe_request COMMAND gst_keyframe_request_test)
     set_tests_properties(gst_keyframe_request PROPERTIES TIMEOUT 10)
+
+    add_executable(capture_inbox_test "${CMAKE_SOURCE_DIR}/10_tests/test_capture_inbox.cpp")
+    target_include_directories(capture_inbox_test PRIVATE include)
+    target_link_libraries(capture_inbox_test PRIVATE pthread)
+    target_compile_options(capture_inbox_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME capture_inbox COMMAND capture_inbox_test)
+    set_tests_properties(capture_inbox PROPERTIES TIMEOUT 15)
+
+    if(GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE)
+        add_executable(sdk_external_color_frame_test "${CMAKE_SOURCE_DIR}/10_tests/test_sdk_external_color_frame.cpp")
+        target_include_directories(sdk_external_color_frame_test PRIVATE "${ORBBEC_SDK_INCLUDE_DIR}")
+        target_link_directories(sdk_external_color_frame_test PRIVATE "${ORBBEC_SDK_LIBRARY_DIR}")
+        target_link_libraries(sdk_external_color_frame_test PRIVATE OrbbecSDK)
+        target_compile_options(sdk_external_color_frame_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+        add_test(NAME sdk_external_color_frame COMMAND sdk_external_color_frame_test)
+        set_tests_properties(sdk_external_color_frame PROPERTIES TIMEOUT 15 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
 
     add_executable(adaptive_exposure_controller_test
         "${CMAKE_SOURCE_DIR}/10_tests/test_adaptive_exposure_controller.cpp"

@@ -1190,6 +1190,8 @@ public:
         size_t size = 0;
         uint64_t frame_id = 0;
         uint64_t system_timestamp_us = 0;
+        uint64_t capture_host_timestamp_us = 0;
+        uint32_t driver_sequence = 0;
         uint32_t width = 0;
         uint32_t height = 0;
         int buffer_index = -1;
@@ -1289,6 +1291,9 @@ public:
     }
 
     bool wait_frame(Frame &frame, std::chrono::milliseconds timeout) {
+        if(requeue_failed_.load()) {
+            throw std::runtime_error("native RGB buffer requeue failed");
+        }
         pollfd pfd{};
         pfd.fd = fd_;
         pfd.events = POLLIN;
@@ -1315,6 +1320,7 @@ public:
             }
             throw std::runtime_error("VIDIOC_DQBUF failed for " + device_path_ + ": " + std::strerror(errno));
         }
+        const auto capture_host_timestamp_us = now_us();
         if(buf.index >= buffers_.size()) {
             throw std::runtime_error("v4l2 returned invalid buffer index for " + device_path_);
         }
@@ -1325,6 +1331,12 @@ public:
         frame.width = width_;
         frame.height = height_;
         frame.buffer_index = static_cast<int>(buf.index);
+        frame.capture_host_timestamp_us = capture_host_timestamp_us;
+        frame.driver_sequence = buf.sequence;
+        if(buf.bytesused > buffers_[buf.index].length || (buf.flags & V4L2_BUF_FLAG_ERROR)) {
+            release_frame(frame);
+            throw std::runtime_error("V4L2 returned an invalid capture buffer");
+        }
         return true;
     }
 
@@ -1337,6 +1349,7 @@ public:
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = static_cast<uint32_t>(frame.buffer_index);
         if(checked_v4l2_ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
+            requeue_failed_.store(true);
             frame.buffer_index = -1;
             frame.data = nullptr;
             frame.size = 0;
@@ -1433,7 +1446,37 @@ private:
     int fps_ = 0;
     uint64_t next_frame_id_ = 0;
     std::vector<Buffer> buffers_;
+    std::atomic<bool> requeue_failed_{false};
 };
+
+struct NativeRgbLease {
+    std::shared_ptr<V4L2MjpegCapture> capture;
+    V4L2MjpegCapture::Frame frame;
+    ~NativeRgbLease() {
+        if(!capture) return;
+        try {
+            capture->release_frame(frame);
+        }
+        catch(...) {
+            // The capture object latches the failure for the next acquisition.
+        }
+    }
+};
+
+std::shared_ptr<ob::ColorFrame> native_rgb_color_frame(const std::shared_ptr<NativeRgbLease> &lease) {
+#if GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE
+    const auto &frame = lease->frame;
+    auto wrapped = ob::FrameHelper::createFrameFromBuffer(
+        OB_FORMAT_MJPG, frame.width, frame.height, const_cast<uint8_t *>(frame.data), static_cast<uint32_t>(frame.size),
+        [owner = lease](void *, void *) mutable { owner.reset(); }, nullptr);
+    // SDK v1 labels external MJPG as generic VIDEO; its public copy constructor
+    // exposes the video data without Frame::as() rejecting that generic type.
+    return std::make_shared<ob::ColorFrame>(*wrapped);
+#else
+    (void)lease;
+    throw std::runtime_error("native_rgb_capture requires the SDK v1 frame buffer bridge");
+#endif
+}
 
 std::string existing_usb_device_name(std::string uid) {
     const std::filesystem::path root = "/sys/bus/usb/devices";

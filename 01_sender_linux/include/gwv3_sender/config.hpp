@@ -89,6 +89,7 @@ struct AdaptiveExposureConfig {
 struct CameraConfig {
     std::string camera_id;
     std::string capture_backend = "orbbec_sdk";
+    bool native_rgb_capture = false;
     std::string device_model;
     std::string serial_number;
     std::string uid;

@@ -243,6 +243,7 @@ struct CameraRuntime {
     std::unique_ptr<ob::Pipeline> pipeline;
     std::shared_ptr<ob::Config> pipeline_config;
     std::shared_ptr<V4L2MjpegCapture> v4l2_capture;
+    std::shared_ptr<CaptureInbox<std::shared_ptr<ob::FrameSet>, 32>> native_depth_inbox;
     std::shared_ptr<ob::VideoStreamProfile> color_profile;
     std::shared_ptr<ob::VideoStreamProfile> depth_profile;
     std::unique_ptr<GstH264Encoder> encoder;

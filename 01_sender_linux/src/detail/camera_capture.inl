@@ -166,6 +166,7 @@ void stop_camera(CameraRuntime &camera, Logger &logger) {
     camera.adaptive_exposure_last_evaluation = std::chrono::steady_clock::time_point::min();
     camera.adaptive_exposure_discard_frames_remaining = 0;
     camera.v4l2_capture.reset();
+    camera.native_depth_inbox.reset();
     camera.jpeg_dual_encoder_disabled = false;
     camera.jpeg_dual_no_main_output = 0;
     camera.web_preview_width = 0;
@@ -271,12 +272,22 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     const std::string device_model = device_info->name() ? device_info->name() : "";
     const std::string device_uid = device_info->uid() ? device_info->uid() : "";
     const std::string device_connection_type = device_info->connectionType() ? device_info->connectionType() : "";
+    if(runtime.config.native_rgb_capture && device_model != "SV1301S_U3") {
+        throw std::runtime_error("native RGB capture is not validated for detected model " + device_model);
+    }
+#if !GWV3_HAS_NATIVE_RGB_FRAME_BRIDGE
+    if(runtime.config.native_rgb_capture) {
+        throw std::runtime_error("this SDK build does not support native_rgb_capture");
+    }
+#endif
 
     CameraRuntime control_runtime;
     control_runtime.config = runtime.config;
     control_runtime.device = device;
     apply_stream_rotation(control_runtime, logger);
 
+    auto native_inbox = runtime.config.native_rgb_capture
+                            ? std::make_shared<CaptureInbox<std::shared_ptr<ob::FrameSet>, 32>>(false) : nullptr;
     auto start_pipeline = [&](OBFrameAggregateOutputMode aggregate_mode) {
         auto candidate_pipeline = std::make_unique<ob::Pipeline>(device);
         auto candidate_config = std::make_shared<ob::Config>();
@@ -287,14 +298,23 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
             candidate_depth_profile =
                 select_profile(*candidate_pipeline, OB_SENSOR_DEPTH, runtime.config.depth_profile, OB_FORMAT_Y16, logger);
         }
-        candidate_config->enableStream(candidate_color_profile);
+        if(!runtime.config.native_rgb_capture) {
+            candidate_config->enableStream(candidate_color_profile);
+        }
         if(candidate_depth_profile) {
             candidate_config->enableStream(candidate_depth_profile);
         }
         if(aggregate_mode != OB_FRAME_AGGREGATE_OUTPUT_DISABLE && candidate_depth_profile) {
             candidate_config->setFrameAggregateOutputMode(aggregate_mode);
         }
-        candidate_pipeline->start(candidate_config);
+        if(runtime.config.native_rgb_capture) {
+            candidate_pipeline->start(candidate_config, [native_inbox](std::shared_ptr<ob::FrameSet> frames) {
+                if(frames) native_inbox->push(std::move(frames));
+            });
+        }
+        else {
+            candidate_pipeline->start(candidate_config);
+        }
         return std::make_tuple(std::move(candidate_pipeline), std::move(candidate_config), std::move(candidate_color_profile),
                                std::move(candidate_depth_profile));
     };
@@ -319,6 +339,15 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
     }
 
     apply_color_controls(control_runtime, logger);
+    std::shared_ptr<V4L2MjpegCapture> native_capture;
+    if(runtime.config.native_rgb_capture) {
+        auto native_config = runtime.config;
+        native_config.serial_number = device_serial;
+        native_capture = std::make_shared<V4L2MjpegCapture>();
+        native_capture->open_device(native_config);
+        logger.info("native RGB four-buffer capture enabled camera_id=" + runtime.config.camera_id
+                    + " timestamp_source=host_dequeue pair_id=0 depth_backend=orbbec_sdk");
+    }
     const bool gemini305_manual_exposure = gemini305_manual_exposure_requested(runtime.config, device_model);
     (void)ensure_gemini305_manual_exposure(runtime.config, device_model, device_serial, logger);
 
@@ -351,6 +380,9 @@ void start_camera_runtime(CameraRuntime &runtime, Logger &logger) {
         runtime.device_uid = device_uid;
         runtime.device_connection_type = device_connection_type;
         runtime.pipeline = std::move(pipeline);
+        runtime.v4l2_capture = std::move(native_capture);
+        runtime.native_depth_inbox = runtime.config.native_rgb_capture ? std::move(native_inbox) : nullptr;
+        if(runtime.native_depth_inbox) runtime.native_depth_inbox->start();
         runtime.pipeline_config = std::move(pipeline_config);
         runtime.color_profile = std::move(color_profile);
         runtime.depth_profile = std::move(depth_profile);
@@ -1469,20 +1501,37 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
         std::shared_ptr<ob::FrameSet> frameset;
         std::shared_ptr<ob::ColorFrame> color;
         std::shared_ptr<ob::DepthFrame> depth;
+        std::shared_ptr<NativeRgbLease> native_lease;
         CameraRuntime *depth_output_camera = nullptr;
         try {
             const auto wait_started = std::chrono::steady_clock::now();
-            frameset = camera.pipeline->waitForFrames(100);
+            if(camera.config.native_rgb_capture) {
+                native_lease = std::make_shared<NativeRgbLease>();
+                native_lease->capture = camera.v4l2_capture;
+                if(!native_lease->capture) throw std::runtime_error("native RGB capture is not open");
+                if(native_lease->capture->wait_frame(native_lease->frame, std::chrono::milliseconds(5))) {
+                    color = native_rgb_color_frame(native_lease);
+                }
+                auto available = camera.native_depth_inbox->pop();
+                if(available) frameset = std::move(*available);
+            }
+            else {
+                frameset = camera.pipeline->waitForFrames(100);
+            }
             const auto wait_ended = std::chrono::steady_clock::now();
-            record_wait_result(camera, elapsed_ms(wait_started, wait_ended), !frameset);
-            if(!frameset) {
+            record_wait_result(camera, elapsed_ms(wait_started, wait_ended), !camera.config.native_rgb_capture && !frameset);
+            if(!frameset && !color) {
                 if(auto reason = capture_stream_stall_reason(camera, wait_ended)) {
                     mark_camera_disconnected(config, camera, transport, logger, transport_mutex, *reason);
                 }
                 continue;
             }
-            color = frameset->colorFrame();
-            depth = frameset->depthFrame();
+            if(frameset) {
+                if(!camera.config.native_rgb_capture) {
+                    color = frameset->colorFrame();
+                }
+                depth = frameset->depthFrame();
+            }
         }
         catch(const ob::Error &e) {
             mark_camera_disconnected(config, camera, transport, logger, transport_mutex, ob_error_text(e));
@@ -1495,6 +1544,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
 
         const auto frame_now = std::chrono::steady_clock::now();
         const uint64_t frame_host_now_us = now_us();
+        const uint64_t rgb_frame_id = color ? (native_lease ? native_lease->frame.frame_id : color->index()) : 0;
         bool reapply_gemini305_manual_exposure = false;
         std::string reapply_device_model;
         std::string reapply_device_serial;
@@ -1555,8 +1605,11 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
         }
         if(warmup_drop) {
             if(color) {
-                record_rgb_input(camera, color, logger);
-                update_color_metadata(camera, color);
+                if(native_lease) record_rgb_input(camera, color->dataSize(), rgb_frame_id, logger);
+                else {
+                    record_rgb_input(camera, color, logger);
+                    update_color_metadata(camera, color);
+                }
             }
             if(depth) {
                 record_depth_input(camera, depth);
@@ -1582,7 +1635,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                                              camera.config.camera_id));
         }
         uint64_t frameset_pair_id = 0;
-        if(color && depth && depth_output_camera == &camera) {
+        if(color && depth && depth_output_camera == &camera && !camera.config.native_rgb_capture) {
             std::lock_guard<std::mutex> lock(camera.mutex);
             frameset_pair_id = camera.next_pair_id++;
             if(camera.next_pair_id == 0) {
@@ -1598,16 +1651,20 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
 
         cv::Mat bgr;
         if(color) {
-            record_rgb_input(camera, color, logger);
-            update_color_metadata(camera, color);
-            const uint64_t rgb_device_timestamp_us = color->timeStampUs();
+            if(native_lease) record_rgb_input(camera, color->dataSize(), rgb_frame_id, logger);
+            else {
+                record_rgb_input(camera, color, logger);
+                update_color_metadata(camera, color);
+            }
+            const uint64_t rgb_device_timestamp_us = native_lease ? 0 : color->timeStampUs();
             const uint64_t rgb_system_timestamp_us = normalize_capture_system_timestamp(
-                camera, StreamType::rgb, frame_system_timestamp_us_or(color, frame_host_now_us), frame_host_now_us);
+                camera, StreamType::rgb, native_lease ? native_lease->frame.capture_host_timestamp_us
+                                                     : frame_system_timestamp_us_or(color, frame_host_now_us), frame_host_now_us);
             const bool color_is_mjpg = color->format() == OB_FORMAT_MJPG;
-            RgbEncodeTiming rgb_capture_timing{color->index(), rgb_device_timestamp_us, rgb_system_timestamp_us, frameset_pair_id,
+            RgbEncodeTiming rgb_capture_timing{rgb_frame_id, rgb_device_timestamp_us, rgb_system_timestamp_us, frameset_pair_id,
                                                static_cast<uint32_t>(color->width()), static_cast<uint32_t>(color->height()),
-                                               rgb_frame_diagnostics(camera, color)};
-            rgb_capture_timing.capture_host_timestamp_us = frame_host_now_us;
+                                               native_lease ? RgbFrameDiagnostics{} : rgb_frame_diagnostics(camera, color)};
+            rgb_capture_timing.capture_host_timestamp_us = native_lease ? native_lease->frame.capture_host_timestamp_us : frame_host_now_us;
             rgb_capture_timing.timing_bound_timestamp_us = now_us();
             bool rgb_usable = true;
             if(color_is_mjpg && !mjpg_has_complete_jpeg(color)) {
@@ -1636,7 +1693,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                     const auto decode_started = std::chrono::steady_clock::now();
                     auto preview_bgr = color_to_preview_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
-                    set_latest_bgr(camera, preview_bgr, color->index(), rgb_system_timestamp_us,
+                    set_latest_bgr(camera, preview_bgr, rgb_frame_id, rgb_system_timestamp_us,
                                    software_rgb_rotation_degrees(camera.config));
                 }
                 else if(!color_is_mjpg) {
@@ -1644,7 +1701,7 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
                     bgr = color_to_bgr(color);
                     record_rgb_decode_ms(camera, elapsed_ms(decode_started, std::chrono::steady_clock::now()));
                     if(preview_due) {
-                        set_latest_bgr(camera, bgr, color->index(), rgb_system_timestamp_us,
+                        set_latest_bgr(camera, bgr, rgb_frame_id, rgb_system_timestamp_us,
                                        software_rgb_rotation_degrees(camera.config));
                     }
                     apply_software_rgb_rotation(bgr, camera.config);
@@ -1969,7 +2026,24 @@ void camera_worker_loop(const AppConfig &config, CameraRuntime &camera, size_t p
             set_camera_announced(camera, true);
         }
         const std::string depth_output_camera_id = depth_output_camera ? depth_output_camera->config.camera_id : camera.config.camera_id;
-        log_time_sync(camera, logger, color, depth, depth_output_camera_id, frame_now);
+        if(!camera.config.native_rgb_capture) {
+            log_time_sync(camera, logger, color, depth, depth_output_camera_id, frame_now);
+        }
+        else if(color) {
+            bool log_due = false;
+            {
+                std::lock_guard<std::mutex> lock(camera.mutex);
+                log_due = frame_now >= camera.next_time_sync_log;
+                if(log_due) camera.next_time_sync_log = frame_now + std::chrono::seconds(5);
+            }
+            if(log_due) logger.info("native_rgb_capture camera_id=" + camera.config.camera_id
+                        + " frame_id=" + std::to_string(rgb_frame_id)
+                        + " driver_sequence=" + std::to_string(native_lease->frame.driver_sequence)
+                        + " buffer_index=" + std::to_string(native_lease->frame.buffer_index)
+                        + " capture_host_timestamp_us=" + std::to_string(native_lease->frame.capture_host_timestamp_us)
+                        + " driver_system_timestamp_us=" + std::to_string(native_lease->frame.system_timestamp_us)
+                        + " pair_id=0");
+        }
         if(preview_due) {
             std::lock_guard<std::mutex> lock(camera.mutex);
             camera.next_preview = frame_now + preview_interval;

@@ -503,6 +503,7 @@ AppConfig load_config(const std::string &path) {
             throw std::runtime_error("depth_camera_id is not supported; RGB and Depth are always sent with the same camera_id");
         }
         camera.capture_backend = optional_string(item, "capture_backend", camera.capture_backend);
+        camera.native_rgb_capture = optional_bool(item, "native_rgb_capture", false);
         camera.device_model = trim_copy(optional_string(item, "device_model", ""));
         camera.serial_number = optional_string(item, "serial_number", "");
         camera.uid = optional_string(item, "uid", "");
@@ -742,6 +743,13 @@ void validate_config(const AppConfig &config) {
         }
         if(camera.capture_backend != "orbbec_sdk" && camera.capture_backend != "v4l2") {
             throw std::runtime_error("camera.capture_backend must be orbbec_sdk or v4l2");
+        }
+        if(camera.native_rgb_capture
+           && (camera.capture_backend != "orbbec_sdk" || camera.device_model != "SV1301S_U3"
+               || camera.rotation_degrees.value_or(0) != 0 || camera.adaptive_exposure.enabled
+               || !camera.depth_profile.enabled || camera.rgb_profile.format != "mjpg"
+               || camera.frame_aggregate_mode != "disable")) {
+            throw std::runtime_error("native_rgb_capture requires orbbec_sdk, SV1301S_U3, MJPG RGB, enabled Depth, aggregate disable, no rotation/adaptive exposure");
         }
         if(camera.capture_backend == "v4l2" && camera.video_device.empty() && camera.serial_number.empty()) {
             throw std::runtime_error("v4l2 camera requires video_device or serial_number");
