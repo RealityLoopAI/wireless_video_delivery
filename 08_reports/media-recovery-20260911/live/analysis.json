@@ -1,0 +1,216 @@
+{
+  "session": 1789112529599230,
+  "segments": [
+    {
+      "directory": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/154210",
+      "camera_key": "lubancat-52d2ef0c_cam01",
+      "ready": true,
+      "quality": "complete",
+      "reason": "all expected streams passed coverage and continuity checks",
+      "streams": {
+        "rgb": {
+          "frames": 1772,
+          "first_global_us": 1789112530631642,
+          "last_global_us": 1789112589621850,
+          "max_gap_us": 33533,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 0,
+          "outside_segment_window": 0,
+          "contiguous_video_indices": true,
+          "media_packets": 1772,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.032,
+          "media_last_pts": 59.022208
+        },
+        "depth": {
+          "frames": 1773,
+          "first_global_us": 1789112530599282,
+          "last_global_us": 1789112589622733,
+          "max_gap_us": 33700,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 0,
+          "outside_segment_window": 0,
+          "media_packets": 1773,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.0,
+          "media_last_pts": 59.067
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/154210",
+      "camera_key": "rk3588-ubuntu_cam01",
+      "ready": true,
+      "quality": "complete",
+      "reason": "all expected streams passed coverage and continuity checks",
+      "streams": {
+        "rgb": {
+          "frames": 1771,
+          "first_global_us": 1789112530625416,
+          "last_global_us": 1789112589603233,
+          "max_gap_us": 44008,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1771,
+          "outside_segment_window": 0,
+          "contiguous_video_indices": true,
+          "media_packets": 1771,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.026,
+          "media_last_pts": 59.003817
+        },
+        "depth": {
+          "frames": 1775,
+          "first_global_us": 1789112530614656,
+          "last_global_us": 1789112589622489,
+          "max_gap_us": 41764,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1775,
+          "outside_segment_window": 0,
+          "media_packets": 1775,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.0,
+          "media_last_pts": 59.133
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/154210",
+      "camera_key": "orangepi5pro-fe0f7222_cam01",
+      "ready": true,
+      "quality": "complete",
+      "reason": "all expected streams passed coverage and continuity checks",
+      "streams": {
+        "rgb": {
+          "frames": 1772,
+          "first_global_us": 1789112530601455,
+          "last_global_us": 1789112589608529,
+          "max_gap_us": 44073,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1772,
+          "outside_segment_window": 0,
+          "contiguous_video_indices": true,
+          "media_packets": 1772,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.002,
+          "media_last_pts": 59.009074
+        },
+        "depth": {
+          "frames": 1774,
+          "first_global_us": 1789112530623526,
+          "last_global_us": 1789112589588618,
+          "max_gap_us": 42080,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1774,
+          "outside_segment_window": 0,
+          "media_packets": 1774,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.0,
+          "media_last_pts": 59.1
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/154210",
+      "camera_key": "lubancat-e8cc0cb3_cam01",
+      "ready": true,
+      "quality": "complete",
+      "reason": "all expected streams passed coverage and continuity checks",
+      "streams": {
+        "rgb": {
+          "frames": 1773,
+          "first_global_us": 1789112530604024,
+          "last_global_us": 1789112589627125,
+          "max_gap_us": 40352,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 0,
+          "outside_segment_window": 0,
+          "contiguous_video_indices": true,
+          "media_packets": 1773,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.004,
+          "media_last_pts": 59.027101
+        },
+        "depth": {
+          "frames": 1773,
+          "first_global_us": 1789112530604671,
+          "last_global_us": 1789112589627746,
+          "max_gap_us": 39709,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 0,
+          "outside_segment_window": 0,
+          "media_packets": 1773,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.0,
+          "media_last_pts": 59.067
+        }
+      }
+    },
+    {
+      "directory": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/154210",
+      "camera_key": "orangepi5pro-b439137c_cam02",
+      "ready": true,
+      "quality": "complete",
+      "reason": "all expected streams passed coverage and continuity checks",
+      "streams": {
+        "rgb": {
+          "frames": 1772,
+          "first_global_us": 1789112530603973,
+          "last_global_us": 1789112589615401,
+          "max_gap_us": 43322,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1772,
+          "outside_segment_window": 0,
+          "contiguous_video_indices": true,
+          "media_packets": 1772,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.004,
+          "media_last_pts": 59.015428
+        },
+        "depth": {
+          "frames": 1775,
+          "first_global_us": 1789112530616326,
+          "last_global_us": 1789112589623975,
+          "max_gap_us": 41802,
+          "gaps_over_50ms": 0,
+          "gaps_over_500ms": 0,
+          "nonincreasing": 0,
+          "invalid_clock": 0,
+          "pair_ids_zero": 1775,
+          "outside_segment_window": 0,
+          "media_packets": 1775,
+          "pts_nonincreasing": 0,
+          "media_first_pts": 0.0,
+          "media_last_pts": 59.133
+        }
+      }
+    }
+  ],
+  "boundaries": []
+}

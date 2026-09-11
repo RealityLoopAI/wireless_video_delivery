@@ -1,0 +1,15 @@
+{
+  "commit": "2d62473",
+  "binary": "/home/loop/wireless_video_delivery-field-v2026.09.07.1/12_build/bin/gemini_receiver",
+  "backup": "/home/loop/wireless_video_delivery-field-v2026.09.07.1/12_build/bin/gemini_receiver.before-media-recovery-2d62473",
+  "sha256": "9a7c505295d3667e8d719ce26b59663c190ada1f2225378eb0ff1c59d85c55e5",
+  "deployed_at_us": 1789112495829185,
+  "verified_cameras": [
+    "lubancat-52d2ef0c_cam01",
+    "lubancat-e8cc0cb3_cam01",
+    "orangepi5pro-b439137c_cam02",
+    "orangepi5pro-fe0f7222_cam01",
+    "rk3588-ubuntu_cam01"
+  ],
+  "media_recovery_grace_ms": 120000
+}

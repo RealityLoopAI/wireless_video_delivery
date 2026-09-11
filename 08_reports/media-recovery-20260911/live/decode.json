@@ -1,0 +1,92 @@
+[
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/154210/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 2.939
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-52d2ef0c_cam01/2026-09-11/154210/depth.mkv",
+    "exit_code": 0,
+    "frames": 1773,
+    "expected_frames": 1773,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.3
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/154210/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1771,
+    "expected_frames": 1771,
+    "stderr": "",
+    "passed": true,
+    "seconds": 6.799
+  },
+  {
+    "file": "/home/loop/Desktop/nas/rk3588-ubuntu_cam01/2026-09-11/154210/depth.mkv",
+    "exit_code": 0,
+    "frames": 1775,
+    "expected_frames": 1775,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.279
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/154210/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 6.531
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-fe0f7222_cam01/2026-09-11/154210/depth.mkv",
+    "exit_code": 0,
+    "frames": 1774,
+    "expected_frames": 1774,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.651
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/154210/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1773,
+    "expected_frames": 1773,
+    "stderr": "",
+    "passed": true,
+    "seconds": 3.403
+  },
+  {
+    "file": "/home/loop/Desktop/nas/lubancat-e8cc0cb3_cam01/2026-09-11/154210/depth.mkv",
+    "exit_code": 0,
+    "frames": 1773,
+    "expected_frames": 1773,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.422
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/154210/rgb.mp4",
+    "exit_code": 0,
+    "frames": 1772,
+    "expected_frames": 1772,
+    "stderr": "",
+    "passed": true,
+    "seconds": 6.717
+  },
+  {
+    "file": "/home/loop/Desktop/nas/orangepi5pro-b439137c_cam02/2026-09-11/154210/depth.mkv",
+    "exit_code": 0,
+    "frames": 1775,
+    "expected_frames": 1775,
+    "stderr": "",
+    "passed": true,
+    "seconds": 1.645
+  }
+]
