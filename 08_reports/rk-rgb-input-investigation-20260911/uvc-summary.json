@@ -1,0 +1,58 @@
+{
+  "v4l2_dqbuf": {
+    "count": 3603,
+    "fps": 30.00385627022386,
+    "missing_sequence": 1,
+    "regressions": 0,
+    "errors": 0,
+    "interval_ms": {
+      "count": 3602,
+      "mean": 33.32904913934048,
+      "p99": 36.04300005827099,
+      "max": 58.33799997344613
+    },
+    "gaps_over_50ms": 1,
+    "gaps_over_500ms": 0
+  },
+  "v4l2_qbuf": {
+    "count": 3603,
+    "indices": [
+      0
+    ]
+  },
+  "done_to_dequeue_ms": {},
+  "driver_timestamp_to_dequeue_ms": {
+    "count": 3603,
+    "mean": 28.202751039926977,
+    "p99": 32.05500007607043,
+    "max": 37.739000050351024
+  },
+  "driver_timestamp_interval_ms": {
+    "count": 3602,
+    "mean": 33.329062465296936,
+    "p99": 36.006,
+    "max": 67.992
+  },
+  "dequeue_to_requeue_ms": {
+    "count": 3603,
+    "mean": 0.1046888703374901,
+    "p99": 0.1669999910518527,
+    "max": 5.943999974988401
+  },
+  "uvc_before": "frames:  1004079\npackets: 477451424\nempty:   257586234\nerrors:  0\ninvalid: 0\npts: 1 early, 1004079 initial, 1004079 ok\nscr: 1004079 count ok, 1004079 diff ok\nsof: 0 <= sof <= 2047, freq 0.001 kHz\n",
+  "uvc_after": "frames:  1007684\npackets: 478412352\nempty:   257757570\nerrors:  0\ninvalid: 0\npts: 1 early, 1007684 initial, 1007684 ok\nscr: 1007684 count ok, 1007684 diff ok\nsof: 0 <= sof <= 2047, freq 0.001 kHz\n",
+  "trace_stats": {
+    "start_epoch": 1789093294.4295578,
+    "end_epoch": 1789093414.565111,
+    "cpu_stats": {
+      "cpu7": "entries: 34\noverrun: 0\ncommit overrun: 0\nbytes: 2424\noldest event ts: 835618.340108\nnow ts: 835736.993763\ndropped events: 0\nread events: 0\n",
+      "cpu6": "entries: 34\noverrun: 0\ncommit overrun: 0\nbytes: 2416\noldest event ts: 835621.972214\nnow ts: 835736.993811\ndropped events: 0\nread events: 0\n",
+      "cpu5": "entries: 506\noverrun: 0\ncommit overrun: 0\nbytes: 36032\noldest event ts: 835617.104192\nnow ts: 835736.993848\ndropped events: 0\nread events: 0\n",
+      "cpu4": "entries: 196\noverrun: 0\ncommit overrun: 0\nbytes: 14004\noldest event ts: 835616.940097\nnow ts: 835736.993882\ndropped events: 0\nread events: 0\n",
+      "cpu3": "entries: 758\noverrun: 0\ncommit overrun: 0\nbytes: 53940\noldest event ts: 835617.040080\nnow ts: 835736.993914\ndropped events: 0\nread events: 0\n",
+      "cpu2": "entries: 3241\noverrun: 0\ncommit overrun: 0\nbytes: 224160\noldest event ts: 835616.904278\nnow ts: 835736.993947\ndropped events: 0\nread events: 0\n",
+      "cpu1": "entries: 1575\noverrun: 0\ncommit overrun: 0\nbytes: 110352\noldest event ts: 835616.872147\nnow ts: 835736.993979\ndropped events: 0\nread events: 0\n",
+      "cpu0": "entries: 862\noverrun: 0\ncommit overrun: 0\nbytes: 60912\noldest event ts: 835617.240121\nnow ts: 835736.994011\ndropped events: 0\nread events: 0\n"
+    }
+  }
+}
