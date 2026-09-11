@@ -33,6 +33,7 @@
 | 部署音频、语音拍照、按键和 LED | [audio-and-controls.md](audio-and-controls.md) |
 | 音频迟到停止、恢复缺口和归档等待修复 | [audio-task-window-finalization-20260910.md](audio-task-window-finalization-20260910.md) |
 | 六路 16 分钟切片、音频与 NAS 实机验收 | [audio-window-16min-validation-20260910.md](audio-window-16min-validation-20260910.md) |
+| 本机 RGB 少帧与 SDK 交帧节奏排查 | [rk-rgb-input-investigation-20260911.md](rk-rgb-input-investigation-20260911.md) |
 | 按现象诊断相机、网络、预览和录制 | [troubleshooting.md](troubleshooting.md) |
 | 运行测试、长测和发布 | [testing-and-release.md](testing-and-release.md) |
 | 了解已知边界和后续方向 | [roadmap.md](roadmap.md) |
