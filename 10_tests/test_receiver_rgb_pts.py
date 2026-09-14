@@ -94,6 +94,13 @@ def exercise(receiver, mode="fragmented_mp4", recovery=False):
                         if r["stream_type"] == "rgb" and r["rgb_recorded"] == "1"]
                 assert [int(r["rgb_video_frame_index"]) for r in rows] == list(range(len(offsets)))
                 assert [int(r["global_timestamp_us"])-start for r in rows] == offsets
+                for name in ("meta.json", "recording_ready.json"):
+                    quality = json.loads((files[0].parent / name).read_text())
+                    assert quality["recording_quality_scope"] == "frame_coverage_and_continuity"
+                    assert quality["clock_quality_status"] == "invalid"
+                    assert quality["rgb_clock_frames"] == len(rows)
+                    assert quality["rgb_clock_invalid_frames"] == len(rows)
+                    assert quality["rgb_clock_unknown_frames"] == 0
                 media = files[0].parent / "rgb.mp4"
                 probe = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
                     "-show_packets", "-show_entries", "packet=pts_time,dts_time", "-of", "json", str(media)], timeout=10))

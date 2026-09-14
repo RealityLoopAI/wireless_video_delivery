@@ -1,3 +1,31 @@
+class RecordingStorageError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+StorageSpaceCheck wait_recording_storage(const Config &cfg, const std::filesystem::path &path, Logger &logger) {
+    // Only recording workers wait. No writes occur while the shared-volume state is unknown.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool warned = false;
+    for(;;) {
+        std::error_code ec;
+        const auto space = std::filesystem::space(path, ec);
+        auto check = ec ? StorageSpaceCheck{false, false, "local_space_query_failed: " + ec.message()}
+                        : check_storage_space(space, cfg);
+        if(check.allowed || !check.retryable || std::chrono::steady_clock::now() >= deadline) {
+            if(warned && check.allowed) {
+                logger.info("recording storage snapshot recovered path=" + path.string());
+            }
+            return check;
+        }
+        if(!warned) {
+            logger.warn("recording storage snapshot retry path=" + path.string() + " reason=" + check.reason);
+            warned = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
 int run_shell_command(const std::string &command) {
     int error_code = 0;
     const pid_t pid = spawn_shell_process(command, -1, -1, -1, error_code);
@@ -436,9 +464,10 @@ public:
         if(!cfg.recording_staging.enabled && !paths_share_device(recording_root, publish_root)) {
             throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
         }
-        const auto space = std::filesystem::space(recording_root, root_ec);
-        if(root_ec || !storage_space_meets_limits(space, cfg)) {
-            throw std::runtime_error("insufficient free space under recording root: " + recording_root.string());
+        const auto storage_check = wait_recording_storage(cfg, recording_root, logger);
+        if(!storage_check.allowed) {
+            throw RecordingStorageError("recording storage check failed: " + storage_check.reason
+                                     + " path=" + recording_root.string());
         }
         const uint64_t directory_time_us = segment_timeline_.start_global_us > 0
                                                ? segment_timeline_.start_global_us
@@ -703,6 +732,8 @@ public:
         storage_check_packets_ = 0;
         storage_failed_ = false;
         recording_window_valid_rows_ = 0;
+        rgb_clock_quality_ = {};
+        depth_clock_quality_ = {};
         recording_window_valid_rgb_frames_ = 0;
         recording_window_valid_depth_frames_ = 0;
         recording_window_first_valid_global_us_ = 0;
@@ -754,15 +785,14 @@ public:
                   recording_window, packet.global_timestamp_us, logger);
         }
         if(storage_failed_) {
-            throw std::runtime_error("recording storage previously failed: " + directory_);
+            throw RecordingStorageError("recording storage previously failed: " + directory_);
         }
         if(++storage_check_packets_ >= 30) {
             storage_check_packets_ = 0;
-            std::error_code ec;
-            const auto space = std::filesystem::space(directory_, ec);
-            if(ec || !storage_space_meets_limits(space, cfg)) {
+            const auto storage_check = wait_recording_storage(cfg, directory_, logger);
+            if(!storage_check.allowed) {
                 storage_failed_ = true;
-                throw std::runtime_error("recording stopped because free space is below the configured reserve: " + directory_);
+                throw RecordingStorageError("recording storage check failed: " + storage_check.reason + " path=" + directory_);
             }
         }
         if(allow_rotate && (stream_profile_changed(packet) || should_rotate_for_timestamp(packet.global_timestamp_us))) {
@@ -1235,6 +1265,21 @@ private:
         return frame_id + "\t" + timestamp_us + "\t" + frame_system_timestamp_us;
     }
 
+    struct ClockQualityCounts {
+        uint64_t frames = 0;
+        uint64_t invalid = 0;
+        uint64_t unknown = 0;
+    };
+
+    void add_clock_quality(const std::string &stream, const std::string &valid) {
+        ClockQualityCounts *counts = stream == "rgb" ? &rgb_clock_quality_
+            : (stream == "depth" || stream == "depth_raw") ? &depth_clock_quality_ : nullptr;
+        if(!counts) return;
+        ++counts->frames;
+        if(valid == "0" || valid == "false") ++counts->invalid;
+        else if(valid != "1" && valid != "true") ++counts->unknown;
+    }
+
     void add_recording_window_summary(const std::string &stream_type, uint64_t global_us, bool valid) {
         if(!valid || global_us == 0) {
             return;
@@ -1350,6 +1395,9 @@ private:
                   "recording_window_start_global_us,recording_window_end_global_us,recording_window_valid,"
                   "global_segment_index,segment_window_start_global_us,segment_window_end_global_us,segment_window_valid\n";
 
+        rgb_clock_quality_ = {};
+        depth_clock_quality_ = {};
+
         recording_window_valid_rows_ = 0;
         recording_window_valid_rgb_frames_ = 0;
         recording_window_valid_depth_frames_ = 0;
@@ -1417,6 +1465,7 @@ private:
                     append_recording_window(merged, window_state);
                     merged << '\n';
                     add_recording_window_summary(stream_type, window_state.first, window_state.second);
+                    add_clock_quality(stream_type, csv_value(row, index, "clock_sync_valid"));
                 }
                 else {
                     dropped_unrecorded_rgb_rows++;
@@ -1427,6 +1476,7 @@ private:
                 append_recording_window(merged, window_state);
                 merged << '\n';
                 add_recording_window_summary(stream_type, window_state.first, window_state.second);
+                add_clock_quality(stream_type, csv_value(row, index, "clock_sync_valid"));
             }
         }
         if(duplicate_frame_rows > 0) {
@@ -1616,6 +1666,17 @@ private:
 
     void write_recording_quality_fields(std::ostream &out) const {
         const auto quality = recording_quality_summary();
+        const bool invalid_clock = rgb_clock_quality_.invalid || depth_clock_quality_.invalid;
+        const bool unknown_clock = rgb_clock_quality_.unknown || depth_clock_quality_.unknown
+            || (rgb_clock_quality_.frames + depth_clock_quality_.frames == 0);
+        out << "  \"recording_quality_scope\": \"frame_coverage_and_continuity\",\n";
+        out << "  \"clock_quality_status\": \"" << (invalid_clock ? "invalid" : unknown_clock ? "unknown" : "valid") << "\",\n";
+        out << "  \"rgb_clock_frames\": " << rgb_clock_quality_.frames << ",\n";
+        out << "  \"depth_clock_frames\": " << depth_clock_quality_.frames << ",\n";
+        out << "  \"rgb_clock_invalid_frames\": " << rgb_clock_quality_.invalid << ",\n";
+        out << "  \"depth_clock_invalid_frames\": " << depth_clock_quality_.invalid << ",\n";
+        out << "  \"rgb_clock_unknown_frames\": " << rgb_clock_quality_.unknown << ",\n";
+        out << "  \"depth_clock_unknown_frames\": " << depth_clock_quality_.unknown << ",\n";
         out << "  \"recording_quality_status\": \"" << quality.status << "\",\n";
         out << "  \"recording_complete\": " << (quality.complete ? "true" : "false") << ",\n";
         out << "  \"recording_quality_reason\": \"" << json_escape(quality.reason) << "\",\n";
@@ -2845,6 +2906,8 @@ private:
     bool storage_failed_ = false;
     uint64_t recording_window_valid_rows_ = 0;
     uint64_t recording_window_valid_rgb_frames_ = 0;
+    ClockQualityCounts rgb_clock_quality_;
+    ClockQualityCounts depth_clock_quality_;
     uint64_t recording_window_valid_depth_frames_ = 0;
     uint64_t recording_window_first_valid_global_us_ = 0;
     uint64_t recording_window_last_valid_global_us_ = 0;

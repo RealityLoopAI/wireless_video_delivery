@@ -116,6 +116,14 @@ def run(args: argparse.Namespace) -> None:
         uploader_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(uploader_module)
         quality_source = {
+            "recording_quality_scope": "frame_coverage_and_continuity",
+            "clock_quality_status": "invalid",
+            "rgb_clock_frames": 90,
+            "depth_clock_frames": 90,
+            "rgb_clock_invalid_frames": 8,
+            "depth_clock_invalid_frames": 0,
+            "rgb_clock_unknown_frames": 0,
+            "depth_clock_unknown_frames": 1,
             "recording_quality_status": "partial",
             "recording_complete": False,
             "recording_quality_reason": "rgb tail is missing",
@@ -139,6 +147,8 @@ def run(args: argparse.Namespace) -> None:
         for field in ("recording_quality_version", "rgb_receive_duration_us", "depth_receive_duration_us"):
             assert quality_ready[field] == quality_source[field]
         assert quality_ready["task_audio_ready_file"] == "audio_ready.json"
+        for field in quality_source:
+            assert quality_ready[field] == quality_source[field]
 
         incremental_staging = temporary / "incremental-staging"
         incremental_nas = temporary / "incremental-nas"

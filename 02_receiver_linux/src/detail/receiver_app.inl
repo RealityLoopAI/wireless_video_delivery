@@ -228,8 +228,10 @@ public:
         const bool recording_space_warning =
             recording_free_percent >= 0 && config_.warn_free_disk_percent > 0
             && recording_free_percent < config_.warn_free_disk_percent;
-        const bool recording_space_hard_limit =
-            recording_space_error || !storage_space_meets_limits(recording_space, config_);
+        const auto recording_space_check = recording_space_error
+            ? StorageSpaceCheck{false, false, "local_space_query_failed: " + recording_space_error.message()}
+            : check_storage_space(recording_space, config_);
+        const bool recording_space_hard_limit = !recording_space_check.allowed;
         UdpReassemblyStats media_udp_stats;
         UdpReassemblyStats preview_udp_stats;
         size_t active_media_udp_assemblies = 0;
@@ -291,6 +293,8 @@ public:
         out << "\"free_percent\":" << recording_free_percent << ',';
         out << "\"warning\":" << (recording_space_warning ? "true" : "false") << ',';
         out << "\"hard_limit\":" << (recording_space_hard_limit ? "true" : "false") << ',';
+        out << "\"check_reason\":\"" << json_escape(recording_space_check.reason) << "\",";
+        out << "\"snapshot_retryable\":" << (recording_space_check.retryable ? "true" : "false") << ',';
         out << "\"warn_free_percent\":" << config_.warn_free_disk_percent << ',';
         out << "\"min_free_percent\":" << config_.min_free_disk_percent << ',';
         out << "\"shared_nas_min_free_bytes\":" << config_.shared_nas_min_free_bytes << ',';
@@ -1185,7 +1189,8 @@ public:
                 clear_prestart_depth_locked(*cam);
             }
             const bool storage_capacity_failure =
-                write_error.find("free space") != std::string::npos
+                dynamic_cast<const RecordingStorageError *>(&e) != nullptr
+                || write_error.find("free space") != std::string::npos
                 || write_error.find("storage previously failed") != std::string::npos;
             bool should_log = false;
             {

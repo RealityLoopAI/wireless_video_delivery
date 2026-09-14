@@ -400,37 +400,69 @@ std::filesystem::path recording_write_root(const Config &cfg) {
                                          : direct_recording_root(cfg);
 }
 
-bool storage_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
-                                uint64_t extra_headroom_bytes = 0) {
+struct StorageSpaceCheck {
+    bool allowed = false;
+    bool retryable = false;
+    std::string reason;
+};
+
+StorageSpaceCheck check_storage_space(const std::filesystem::space_info &space, const Config &cfg,
+                                      uint64_t extra_headroom_bytes = 0) {
+    if(cfg.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - extra_headroom_bytes
+       || space.available < cfg.min_free_disk_bytes + extra_headroom_bytes) {
+        return {false, false, "local_low_space free_bytes=" + std::to_string(space.available)
+            + " reserve_bytes=" + std::to_string(cfg.min_free_disk_bytes)
+            + " extra_bytes=" + std::to_string(extra_headroom_bytes)};
+    }
+    if(cfg.min_free_disk_percent > 0 && space.capacity > 0
+       && static_cast<long double>(space.available) * 100.0L / space.capacity < cfg.min_free_disk_percent) {
+        return {false, false, "local_low_space_percent free_bytes=" + std::to_string(space.available)
+            + " capacity_bytes=" + std::to_string(space.capacity)
+            + " min_percent=" + std::to_string(cfg.min_free_disk_percent)};
+    }
     // A guest filesystem can have free blocks while its thin backing volume is full.
     if(cfg.shared_nas_min_free_bytes > 0) {
         // Read the local monitor snapshot; never stat the network mount on the media/admin path.
         std::ifstream input(cfg.nas_auto_mount.status_path);
+        if(!input) {
+            return {false, true, "nas_snapshot_unreadable path=" + cfg.nas_auto_mount.status_path};
+        }
         const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         Json::Value status;
         const auto current_us = now_us();
-        if(!parse_json_object_strict(text, status) || !status["ready"].isBool() || !status["ready"].asBool()
-           || !status["free_bytes"].isUInt64() || !status["updated_us"].isUInt64()
-           || !status["mount_point"].isString()
-           || std::filesystem::path(status["mount_point"].asString()).lexically_normal()
-                  != std::filesystem::path(cfg.nas_root).lexically_normal()
-           || status["updated_us"].asUInt64() > current_us
-           || current_us - status["updated_us"].asUInt64() > static_cast<uint64_t>(cfg.nas_auto_mount.status_max_age_ms) * 1000ull
-           || extra_headroom_bytes > std::numeric_limits<uint64_t>::max() - cfg.shared_nas_min_free_bytes
-           || status["free_bytes"].asUInt64() < cfg.shared_nas_min_free_bytes + extra_headroom_bytes) {
-            return false;
+        if(!parse_json_object_strict(text, status) || !status["mount_point"].isString()
+           || !status["updated_us"].isUInt64() || !status["ready"].isBool()) {
+            return {false, true, "nas_snapshot_invalid path=" + cfg.nas_auto_mount.status_path};
+        }
+        const std::string evidence = " updated_us=" + std::to_string(status["updated_us"].asUInt64())
+            + " checked_us=" + std::to_string(current_us)
+            + " free_bytes=" + (status["free_bytes"].isUInt64() ? std::to_string(status["free_bytes"].asUInt64()) : "unknown")
+            + " reserve_bytes=" + std::to_string(cfg.shared_nas_min_free_bytes);
+        if(std::filesystem::path(status["mount_point"].asString()).lexically_normal()
+           != std::filesystem::path(cfg.nas_root).lexically_normal()) {
+            return {false, false, "nas_snapshot_wrong_mount" + evidence};
+        }
+        if(extra_headroom_bytes > std::numeric_limits<uint64_t>::max() - cfg.shared_nas_min_free_bytes
+           || (status["free_bytes"].isUInt64()
+               && status["free_bytes"].asUInt64() < cfg.shared_nas_min_free_bytes + extra_headroom_bytes)) {
+            return {false, false, "shared_nas_low_space" + evidence};
+        }
+        if(!status["ready"].asBool() || !status["free_bytes"].isUInt64()) {
+            return {false, true, "nas_snapshot_unavailable" + evidence};
+        }
+        if(status["updated_us"].asUInt64() > current_us) {
+            return {false, true, "nas_snapshot_future" + evidence};
+        }
+        if(current_us - status["updated_us"].asUInt64() > static_cast<uint64_t>(cfg.nas_auto_mount.status_max_age_ms) * 1000ull) {
+            return {false, true, "nas_snapshot_stale" + evidence};
         }
     }
-    if(cfg.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - extra_headroom_bytes
-       || space.available < cfg.min_free_disk_bytes + extra_headroom_bytes) {
-        return false;
-    }
-    if(cfg.min_free_disk_percent <= 0 || space.capacity == 0) {
-        return true;
-    }
-    const long double free_percent = static_cast<long double>(space.available) * 100.0L
-                                     / static_cast<long double>(space.capacity);
-    return free_percent >= static_cast<long double>(cfg.min_free_disk_percent);
+    return {true, false, "ok"};
+}
+
+bool storage_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
+                                uint64_t extra_headroom_bytes = 0) {
+    return check_storage_space(space, cfg, extra_headroom_bytes).allowed;
 }
 
 bool rgb_h264_full_range_for_camera(const Config &cfg, const std::string &sender_id, const std::string &camera_id) {
