@@ -57,8 +57,8 @@
   },
   "recording_buffer": {
     "enabled": true,
-    "rgb_frames_per_slot": 900,
-    "depth_frames_per_slot": 900,
+    "rgb_frames_per_slot": 1800,
+    "depth_frames_per_slot": 1800,
     "depth_compression_frames_per_slot": 60
   },
   "cameras": [

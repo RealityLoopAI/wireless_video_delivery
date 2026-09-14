@@ -332,6 +332,12 @@ if(BUILD_TESTING)
     set_tests_properties(sender_config_validation PROPERTIES TIMEOUT 120)
 
     add_test(
+        NAME sender_media_buffer
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_sender_media_buffer.py"
+    )
+    set_tests_properties(sender_media_buffer PROPERTIES TIMEOUT 90)
+
+    add_test(
         NAME deployment_scripts
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/10_tests/test_deployment_scripts.py"
                 --source-root "${CMAKE_SOURCE_DIR}"
