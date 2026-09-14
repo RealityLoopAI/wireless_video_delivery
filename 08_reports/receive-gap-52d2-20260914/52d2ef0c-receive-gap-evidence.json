@@ -1,0 +1,57 @@
+{
+  "device": "lubancat-52d2ef0c_cam01",
+  "date": "2026-09-11",
+  "session": "174304",
+  "timezone": "Asia/Shanghai",
+  "source_csv": "Z:\\lubancat-52d2ef0c_cam01\\2026-09-11\\174304\\frames.csv",
+  "source_csv_sha256": "8989018797e4112c00de992b3c5779f4245a15e018ff3f7d49efea6a47c6c11d",
+  "source_audit": "E:\\test_product_v2_passive\\reports\\friday-20260911-1700-1900-arrival-audit.json",
+  "verified_against_original_csv": true,
+  "scope": "two selected RGB receive gaps greater than 9 seconds; adjacent selected source rows, original order",
+  "events": [
+    {
+      "stream": "rgb",
+      "receive_gap_us": 9450768,
+      "previous": {
+        "global_timestamp_us": "1789119835840527",
+        "receiver_receive_timestamp_us": "1789119835886460",
+        "sender_system_timestamp_us": "1789119835840361",
+        "clock_sync_valid": "1",
+        "frame_id": "633860",
+        "rgb_video_frame_index": "1529",
+        "csv_line": 3062
+      },
+      "current": {
+        "global_timestamp_us": "1789119835873809",
+        "receiver_receive_timestamp_us": "1789119845337228",
+        "sender_system_timestamp_us": "1789119835873642",
+        "clock_sync_valid": "1",
+        "frame_id": "633861",
+        "rgb_video_frame_index": "1530",
+        "csv_line": 3066
+      }
+    },
+    {
+      "stream": "rgb",
+      "receive_gap_us": 10254619,
+      "previous": {
+        "global_timestamp_us": "1789119859723470",
+        "receiver_receive_timestamp_us": "1789119859790261",
+        "sender_system_timestamp_us": "1789119859723161",
+        "clock_sync_valid": "1",
+        "frame_id": "634577",
+        "rgb_video_frame_index": "2246",
+        "csv_line": 4496
+      },
+      "current": {
+        "global_timestamp_us": "1789119859756504",
+        "receiver_receive_timestamp_us": "1789119870044880",
+        "sender_system_timestamp_us": "1789119859756195",
+        "clock_sync_valid": "1",
+        "frame_id": "634578",
+        "rgb_video_frame_index": "2247",
+        "csv_line": 4500
+      }
+    }
+  ]
+}
