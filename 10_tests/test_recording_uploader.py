@@ -908,7 +908,7 @@ def run(args: argparse.Namespace) -> None:
             total=100,
             used=80,
             free=20,
-        )
+        ) if Path(_path) == fallback_staging else original_disk_usage(_path)
         try:
             assert fallback_uploader.run_once() is True
         finally:

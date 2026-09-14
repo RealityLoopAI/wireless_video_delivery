@@ -71,6 +71,7 @@ def run(beacon_path: Path, manager_path: Path, uploader_path: Path) -> None:
                 json.dumps(
                     {
                         "nas_root": str(temporary / "nas"),
+                        "nas_min_free_mb": 0,
                         "nas_auto_mount": {
                             "enabled": True,
                             "discovery_port": port,
@@ -124,7 +125,9 @@ def run(beacon_path: Path, manager_path: Path, uploader_path: Path) -> None:
             )
             uploader = uploader_module.Uploader(uploader_config)
             assert uploader.nas_mount_ready() is False
+            (temporary / "nas").mkdir(exist_ok=True)
             mount_manager.write_status(True, "ready")
+            assert json.loads(status_path.read_text())["free_bytes"] > 0
             assert uploader.nas_mount_ready() is True
             stale = json.loads(status_path.read_text(encoding="utf-8"))
             stale["updated_us"] = 1
