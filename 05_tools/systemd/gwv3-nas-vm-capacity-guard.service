@@ -1,0 +1,8 @@
+[Unit]
+Description=GWV3 NAS backing volume emergency capacity guard
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C
+ExecStart=/usr/bin/python3 /usr/local/lib/gwv3/nas_vm_capacity_guard.py --volume /volume1 --vm-uuid 9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8 --reserve-gib 50 --status /var/lib/gwv3/vm-capacity-status.json
+TimeoutStartSec=60

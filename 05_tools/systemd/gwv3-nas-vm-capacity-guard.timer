@@ -1,0 +1,10 @@
+[Unit]
+Description=Check GWV3 receiver VM backing capacity every 15 seconds
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=15
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

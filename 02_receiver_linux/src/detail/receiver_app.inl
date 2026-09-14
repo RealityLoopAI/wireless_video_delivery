@@ -293,6 +293,7 @@ public:
         out << "\"hard_limit\":" << (recording_space_hard_limit ? "true" : "false") << ',';
         out << "\"warn_free_percent\":" << config_.warn_free_disk_percent << ',';
         out << "\"min_free_percent\":" << config_.min_free_disk_percent << ',';
+        out << "\"shared_nas_min_free_bytes\":" << config_.shared_nas_min_free_bytes << ',';
         out << "\"min_free_bytes\":" << config_.min_free_disk_bytes;
         out << "},";
         out << "\"nas_auto_mount\":{";

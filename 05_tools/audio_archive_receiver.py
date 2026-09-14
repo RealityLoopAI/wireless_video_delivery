@@ -1587,6 +1587,10 @@ class AudioUploader:
             raise RuntimeError(f"NAS root unavailable: {nas_root}")
         usage = shutil.disk_usage(nas_root)
         self.nas_free_bytes = usage.free
+        minimum = int(self.app.config.get("nas_min_free_mb", 10240)) * 1024 * 1024
+        if usage.free < minimum:
+            self.nas_available = False
+            raise OSError(28, f"NAS reserve reached free_bytes={usage.free} reserve_bytes={minimum}: {nas_root}")
         self.nas_available = True
         warning_bytes = self.app.config["nas_low_space_warning_mb"] * 1024 * 1024
         if warning_bytes and usage.free < warning_bytes:
@@ -1634,6 +1638,7 @@ class AudioUploader:
         shutil.rmtree(hidden, ignore_errors=True)
         hidden.mkdir(parents=True, exist_ok=True)
         for name, expected in marker["files"].items():
+            self._nas_ready()
             source = staged / name
             target = hidden / name
             shutil.copyfile(source, target)
@@ -1805,6 +1810,18 @@ class AudioArchiveService:
             reason = f"local free space below {self.config['min_free_disk_mb']} MB"
         elif oldest_age_days >= self.config["local_retention_days"]:
             reason = f"oldest pending audio is {oldest_age_days:.2f} days old"
+        shared_minimum = int(self.config.get("shared_nas_min_free_mb", 0)) * 1024 * 1024
+        if shared_minimum > 0:
+            try:
+                status = json.loads(Path(self.config.get("nas_capacity_status_path", "/run/gwv3/nas-mount-status.json")).read_text())
+                age = now_us() - int(status["updated_us"])
+                backing_free = int(status["free_bytes"]) if (status.get("ready") is True
+                    and Path(status["mount_point"]) == self.nas_root and 0 <= age <= 10_000_000) else -1
+            except (OSError, ValueError, TypeError, KeyError):
+                backing_free = -1
+            if backing_free < shared_minimum:
+                blocked = True
+                reason = "shared NAS backing volume unavailable or below reserve"
         with self._state_lock:
             self._storage_blocked = blocked
             self._storage_reason = reason

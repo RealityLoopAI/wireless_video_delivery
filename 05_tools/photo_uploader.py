@@ -190,10 +190,16 @@ class PhotoUploader:
         self.last_error = ""
         self.last_published_path = ""
         self.failure_counts: dict[str, int] = {}
+        self.nas_min_free_bytes = max(0, int(config.get("nas_min_free_mb", 10240))) * 1024 * 1024
         self.retry_after: dict[str, float] = {}
 
     def nas_available(self) -> bool:
         if not self.nas_root.is_dir():
+            return False
+        try:
+            if shutil.disk_usage(self.nas_root).free < self.nas_min_free_bytes:
+                return False
+        except OSError:
             return False
         return not self.require_nas_mount or os.path.ismount(self.nas_root)
 

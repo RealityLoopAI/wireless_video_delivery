@@ -142,6 +142,14 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_build_rgb_sync_manifest.py
     )
     add_test(
+        NAME shared_nas_capacity
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_shared_nas_capacity.py --receiver $<TARGET_FILE:gemini_receiver>
+    )
+    add_test(
+        NAME nas_capacity_reserve
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_nas_capacity_reserve.py
+    )
+    add_test(
         NAME recording_uploader_fault_injection
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_uploader.py
                 --python ${Python3_EXECUTABLE}

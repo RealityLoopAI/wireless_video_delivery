@@ -2637,6 +2637,7 @@ class Uploader:
             0,
             int(config.get("min_free_disk_mb", 0)),
         ) * 1024 * 1024
+        self.nas_min_free_bytes = max(0, int(config.get("nas_min_free_mb", 10240))) * 1024 * 1024
         self.emergency_free_disk_headroom_bytes = max(
             0,
             int(staging.get("emergency_free_disk_headroom_mb", 2048)),
@@ -2851,6 +2852,9 @@ class Uploader:
         self.staging_root.mkdir(parents=True, exist_ok=True)
 
     def nas_mount_ready(self) -> bool:
+        if not self.nas_capacity_ready():
+            self.nas_mount_ready_status = False
+            return False
         if not self.nas_mount_gate_enabled:
             self.nas_mount_ready_status = True
             return True
@@ -2868,6 +2872,15 @@ class Uploader:
             ready = False
         self.nas_mount_ready_status = ready
         return ready
+
+    def nas_capacity_ready(self) -> bool:
+        minimum = getattr(self, "nas_min_free_bytes", 0)
+        if minimum <= 0:
+            return True
+        try:
+            return shutil.disk_usage(self.nas_root).free >= minimum
+        except OSError:
+            return False
 
     def write_status(self, refresh_metrics: bool = False) -> None:
         with self.status_lock:
@@ -3128,6 +3141,8 @@ class Uploader:
         resume_phase: str,
         publish_status: bool = True,
     ) -> bool:
+        if not self.nas_capacity_ready():
+            raise OSError(errno.ENOSPC, f"NAS reserve reached; local data retained: {self.nas_root}")
         if not self.pause_during_receiver_finalize:
             return False
         with self.receiver_status_lock:
@@ -4740,7 +4755,7 @@ class Uploader:
     def run_once(self) -> bool:
         if not self.nas_mount_ready():
             self.close_incremental_mirror_handles()
-            self.last_error = "NAS mount unavailable; uploads are paused and local recordings are retained"
+            self.last_error = "NAS mount unavailable or free space below reserve; uploads paused, local recordings retained"
             self.write_status(refresh_metrics=True)
             return False
         if self.last_error.startswith("NAS mount unavailable"):

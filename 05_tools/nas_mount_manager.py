@@ -246,6 +246,13 @@ class NasMountManager:
             pass
 
     def write_status(self, ready: bool, state: str, error: str = "") -> None:
+        measured_us = now_us()
+        free_bytes = None
+        if ready:
+            try:
+                free_bytes = shutil.disk_usage(self.mount_point).free
+            except OSError as exc:
+                ready, state, error = False, "capacity_unavailable", str(exc)
         atomic_json_write(
             self.status_path,
             {
@@ -253,12 +260,13 @@ class NasMountManager:
                 "ready": ready,
                 "state": state,
                 "error": error,
+                "free_bytes": free_bytes,
                 "mount_point": str(self.mount_point),
                 "nas_id": self.preferred.get("nas_id", ""),
                 "host": self.preferred.get("host", ""),
                 "share": self.preferred.get("share", ""),
                 "mac": self.preferred.get("mac", ""),
-                "updated_us": now_us(),
+                "updated_us": measured_us,
             },
         )
 

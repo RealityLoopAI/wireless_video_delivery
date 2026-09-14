@@ -72,6 +72,7 @@ struct Config {
     uint64_t min_free_disk_bytes = 2ull * 1024ull * 1024ull * 1024ull;
     int min_free_disk_percent = 0;
     int warn_free_disk_percent = 0;
+    uint64_t shared_nas_min_free_bytes = 0;
 };
 
 Config load_config(const std::string &path) {
@@ -268,6 +269,11 @@ Config load_config(const std::string &path) {
     const int max_payload_mb = int_value(root, "max_payload_mb", 32);
     const int record_queue_max_mb = int_value(root, "record_queue_max_mb", 512);
     const int min_free_disk_mb = int_value(root, "min_free_disk_mb", 2048);
+    const int shared_nas_min_free_mb = int_value(root, "shared_nas_min_free_mb", 0);
+    if(shared_nas_min_free_mb < 0 || shared_nas_min_free_mb > 1024 * 1024) {
+        throw std::runtime_error("invalid shared_nas_min_free_mb");
+    }
+    cfg.shared_nas_min_free_bytes = static_cast<uint64_t>(shared_nas_min_free_mb) * 1024ull * 1024ull;
     cfg.min_free_disk_percent = int_value(root, "min_free_disk_percent", cfg.min_free_disk_percent);
     cfg.warn_free_disk_percent = int_value(root, "warn_free_disk_percent", cfg.warn_free_disk_percent);
     const int record_queue_total_max_mb = int_value(root, "record_queue_total_max_mb", 2048);
@@ -396,6 +402,25 @@ std::filesystem::path recording_write_root(const Config &cfg) {
 
 bool storage_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
                                 uint64_t extra_headroom_bytes = 0) {
+    // A guest filesystem can have free blocks while its thin backing volume is full.
+    if(cfg.shared_nas_min_free_bytes > 0) {
+        // Read the local monitor snapshot; never stat the network mount on the media/admin path.
+        std::ifstream input(cfg.nas_auto_mount.status_path);
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        Json::Value status;
+        const auto current_us = now_us();
+        if(!parse_json_object_strict(text, status) || !status["ready"].isBool() || !status["ready"].asBool()
+           || !status["free_bytes"].isUInt64() || !status["updated_us"].isUInt64()
+           || !status["mount_point"].isString()
+           || std::filesystem::path(status["mount_point"].asString()).lexically_normal()
+                  != std::filesystem::path(cfg.nas_root).lexically_normal()
+           || status["updated_us"].asUInt64() > current_us
+           || current_us - status["updated_us"].asUInt64() > static_cast<uint64_t>(cfg.nas_auto_mount.status_max_age_ms) * 1000ull
+           || extra_headroom_bytes > std::numeric_limits<uint64_t>::max() - cfg.shared_nas_min_free_bytes
+           || status["free_bytes"].asUInt64() < cfg.shared_nas_min_free_bytes + extra_headroom_bytes) {
+            return false;
+        }
+    }
     if(cfg.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - extra_headroom_bytes
        || space.available < cfg.min_free_disk_bytes + extra_headroom_bytes) {
         return false;
