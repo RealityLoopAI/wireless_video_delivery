@@ -1,0 +1,97 @@
+NAS容量耗尽导致音视频交付失败及接收端虚拟机I/O暂停，容量恢复后仍未恢复
+
+【2026-09-11跨夜存储压力测试；实际故障为2026-09-12凌晨；北京时间】
+录像存储与接收端虚拟磁盘共用NAS同一数据卷。容量耗尽后，故障由音视频写入失败扩大为接收端整体不可用。
+
+实际结果（四项已核实发现）：
+1. 空间耗尽：2026-09-12 04:07:18.393，接收端内核记录“CIFS: Out of space writing to \\192.168.1.89\video_database”；04:07:21，NAS五秒采样首次观测到可用空间为0。两者约三秒差异属于采样尺度，未声称毫秒级对时。
+2. 音视频交付失败：视频上传出现14条incremental mirror deferred及20条recording capture failed业务错误，均含Errno 28: No space left on device；另20行traceback属于重复输出。04:15:02—04:15:48，音频发布出现25条NAS publish deferred / Errno 28。以上为日志错误/重试次数，不代表丢失文件数。
+3. 接收端停止运行：约04:18后磁盘日志停止更新，最后完整音频日志为04:18:02.898，虚拟磁盘最后修改时间为04:18:04.106。2026-09-14复盘时，NAS上ubuntu24虚拟机的只读查询结果为“paused (I/O error)”，磁盘错误为“vda: no space”。历史宿主日志保留不足，暂停精确时间未取得，不能把04:18直接当作准确暂停时刻。
+4. 故障扩大及恢复缺口：录像目录/volume1/video_database与接收端qcow2虚拟磁盘/volume1/@kvm/...共用/volume1，数据卷写满同时阻断虚拟磁盘写入，导致整个接收端虚拟机暂停。9月12日11:11采样显示可用容量已恢复到约13%；截至9月14日本次检查，虚拟机仍暂停。释放容量未带来接收服务恢复；本次未执行虚拟机恢复操作。
+
+预期结果（建议验收标准）：
+1. 容量不足应告警并受控停止/延迟数据写入，记录目标路径、时间、错误码及待补传状态，不将失败标为交付成功。
+2. 录像容量压力与接收端系统盘应隔离或保留足够系统空间，不能因录像写满导致整个接收端虚拟机I/O暂停。
+3. 容量释放后应提供明确、可执行的恢复路径和状态反馈，验证虚拟机、接收服务及待交付任务恢复，不能仅以NAS容量恢复判定故障结束。
+
+复现条件/步骤：本次依据已发生事件只读复盘，未重新填满生产NAS。历史条件为接收端虚拟机与持续写入的录像共用NAS /volume1；写入至可用空间耗尽后观察写入错误及虚拟机状态，再对照后续容量恢复与接收服务状态。后续主动复现应使用专用限额测试空间，按STORAGE-CAP-001执行。
+
+影响范围：NAS 192.168.1.89（RealityLoop）；接收端192.168.1.196，虚拟机ubuntu24；视频错误涉及52d2ef0c、e8cc0cb3、b439137c、fe0f7222、rk3588，音频发布错误涉及4df661d7。接收端整体可用性及音视频NAS交付受影响，未据此断言数据全部永久丢失。
+环境版本：接收端安装目录wireless_video_delivery-field-v2026.09.07.1；实际运行二进制版本未单独核实。修复版本待排期。
+
+证据：附件storage-exhaustion-evidence.txt包含原始日志行号、摘录、虚拟机状态、时间线和源文件SHA-256。完整本地证据目录：E:\test_product_v2_passive\reports\storage-exhaustion-20260911。测试用例：D:\test_product_v2\docs\testcases\storage-capacity-exhaustion.md。
+关联需求：既有“【NAS容量不足需求】Z盘使用率92.10%，申请扩容与容量管理”（recvuTC97nfT42）记录的是故障前容量预警与扩容需求；本Bug跟踪本次已发生的写入失败、系统盘隔离及暂停后恢复问题。
+
+===== 原始证据摘录 =====
+复盘方式：历史只读读取；未启动/恢复虚拟机，未写入NAS。
+
+来源：E:\test_product_v2_passive\reports\storage-exhaustion-20260911\guest-logs\kern.log
+78: 2026-09-12T04:07:18.393728+08:00 loop-Standard-PC-i440FX-PIIX-1996 kernel: CIFS: Out of space writing to \\192.168.1.89\video_database
+
+来源：E:\test_product_v2_passive\reports\storage-exhaustion-20260911\guest-logs\recording_uploader.log
+21998: recording incremental mirror deferred source=/home/loop/recording_staging/orangepi5pro-b439137c_cam02/2026-09-12/035804 error=OSError: [Errno 28] No space left on device
+22064: recording incremental mirror deferred source=/home/loop/recording_staging/lubancat-e8cc0cb3_cam01/2026-09-12/035804 error=OSError: [Errno 28] No space left on device
+22112: recording capture failed source=/home/loop/recording_staging/rk3588-ubuntu_cam01/2026-09-12/035804 error=OSError: [Errno 28] No space left on device
+22147: recording incremental mirror deferred source=/home/loop/recording_staging/lubancat-52d2ef0c_cam01/2026-09-12/041304 error=OSError: [Errno 28] No space left on device
+22403: recording capture failed source=/home/loop/recording_staging/orangepi5pro-fe0f7222_cam01/2026-09-12/035804 error=OSError: [Errno 28] No space left on device
+22475: recording capture failed source=/home/loop/recording_staging/lubancat-52d2ef0c_cam01/2026-09-12/035804 error=OSError: [Errno 28] No space left on device
+
+来源：E:\test_product_v2_passive\reports\storage-exhaustion-20260911\guest-logs\audio_archive.log
+70044: 2026-09-12 04:15:02,034 WARNING gwv3.audio_archive audio NAS publish deferred path=/home/loop/audio_staging/segments/lubancat-4df661d7/2026-09-12/040000.a79e5211daee4977a7730d84844b3d1f.staged error=[Errno 28] No space left on device: '/home/loop/Desktop/nas/.gwv3_audio_uploading/lubancat-4df661d7/2026-09-12/040000.a79e5211daee4977a7730d84844b3d1f'
+70121: 2026-09-12 04:15:48,498 WARNING gwv3.audio_archive audio NAS publish deferred path=/home/loop/audio_staging/segments/lubancat-4df661d7/2026-09-12/040000.a79e5211daee4977a7730d84844b3d1f.staged error=[Errno 28] No space left on device
+
+来源：E:\test_product_v2_passive\reports\storage-exhaustion-20260911\guest-logs\audio_archive.log
+70199: 2026-09-12 04:18:00,893 WARNING gwv3.audio_archive NAS free space low free_bytes=91492352
+70200: 2026-09-12 04:18:02,898 WARNING gwv3.audio_archive NAS free space low free_bytes=37027840
+
+来源：vm_state.json（只读virsh查询）
+virsh -r -c qemu:///system domstate 9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8 --reason; virsh -r -c qemu:///system domblkerror 9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8; virsh -r -c qemu:///system domblklist 9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8 --details; virsh -r -c qemu:///system domiflist 9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8
+paused (I/O error)
+
+vda: no space
+
+ Type   Device   Target   Source
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+ file   disk     vda      /volume1/@kvm/9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8/9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8_181bacfe-74d4-4624-aafd-cd76c1582915.qcow2
+ file   cdrom    hda      /volume1/@appstore/com.ugreen.kvm/iso/ubuntu24.iso
+
+
+来源：findings.json（已保存分析摘要）
+{
+  "analysis_at": "2026-09-14T10:21:07.222056+08:00",
+  "first_kernel_write_failure": "2026-09-12T04:07:18.393728+08:00",
+  "first_observed_available_zero": "2026-09-12T04:07:21+08:00",
+  "last_complete_audio_log": "2026-09-12T04:18:02.898+08:00",
+  "last_vm_image_mtime": "2026-09-12T04:18:04.106556+08:00",
+  "vm": {
+    "name": "ubuntu24",
+    "uuid": "9e268f60-b0a2-46c2-a8f4-2671bcc1b8f8",
+    "state": "paused (I/O error)",
+    "block_error": "vda: no space",
+    "historical_pause_exact_time": null
+  }
+}
+
+原始日志文件校验：
+[
+  {
+    "path": "E:\\test_product_v2_passive\\reports\\storage-exhaustion-20260911\\guest-logs\\kern.log",
+    "bytes": 22293,
+    "sha256": "74d7ba51dd205e9aeb06b99e5bffe86b3e11a9f177f513b762829c9d3a3b73c7"
+  },
+  {
+    "path": "E:\\test_product_v2_passive\\reports\\storage-exhaustion-20260911\\guest-logs\\recording_uploader.log",
+    "bytes": 5017600,
+    "sha256": "59934600007035083ecf96759f3b3ce8749af7d4682fcb9cf53c0d80f19f76a5"
+  },
+  {
+    "path": "E:\\test_product_v2_passive\\reports\\storage-exhaustion-20260911\\guest-logs\\audio_archive.log",
+    "bytes": 11667248,
+    "sha256": "99b60ea7522ef9b037d5b2925e0e815248baae7aa0900c76a6239accdf1c5108"
+  },
+  {
+    "path": "E:\\test_product_v2_passive\\reports\\storage-exhaustion-20260911\\guest-logs\\audio_archive.log",
+    "bytes": 11667248,
+    "sha256": "99b60ea7522ef9b037d5b2925e0e815248baae7aa0900c76a6239accdf1c5108"
+  }
+]
