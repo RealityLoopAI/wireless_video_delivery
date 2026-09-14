@@ -109,6 +109,8 @@ def exercise(receiver, tail=False, expire=False, pause_seconds=6.2):
                             rows.extend(csv.DictReader(source))
                     for stream in ("rgb", "depth"):
                         assert sorted(int(r["frame_id"]) for r in rows if r["stream_type"] == stream) == [10, 11], rows
+                    trace = (root / "stdout.log").read_text(errors="replace")
+                    assert "media receive stages" in trace and "read_wait_ms=" in trace and "handle_ms=" in trace, trace
                     print("PASS", "bounded expiry and resume" if expire else "stop-tail isolation" if tail else f"{pause_seconds}-second media recovery", flush=True)
             except Exception:
                 print((root / "stdout.log").read_text(errors="replace")[-4000:], flush=True)

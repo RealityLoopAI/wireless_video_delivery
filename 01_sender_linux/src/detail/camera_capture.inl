@@ -500,6 +500,7 @@ MediaPacketJob make_owned_media_job(CameraRuntime &camera, StreamType stream_typ
     job.camera = &camera;
     job.stream_type = stream_type;
     job.header = build_media_header(meta);
+    job.frame_id = meta.frame_id;
     job.owned_payload = std::move(payload);
     job.rgb_keyframe = stream_type == StreamType::rgb && (meta.flags & key_frame) != 0u;
     return job;
@@ -511,6 +512,7 @@ MediaPacketJob make_external_media_job(CameraRuntime &camera, StreamType stream_
     job.camera = &camera;
     job.stream_type = stream_type;
     job.header = build_media_header(meta);
+    job.frame_id = meta.frame_id;
     job.external_payload = static_cast<const uint8_t *>(payload);
     job.external_payload_size = payload_size;
     job.payload_owner = std::move(payload_owner);
@@ -781,6 +783,7 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
                        const std::atomic<bool> *path_running = nullptr, bool reliable_retry = false) {
     auto next_idle_close_log = std::chrono::steady_clock::now();
     auto next_backpressure_log = std::chrono::steady_clock::now();
+    auto next_slow_send_log = std::chrono::steady_clock::now();
     std::optional<MediaPacketJob> retry_job;
     std::optional<std::chrono::steady_clock::time_point> drain_deadline;
     while(true) {
@@ -831,6 +834,9 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
         }
 
         const auto send_started = std::chrono::steady_clock::now();
+        if(!job->first_send_at) {
+            job->first_send_at = send_started;
+        }
         bool sent = false;
         bool retry_pending = false;
         std::string error;
@@ -850,11 +856,27 @@ void media_sender_loop(LatestMediaQueue &media_queue, Sender &transport, Logger 
             error = "unknown media transport exception";
         }
         const auto send_ended = std::chrono::steady_clock::now();
-        const double send_ms = elapsed_ms(send_started, send_ended);
+        const double send_ms = elapsed_ms(*job->first_send_at, send_ended);
+        if(send_ended >= next_slow_send_log
+           && (send_ms >= 250.0 || elapsed_ms(job->created_at, *job->first_send_at) >= 250.0)) {
+            std::string tcp_state;
+            {
+                std::lock_guard<std::mutex> lock(transport_mutex);
+                tcp_state = transport.media_diagnostics();
+            }
+            logger.warn("media send stages camera_id=" + job->camera->config.camera_id
+                        + " stream=" + stream_type_name(job->stream_type)
+                        + " frame=" + std::to_string(job->frame_id)
+                        + " queue_ms=" + std::to_string(elapsed_ms(job->created_at, *job->first_send_at))
+                        + " send_total_ms=" + std::to_string(send_ms)
+                        + " sent=" + std::to_string(sent) + " " + tcp_state);
+            next_slow_send_log = send_ended + std::chrono::seconds(1);
+        }
         if(!sent && retry_pending) {
             if(send_ended >= next_backpressure_log) {
                 logger.warn("media TCP retaining pending packet camera_id=" + job->camera->config.camera_id
                             + " stream=" + stream_type_name(job->stream_type)
+                            + " frame=" + std::to_string(job->frame_id)
                             + "; backpressure has not dropped this packet");
                 next_backpressure_log = send_ended + std::chrono::seconds(5);
             }

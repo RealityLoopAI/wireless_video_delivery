@@ -62,10 +62,15 @@ void Logger::rotate_if_needed() {
         return;
     }
     stream_.close();
-    const auto rotated = log_path_ + ".1";
     std::error_code ec;
-    fs::remove(rotated, ec);
-    fs::rename(log_path_, rotated, ec);
+    // Keep bounded history so a next-day incident is not immediately overwritten.
+    constexpr int kBackups = 8;
+    fs::remove(log_path_ + "." + std::to_string(kBackups), ec);
+    for(int i = kBackups - 1; i >= 1; --i) {
+        fs::rename(log_path_ + "." + std::to_string(i),
+                   log_path_ + "." + std::to_string(i + 1), ec);
+    }
+    fs::rename(log_path_, log_path_ + ".1", ec);
     stream_.open(log_path_, std::ios::app);
 }
 

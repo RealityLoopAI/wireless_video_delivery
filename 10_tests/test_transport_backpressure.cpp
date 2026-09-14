@@ -103,6 +103,11 @@ int main(int argc, char **argv) {
                         std::chrono::steady_clock::now() - start).count());
                     if(sent) break;
                     require(pending(transport, 0), "backpressure closed connection instead of retaining packet");
+                    const auto diagnostic = transport.media_diagnostics();
+                    require(diagnostic.find("tcp_send_queue_bytes=") != std::string::npos,
+                            "missing queue diagnostic under backpressure");
+                    require(diagnostic.find("tcp_total_retrans=") != std::string::npos,
+                            "missing TCP retransmission diagnostic");
                     require(std::chrono::steady_clock::now() < deadline, "resume timed out");
                     ++retries;
                     std::this_thread::sleep_for(10ms);

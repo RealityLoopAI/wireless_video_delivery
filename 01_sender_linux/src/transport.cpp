@@ -25,6 +25,24 @@
 
 namespace gwv3 {
 
+std::string Transport::media_diagnostics() const {
+    int queued = -1;
+    if(media_tcp_fd_ < 0) {
+        return "tcp_connected=0";
+    }
+    ioctl(media_tcp_fd_, TIOCOUTQ, &queued);
+    tcp_info info{};
+    socklen_t length = sizeof(info);
+    if(getsockopt(media_tcp_fd_, IPPROTO_TCP, TCP_INFO, &info, &length) != 0) {
+        return "tcp_send_queue_bytes=" + std::to_string(queued);
+    }
+    return "tcp_send_queue_bytes=" + std::to_string(queued)
+           + " tcp_rtt_us=" + std::to_string(info.tcpi_rtt)
+           + " tcp_rto_us=" + std::to_string(info.tcpi_rto)
+           + " tcp_unacked=" + std::to_string(info.tcpi_unacked)
+           + " tcp_total_retrans=" + std::to_string(info.tcpi_total_retrans);
+}
+
 namespace {
 
 void set_nonblock(int fd, bool nonblock) {

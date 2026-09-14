@@ -5245,14 +5245,31 @@ private:
         uint64_t last_frame_id = 0;
         MediaPacket packet;
         MediaPacketReadBuffers read_buffers;
+        auto next_stage_log = std::chrono::steady_clock::now();
         while(running_ && g_running) {
             try {
+                const auto read_started = std::chrono::steady_clock::now();
                 read_media_packet_into(fd, config_.max_payload_bytes, read_buffers, packet);
+                const auto read_done = std::chrono::steady_clock::now();
                 last_sender = packet.sender_id;
                 last_camera = packet.camera_id;
                 last_stream = stream_type_name(packet.stream_type);
                 last_frame_id = packet.frame_id;
                 handle_media_packet(std::move(packet), peer_endpoint, media_session_id, fd);
+                const auto handled = std::chrono::steady_clock::now();
+                const auto read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(read_done - read_started).count();
+                const auto handle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(handled - read_done).count();
+                if(handled >= next_stage_log && (read_ms >= 250 || handle_ms >= 250)) {
+                    int unread = -1;
+                    ioctl(fd, FIONREAD, &unread);
+                    logger_.warn("media receive stages camera=" + last_sender + "_" + last_camera
+                                 + " stream=" + last_stream + " frame=" + std::to_string(last_frame_id)
+                                 + " session=" + std::to_string(media_session_id)
+                                 + " read_wait_ms=" + std::to_string(read_ms)
+                                 + " handle_ms=" + std::to_string(handle_ms)
+                                 + " socket_unread_bytes=" + std::to_string(unread));
+                    next_stage_log = handled + std::chrono::seconds(1);
+                }
             }
             catch(const std::exception &e) {
                 std::ostringstream msg;

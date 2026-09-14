@@ -37,6 +37,7 @@ public:
     bool close_if_media_peer_closed();
     bool media_retry_pending() const { return pending_media_.has_value(); }
     std::string last_error() const;
+    std::string media_diagnostics() const;
 
 private:
     enum class SendResult {
@@ -91,6 +92,7 @@ public:
     bool close_if_media_peer_closed() { return false; }
     bool media_retry_pending() const { return false; }
     std::string last_error() const { return {}; }
+    std::string media_diagnostics() const { return {}; }
 };
 
 }  // namespace gwv3

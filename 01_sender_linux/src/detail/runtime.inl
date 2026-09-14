@@ -346,6 +346,9 @@ struct CameraRuntime {
 };
 
 struct MediaPacketJob {
+    uint64_t frame_id = 0;
+    std::chrono::steady_clock::time_point created_at = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> first_send_at;
     CameraRuntime *camera = nullptr;
     StreamType stream_type = StreamType::rgb;
     std::vector<uint8_t> header;
