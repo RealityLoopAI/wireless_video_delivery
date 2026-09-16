@@ -146,6 +146,12 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_shared_nas_capacity.py --receiver $<TARGET_FILE:gemini_receiver>
     )
     add_test(
+        NAME receiver_nas_outage_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_receiver_nas_outage.py
+                --receiver $<TARGET_FILE:gemini_receiver>
+    )
+    set_tests_properties(receiver_nas_outage_integration PROPERTIES TIMEOUT 120)
+    add_test(
         NAME nas_capacity_reserve
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_nas_capacity_reserve.py
     )

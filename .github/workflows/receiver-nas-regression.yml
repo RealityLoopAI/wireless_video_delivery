@@ -25,7 +25,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential cmake pkg-config git python3 ffmpeg libavformat-dev libavcodec-dev libavutil-dev libjsoncpp-dev zlib1g-dev iproute2 util-linux ca-certificates
+          apt-get install -y --no-install-recommends build-essential cmake pkg-config git python3 python3-numpy ffmpeg libavformat-dev libavcodec-dev libavutil-dev libjsoncpp-dev zlib1g-dev iproute2 util-linux ca-certificates
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Configure and build receiver
         run: |
