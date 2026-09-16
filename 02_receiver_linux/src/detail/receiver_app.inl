@@ -229,7 +229,7 @@ public:
             recording_free_percent >= 0 && config_.warn_free_disk_percent > 0
             && recording_free_percent < config_.warn_free_disk_percent;
         const bool recording_space_hard_limit =
-            recording_space_error || !storage_space_meets_limits(recording_space, config_);
+            recording_space_error || !recording_destination_space_meets_limits(recording_space, config_);
         UdpReassemblyStats media_udp_stats;
         UdpReassemblyStats preview_udp_stats;
         size_t active_media_udp_assemblies = 0;
@@ -1842,7 +1842,8 @@ public:
         if(ec) {
             return false;
         }
-        return storage_space_meets_limits(space, config_, kRecoveryHeadroomBytes);
+        return recording_destination_space_meets_limits(space, config_, kRecoveryHeadroomBytes)
+               && shared_nas_capacity_meets_limits(config_, kRecoveryHeadroomBytes);
     }
 
     bool nas_ready_for_new_recording() const {

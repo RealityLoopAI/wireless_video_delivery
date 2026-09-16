@@ -400,8 +400,8 @@ std::filesystem::path recording_write_root(const Config &cfg) {
                                          : direct_recording_root(cfg);
 }
 
-bool storage_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
-                                uint64_t extra_headroom_bytes = 0) {
+bool shared_nas_capacity_meets_limits(const Config &cfg, uint64_t extra_headroom_bytes = 0) {
+    // NAS observations gate new recording admission, never an admitted session.
     // A guest filesystem can have free blocks while its thin backing volume is full.
     if(cfg.shared_nas_min_free_bytes > 0) {
         // Read the local monitor snapshot; never stat the network mount on the media/admin path.
@@ -421,6 +421,11 @@ bool storage_space_meets_limits(const std::filesystem::space_info &space, const 
             return false;
         }
     }
+    return true;
+}
+
+bool recording_destination_space_meets_limits(const std::filesystem::space_info &space, const Config &cfg,
+                                              uint64_t extra_headroom_bytes = 0) {
     if(cfg.min_free_disk_bytes > std::numeric_limits<uint64_t>::max() - extra_headroom_bytes
        || space.available < cfg.min_free_disk_bytes + extra_headroom_bytes) {
         return false;
