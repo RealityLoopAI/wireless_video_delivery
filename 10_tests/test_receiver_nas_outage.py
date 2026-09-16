@@ -233,9 +233,21 @@ def test_continuity(binary, fixture, staging):
             if kind not in {"low_free", "invalid_free"}:
                 assert current["nas_auto_mount"]["ready"] is False, kind
             frames_after = receiver.recorded_frames()
+            # A new segment probes RGB FPS for up to 60 frames / three seconds.
+            # Keep sending under the same unhealthy snapshot until the muxer has
+            # enough evidence; never substitute received packets for writes.
+            growth_deadline = time.monotonic() + 6
+            while (not all(frames_after[stream] - frames_before[stream] for stream in ("rgb", "depth"))
+                   and time.monotonic() < growth_deadline):
+                receiver.send_frames(fixture, 15)
+                current = receiver.status()
+                assert_active(current, session, kind)
+                frames_after = receiver.recorded_frames()
             for stream in ("rgb", "depth"):
                 assert frames_after[stream] - frames_before[stream], (
-                    f"{kind}: {stream} frame files stopped growing")
+                    f"{kind}: {stream} frame files stopped growing; "
+                    f"before={len(frames_before[stream])}, after={len(frames_after[stream])}, "
+                    f"camera={current['cameras'][0]}")
         # Several three-second boundaries have passed entirely under bad snapshots.
         assert current["cameras"][0]["global_segment_index"] > first_segment
         receiver.write_snapshot("healthy")

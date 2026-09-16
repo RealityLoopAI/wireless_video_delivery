@@ -3,6 +3,9 @@ name: Receiver NAS regression
 on:
   push:
     branches: [codex/nas-recording-decoupling]
+    paths-ignore:
+      - '04_docs/**'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -36,6 +39,9 @@ jobs:
       - name: NAS outage recording regression
         if: ${{ !cancelled() && hashFiles('10_tests/test_receiver_nas_outage.py') != '' }}
         run: python3 10_tests/test_receiver_nas_outage.py --receiver "$PWD/12_build_nas_ci/bin/gemini_receiver"
+      - name: Inaccessible NAS path staging regression
+        if: ${{ !cancelled() && hashFiles('10_tests/test_receiver_nas_outage.py') != '' }}
+        run: python3 10_tests/test_receiver_nas_outage.py --receiver "$PWD/12_build_nas_ci/bin/gemini_receiver" --case staging-nas-path
       - name: Preserve test logs
         if: always()
         uses: actions/upload-artifact@v4
