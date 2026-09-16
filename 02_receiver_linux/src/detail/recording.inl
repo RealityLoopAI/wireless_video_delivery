@@ -428,13 +428,15 @@ public:
         if(root_ec) {
             throw std::runtime_error("cannot create recording root: " + recording_root.string() + ": " + root_ec.message());
         }
-        std::filesystem::create_directories(publish_root, root_ec);
-        if(root_ec) {
-            throw std::runtime_error("cannot create recording publish root: " + publish_root.string()
-                                     + ": " + root_ec.message());
-        }
-        if(!cfg.recording_staging.enabled && !paths_share_device(recording_root, publish_root)) {
-            throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
+        if(!cfg.recording_staging.enabled) {
+            std::filesystem::create_directories(publish_root, root_ec);
+            if(root_ec) {
+                throw std::runtime_error("cannot create recording publish root: " + publish_root.string()
+                                         + ": " + root_ec.message());
+            }
+            if(!paths_share_device(recording_root, publish_root)) {
+                throw std::runtime_error("direct NAS hidden and publish roots must share one filesystem");
+            }
         }
         const auto space = std::filesystem::space(recording_root, root_ec);
         if(root_ec || !recording_destination_space_meets_limits(space, cfg)) {
