@@ -163,6 +163,12 @@ if(BUILD_TESTING)
     )
     set_tests_properties(recording_uploader_fault_injection PROPERTIES TIMEOUT 90)
     add_test(
+        NAME recording_uploader_nas_recovery
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_uploader_nas_recovery.py
+                --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
+    )
+    set_tests_properties(recording_uploader_nas_recovery PROPERTIES TIMEOUT 30)
+    add_test(
         NAME recording_uploader_concurrency
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/10_tests/test_recording_uploader_concurrency.py
                 --uploader ${CMAKE_SOURCE_DIR}/05_tools/recording_uploader.py
