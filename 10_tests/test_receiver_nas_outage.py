@@ -27,6 +27,7 @@ class Receiver:
         self.temporary = tempfile.TemporaryDirectory(prefix="gwv3_nas_outage_")
         self.root = Path(self.temporary.name)
         self.nas = self.root / "nas"
+        self.nas.mkdir()
         self.snapshot = self.root / "capacity.json"
         self.admin = h.free_port(socket.SOCK_STREAM)
         self.media_port = h.free_port(socket.SOCK_STREAM)
@@ -141,24 +142,66 @@ class Receiver:
             time.sleep(1 / 30)
 
     def recorded_frames(self):
+        # A direct segment may move midway through discovery or opening a CSV.
+        # Retry the complete scan instead of returning incomplete frame evidence.
+        for attempt in range(3):
+            try:
+                return self._recorded_frames_once()
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.02)
+
+    def _recorded_frames_once(self):
         # A finalized segment replaces its live journal. Frame identities avoid
         # double counting while that atomic publication happens during a scan.
         frames = {"rgb": set(), "depth": set()}
-        for path in self.root.rglob("frames.csv*"):
-            if path.name not in {"frames.csv", "frames.csv.inprogress"}:
-                continue
-            try:
-                with path.open(newline="", encoding="utf-8") as stream:
-                    for row in csv.DictReader(stream):
-                        kind = row.get("stream_type", "")
-                        if kind.startswith("depth"):
-                            kind = "depth"
-                        frame_id = row.get("frame_id", "")
-                        if kind in frames and frame_id and frame_id.isdigit():
-                            frames[kind].add(int(frame_id))
-            except FileNotFoundError:
-                pass  # A direct segment can be published while scanning it.
+        def scan_error(error):
+            raise error
+
+        paths = []
+        for directory, _, files in os.walk(self.root, onerror=scan_error):
+            paths.extend(Path(directory) / name for name in files
+                         if name in {"frames.csv", "frames.csv.inprogress", "rgb_recorded_frames.csv"})
+        for path in paths:
+            with path.open(newline="", encoding="utf-8") as stream:
+                for row in csv.DictReader(stream):
+                    kind = "rgb" if path.name == "rgb_recorded_frames.csv" else row.get("stream_type", "")
+                    if kind == "rgb" and path.name != "rgb_recorded_frames.csv":
+                        # The packet journal alone does not prove an RGB frame
+                        # reached the muxer. Final maps mark successful writes.
+                        if path.name != "frames.csv" or row.get("rgb_recorded") != "1":
+                            continue
+                    if kind.startswith("depth"):
+                        kind = "depth"
+                    frame_id = row.get("frame_id", "")
+                    if kind in frames and frame_id and frame_id.isdigit():
+                        frames[kind].add(int(frame_id))
         return frames
+
+    def assert_recorded_media(self):
+        frames = self.recorded_frames()
+        for kind, filename, codec in (("rgb", "rgb.mp4", "h264"), ("depth", "depth.mkv", "ffv1")):
+            files = list(self.root.rglob(filename))
+            assert files, f"no finalized {kind} video"
+            total = 0
+            for path in files:
+                result = subprocess.run([
+                    "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+                    "-show_entries", "stream=codec_name,nb_read_frames", "-of", "json", str(path),
+                ], capture_output=True, text=True, check=True, timeout=10)
+                stream = json.loads(result.stdout)["streams"][0]
+                count = int(stream["nb_read_frames"])
+                assert count > 0 and stream["codec_name"] == codec, (path, stream)
+                total += count
+            expected = len(frames[kind])
+            assert expected > 0
+            if kind == "rgb":
+                assert total == expected, (kind, total, expected)
+            else:
+                # Depth output can trim timestamp boundaries, but must account
+                # for the frame journal, including frames sent during outages.
+                assert total >= expected * 0.9, (kind, total, expected)
 
 
 def assert_active(status, session, label):
@@ -207,6 +250,7 @@ def test_continuity(binary, fixture, staging):
                                 not s["cameras"][0]["segment_active"] and
                                 s["record_finalize_outstanding_segments"] == 0, "explicit stop", 15)
         assert not stopped["recording_faulted"], stopped
+        receiver.assert_recorded_media()
         frames_before = receiver.recorded_frames()
         receiver.send_frames(fixture, 15)
         assert receiver.recorded_frames() == frames_before, "explicit stop still records frames"
@@ -227,6 +271,42 @@ def test_continuity(binary, fixture, staging):
         assert restarted["ok"] and restarted["recording_session_id"] != session, restarted
         assert receiver.command("stop-all")["ok"]
         print(f"NAS snapshot continuity, rollover, recovery and admission passed (staging={staging})")
+
+
+def test_staging_nas_path_outage(binary, fixture):
+    with Receiver(binary, staging=True) as receiver:
+        start = receiver.command("start-all")
+        assert start["ok"], start
+        session = start["recording_session_id"]
+        receiver.send_frames(fixture)
+        initial = assert_active(receiver.status(), session, "healthy NAS path")
+        before = receiver.recorded_frames()
+        retained = receiver.root / "nas-retained"
+        receiver.nas.rename(retained)
+        receiver.nas.write_text("temporary test NAS path unavailable", encoding="utf-8")
+        receiver.write_snapshot("unavailable")
+        try:
+            # Four seconds must cross the three-second segment boundary while
+            # only the NAS publication path is unusable; the staging root is healthy.
+            receiver.send_frames(fixture, 120)
+            current = receiver.status()
+            camera = assert_active(current, session, "NAS path unavailable during staging rollover")
+            assert camera["global_segment_index"] > initial["global_segment_index"], current
+            after = receiver.recorded_frames()
+            assert all(after[stream] - before[stream] for stream in ("rgb", "depth"))
+            assert not current["recording_start_ready"]
+            assert not current["nas_auto_mount"]["ready"]
+            assert receiver.command("stop-all")["ok"]
+            receiver.wait(lambda s: not s["recording_all"] and
+                          not s["cameras"][0]["segment_active"] and
+                          s["record_finalize_outstanding_segments"] == 0, "staged outage stop", 15)
+            receiver.assert_recorded_media()
+            assert list((receiver.root / "staging").rglob("recording_staged.json")), (
+                "NAS outage lost the finalized local upload backlog")
+        finally:
+            receiver.nas.unlink()
+            retained.rename(receiver.nas)
+        print("staging rollover survives an unusable NAS publication path")
 
 
 def test_destination_reserve(binary, fixture):
@@ -267,11 +347,16 @@ def test_destination_reserve(binary, fixture):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--receiver", required=True)
+    parser.add_argument("--case", choices=("all", "staging-nas-path"), default="all")
     args = parser.parse_args()
     assert shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe required"
     fixture = h.generate_h264_fixture(1)
+    if args.case == "staging-nas-path":
+        test_staging_nas_path_outage(args.receiver, fixture)
+        return
     for staging in (True, False):
         test_continuity(args.receiver, fixture, staging)
+    test_staging_nas_path_outage(args.receiver, fixture)
     test_destination_reserve(args.receiver, fixture)
 
 
