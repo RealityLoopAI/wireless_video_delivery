@@ -1,0 +1,46 @@
+name: Receiver NAS regression
+
+on:
+  push:
+    branches: [codex/nas-recording-decoupling]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  receiver-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    container:
+      image: ubuntu:22.04
+      options: --shm-size=64m
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install receiver build and test dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake pkg-config git python3 ffmpeg libavformat-dev libavcodec-dev libavutil-dev libjsoncpp-dev zlib1g-dev iproute2 util-linux ca-certificates
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Configure and build receiver
+        run: |
+          cmake -S . -B 12_build_nas_ci -DGWV3_BUILD_RECEIVER=ON -DGWV3_BUILD_SENDER=OFF -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build 12_build_nas_ci --parallel 2
+      - name: Existing receiver regression suite
+        run: ctest --test-dir 12_build_nas_ci --output-on-failure --parallel 2 -E receiver_nas_outage
+      - name: NAS outage recording regression
+        if: ${{ !cancelled() && hashFiles('10_tests/test_receiver_nas_outage.py') != '' }}
+        run: python3 10_tests/test_receiver_nas_outage.py --receiver "$PWD/12_build_nas_ci/bin/gemini_receiver"
+      - name: Preserve test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: receiver-nas-test-logs
+          path: 12_build_nas_ci/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 14
