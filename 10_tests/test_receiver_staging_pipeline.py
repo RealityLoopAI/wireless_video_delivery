@@ -34,6 +34,9 @@ def run(args: argparse.Namespace) -> None:
         ffmpeg_wrapper = create_ffmpeg_test_wrappers(temporary)
         staging_root = temporary / "staging"
         nas_root = temporary / "nas"
+        # The mounted NAS is external to the local recorder. Staging segment
+        # creation must not be responsible for creating this publication root.
+        nas_root.mkdir()
         ports = {
             "status": free_port(socket.SOCK_DGRAM),
             "media": free_port(socket.SOCK_STREAM),
