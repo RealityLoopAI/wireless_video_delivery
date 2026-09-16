@@ -4776,10 +4776,24 @@ class Uploader:
         # concurrency until a worker performs its first receiver-I/O check.
         with self.receiver_status_lock:
             self.next_receiver_status_at = 0.0
-        self.should_pause_for_receiver_io(
-            "capturing_batch_to_nas",
-            publish_status=False,
-        )
+        try:
+            self.should_pause_for_receiver_io(
+                "capturing_batch_to_nas",
+                publish_status=False,
+            )
+        except OSError as error:
+            if error.errno != errno.ENOSPC:
+                raise
+            # NAS capacity can disappear after the initial mount gate. Defer
+            # this batch so the daemon backs off and retries the retained files.
+            self.nas_mount_ready_status = False
+            self.close_incremental_mirror_handles()
+            self.last_error = (
+                "NAS mount unavailable or free space below reserve; "
+                "uploads paused, local recordings retained"
+            )
+            self.write_status(refresh_metrics=True)
+            return False
         local_segments = discover_local_segments(self.staging_root)
         self.write_status(refresh_metrics=True)
         if not STOP_REQUESTED and self.process_local_batch(local_segments):

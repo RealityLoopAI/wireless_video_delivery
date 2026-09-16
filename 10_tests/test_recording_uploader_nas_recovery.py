@@ -140,7 +140,12 @@ def test_midpass_capacity_failure_keeps_daemon_alive(module):
         write_snapshot(module, uploader, status_path)
         original_run_once = uploader.run_once
         original_recover = uploader.recover_pending_publications
-        state = {"passes": 0, "unavailable": False, "failed_capacity_checks": 0}
+        state = {
+            "passes": 0,
+            "unavailable": False,
+            "failed_capacity_checks": 0,
+            "first_pass_finished_at": 0.0,
+        }
 
         def disk_usage(path):
             if Path(path) == uploader.nas_root and state["unavailable"]:
@@ -158,12 +163,21 @@ def test_midpass_capacity_failure_keeps_daemon_alive(module):
         def observed_pass():
             state["passes"] += 1
             if state["passes"] == 2:
+                elapsed = module.time.monotonic() - state["first_pass_finished_at"]
+                assert elapsed >= uploader.interval * 0.9, "NAS pause skipped the daemon retry interval"
                 assert_retained(module, uploader, segment, original_files)
+                paused_status = json.loads(uploader.status_path.read_text())
+                assert paused_status["nas_mount_ready"] is False
+                assert paused_status["local_pending_segments"] == 1
+                assert paused_status["last_error"].startswith("NAS mount unavailable")
+                assert "local recordings retained" in paused_status["last_error"]
                 state["unavailable"] = False
                 write_snapshot(module, uploader, status_path)
             try:
                 return original_run_once()
             finally:
+                if state["passes"] == 1:
+                    state["first_pass_finished_at"] = module.time.monotonic()
                 # Bound the daemon test even if recovery makes no progress.
                 if state["passes"] >= 2:
                     module.STOP_REQUESTED = True
@@ -191,12 +205,11 @@ def test_midpass_capacity_failure_keeps_daemon_alive(module):
         print("mid-pass NAS capacity loss retained files and daemon recovered")
 
 
-def test_unexpected_error_propagates(module):
+def test_unexpected_error_propagates(module, unexpected):
     with tempfile.TemporaryDirectory(prefix="gwv3_unexpected_error_") as temporary:
         uploader, segment, status_path, original_files = make_fixture(module, Path(temporary))
         uploader.nas_min_free_bytes = 0
         write_snapshot(module, uploader, status_path)
-        unexpected = ValueError("simulated non-storage programming error")
 
         def fail_receiver_check(*_args, **_kwargs):
             # Bound the test if an overly broad handler swallows this error.
@@ -209,14 +222,14 @@ def test_unexpected_error_propagates(module):
             with mock.patch.object(uploader, "should_pause_for_receiver_io", side_effect=fail_receiver_check):
                 try:
                     uploader.run_locked(False)
-                except ValueError as error:
+                except type(unexpected) as error:
                     assert error is unexpected
                 else:
                     raise AssertionError("uploader swallowed an unexpected non-storage error")
         finally:
             module.STOP_REQUESTED = previous_stop
         assert_retained(module, uploader, segment, original_files)
-        print("unexpected non-storage errors propagate")
+        print(f"unexpected {type(unexpected).__name__} propagates")
 
 
 if __name__ == "__main__":
@@ -225,5 +238,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     uploader_module = load_uploader(args.uploader)
     test_snapshot_pause_and_recovery(uploader_module)
-    test_unexpected_error_propagates(uploader_module)
+    test_unexpected_error_propagates(uploader_module, ValueError("simulated programming error"))
+    test_unexpected_error_propagates(uploader_module, OSError(errno.EIO, "simulated unexpected I/O error"))
     test_midpass_capacity_failure_keeps_daemon_alive(uploader_module)
