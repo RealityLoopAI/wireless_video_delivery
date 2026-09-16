@@ -6,6 +6,7 @@ production NAS are used, including in the actual-destination reserve test.
 """
 import argparse
 import csv
+import itertools
 import json
 import os
 from pathlib import Path
@@ -166,8 +167,9 @@ class Receiver:
         for path in paths:
             with path.open(newline="", encoding="utf-8") as stream:
                 # A live CSV flush can end mid-row while this reader catches up.
-                # Only complete lines are evidence; the next scan sees the tail.
-                for row in csv.DictReader(line for line in stream if line.endswith("\n")):
+                # Stop at its first incomplete line: a concurrently appended
+                # suffix is not a new row. The next fresh scan sees the full tail.
+                for row in csv.DictReader(itertools.takewhile(lambda line: line.endswith("\n"), stream)):
                     kind = "rgb" if path.name == "rgb_recorded_frames.csv" else row.get("stream_type", "")
                     if kind == "rgb" and path.name != "rgb_recorded_frames.csv":
                         # The packet journal alone does not prove an RGB frame
