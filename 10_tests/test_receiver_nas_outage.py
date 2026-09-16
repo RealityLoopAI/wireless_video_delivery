@@ -165,7 +165,9 @@ class Receiver:
                          if name in {"frames.csv", "frames.csv.inprogress", "rgb_recorded_frames.csv"})
         for path in paths:
             with path.open(newline="", encoding="utf-8") as stream:
-                for row in csv.DictReader(stream):
+                # A live CSV flush can end mid-row while this reader catches up.
+                # Only complete lines are evidence; the next scan sees the tail.
+                for row in csv.DictReader(line for line in stream if line.endswith("\n")):
                     kind = "rgb" if path.name == "rgb_recorded_frames.csv" else row.get("stream_type", "")
                     if kind == "rgb" and path.name != "rgb_recorded_frames.csv":
                         # The packet journal alone does not prove an RGB frame
