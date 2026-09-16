@@ -552,6 +552,8 @@ def run(args: argparse.Namespace) -> None:
                 "enabled": True,
                 "root": str(staging_root),
                 "upload_interval_ms": 250,
+                # Ordinary local-remux tests must not inherit host disk pressure.
+                "local_cache_high_watermark_percent": 0,
                 "delete_after_upload": True,
                 "pause_during_receiver_finalize": False,
             },
@@ -707,6 +709,7 @@ def run(args: argparse.Namespace) -> None:
                     "recording_staging": {
                         "enabled": True,
                         "root": str(recovery_staging),
+                        "local_cache_high_watermark_percent": 0,
                         "delete_after_upload": True,
                         "pause_during_receiver_finalize": False,
                     },
@@ -834,6 +837,7 @@ def run(args: argparse.Namespace) -> None:
                     "recording_staging": {
                         "enabled": True,
                         "root": str(parallel_staging),
+                        "local_cache_high_watermark_percent": 0,
                         "delete_after_upload": True,
                         "retain_local_capture_for_finalize": True,
                         "capture_workers": 2,
@@ -947,6 +951,7 @@ def run(args: argparse.Namespace) -> None:
                     "recording_staging": {
                         "enabled": True,
                         "root": str(fragmented_staging),
+                        "local_cache_high_watermark_percent": 0,
                         "rgb_output_mode": "fragmented_mp4",
                         "delete_after_upload": True,
                         "retain_local_capture_for_finalize": True,

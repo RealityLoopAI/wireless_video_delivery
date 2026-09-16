@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+from unittest import mock
 
 
 def load_uploader(path: Path):
@@ -61,9 +62,12 @@ def run(uploader_path: Path) -> None:
         assert uploader.nas_write_limiter.bandwidth_mbps == 240
         uploader.receiver_recording_active = True
         uploader.active_recording_full_copy_workers = 0
-        assert uploader.current_full_copy_limit() == 0
-        uploader.receiver_recording_active = False
-        assert uploader.current_full_copy_limit() == uploader.full_copy_workers
+        # These assertions exercise the no-pressure policy independently of
+        # host disk occupancy; pressure and hysteresis are tested below.
+        with mock.patch.object(uploader, "staging_disk_pressure", return_value=False):
+            assert uploader.current_full_copy_limit() == 0
+            uploader.receiver_recording_active = False
+            assert uploader.current_full_copy_limit() == uploader.full_copy_workers
         uploader.active_recording_full_copy_workers = 1
 
         limiter = uploader_module.SharedBandwidthLimiter(32)
