@@ -187,7 +187,8 @@ def detect_hardware(sys_root: Path = Path("/sys"), os_release: Path = Path("/etc
                 "platform-2ac40000.i2c-platform-rk805-pwrkey.*.auto-event"
             )
         ),
-        "recording_led_available": board == "lubancat" and Path("/dev/gpiochip4").exists(),
+        # "recording_led_available": board == "lubancat" and Path("/dev/gpiochip4").exists(),
+        "recording_led_available": board == "lubancat",
     }
 
 

@@ -25,7 +25,8 @@
 
 `systemd-logind` 使用 `HandlePowerKey=ignore`，避免短按绕过 5 秒策略。关机流程等待当前语音结束后播放组合提示，再执行系统关机。
 
-已配置 LED 的底板使用 `GPIO4_C3_D`（`gpiochip4` line `19`，active high）：sender 空闲或 receiver 状态短时不可用时常亮，本 sender 录制时每 500 ms 翻转。HTTP 轮询在独立线程中运行，短时超时不会暂停闪烁；最后有效状态最多保留 5 秒。
+<!-- 旧底板：GPIO4_C3_D（gpiochip4 line 19，active high） -->
+已配置 LED 的底板使用 `GPIO0_D0`（`gpiochip0` line `24`，active low）：sender 空闲或 receiver 状态短时不可用时常亮，本 sender 录制时每 500 ms 翻转。HTTP 轮询在独立线程中运行，短时超时不会暂停闪烁；最后有效状态最多保留 5 秒。
 
 ## Install
 

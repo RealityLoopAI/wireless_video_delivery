@@ -2,6 +2,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import select
 import signal
@@ -46,6 +47,8 @@ class ServiceConfig:
     speech_status_poll_seconds: float
     boot_marker_path: Path
     poweroff_command: tuple
+    sender_id: str = ""
+    shutdown_audio_wait_seconds: float = 30.0
 
 
 def load_config(path: Path) -> ServiceConfig:
@@ -81,6 +84,10 @@ def load_config(path: Path) -> ServiceConfig:
                 "poweroff_command", ["/usr/bin/systemctl", "poweroff"]
             )
         ),
+        sender_id=str(raw.get("sender_id", "")).strip(),
+        shutdown_audio_wait_seconds=float(
+            raw.get("shutdown_audio_wait_seconds", 30.0)
+        ),
     )
     if config.hold_seconds <= 0:
         raise ValueError("hold_seconds must be positive")
@@ -94,6 +101,11 @@ def load_config(path: Path) -> ServiceConfig:
         raise ValueError("boot_cue_wait_seconds cannot be negative")
     if config.shutdown_audio_failure_seconds < 0:
         raise ValueError("shutdown_audio_failure_seconds cannot be negative")
+    if (
+        not math.isfinite(config.shutdown_audio_wait_seconds)
+        or config.shutdown_audio_wait_seconds <= 0
+    ):
+        raise ValueError("shutdown_audio_wait_seconds must be finite and positive")
     if config.speech_status_poll_seconds <= 0:
         raise ValueError("speech_status_poll_ms must be positive")
     if not config.poweroff_command:
@@ -115,8 +127,10 @@ class JsonHttpClient:
         timeout = (
             self.timeout_seconds
             if timeout_seconds is None
-            else max(0.05, float(timeout_seconds))
+            else float(timeout_seconds)
         )
+        if timeout <= 0:
+            raise ValueError("HTTP request timeout must be positive")
         try:
             with urlopen(request, timeout=timeout) as response:
                 response_body = response.read()
@@ -293,18 +307,40 @@ class PowerController:
                 status = self.http_client.request(
                     "GET", f"{receiver_base_url}/api/status"
                 )
-                state = str(status.get("recording_state", ""))
-                recording_all = bool(status.get("recording_all", False))
-                if not recording_all and state in {"idle", "faulted"}:
-                    LOG.info("recording already stopped before poweroff state=%s", state)
-                    return "idle"
+                if self.config.sender_id:
+                    if status.get("receiver_admin_stale") is True:
+                        raise RuntimeError("receiver status is stale")
+                    cameras = [
+                        camera for camera in status.get("cameras", [])
+                        if isinstance(camera, dict)
+                        and camera.get("sender_id") == self.config.sender_id
+                    ]
+                    if not cameras:
+                        raise RuntimeError(
+                            f"sender not present in receiver status: {self.config.sender_id}"
+                        )
+                    if not any(
+                        camera.get("recording") or camera.get("recording_start_pending")
+                        for camera in cameras
+                    ):
+                        LOG.info("sender already stopped before poweroff sender=%s", self.config.sender_id)
+                        return "idle"
+                    stop_path = "/api/record/stop-sender?sender_id=" + quote(self.config.sender_id, safe="")
+                else:
+                    # Preserve existing installations that intentionally use global stop.
+                    state = str(status.get("recording_state", ""))
+                    recording_all = bool(status.get("recording_all", False))
+                    if not recording_all and state in {"idle", "faulted"}:
+                        LOG.info("recording already stopped before poweroff state=%s", state)
+                        return "idle"
+                    stop_path = "/api/record/stop-all"
                 response = self.http_client.request(
                     "POST",
-                    f"{receiver_base_url}/api/record/stop-all",
+                    f"{receiver_base_url}{stop_path}",
                 )
                 if response.get("ok") is not True:
                     raise RuntimeError(
-                        str(response.get("error", "stop-all request rejected"))
+                        str(response.get("error", "recording stop request rejected"))
                     )
                 LOG.info(
                     "recording stop accepted before poweroff attempt=%d response=%s",
@@ -356,6 +392,7 @@ class PowerController:
                 self.sleep(min(0.2, remaining))
 
     def _wait_for_cue(self, request_id: str) -> bool:
+        deadline = self.monotonic() + self.config.shutdown_audio_wait_seconds
         unavailable_since = None
         encoded_id = quote(request_id, safe="")
         url = (
@@ -364,19 +401,23 @@ class PowerController:
         )
         while True:
             attempt_started = self.monotonic()
-            if unavailable_since is None:
-                request_timeout = self.config.request_timeout_seconds
-            else:
-                remaining = (
+            remaining = deadline - attempt_started
+            if remaining <= 0:
+                LOG.warning(
+                    "cue completion wait timed out request_id=%s after=%.1fs",
+                    request_id,
+                    self.config.shutdown_audio_wait_seconds,
+                )
+                return False
+            request_timeout = min(self.config.request_timeout_seconds, remaining)
+            if unavailable_since is not None:
+                failure_remaining = (
                     self.config.shutdown_audio_failure_seconds
                     - (attempt_started - unavailable_since)
                 )
-                if remaining <= 0:
+                if failure_remaining <= 0:
                     return False
-                request_timeout = min(
-                    self.config.request_timeout_seconds,
-                    remaining,
-                )
+                request_timeout = min(request_timeout, failure_remaining)
             try:
                 status = self.http_client.request(
                     "GET",
@@ -405,7 +446,15 @@ class PowerController:
                     >= self.config.shutdown_audio_failure_seconds
                 ):
                     return False
-            self.sleep(self.config.speech_status_poll_seconds)
+            now = self.monotonic()
+            poll_delay = min(self.config.speech_status_poll_seconds, deadline - now)
+            if unavailable_since is not None:
+                poll_delay = min(
+                    poll_delay,
+                    self.config.shutdown_audio_failure_seconds - (now - unavailable_since),
+                )
+            if poll_delay > 0:
+                self.sleep(poll_delay)
 
 
 class PowerButtonService:

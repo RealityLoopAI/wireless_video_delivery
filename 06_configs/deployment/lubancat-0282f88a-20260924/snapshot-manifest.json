@@ -1,0 +1,39 @@
+{
+  "snapshot_date": "2026-09-24",
+  "base_commit": "91f4d8a985e85b5a9a0f804a72884671fef11cd7",
+  "sender_id": "lubancat-0282f88a",
+  "camera_id": "cam02",
+  "sender_host": "192.168.1.91",
+  "receiver_host": "192.168.1.196",
+  "sha256": {
+    "receiver/audio_archive_receiver.json": "4084cf35b52129daf5b881dc9e0765b9c803be739355d6a9a193aff9c449ddb5",
+    "receiver/receiver.json": "4a4c99db3ea6ce01db08b91fd00733691378587a0f705af152ddc3a68ce38d3c",
+    "sender/device.conf": "9b1db8a871d09461598437c1f29b865aac24c4aec733742c31b48a2c8caec120",
+    "sender/power-key-inhibit.conf": "ab4332d7c710dc2af21ba9cfed60121f1713647e3ddd21248c4171e790964977",
+    "sender/sender.json": "c8d89e8153b650f8719f760e448e8bcd96a93949c0b56367394db99b6eed768a",
+    "sender/sm15-m1.conf": "40599c19822588a8fbf67d7235a62b1194d78af6f2b02cd277abe90e20310f89",
+    "sender/zz-audio-archive.conf": "b3f773f0a19cbcfdd352733f4cb3d74dd0d499b486a72a4a751bb6f2b7f5698a"
+  },
+  "validation": {
+    "platform": "Ubuntu 22.04 ARM64 on sender; isolated temporary checkout",
+    "tests_passed": [
+      "test_power_button_service.py",
+      "test_power_sender_scope.py",
+      "test_recording_button_service.py",
+      "test_recording_led_service.py",
+      "test_voice_photo_burst.py",
+      "test_voice_tts_service.py",
+      "test_voice_audio_mixer.py"
+    ],
+    "audio_recording": {
+      "relative_directory": "lubancat-0282f88a_cam02/2026-09-24/204126",
+      "audio_valid": true,
+      "received_packets": 553,
+      "expected_packets": 553,
+      "audio_duration_us": 11060000,
+      "opus_file_bytes": 45234,
+      "ffmpeg_decode_exit_code": 0
+    },
+    "native_auto_exposure": true
+  }
+}

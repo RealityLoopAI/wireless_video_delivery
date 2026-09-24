@@ -15,7 +15,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 DevicePolicy=closed
-DeviceAllow=/dev/gpiochip4 rw
+# DeviceAllow=/dev/gpiochip4 rw
+DeviceAllow=/dev/gpiochip0 rw
 
 [Install]
 WantedBy=multi-user.target

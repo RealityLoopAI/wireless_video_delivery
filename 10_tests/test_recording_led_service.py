@@ -44,7 +44,7 @@ class RecordingLedServiceTest(unittest.TestCase):
             status_stale_seconds=1.0,
         )
 
-    def test_loads_gpio4_c3_defaults(self):
+    def test_loads_gpio0_d0_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(
@@ -57,9 +57,12 @@ class RecordingLedServiceTest(unittest.TestCase):
                 )
             )
             config = MODULE.load_config(path)
-        self.assertEqual(config.chip, "gpiochip4")
-        self.assertEqual(config.line_offset, 19)
-        self.assertTrue(config.active_high)
+        # self.assertEqual(config.chip, "gpiochip4")
+        # self.assertEqual(config.line_offset, 19)
+        # self.assertTrue(config.active_high)
+        self.assertEqual(config.chip, "gpiochip0")
+        self.assertEqual(config.line_offset, 24)
+        self.assertFalse(config.active_high)
 
     def test_blinks_only_while_recording(self):
         now = [0.0]

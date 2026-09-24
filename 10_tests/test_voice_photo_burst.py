@@ -477,7 +477,7 @@ def test_usb_audio_exclusive_install(source_root: Path):
     unit = (app_root / "systemd" / "xiaohuan-wake.service").read_text(encoding="utf-8")
     assert "@APP_DIR@" in unit
     assert "new_experiment_2026-07-02" not in unit
-    assert 'WorkingDirectory="@APP_DIR@"' in unit
+    assert 'WorkingDirectory=@APP_DIR@' in unit
     assert 'ExecStart="@APP_DIR@/run_wake_service.sh"' in unit
     assert 'sed "s|@APP_DIR@|$escaped_root|g"' in installer
     assert "90-xiaohuan-usb-audio-exclusive.rules" in installer

@@ -40,9 +40,12 @@ def load_config(path: Path) -> LedConfig:
     config = LedConfig(
         sender_id=str(raw["sender_id"]).strip(),
         receiver_base_url=str(raw["receiver_base_url"]).rstrip("/"),
-        chip=str(led.get("chip", "gpiochip4")),
-        line_offset=int(led.get("line_offset", 19)),
-        active_high=bool(led.get("active_high", True)),
+        # chip=str(led.get("chip", "gpiochip4")),
+        # line_offset=int(led.get("line_offset", 19)),
+        # active_high=bool(led.get("active_high", True)),
+        chip=str(led.get("chip", "gpiochip0")),
+        line_offset=int(led.get("line_offset", 24)),
+        active_high=bool(led.get("active_high", False)),
         blink_interval_seconds=float(led.get("blink_interval_ms", 500)) / 1000.0,
         status_poll_interval_seconds=float(
             led.get("status_poll_interval_ms", 250)

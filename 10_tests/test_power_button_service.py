@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -187,6 +188,147 @@ def test_audio_unavailable_still_powers_off(module):
         assert len(commands) == 1
 
 
+def test_queued_shutdown_cue_reaches_wait_deadline_and_powers_off(module):
+    config = SimpleNamespace(**vars(make_config(module, Path("unused-marker"))))
+    config.shutdown_audio_wait_seconds = 0.25
+    now = [0.0]
+    commands = []
+    status_timeouts = []
+
+    class QueuedClient:
+        def request(self, method, url, payload=None, timeout_seconds=None):
+            if url.endswith("/api/status"):
+                return {"recording_state": "idle", "recording_all": False}
+            if method == "POST":
+                return {"accepted": True}
+            status_timeouts.append((now[0], timeout_seconds))
+            return {"state": "queued"}
+
+    def sleep(seconds):
+        now[0] += seconds
+        assert now[0] <= config.shutdown_audio_wait_seconds + 1e-9, (
+            "cue wait exceeded configured total deadline"
+        )
+
+    controller = module.PowerController(
+        config,
+        QueuedClient(),
+        sleep=sleep,
+        monotonic=lambda: now[0],
+        run_command=lambda command, **kwargs: (
+            commands.append(command) or SimpleNamespace(returncode=0)
+        ),
+    )
+    assert controller.shutdown() is True
+    assert commands == [["/usr/bin/systemctl", "poweroff"]]
+    assert abs(now[0] - config.shutdown_audio_wait_seconds) < 1e-9
+    assert status_timeouts
+    assert all(
+        0 < timeout <= config.shutdown_audio_wait_seconds - started + 1e-9
+        for started, timeout in status_timeouts
+    )
+
+
+def test_cue_wait_http_timeout_respects_remaining_deadline(module):
+    config = SimpleNamespace(**vars(make_config(module, Path("unused-marker"))))
+    config.shutdown_audio_wait_seconds = 0.025
+    now = [0.0]
+    timeouts = []
+    original_urlopen = module.urlopen
+
+    def stalled_urlopen(request, timeout):
+        timeouts.append(timeout)
+        now[0] += timeout
+        raise TimeoutError("injected status timeout")
+
+    def sleep(seconds):
+        now[0] += seconds
+        assert now[0] <= config.shutdown_audio_wait_seconds + 1e-9, (
+            "HTTP timeout or poll exceeded the cue deadline"
+        )
+
+    module.urlopen = stalled_urlopen
+    try:
+        controller = module.PowerController(
+            config,
+            module.JsonHttpClient(config.request_timeout_seconds),
+            sleep=sleep,
+            monotonic=lambda: now[0],
+        )
+        assert controller._wait_for_cue("timeout-test") is False
+    finally:
+        module.urlopen = original_urlopen
+    assert timeouts == [config.shutdown_audio_wait_seconds]
+    assert now[0] <= config.shutdown_audio_wait_seconds + 1e-9
+
+
+def test_cue_wait_network_failure_keeps_short_deadline(module):
+    config = make_config(module, Path("unused-marker"))
+    now = [0.0]
+
+    class UnavailableClient:
+        def request(self, method, url, payload=None, timeout_seconds=None):
+            now[0] += timeout_seconds
+            raise RuntimeError("status unavailable")
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    controller = module.PowerController(
+        config,
+        UnavailableClient(),
+        sleep=sleep,
+        monotonic=lambda: now[0],
+    )
+    assert controller._wait_for_cue("network-test") is False
+    assert abs(now[0] - config.shutdown_audio_failure_seconds) < 1e-9
+
+
+def test_queued_cue_can_complete_after_network_failure_window(module):
+    config = make_config(module, Path("unused-marker"))
+    now = [0.0]
+
+    class DelayedCueClient:
+        def request(self, method, url, payload=None, timeout_seconds=None):
+            return {"state": "completed" if now[0] >= 4.0 else "queued"}
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    controller = module.PowerController(
+        config,
+        DelayedCueClient(),
+        sleep=sleep,
+        monotonic=lambda: now[0],
+    )
+    assert controller._wait_for_cue("delayed-test") is True
+    assert config.shutdown_audio_failure_seconds < now[0] < 5.0
+
+
+def test_load_config_shutdown_audio_wait_seconds(module):
+    with tempfile.TemporaryDirectory(prefix="gwv3_power_wait_config_") as temporary:
+        path = Path(temporary) / "config.json"
+        raw = {
+            "event_device": "/dev/input/power",
+            "receiver_base_url": "http://receiver",
+            "speech_base_url": "http://speech",
+        }
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert module.load_config(path).shutdown_audio_wait_seconds == 30.0
+        raw["shutdown_audio_wait_seconds"] = 7.5
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert module.load_config(path).shutdown_audio_wait_seconds == 7.5
+        for invalid in (0, -1, float("inf"), float("nan")):
+            raw["shutdown_audio_wait_seconds"] = invalid
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            try:
+                module.load_config(path)
+            except ValueError as exc:
+                assert "shutdown_audio_wait_seconds" in str(exc)
+            else:
+                raise AssertionError("invalid cue wait deadline was accepted")
+
+
 def main():
     module = load_module()
     assert module.INPUT_EVENT.size == 24
@@ -195,6 +337,11 @@ def main():
     test_idle_shutdown_skips_receiver_stop(module)
     test_boot_cue_runs_once(module)
     test_audio_unavailable_still_powers_off(module)
+    test_queued_shutdown_cue_reaches_wait_deadline_and_powers_off(module)
+    test_cue_wait_http_timeout_respects_remaining_deadline(module)
+    test_cue_wait_network_failure_keeps_short_deadline(module)
+    test_queued_cue_can_complete_after_network_failure_window(module)
+    test_load_config_shutdown_audio_wait_seconds(module)
     print("power button service tests passed")
 
 
