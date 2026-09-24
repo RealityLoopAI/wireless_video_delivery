@@ -63,10 +63,12 @@ payload bytes
 | width / height | 当前流尺寸 |
 | payload_size | 编码/压缩 payload 大小 |
 | uncompressed_size | Depth 解压后大小 |
-| rgb_exposure_us / rgb_gain | SDK 读回的曝光诊断 |
+| rgb_exposure_us / rgb_gain | SDK 原始曝光及增益诊断；曝光单位见下方说明 |
 | sender_*_timestamp_us | 采集、绑定、编码和入队阶段诊断时间 |
 
 完整布局以 `03_common_core/include/gwv3_common/protocol.hpp` 为唯一源码定义。解析器必须检查 magic、版本、header size、字符串长度、尺寸、payload 上限和整数溢出。
+
+`rgb_exposure_us` 目前直接保存 SDK 的曝光元数据或属性回退值，发送端没有统一换算成微秒，不能仅凭字段后缀解释单位。Gemini 305 / OrbbecSDK 2.8.6 标准彩色路径使用 100 微秒单位，例如 301 对应约 30.1 ms；其他型号须核对各自实现。本说明不改变现有线上协议和 CSV 数值。具体源码与 `getIntPropertyRange()` 混合单位问题见 [Gemini 305 画质实施记录](lubancat-0282f88a-quality-20260924.md)。
 
 ## Stream Types
 

@@ -103,6 +103,8 @@ rgb_output_mode:            fragmented_mp4
 - Gemini 305 与 SV1301S 的属性范围、曝光单位和画面响应不同，不能复制同一个数值后假设观感一致。
 - 修改曝光、白平衡、旋转或 profile 后，必须读回 SDK 属性并做实际帧率与录制画面验证。
 
+Gemini 305 / OrbbecSDK 2.8.6 的标准 `OB_SENSOR_COLOR` 路径中，`color_controls.exposure` 和 `color_controls.max_exposure` 的 API 整数单位为 100 微秒。保留原生自动曝光并请求 10 ms 上限，对应 `auto_exposure=true, max_exposure=100`；此为单位换算示例，具体设备仍须验证支持性、独立属性读回和逐帧元数据。该 SDK 的 `getIntPropertyRange()` 只换算 `max/def`，`cur` 仍为底层微秒值，不能直接用 `range.cur` 作为配置值。源码依据和验证边界见 [Gemini 305 画质实施记录](lubancat-0282f88a-quality-20260924.md)。
+
 ## Validation
 
 发送端配置验证：

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-24",
+  "camera_key": "lubancat-0282f88a_cam02",
+  "files": {
+    "sender.json": "fef0c34f6906d530921e66de084bd2ba7a46e3817d50ab1571548b9f07649204",
+    "receiver.json": "147eb4a4e0eec5a76fd2e302787e39e3f8fa3b81a982e3b653f9fa6050baf2bc",
+    "60-mpp-sync-point.conf": "f125ce4daf1f7eac87043645004946112f976dc5d7b75ec0eaedf3a64373e1b9",
+    "acceptance-summary.json": "a751f44a6d5b4a7845f90965dac6650d6d9399a1bccd281f149ddd72839cd813"
+  },
+  "production": {
+    "sender_binary_sha256": "fc59625a9cda00941c4532ccd6703077986b836f275339d290441a2b64084d18",
+    "sender_build_commit": "unknown",
+    "sender_build_source_hash": "f1a27f542274a25e",
+    "sender_plugin_sha256": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d",
+    "receiver_binary_sha256": "2a28f1c73fae10ffcd9a977cd083d6e9e7ea094a66c1a9c05685e6ba1b7bcdbb"
+  },
+  "deployment_scope": "Only receiver full-range camera key and sender max_exposure=100 added by this task. Production binaries and MPP plugin retained from the other maintenance group.",
+  "backup_paths": {
+    "sender": "/var/backups/gwv3-quality-20260924/sender.before.json",
+    "receiver": "/var/backups/gwv3-quality-20260924/receiver.before.json"
+  },
+  "evidence_archives": {
+    "sender-evidence.tar.gz": "30284faf48c50850a8c03769584a52aa3132ac79401c700e782115f4856ff62a",
+    "receiver-evidence.tar.gz": "22fc73fd1300445aeb0044c9787275d63b8a2b18cce4b2b7aaebaf93afad8ba9",
+    "sender-post-test.tar.gz": "2069d58c2b4e65d73114ed9d791048e6e8dd4f78254bc3b3a51dbf59c0ee755c",
+    "receiver-post-test.tar.gz": "0cdcfbbc539d4b6ac513de5e1631b806129c7cf5a0b7622aeac13ebda038ec2f"
+  }
+}

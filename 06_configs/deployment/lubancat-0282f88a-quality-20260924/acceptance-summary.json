@@ -1,0 +1,841 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-24",
+  "camera_key": "lubancat-0282f88a_cam02",
+  "sender_ip": "192.168.1.91",
+  "receiver_ip": "192.168.1.196",
+  "validation_source_sha256": "f0367e65012af510a0feea81175deff04837cdfab7c0d6fccd9988869a987bad",
+  "recording_validation_passed": true,
+  "full_plan_acceptance_passed": false,
+  "unresolved": [
+    "Real voice photo acknowledgement timeout affected 9 of 36 photos; all 36 eventually archived. Receiver enqueue-to-local-staging completion latency 43-104 seconds includes queue wait; exact blocking syscall unconfirmed."
+  ],
+  "limitations": [
+    "User revised continuous recording to 5 minutes; no 900-second segment boundary was crossed.",
+    "Physical buttons were covered by software regression only.",
+    "640x480 resolution and fast-motion blur remain."
+  ],
+  "recordings": [
+    {
+      "nas_directory": "222445",
+      "recording_session_id": 1790259884423003,
+      "window_seconds": 21.050043,
+      "passed": true,
+      "failed_checks": [],
+      "thresholds": {
+        "coverage_min": 0.98,
+        "edge_lag_max_us": 500000,
+        "frame_gap_max_us": 500000,
+        "rgb_depth_span_delta_max_us": 500000,
+        "g305_color_exposure_raw_max": 100,
+        "g305_color_exposure_raw_unit_us": 100
+      },
+      "streams": {
+        "rgb": {
+          "quality": {
+            "valid_frames": 632,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007897212688195,
+            "first_frame_lag_us": 11099,
+            "end_frame_lag_us": 19997,
+            "capture_span_us": 21018947,
+            "max_frame_gap_us": 47251,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 632
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        },
+        "depth": {
+          "quality": {
+            "valid_frames": 632,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007897212688195,
+            "first_frame_lag_us": 13098,
+            "end_frame_lag_us": 16953,
+            "capture_span_us": 21019992,
+            "max_frame_gap_us": 49941,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 632
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        }
+      },
+      "rgb_depth_capture_span_delta_us": 1045,
+      "exposure": {
+        "rgb_frames": 632,
+        "source_field": "rgb_exposure_us",
+        "source_field_contains": "G305 raw metadata in 100-us ticks; NOT microseconds",
+        "raw_exposure_100us_ticks": {
+          "count": 632,
+          "min": 100,
+          "p50": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "max": 100,
+          "mean": 100
+        },
+        "exposure_ms": {
+          "count": 632,
+          "min": 10.0,
+          "p50": 10.0,
+          "p95": 10.0,
+          "p99": 10.0,
+          "max": 10.0,
+          "mean": 10.0
+        },
+        "raw_missing_or_nonpositive": 0,
+        "raw_over_100_count": 0,
+        "raw_histogram": {
+          "100": 632
+        },
+        "auto_exposure_counts": {
+          "1": 632
+        },
+        "gain": {
+          "count": 632,
+          "min": 36,
+          "p50": 102.0,
+          "p95": 206.0,
+          "p99": 225.0,
+          "max": 225,
+          "mean": 107.22310126582279
+        },
+        "gain_histogram": {
+          "102": 181,
+          "111": 12,
+          "96": 4,
+          "78": 4,
+          "63": 4,
+          "57": 28,
+          "47": 8,
+          "43": 20,
+          "39": 4,
+          "36": 12,
+          "40": 8,
+          "44": 8,
+          "51": 4,
+          "61": 12,
+          "69": 20,
+          "75": 8,
+          "83": 36,
+          "91": 20,
+          "92": 32,
+          "106": 4,
+          "116": 8,
+          "104": 12,
+          "113": 4,
+          "128": 80,
+          "140": 12,
+          "153": 12,
+          "170": 8,
+          "189": 4,
+          "206": 44,
+          "225": 19
+        }
+      },
+      "media": {
+        "rgb": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 632
+        },
+        "depth": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 632
+        },
+        "audio": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 1052
+        }
+      },
+      "audio_checks_passed": true
+    },
+    {
+      "nas_directory": "222632",
+      "recording_session_id": 1790259991163388,
+      "window_seconds": 21.018046,
+      "passed": true,
+      "failed_checks": [],
+      "thresholds": {
+        "coverage_min": 0.98,
+        "edge_lag_max_us": 500000,
+        "frame_gap_max_us": 500000,
+        "rgb_depth_span_delta_max_us": 500000,
+        "g305_color_exposure_raw_max": 100,
+        "g305_color_exposure_raw_unit_us": 100
+      },
+      "streams": {
+        "rgb": {
+          "quality": {
+            "valid_frames": 631,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007273432236914,
+            "first_frame_lag_us": 26144,
+            "end_frame_lag_us": 8112,
+            "capture_span_us": 20983790,
+            "max_frame_gap_us": 46430,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 631
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        },
+        "depth": {
+          "quality": {
+            "valid_frames": 631,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007273432236914,
+            "first_frame_lag_us": 28885,
+            "end_frame_lag_us": 5206,
+            "capture_span_us": 20983955,
+            "max_frame_gap_us": 46458,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 631
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        }
+      },
+      "rgb_depth_capture_span_delta_us": 165,
+      "exposure": {
+        "rgb_frames": 631,
+        "source_field": "rgb_exposure_us",
+        "source_field_contains": "G305 raw metadata in 100-us ticks; NOT microseconds",
+        "raw_exposure_100us_ticks": {
+          "count": 631,
+          "min": 100,
+          "p50": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "max": 100,
+          "mean": 100
+        },
+        "exposure_ms": {
+          "count": 631,
+          "min": 10.0,
+          "p50": 10.0,
+          "p95": 10.0,
+          "p99": 10.0,
+          "max": 10.0,
+          "mean": 10.0
+        },
+        "raw_missing_or_nonpositive": 0,
+        "raw_over_100_count": 0,
+        "raw_histogram": {
+          "100": 631
+        },
+        "auto_exposure_counts": {
+          "1": 631
+        },
+        "gain": {
+          "count": 631,
+          "min": 115,
+          "p50": 115.0,
+          "p95": 115.0,
+          "p99": 115.0,
+          "max": 115,
+          "mean": 115
+        },
+        "gain_histogram": {
+          "115": 631
+        }
+      },
+      "media": {
+        "rgb": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 631
+        },
+        "depth": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 631
+        },
+        "audio": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 1051
+        }
+      },
+      "audio_checks_passed": true
+    },
+    {
+      "nas_directory": "222813",
+      "recording_session_id": 1790260092558631,
+      "window_seconds": 304.039646,
+      "passed": true,
+      "failed_checks": [],
+      "thresholds": {
+        "coverage_min": 0.98,
+        "edge_lag_max_us": 500000,
+        "frame_gap_max_us": 500000,
+        "rgb_depth_span_delta_max_us": 500000,
+        "g305_color_exposure_raw_max": 100,
+        "g305_color_exposure_raw_unit_us": 100
+      },
+      "streams": {
+        "rgb": {
+          "quality": {
+            "valid_frames": 9128,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007466811307453,
+            "first_frame_lag_us": 23463,
+            "end_frame_lag_us": 9501,
+            "capture_span_us": 304006682,
+            "max_frame_gap_us": 47764,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 9128
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        },
+        "depth": {
+          "quality": {
+            "valid_frames": 9128,
+            "nominal_fps": 30.0,
+            "coverage_ratio": 1.0007466811307453,
+            "first_frame_lag_us": 24848,
+            "end_frame_lag_us": 7689,
+            "capture_span_us": 304007109,
+            "max_frame_gap_us": 46587,
+            "timestamp_out_of_order_count": 0
+          },
+          "clock_sync_valid_counts": {
+            "1": 9128
+          },
+          "source_frame_continuity": {
+            "missing_values": 0,
+            "duplicate_count": 0,
+            "backward_count": 0,
+            "missing_frame_id_count": 0,
+            "gaps": [],
+            "duplicates": [],
+            "backwards": []
+          }
+        }
+      },
+      "rgb_depth_capture_span_delta_us": 427,
+      "exposure": {
+        "rgb_frames": 9128,
+        "source_field": "rgb_exposure_us",
+        "source_field_contains": "G305 raw metadata in 100-us ticks; NOT microseconds",
+        "raw_exposure_100us_ticks": {
+          "count": 9128,
+          "min": 100,
+          "p50": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "max": 100,
+          "mean": 100
+        },
+        "exposure_ms": {
+          "count": 9128,
+          "min": 10.0,
+          "p50": 10.0,
+          "p95": 10.0,
+          "p99": 10.0,
+          "max": 10.0,
+          "mean": 10.0
+        },
+        "raw_missing_or_nonpositive": 0,
+        "raw_over_100_count": 0,
+        "raw_histogram": {
+          "100": 9128
+        },
+        "auto_exposure_counts": {
+          "1": 9128
+        },
+        "gain": {
+          "count": 9128,
+          "min": 18,
+          "p50": 47.0,
+          "p95": 172.0,
+          "p99": 248.0,
+          "max": 248,
+          "mean": 64.63978965819457
+        },
+        "gain_histogram": {
+          "109": 24,
+          "85": 12,
+          "93": 24,
+          "107": 76,
+          "99": 20,
+          "91": 44,
+          "105": 36,
+          "87": 48,
+          "79": 44,
+          "68": 128,
+          "59": 104,
+          "147": 4,
+          "173": 44,
+          "123": 24,
+          "55": 80,
+          "41": 288,
+          "34": 376,
+          "31": 96,
+          "28": 120,
+          "40": 124,
+          "49": 92,
+          "57": 128,
+          "62": 60,
+          "78": 52,
+          "69": 152,
+          "72": 32,
+          "64": 100,
+          "54": 120,
+          "53": 60,
+          "58": 68,
+          "50": 100,
+          "60": 128,
+          "65": 72,
+          "71": 68,
+          "80": 52,
+          "66": 8,
+          "56": 64,
+          "51": 16,
+          "70": 28,
+          "63": 112,
+          "96": 36,
+          "117": 12,
+          "128": 16,
+          "154": 4,
+          "197": 4,
+          "223": 8,
+          "203": 4,
+          "150": 4,
+          "118": 8,
+          "106": 32,
+          "98": 24,
+          "101": 20,
+          "92": 12,
+          "76": 4,
+          "67": 12,
+          "43": 272,
+          "39": 100,
+          "30": 92,
+          "32": 108,
+          "38": 104,
+          "73": 20,
+          "37": 120,
+          "35": 208,
+          "27": 76,
+          "25": 64,
+          "23": 56,
+          "45": 116,
+          "52": 100,
+          "81": 8,
+          "90": 16,
+          "74": 8,
+          "33": 124,
+          "44": 84,
+          "199": 4,
+          "248": 244,
+          "204": 4,
+          "144": 40,
+          "104": 32,
+          "89": 4,
+          "100": 12,
+          "143": 84,
+          "201": 4,
+          "161": 4,
+          "169": 4,
+          "184": 8,
+          "208": 4,
+          "227": 12,
+          "206": 8,
+          "238": 12,
+          "196": 4,
+          "155": 8,
+          "172": 8,
+          "188": 8,
+          "159": 8,
+          "138": 8,
+          "127": 12,
+          "112": 8,
+          "103": 16,
+          "115": 24,
+          "47": 1332,
+          "77": 28,
+          "136": 4,
+          "110": 8,
+          "86": 64,
+          "61": 16,
+          "94": 8,
+          "95": 20,
+          "116": 8,
+          "133": 44,
+          "157": 8,
+          "181": 8,
+          "139": 36,
+          "171": 28,
+          "187": 48,
+          "189": 12,
+          "167": 4,
+          "129": 4,
+          "29": 124,
+          "26": 64,
+          "24": 28,
+          "48": 300,
+          "42": 52,
+          "36": 136,
+          "120": 44,
+          "131": 8,
+          "130": 4,
+          "75": 36,
+          "88": 4,
+          "82": 20,
+          "108": 20,
+          "122": 8,
+          "151": 8,
+          "165": 32,
+          "152": 72,
+          "132": 20,
+          "149": 24,
+          "46": 8,
+          "21": 504,
+          "22": 4,
+          "20": 88,
+          "18": 36,
+          "162": 4,
+          "191": 8,
+          "213": 8,
+          "160": 16,
+          "102": 4,
+          "113": 48,
+          "126": 12,
+          "121": 16
+        }
+      },
+      "media": {
+        "rgb": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 9128
+        },
+        "depth": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 9128
+        },
+        "audio": {
+          "full_decode_passed": true,
+          "decode_exit_code": 0,
+          "decode_error_bytes": 0,
+          "decoded_frame_count": 15202
+        }
+      },
+      "audio_checks_passed": true
+    }
+  ],
+  "mpp": {
+    "input": {
+      "mode": "dual",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "main_bitrate_bps": 12000000,
+      "preview_width": 320,
+      "preview_height": 240,
+      "preview_bitrate_bps": 100000
+    },
+    "limits": {
+      "idr_frame_delay": 3,
+      "output_frame_delay": 4
+    },
+    "production_main_bitrate_bps": 2000000,
+    "production_binary_sha256": "fc59625a9cda00941c4532ccd6703077986b836f275339d290441a2b64084d18",
+    "production_sender_source_hash": "f1a27f542274a25e",
+    "results": {
+      "system": {
+        "start": "2026-09-24T22:17:34+08:00",
+        "end": "2026-09-24T22:17:51+08:00",
+        "exit_code": 1,
+        "requests": 10,
+        "failures": 8,
+        "max_idr_frame_delay": 28,
+        "max_output_frame_delay": 29,
+        "suppressed_request_log_count": 9,
+        "requests_detail": [
+          {
+            "request": 43,
+            "idr_frame": 43,
+            "observed_at": 44
+          },
+          {
+            "request": 90,
+            "idr_frame": 104,
+            "observed_at": 105
+          },
+          {
+            "request": 137,
+            "idr_frame": 164,
+            "observed_at": 165
+          },
+          {
+            "request": 184,
+            "idr_frame": 194,
+            "observed_at": 195
+          },
+          {
+            "request": 231,
+            "idr_frame": 254,
+            "observed_at": 255
+          },
+          {
+            "request": 278,
+            "idr_frame": 284,
+            "observed_at": 285
+          },
+          {
+            "request": 325,
+            "idr_frame": 344,
+            "observed_at": 345
+          },
+          {
+            "request": 372,
+            "idr_frame": 374,
+            "observed_at": 375
+          },
+          {
+            "request": 419,
+            "idr_frame": 434,
+            "observed_at": 435
+          },
+          {
+            "request": 466,
+            "idr_frame": 494,
+            "observed_at": 495
+          }
+        ]
+      },
+      "deployed": {
+        "start": "2026-09-24T22:18:24+08:00",
+        "end": "2026-09-24T22:18:42+08:00",
+        "exit_code": 0,
+        "requests": 10,
+        "failures": 0,
+        "max_idr_frame_delay": 0,
+        "max_output_frame_delay": 1,
+        "suppressed_request_log_count": 0,
+        "requests_detail": [
+          {
+            "request": 43,
+            "idr_frame": 43,
+            "observed_at": 44
+          },
+          {
+            "request": 90,
+            "idr_frame": 90,
+            "observed_at": 91
+          },
+          {
+            "request": 137,
+            "idr_frame": 137,
+            "observed_at": 138
+          },
+          {
+            "request": 184,
+            "idr_frame": 184,
+            "observed_at": 185
+          },
+          {
+            "request": 231,
+            "idr_frame": 231,
+            "observed_at": 232
+          },
+          {
+            "request": 278,
+            "idr_frame": 278,
+            "observed_at": 279
+          },
+          {
+            "request": 325,
+            "idr_frame": 325,
+            "observed_at": 326
+          },
+          {
+            "request": 372,
+            "idr_frame": 372,
+            "observed_at": 373
+          },
+          {
+            "request": 419,
+            "idr_frame": 419,
+            "observed_at": 420
+          },
+          {
+            "request": 466,
+            "idr_frame": 466,
+            "observed_at": 467
+          }
+        ],
+        "loaded_plugin_sha256_evidence": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d  /opt/gwv3/plugins/mpp-syncpoint-ca829e0/640637d13e82/libgstrockchipmpp.so"
+      }
+    }
+  },
+  "five_minute_audio_and_color": {
+    "passed": true,
+    "recording": "222813",
+    "window_seconds": 304.039646,
+    "rgb_frames": 9128,
+    "depth_frames": 9128,
+    "audio_decoded_frames": 15202,
+    "audio": {
+      "audio_duration_us": 304040000,
+      "expected_packets": 15202,
+      "received_packets": 15202,
+      "clock_sync_valid_packets": 15202,
+      "late_packets": 0,
+      "duplicate_packets": 0,
+      "silence_packets": 0,
+      "longest_no_input_ms": 0,
+      "quality_status": "complete"
+    },
+    "audio_hash_checks": {
+      "audio.opus": true,
+      "audio_meta.json": true,
+      "audio_timing.csv": true
+    },
+    "playback_event_counts": {
+      "wake-response:start": 13,
+      "wake-response:end": 13,
+      "photo-cue:start": 12,
+      "photo-cue:end": 12
+    },
+    "input_files_stable": true,
+    "rgb_color": {
+      "color_range": "pc",
+      "color_space": "smpte170m"
+    },
+    "all_decode_error_logs_empty": true
+  },
+  "five_minute_queue_samples": {
+    "record_queue_bytes": {
+      "min": 0,
+      "max": 26453986,
+      "last": 0
+    },
+    "record_queue_peak_bytes": {
+      "min": 0,
+      "max": 48429825,
+      "last": 48429825
+    },
+    "record_queue_oldest_age_ms": {
+      "min": 0,
+      "max": 2844,
+      "last": 0
+    },
+    "record_write_errors": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "depth_receive_delay_us": {
+      "min": 32922,
+      "max": 565832,
+      "last": 41453
+    },
+    "sender_depth_dropped_frames": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "sender_depth_send_failures": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "sender_rgb_dropped_frames": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    }
+  },
+  "software_regressions": [
+    {
+      "test": "test_power_sender_scope.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_power_button_service.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_recording_button_service.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_recording_led_service.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_voice_photo_burst.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_voice_tts_service.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_voice_audio_mixer.py",
+      "exit_code": 0
+    }
+  ]
+}
