@@ -1,0 +1,35 @@
+devices=1
+device index=0 sn=CV275610004S uid=4-1-2 conn=USB3.2
+exposure_api=156 max_exposure_api=50 max_range_cur=5000
+selected sn=CV275610004S name=Orbbec Gemini 305 fw=1.0.70 conn=USB3.2 uid=4-1-2
+property_support phase=before_start name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_range phase=before_start name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=before_start name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_range phase=before_start name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=before_start name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=before_start name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=639 y1_bottom=479
+property_support phase=before_start name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=4
+property_range phase=before_start name=COLOR_DENOISING_LEVEL cur=4 min=0 max=8 step=1 def=0
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+property_support phase=after_config name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_REFERENCE cur=1
+property_range phase=after_config name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=after_config name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_STRATEGY cur=0
+property_range phase=after_config name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=after_config name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=after_config name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=1279 y1_bottom=799
+property_support phase=after_config name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=after_config name=COLOR_DENOISING_LEVEL cur=4
+property_range phase=after_config name=COLOR_DENOISING_LEVEL cur=4 min=0 max=8 step=1 def=0
+[09/25 11:22:15.074226][warning][1163333][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200
+sample framesets_fps=17.6188 color_fps=15.6612 depth_fps=17.6188 both=16 timeouts=2
+sample framesets_fps=30.0157 color_fps=30.0157 depth_fps=30.0157 both=47 timeouts=2
+sample framesets_fps=30.0206 color_fps=30.0206 depth_fps=30.0206 both=78 timeouts=2
+[09/25 11:22:18.275486][warning][1163364][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200 [**1 logs in 3201ms, last: 11:22:15.274821**]
+sample framesets_fps=30.0354 color_fps=30.0354 depth_fps=30.0354 both=109 timeouts=2
+sample framesets_fps=29.9969 color_fps=29.9969 depth_fps=29.9969 both=139 timeouts=2
+summary seconds=6.01809 framesets=168 color=166 depth=168 both=166 timeouts=2 color_fps=27.5835 depth_fps=27.9158 color_id_delta=165 depth_id_delta=167 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=0 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested

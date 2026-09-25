@@ -1,0 +1,40 @@
+GROUP autoA
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=0
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+property_write_readback name=COLOR_DENOISING_LEVEL requested=0 actual=0 matches=1
+summary seconds=13.0015 framesets=378 color=376 depth=378 both=376 timeouts=2 color_fps=28.9197 depth_fps=29.0735 color_id_delta=375 depth_id_delta=377 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
+GROUP level4
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=0
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+property_write_readback name=COLOR_DENOISING_LEVEL requested=4 actual=4 matches=1
+summary seconds=13.0212 framesets=377 color=375 depth=377 both=375 timeouts=2 color_fps=28.7991 depth_fps=28.9527 color_id_delta=374 depth_id_delta=376 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
+GROUP level8
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=4
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+property_write_readback name=COLOR_DENOISING_LEVEL requested=8 actual=8 matches=1
+summary seconds=13.0025 framesets=380 color=378 depth=380 both=378 timeouts=2 color_fps=29.0713 depth_fps=29.2251 color_id_delta=377 depth_id_delta=379 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
+GROUP autoB
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=8
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+property_write_readback name=COLOR_DENOISING_LEVEL requested=0 actual=0 matches=1
+summary seconds=13.0121 framesets=378 color=376 depth=378 both=376 timeouts=2 color_fps=28.8961 depth_fps=29.0499 color_id_delta=375 depth_id_delta=377 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
+GROUP level2
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=2
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+summary seconds=13.0249 framesets=379 color=377 depth=379 both=377 timeouts=2 color_fps=28.9445 depth_fps=29.0981 color_id_delta=376 depth_id_delta=378 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
+GROUP autoC
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=0
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+summary seconds=13.0102 framesets=377 color=375 depth=377 both=375 timeouts=2 color_fps=28.8235 depth_fps=28.9772 color_id_delta=374 depth_id_delta=376 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=29 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested

@@ -1,0 +1,40 @@
+{
+  "samples": 33,
+  "metrics": {
+    "sender_rgb_input_fps": {
+      "min": 28.9867,
+      "max": 30.88,
+      "mean": 29.925163636363635
+    },
+    "sender_depth_input_fps": {
+      "min": 28.9999,
+      "max": 30.9411,
+      "mean": 29.98569696969697
+    },
+    "sender_rgb_sent_fps": {
+      "min": 29.8423,
+      "max": 30.9623,
+      "mean": 29.985836363636363
+    },
+    "sender_depth_sent_fps": {
+      "min": 28.9113,
+      "max": 30.9622,
+      "mean": 30.016000000000002
+    },
+    "rgb_receive_delay_us": {
+      "min": 32820,
+      "max": 43136,
+      "mean": 37491.21212121212
+    },
+    "depth_receive_delay_us": {
+      "min": 15158,
+      "max": 32219,
+      "mean": 22670.454545454544
+    },
+    "record_queue_oldest_age_ms": {
+      "min": 0,
+      "max": 0,
+      "mean": 0
+    }
+  }
+}

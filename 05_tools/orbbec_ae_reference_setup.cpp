@@ -1,4 +1,4 @@
-// Standalone, explicit-serial DEVICE_AE_REFERENCE setter for ExecStartPre.
+// Explicit-serial AE reference and optional native color denoising for ExecStartPre.
 // No pipeline or stream is created. All arguments are checked before SDK setup.
 #include "libobsensor/hpp/Context.hpp"
 #include "libobsensor/hpp/Device.hpp"
@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -21,14 +23,18 @@ constexpr OBPropertyID kReferenceProperty = OB_PROP_DEVICE_AE_REFERENCE_INT;
 struct Options {
     std::string serial;
     int32_t reference = -1;
+    std::optional<int32_t> denoise_level;
 };
 
 void usage(std::ostream &out, const char *program) {
-    out << "Usage: " << program << " --serial SN --reference 0|1\n"
+    out << "Usage: " << program << " --serial SN --reference 0|1 [--denoise-level 0..8]\n"
         << "       " << program << " --help\n\n"
         << "Explicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n"
         << "  0 = depth based (also the explicit rollback command)\n"
         << "  1 = color based\n"
+        << "Optional COLOR_DENOISING_LEVEL: 0 = automatic; 1..8 = increasing strength.\n"
+        << "Native color denoising requires auto exposure to be enabled.\n"
+        << "Omitting --denoise-level leaves that property unchanged.\n"
         << "Print support, current value and range; write and verify readback.\n"
         << "No default serial/value, streaming, retries or automatic restoration.\n"
         << "No arguments or invalid arguments fail before SDK initialization.\n"
@@ -42,7 +48,7 @@ Options parse_options(int argc, char **argv) {
     bool have_reference = false;
     for(int i = 1; i < argc; ++i) {
         const std::string argument(argv[i]);
-        if(argument != "--serial" && argument != "--reference") {
+        if(argument != "--serial" && argument != "--reference" && argument != "--denoise-level") {
             throw std::invalid_argument("unknown argument: " + argument);
         }
         if(i + 1 >= argc) {
@@ -58,6 +64,15 @@ Options parse_options(int argc, char **argv) {
             }
             options.serial = value;
             have_serial = true;
+        }
+        else if(argument == "--denoise-level") {
+            if(options.denoise_level) {
+                throw std::invalid_argument("duplicate --denoise-level");
+            }
+            if(value.size() != 1 || value[0] < '0' || value[0] > '8') {
+                throw std::invalid_argument("--denoise-level must be exactly one digit from 0 to 8");
+            }
+            options.denoise_level = value[0] - '0';
         }
         else {
             if(have_reference) {
@@ -114,43 +129,58 @@ int configure(const Options &options) {
     }
     std::cout << "serial=" << opened_serial << " requested_reference=" << options.reference << '\n';
 
-    const bool readable = device->isPropertySupported(kReferenceProperty, OB_PERMISSION_READ);
-    const bool writable = device->isPropertySupported(kReferenceProperty, OB_PERMISSION_WRITE);
-    std::cout << "DEVICE_AE_REFERENCE support_read=" << readable << " support_write=" << writable << '\n';
-    if(!readable) {
-        std::cerr << "ERROR: DEVICE_AE_REFERENCE is not readable; verified setup is unavailable\n";
-        return kPreconditionError;
+    struct Property {
+        OBPropertyID id;
+        const char *name;
+        int32_t requested;
+        int32_t before = 0;
+    };
+    std::vector<Property> properties{{kReferenceProperty, "DEVICE_AE_REFERENCE", options.reference}};
+    if(options.denoise_level) {
+        properties.push_back({OB_PROP_COLOR_DENOISING_LEVEL_INT, "COLOR_DENOISING_LEVEL", *options.denoise_level});
+    }
+    // Validate every requested property before writing any of them.
+    for(auto &property : properties) {
+        const bool readable = device->isPropertySupported(property.id, OB_PERMISSION_READ);
+        const bool writable = device->isPropertySupported(property.id, OB_PERMISSION_WRITE);
+        std::cout << property.name << " support_read=" << readable << " support_write=" << writable << '\n';
+        if(!readable) {
+            std::cerr << "ERROR: " << property.name << " is not readable; verified setup is unavailable\n";
+            return kPreconditionError;
+        }
+
+        property.before = device->getIntProperty(property.id);
+        std::cout << property.name << " current=" << property.before << '\n';
+        const OBIntPropertyRange range = device->getIntPropertyRange(property.id);
+        std::cout << property.name << " range_min=" << range.min << " range_max=" << range.max
+                  << " range_step=" << range.step << " range_default=" << range.def
+                  << " range_current=" << range.cur << '\n';
+        if(!writable) {
+            std::cerr << "ERROR: " << property.name << " is not writable\n";
+            return kPreconditionError;
+        }
+        if(range.min > range.max || range.step <= 0) {
+            std::cerr << "ERROR: invalid integer property range; refusing the write\n";
+            return kPreconditionError;
+        }
+        const int64_t offset = static_cast<int64_t>(property.requested) - range.min;
+        if(property.requested < range.min || property.requested > range.max || offset % range.step != 0) {
+            std::cerr << "ERROR: requested " << property.name << " is outside the supported integer range\n";
+            return kPreconditionError;
+        }
     }
 
-    const int32_t before = device->getIntProperty(kReferenceProperty);
-    std::cout << "DEVICE_AE_REFERENCE current=" << before << '\n';
-    const OBIntPropertyRange range = device->getIntPropertyRange(kReferenceProperty);
-    std::cout << "DEVICE_AE_REFERENCE range_min=" << range.min << " range_max=" << range.max
-              << " range_step=" << range.step << " range_default=" << range.def
-              << " range_current=" << range.cur << '\n';
-    if(!writable) {
-        std::cerr << "ERROR: DEVICE_AE_REFERENCE is not writable\n";
-        return kPreconditionError;
-    }
-    if(range.min > range.max || range.step <= 0) {
-        std::cerr << "ERROR: invalid integer property range; refusing the write\n";
-        return kPreconditionError;
-    }
-    const int64_t offset = static_cast<int64_t>(options.reference) - range.min;
-    if(options.reference < range.min || options.reference > range.max || offset % range.step != 0) {
-        std::cerr << "ERROR: requested reference is outside the supported integer range\n";
-        return kPreconditionError;
-    }
-
-    std::cout << "DEVICE_AE_REFERENCE writing=" << options.reference << '\n';
-    device->setIntProperty(kReferenceProperty, options.reference);
-    const int32_t after = device->getIntProperty(kReferenceProperty);
-    const bool verified = after == options.reference;
-    std::cout << "DEVICE_AE_REFERENCE before=" << before << " requested=" << options.reference
-              << " readback=" << after << " verified=" << verified << '\n';
-    if(!verified) {
-        std::cerr << "ERROR: readback did not match; no automatic restoration was attempted\n";
-        return kReadbackMismatch;
+    for(const auto &property : properties) {
+        std::cout << property.name << " writing=" << property.requested << '\n';
+        device->setIntProperty(property.id, property.requested);
+        const int32_t after = device->getIntProperty(property.id);
+        const bool verified = after == property.requested;
+        std::cout << property.name << " before=" << property.before << " requested=" << property.requested
+                  << " readback=" << after << " verified=" << verified << '\n';
+        if(!verified) {
+            std::cerr << "ERROR: readback did not match; no automatic restoration was attempted\n";
+            return kReadbackMismatch;
+        }
     }
     return 0;
 }

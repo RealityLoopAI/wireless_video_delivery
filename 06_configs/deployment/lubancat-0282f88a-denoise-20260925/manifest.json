@@ -1,0 +1,39 @@
+{
+  "camera_key": "lubancat-0282f88a_cam02",
+  "serial": "CV275610004S",
+  "sender_ip": "192.168.1.91",
+  "receiver_ip": "192.168.1.196",
+  "denoise_level": 4,
+  "zero_means": "automatic, not disabled",
+  "property": "OB_PROP_COLOR_DENOISING_LEVEL_INT (5525)",
+  "sdk": "2.8.6",
+  "firmware": "1.0.70",
+  "helper_path": "/opt/gwv3/camera-controls/ae-denoise-f02b9fbbec70/ae_reference_setup",
+  "backup_drop_in": "/var/backups/gwv3-denoise-20260925/70-color-ae-reference.before.conf",
+  "remote_hashes": {
+    "/etc/gwv3/sender.json": "e5a84f2629cbe854715f88c6a0813e18cb194c6ad573cc29449c46a73d9d4ced",
+    "/etc/systemd/system/gwv3-gemini-sender.service.d/70-color-ae-reference.conf": "9654511aa8f40e365437f2ac7d1edacf7a35bd93eaacfc91406d8c537c479810",
+    "/opt/gwv3/camera-controls/ae-denoise-f02b9fbbec70/ae_reference_setup": "f02b9fbbec709412d4d9b55a2a510b72536b26365de115c61505e1838ec81b1e",
+    "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender": "fc59625a9cda00941c4532ccd6703077986b836f275339d290441a2b64084d18",
+    "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/640637d13e82/libgstrockchipmpp.so": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d"
+  },
+  "raw_media_in_git": false,
+  "helper_source_sha256": "18e92d73bb6a5877b3bc2e4c86f1f20b83b3cbbb8a72d1e9ad821f9d8b67d58d",
+  "file_hash_basis": "SHA256 of archived Git blob bytes; live-device hashes are stored separately.",
+  "files": {
+    "70-color-ae-reference.conf": "9654511aa8f40e365437f2ac7d1edacf7a35bd93eaacfc91406d8c537c479810",
+    "cli-tests.txt": "9fce8b5b4f90507cd1e53ff513c84aef99b6847365e7286acdf38d9668a4f042",
+    "compare_noise.py": "dfa0194398fc0d731fea1015f7a8d5211abe25280a5316277c34554c29f7852f",
+    "comparison.json": "8f664c35debc7e62a9c1f84d5d8d4185aa5e396b44b7dabda9e6950a89931534",
+    "native-comparison.txt": "57db189bce89c3369bb72f6d637d4119ae4db37d29df78a7c98a9d8798bc88c0",
+    "record-runtime-summary.json": "d3b5c9a1c80e420738088c82846b358b742d03e09bec0513a68754030ecb1a26",
+    "recording-acceptance.json": "2640822eb8cc244e3a382f9505077e69bee789be73bd9e575e6eb543d2351c4e",
+    "recording_ready.json": "f77a842d8ef91b902d58e97e0014671e4db120deebe6e461b4a80bebe6ceec4a",
+    "sender.json": "e5a84f2629cbe854715f88c6a0813e18cb194c6ad573cc29449c46a73d9d4ced",
+    "setup-legacy-preserves.txt": "55a4b5d980a1e071c4003a66534edd958c2fddf65996954b33d0a8adeba213c6",
+    "setup-level4.txt": "7220ffcc2e2a90730d76b0bdaf8576cb25511ac83332d172b7cae23eff93fa7f",
+    "setup-reopen.txt": "333ae7329fa8197a3a3d60bbdd928dea96d86d5acecd5271e03bf7e517c36283",
+    "startup-settings.txt": "cb0bdd1c26def42278d0f653f3b65a6339e6e35ec440f6dd49e03fc770e295e5",
+    "test-evidence.json": "5a5fc488fe5dc913948a313d5262e3060d081bc427a158af9501b335f6aabd72"
+  }
+}

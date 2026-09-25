@@ -1,0 +1,11 @@
+serial=CV275610004S requested_reference=1
+DEVICE_AE_REFERENCE support_read=1 support_write=1
+DEVICE_AE_REFERENCE current=1
+DEVICE_AE_REFERENCE range_min=0 range_max=1 range_step=1 range_default=0 range_current=1
+COLOR_DENOISING_LEVEL support_read=1 support_write=1
+COLOR_DENOISING_LEVEL current=0
+COLOR_DENOISING_LEVEL range_min=0 range_max=8 range_step=1 range_default=0 range_current=0
+DEVICE_AE_REFERENCE writing=1
+DEVICE_AE_REFERENCE before=1 requested=1 readback=1 verified=1
+COLOR_DENOISING_LEVEL writing=4
+COLOR_DENOISING_LEVEL before=0 requested=4 readback=4 verified=1

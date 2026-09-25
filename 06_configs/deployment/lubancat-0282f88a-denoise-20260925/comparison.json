@@ -1,0 +1,433 @@
+{
+  "rois": {
+    "dark_bench": [
+      5,
+      405,
+      60,
+      480
+    ],
+    "gray_scale_front": [
+      180,
+      675,
+      270,
+      720
+    ],
+    "light_wall": [
+      1140,
+      140,
+      1250,
+      320
+    ],
+    "bottle_text": [
+      55,
+      130,
+      150,
+      230
+    ]
+  },
+  "groups": {
+    "autoA": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "36"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 58.69289016723633,
+          "temporal_rms_y_cb_cr_median": [
+            1.8309781551361084,
+            1.1573981046676636,
+            1.3453752994537354
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.9139440059661865,
+            0.47333934903144836,
+            0.5078279376029968
+          ],
+          "mean_frame_luma_gradient_p95": 1.871747612953186
+        },
+        "gray_scale_front": {
+          "mean_y": 116.10198974609375,
+          "temporal_rms_y_cb_cr_median": [
+            1.587839126586914,
+            1.0588644742965698,
+            1.3128211498260498
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7208681702613831,
+            0.41379985213279724,
+            0.44049006700515747
+          ],
+          "mean_frame_luma_gradient_p95": 1.359032154083252
+        },
+        "light_wall": {
+          "mean_y": 162.66851806640625,
+          "temporal_rms_y_cb_cr_median": [
+            1.3537826538085938,
+            0.7665334343910217,
+            1.0832505226135254
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.6843730211257935,
+            0.3549373149871826,
+            0.40023720264434814
+          ],
+          "mean_frame_luma_gradient_p95": 0.8831886053085327
+        },
+        "bottle_text": {
+          "mean_y": 111.76103973388672,
+          "temporal_rms_y_cb_cr_median": [
+            3.2503914833068848,
+            1.5033555030822754,
+            1.4403672218322754
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            4.130675315856934,
+            0.6772234439849854,
+            0.664574146270752
+          ],
+          "mean_frame_luma_gradient_p95": 38.77763366699219
+        }
+      }
+    },
+    "level4": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "40"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 61.97589111328125,
+          "temporal_rms_y_cb_cr_median": [
+            1.7717989683151245,
+            1.041717529296875,
+            1.3399229049682617
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7663072347640991,
+            0.432010680437088,
+            0.47453877329826355
+          ],
+          "mean_frame_luma_gradient_p95": 1.7315011024475098
+        },
+        "gray_scale_front": {
+          "mean_y": 121.47056579589844,
+          "temporal_rms_y_cb_cr_median": [
+            1.483426809310913,
+            0.8151497840881348,
+            1.127457618713379
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.5758293271064758,
+            0.32105085253715515,
+            0.3615514636039734
+          ],
+          "mean_frame_luma_gradient_p95": 1.2777260541915894
+        },
+        "light_wall": {
+          "mean_y": 167.0214080810547,
+          "temporal_rms_y_cb_cr_median": [
+            1.1184232234954834,
+            0.3609035015106201,
+            0.9198201298713684
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.5013635158538818,
+            0.22813282907009125,
+            0.3042912483215332
+          ],
+          "mean_frame_luma_gradient_p95": 0.689654529094696
+        },
+        "bottle_text": {
+          "mean_y": 116.37273406982422,
+          "temporal_rms_y_cb_cr_median": [
+            2.5302951335906982,
+            1.3810186386108398,
+            1.3155978918075562
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            2.7510902881622314,
+            0.6170269846916199,
+            0.5755956172943115
+          ],
+          "mean_frame_luma_gradient_p95": 28.380966186523438
+        }
+      }
+    },
+    "level8": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "39"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 60.00031661987305,
+          "temporal_rms_y_cb_cr_median": [
+            1.5799651145935059,
+            1.177878975868225,
+            1.1839302778244019
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.650786817073822,
+            0.43053755164146423,
+            0.4641820788383484
+          ],
+          "mean_frame_luma_gradient_p95": 1.4325884580612183
+        },
+        "gray_scale_front": {
+          "mean_y": 118.28899383544922,
+          "temporal_rms_y_cb_cr_median": [
+            1.3386006355285645,
+            0.9325058460235596,
+            1.0910394191741943
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.5057607889175415,
+            0.3563688099384308,
+            0.3634187877178192
+          ],
+          "mean_frame_luma_gradient_p95": 1.1742079257965088
+        },
+        "light_wall": {
+          "mean_y": 164.29049682617188,
+          "temporal_rms_y_cb_cr_median": [
+            0.9365253448486328,
+            0.6034301519393921,
+            0.9486692547798157
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.404155969619751,
+            0.26479554176330566,
+            0.3057899475097656
+          ],
+          "mean_frame_luma_gradient_p95": 0.5613297820091248
+        },
+        "bottle_text": {
+          "mean_y": 113.03021240234375,
+          "temporal_rms_y_cb_cr_median": [
+            1.9774982929229736,
+            1.4245959520339966,
+            1.2795515060424805
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            1.695540189743042,
+            0.6008101105690002,
+            0.5306093096733093
+          ],
+          "mean_frame_luma_gradient_p95": 17.1231746673584
+        }
+      }
+    },
+    "autoB": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "39"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 59.98908233642578,
+          "temporal_rms_y_cb_cr_median": [
+            1.8510102033615112,
+            1.154128074645996,
+            1.3662281036376953
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.9485797882080078,
+            0.48694556951522827,
+            0.5200594663619995
+          ],
+          "mean_frame_luma_gradient_p95": 1.9024986028671265
+        },
+        "gray_scale_front": {
+          "mean_y": 118.41210174560547,
+          "temporal_rms_y_cb_cr_median": [
+            1.638521671295166,
+            1.0313453674316406,
+            1.3674914836883545
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7608950138092041,
+            0.43112218379974365,
+            0.454428106546402
+          ],
+          "mean_frame_luma_gradient_p95": 1.364143967628479
+        },
+        "light_wall": {
+          "mean_y": 164.33921813964844,
+          "temporal_rms_y_cb_cr_median": [
+            1.3608198165893555,
+            0.7712806463241577,
+            1.0836354494094849
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7032479047775269,
+            0.3638272285461426,
+            0.4029216766357422
+          ],
+          "mean_frame_luma_gradient_p95": 0.8991943597793579
+        },
+        "bottle_text": {
+          "mean_y": 113.44942474365234,
+          "temporal_rms_y_cb_cr_median": [
+            3.274244546890259,
+            1.5446746349334717,
+            1.444554090499878
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            4.151392936706543,
+            0.6862956881523132,
+            0.6602479815483093
+          ],
+          "mean_frame_luma_gradient_p95": 39.301361083984375
+        }
+      }
+    },
+    "level2": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "39"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 58.37898254394531,
+          "temporal_rms_y_cb_cr_median": [
+            1.595808744430542,
+            1.1786844730377197,
+            1.2949070930480957
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7291454672813416,
+            0.443572461605072,
+            0.4810907244682312
+          ],
+          "mean_frame_luma_gradient_p95": 1.411515712738037
+        },
+        "gray_scale_front": {
+          "mean_y": 117.73089599609375,
+          "temporal_rms_y_cb_cr_median": [
+            1.3136494159698486,
+            1.1054571866989136,
+            1.3103861808776855
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.5507531762123108,
+            0.40785184502601624,
+            0.4063774347305298
+          ],
+          "mean_frame_luma_gradient_p95": 1.241282343864441
+        },
+        "light_wall": {
+          "mean_y": 163.83770751953125,
+          "temporal_rms_y_cb_cr_median": [
+            1.0818870067596436,
+            0.7398386001586914,
+            1.0863280296325684
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.5042470097541809,
+            0.32716870307922363,
+            0.363618940114975
+          ],
+          "mean_frame_luma_gradient_p95": 0.6632840037345886
+        },
+        "bottle_text": {
+          "mean_y": 111.1088638305664,
+          "temporal_rms_y_cb_cr_median": [
+            2.979701280593872,
+            1.5701649188995361,
+            1.494704008102417
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            3.5326523780822754,
+            0.678497850894928,
+            0.6568555235862732
+          ],
+          "mean_frame_luma_gradient_p95": 34.17559051513672
+        }
+      }
+    },
+    "autoC": {
+      "frames": 29,
+      "exposure_raw": [
+        "50"
+      ],
+      "gain": [
+        "37"
+      ],
+      "rois": {
+        "dark_bench": {
+          "mean_y": 56.625614166259766,
+          "temporal_rms_y_cb_cr_median": [
+            1.8389060497283936,
+            1.1876609325408936,
+            1.2724214792251587
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.9366741180419922,
+            0.46005770564079285,
+            0.5026075839996338
+          ],
+          "mean_frame_luma_gradient_p95": 1.7684661149978638
+        },
+        "gray_scale_front": {
+          "mean_y": 115.03873443603516,
+          "temporal_rms_y_cb_cr_median": [
+            1.568812608718872,
+            1.1788219213485718,
+            1.2078148126602173
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.7158843278884888,
+            0.4469088912010193,
+            0.4265257716178894
+          ],
+          "mean_frame_luma_gradient_p95": 1.311957836151123
+        },
+        "light_wall": {
+          "mean_y": 161.68431091308594,
+          "temporal_rms_y_cb_cr_median": [
+            1.3131706714630127,
+            0.9250638484954834,
+            1.1078028678894043
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            0.6773234009742737,
+            0.3983595669269562,
+            0.4105411767959595
+          ],
+          "mean_frame_luma_gradient_p95": 0.8648151159286499
+        },
+        "bottle_text": {
+          "mean_y": 108.78346252441406,
+          "temporal_rms_y_cb_cr_median": [
+            3.29325270652771,
+            1.5227572917938232,
+            1.3803696632385254
+          ],
+          "spatial_median_residual_y_cb_cr_rms": [
+            4.193732738494873,
+            0.6908502578735352,
+            0.6397963762283325
+          ],
+          "mean_frame_luma_gradient_p95": 39.396305084228516
+        }
+      }
+    }
+  },
+  "method": "Median adjacent-frame temporal RMS / sqrt(2); includes motion and illumination changes. Spatial residual includes texture. Not a calibrated sensor noise measurement."
+}

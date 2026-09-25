@@ -1,0 +1,420 @@
+{
+  "directory": "\\\\REALITYLOOP\\video_database\\lubancat-0282f88a_cam02\\2026-09-25\\112331",
+  "duration_seconds": 66.045733,
+  "thresholds": {
+    "coverage_min": 0.98,
+    "edge_lag_max_us": 500000,
+    "frame_gap_max_us": 500000,
+    "rgb_depth_span_delta_max_us": 500000,
+    "g305_color_exposure_raw_max": 100,
+    "g305_color_exposure_raw_unit_us": 100
+  },
+  "checks": {
+    "ready_and_finalized": {
+      "passed": true,
+      "details": null
+    },
+    "stored_quality_complete": {
+      "passed": true,
+      "details": null
+    },
+    "ready_meta_quality_consistency": {
+      "passed": true,
+      "details": {}
+    },
+    "minimum_requested_duration": {
+      "passed": true,
+      "details": {
+        "requested_min_seconds": 60.0,
+        "actual_seconds": 66.045733
+      }
+    },
+    "rgb_depth_span_delta_le_500ms": {
+      "passed": true,
+      "details": null
+    },
+    "span_delta_matches_meta": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_auto_exposure_on_all_frames": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_exposure_raw_le_100_all_frames": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_auto_exposure_on_after_first_seconds": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_exposure_raw_le_100_after_first_seconds": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_full_decode": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_full_range_bt601_metadata": {
+      "passed": true,
+      "details": {
+        "color_range": "pc",
+        "color_space": "smpte170m"
+      }
+    },
+    "rgb_csv_index_pts_match_media": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_valid_frames_all_recorded": {
+      "passed": true,
+      "details": null
+    },
+    "rgb_meta_frame_count_matches_decode": {
+      "passed": true,
+      "details": null
+    },
+    "depth_full_decode": {
+      "passed": true,
+      "details": null
+    },
+    "depth_meta_csv_decode_frame_counts": {
+      "passed": true,
+      "details": {
+        "meta": 1983,
+        "csv_all_rows": 1983,
+        "decoded": 1983
+      }
+    },
+    "audio_full_decode": {
+      "passed": true,
+      "details": null
+    },
+    "finalized_inputs_unchanged_during_analysis": {
+      "passed": true,
+      "details": null
+    }
+  },
+  "rgb_depth_capture_span_delta_us": 10254,
+  "failed_checks": [],
+  "passed": true,
+  "streams": {
+    "rgb": {
+      "quality": {
+        "valid_frames": 1983,
+        "nominal_fps": 30.0,
+        "coverage_ratio": 1.0008216579260314,
+        "first_frame_lag_us": 13867,
+        "end_frame_lag_us": 3894,
+        "capture_span_us": 66027972,
+        "max_frame_gap_us": 45509,
+        "timestamp_out_of_order_count": 0
+      },
+      "checks": {
+        "coverage_ge_98_percent": {
+          "passed": true,
+          "details": null
+        },
+        "first_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "tail_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "max_gap_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "no_global_timestamp_backwards": {
+          "passed": true,
+          "details": null
+        },
+        "clock_valid_all_rows": {
+          "passed": true,
+          "details": null
+        },
+        "global_timestamps_present": {
+          "passed": true,
+          "details": null
+        },
+        "source_ids_contiguous": {
+          "passed": true,
+          "details": null
+        },
+        "valid_rows_inside_window": {
+          "passed": true,
+          "details": []
+        },
+        "csv_metrics_match_meta": {
+          "passed": true,
+          "details": {}
+        }
+      },
+      "receive_minus_capture_ms": {
+        "count": 1983,
+        "min": 25.254,
+        "p50": 37.095,
+        "p95": 43.9538,
+        "p99": 54.967800000000025,
+        "max": 124.095,
+        "mean": 38.09337670196672
+      },
+      "continuity_all_rows_in_csv_order": {
+        "frame_id": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        },
+        "timestamp_us": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        },
+        "global_timestamp_us": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        }
+      }
+    },
+    "depth": {
+      "quality": {
+        "valid_frames": 1983,
+        "nominal_fps": 30.0,
+        "coverage_ratio": 1.0008216579260314,
+        "first_frame_lag_us": 12228,
+        "end_frame_lag_us": 15787,
+        "capture_span_us": 66017718,
+        "max_frame_gap_us": 45551,
+        "timestamp_out_of_order_count": 0
+      },
+      "checks": {
+        "coverage_ge_98_percent": {
+          "passed": true,
+          "details": null
+        },
+        "first_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "tail_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "max_gap_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "no_global_timestamp_backwards": {
+          "passed": true,
+          "details": null
+        },
+        "clock_valid_all_rows": {
+          "passed": true,
+          "details": null
+        },
+        "global_timestamps_present": {
+          "passed": true,
+          "details": null
+        },
+        "source_ids_contiguous": {
+          "passed": true,
+          "details": null
+        },
+        "valid_rows_inside_window": {
+          "passed": true,
+          "details": []
+        },
+        "csv_metrics_match_meta": {
+          "passed": true,
+          "details": {}
+        }
+      },
+      "receive_minus_capture_ms": {
+        "count": 1983,
+        "min": 12.041,
+        "p50": 23.981,
+        "p95": 32.2001,
+        "p99": 45.88452000000002,
+        "max": 123.863,
+        "mean": 24.417442763489664
+      },
+      "continuity_all_rows_in_csv_order": {
+        "frame_id": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        },
+        "timestamp_us": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        },
+        "global_timestamp_us": {
+          "missing_values": 0,
+          "duplicate_count": 0,
+          "backward_count": 0,
+          "missing_frame_id_count": 0,
+          "gaps": [],
+          "duplicates": [],
+          "backwards": []
+        }
+      }
+    }
+  },
+  "media": {
+    "rgb": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 1983,
+      "probe_exit_code": 0,
+      "decode_exit_code": 0,
+      "profile": {
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 800,
+        "pix_fmt": "yuvj420p",
+        "color_range": "pc",
+        "color_space": "smpte170m",
+        "r_frame_rate": "30/1"
+      }
+    },
+    "depth": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 1983,
+      "probe_exit_code": 0,
+      "decode_exit_code": 0,
+      "profile": {
+        "codec_name": "ffv1",
+        "width": 320,
+        "height": 180,
+        "pix_fmt": "gray16le",
+        "color_range": null,
+        "color_space": null,
+        "r_frame_rate": "30/1"
+      }
+    },
+    "audio": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 3303,
+      "probe_exit_code": 0,
+      "decode_exit_code": 0,
+      "profile": {
+        "codec_name": "opus",
+        "width": null,
+        "height": null,
+        "pix_fmt": null,
+        "color_range": null,
+        "color_space": null,
+        "r_frame_rate": "0/0"
+      }
+    }
+  },
+  "exposure": {
+    "rgb_frames": 1983,
+    "source_field": "rgb_exposure_us",
+    "source_field_contains": "G305 raw metadata in 100-us ticks; NOT microseconds",
+    "raw_exposure_100us_ticks": {
+      "count": 1983,
+      "min": 50,
+      "p50": 50.0,
+      "p95": 50.0,
+      "p99": 50.0,
+      "max": 50,
+      "mean": 50
+    },
+    "exposure_ms": {
+      "count": 1983,
+      "min": 5.0,
+      "p50": 5.0,
+      "p95": 5.0,
+      "p99": 5.0,
+      "max": 5.0,
+      "mean": 5.0
+    },
+    "raw_missing_or_nonpositive": 0,
+    "raw_over_100_count": 0,
+    "raw_histogram": {
+      "50": 1983
+    },
+    "auto_exposure_counts": {
+      "1": 1983
+    },
+    "gain": {
+      "count": 1983,
+      "min": 39,
+      "p50": 39.0,
+      "p95": 39.0,
+      "p99": 39.0,
+      "max": 39,
+      "mean": 39
+    },
+    "gain_histogram": {
+      "39": 1983
+    }
+  },
+  "audio_passed": true,
+  "rgb_pts_mapping": {
+    "recorded_csv_rows": 1983,
+    "decoded_frames": 1983,
+    "indices_zero_based_contiguous_in_csv_order": true,
+    "frame_count_identical": true,
+    "pts_origin_global_us": 1790306611857670,
+    "initial_muxer_offset_us": -867.0,
+    "all_pts_offsets_us": {
+      "count": 1983,
+      "min": -867.0,
+      "p50": -867.0,
+      "p95": -867.0,
+      "p99": -867.0,
+      "max": -867.0,
+      "mean": -867.0
+    },
+    "relative_pts_residual_us": {
+      "count": 1983,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0,
+      "mean": 0.0
+    },
+    "initial_offset_tolerance_us": 1000,
+    "relative_pts_tolerance_us": 1,
+    "note": "PTS tolerances reflect MP4 start edit-list rounding and 1-us video timebase; quality thresholds remain 500ms.",
+    "passed": true
+  },
+  "additional_checks": {
+    "rgb_1280x800": true,
+    "depth_320x180_uint16": true,
+    "photo_1280x800": true,
+    "all_exposures_at_most_5ms": true,
+    "all_rgb_frames_ae_on": true,
+    "color_calibration_dimensions": true,
+    "depth_calibration_dimensions": true
+  },
+  "scope": "66.045733-second final recording, not long-duration, restart stress, or motion-specific denoising validation."
+}

@@ -1,0 +1,6 @@
+COLOR_DENOISING_LEVEL support_read=1 support_write=1
+COLOR_DENOISING_LEVEL current=4
+COLOR_DENOISING_LEVEL range_min=0 range_max=8 range_step=1 range_default=0 range_current=4
+DEVICE_AE_REFERENCE before=1 requested=1 readback=1 verified=1
+COLOR_DENOISING_LEVEL writing=4
+COLOR_DENOISING_LEVEL before=4 requested=4 readback=4 verified=1

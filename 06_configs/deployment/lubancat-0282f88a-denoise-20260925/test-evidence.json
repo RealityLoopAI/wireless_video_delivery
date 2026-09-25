@@ -1,0 +1,13 @@
+{
+  "baseline_help_expected_failure": "Native color denoising option missing in old helper",
+  "native_build": "g++ C++17 -O2 -Wall -Wextra -Wpedantic, exit 0",
+  "cli_help_and_invalid_argument_cases": {
+    "passed": true,
+    "invalid_cases": 15
+  },
+  "missing_device_cases": {
+    "legacy": 3,
+    "with_denoise": 3,
+    "both_reported_zero_matches": true
+  }
+}
