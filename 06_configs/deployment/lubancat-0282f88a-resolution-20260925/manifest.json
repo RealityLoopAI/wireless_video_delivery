@@ -1,0 +1,43 @@
+{
+  "camera_key": "lubancat-0282f88a_cam02",
+  "serial": "CV275610004S",
+  "sender_ip": "192.168.1.91",
+  "receiver_ip": "192.168.1.196",
+  "rgb": {
+    "width": 1280,
+    "height": 800,
+    "fps": 30,
+    "format": "mjpg"
+  },
+  "depth": {
+    "width": 320,
+    "height": 180,
+    "fps": 30,
+    "format": "y16"
+  },
+  "depth_compression": "zlib",
+  "ae_reference": 1,
+  "max_color_exposure_raw": 50,
+  "color_exposure_unit_us": 100,
+  "remote_hashes": {
+    "/etc/gwv3/sender.json": "e5a84f2629cbe854715f88c6a0813e18cb194c6ad573cc29449c46a73d9d4ced",
+    "/home/cat/wireless_video_delivery/12_build/bin/gemini_sender": "fc59625a9cda00941c4532ccd6703077986b836f275339d290441a2b64084d18",
+    "/opt/gwv3/plugins/mpp-syncpoint-ca829e0/640637d13e82/libgstrockchipmpp.so": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d"
+  },
+  "backup_before_rgb_change": "/var/backups/gwv3-resolution-20260925/sender.before.json",
+  "backup_before_depth_change": "/var/backups/gwv3-resolution-20260925/sender.rgb1280-before-depth-change.json",
+  "source_photos_and_media_archived_in_git": false,
+  "file_hash_basis": "SHA256 of archived Git blob bytes; Git normalizes text line endings. Device hashes use exact live bytes.",
+  "files": {
+    "calibration.json": "f07c738ec8d5fca707c47717646a51b83d7e0af4965f8c54de7128e387763940",
+    "live-verification.json": "2cb8ffceed0da480a19f5ab583f50e6fcd2b6f53c2d050b7844ee625faf549c1",
+    "native-probe.txt": "5d679c6064d10bd28ded824796fd276cb4dd30267ba34d2bc018799f7806e619",
+    "previous-depth-diagnosis.md": "30b3adf6e41e29575cc514bb3807b95649d394ba461c913e93259f2d2a78ccda",
+    "recording-acceptance.json": "6962b6cc165569a2a561f1e8b7beaaf75bcbff38a852dac095cfad063fae36c0",
+    "recording_ready.json": "69b70a5681242a9b0eccbb0e8accfbacb8f758ae0905b8944fc91ef2fdcca4c7",
+    "runtime-events.txt": "cdc543fd53eee0e41fce3478d9b1ebc4756f94d43d99d5ebb2ea2e7edd0d1f7b",
+    "runtime-summary.json": "77959f44b783bc2397269c2cc465eb3c0b43e4da1b8f31cde70e62ed8d751018",
+    "sender.before.json": "efa93d0eed9cd3cdeeb47668156d276336ba388ee3c87a3534c4e1ea29cc2394",
+    "sender.json": "e5a84f2629cbe854715f88c6a0813e18cb194c6ad573cc29449c46a73d9d4ced"
+  }
+}

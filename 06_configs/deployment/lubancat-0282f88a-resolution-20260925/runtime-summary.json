@@ -1,0 +1,62 @@
+{
+  "samples": 90,
+  "first": "2026-09-25 11:01:31",
+  "last": "2026-09-25 11:03:00",
+  "metrics": {
+    "rgb_input_fps": {
+      "min": 29.74,
+      "max": 30.95,
+      "mean": 30.025666666666666
+    },
+    "depth_input_fps": {
+      "min": 29.74,
+      "max": 30.98,
+      "mean": 30.025666666666666
+    },
+    "depth_sent_fps": {
+      "min": 28.87,
+      "max": 30.92,
+      "mean": 30.014555555555557
+    },
+    "depth_mbps": {
+      "min": 2.91,
+      "max": 17.17,
+      "mean": 13.113333333333333
+    },
+    "depth_compress_avg_ms": {
+      "min": 6.79,
+      "max": 18.46,
+      "mean": 14.599444444444444
+    },
+    "depth_send_avg_ms": {
+      "min": 0.38,
+      "max": 5.3,
+      "mean": 0.8417777777777777
+    },
+    "rgb_ae": {
+      "min": 1.0,
+      "max": 1.0,
+      "mean": 1.0
+    },
+    "rgb_exposure": {
+      "min": 39.0,
+      "max": 50.0,
+      "mean": 49.87777777777778
+    },
+    "rgb_source_missing": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0
+    },
+    "rgb_encoder_lag_resets": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0
+    },
+    "depth_send_failures": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0
+    }
+  }
+}

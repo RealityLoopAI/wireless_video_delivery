@@ -1,0 +1,32 @@
+{
+  "schema": "gemini_calibration_v1",
+  "sender_id": "lubancat-0282f88a",
+  "camera_id": "cam02",
+  "camera_key": "lubancat-0282f88a_cam02",
+  "camera_name": "",
+  "storage_key": "lubancat-0282f88a_cam02",
+  "file_prefix": "",
+  "segment_start_us": 1790305262460042,
+  "segment_end_us": 1790305380407726,
+  "global_segment_index": 0,
+  "segment_window_start_global_us": 1790305262402680,
+  "segment_window_end_global_us": 1790306162402680,
+  "recording_session_id": 1790305261402680,
+  "recording_window_start_global_us": 1790305262402680,
+  "recording_window_end_global_us": 1790305380346763,
+  "closed": true,
+  "announce_timestamp_us": 1790305376943341,
+  "alignment_mode": "raw_depth_to_rgb_offline",
+  "depth_master": "depth_raw",
+  "aligned_depth": {
+    "generated": false,
+    "target": "rgb",
+    "output_file": "depth_aligned_to_rgb.mkv",
+    "method": "offline"
+  },
+  "device": {"configured_model":"","configured_serial_number":"CV275610004S","configured_uid":"","connection_type":"USB3.2","firmware_version":"1.0.70","model":"Orbbec Gemini 305","paired_rgb_serial":"","serial_number":"CV275610004S","uid":"4-1-2","vendor":"orbbec"},
+  "rgb_profile": {"codec":"h264","fps":30,"height":800,"pixel_format":"encoded_video","width":1280},
+  "depth_profile": {"compression":"zlib","depth_scale":0.10000000149011612,"fps":30,"height":180,"pixel_format":"uint16","width":320},
+  "calibration": {"available":true,"data":{"d2c_transform":{"rot":[0.99999582767486572,-0.0020730311516672373,-0.0020040997769683599,0.0020756705198436975,0.99999696016311646,0.0013158367946743965,0.0020013658795505762,-0.0013199911918491125,0.99999713897705078],"trans_mm":[0.0,0.0,0.0]},"depth_distortion":{"k1":0.0,"k2":0.0,"k3":0.0,"k4":0.0,"k5":0.0,"k6":0.0,"p1":0.0,"p2":0.0},"depth_intrinsic":{"cx":157.875,"cy":88.25,"fx":156.09931945800781,"fy":156.09931945800781,"height":180,"width":320},"is_mirrored":false,"rgb_distortion":{"k1":-0.97390884160995483,"k2":0.39236590266227722,"k3":-0.02711593359708786,"k4":-0.95518505573272705,"k5":0.36657875776290894,"k6":-0.017303004860877991,"p1":0.00044757890282198787,"p2":0.00036729854764416814},"rgb_intrinsic":{"cx":632.705322265625,"cy":399.10415649414062,"fx":612.7913818359375,"fy":612.69964599609375,"height":800,"width":1280}},"profile_aware":true,"source":"orbbec_sdk","source_detail":"pipeline_config_calibration"},
+  "camera_announce_raw": "{\"build_commit\":\"unknown\",\"build_dirty\":false,\"build_source_hash\":\"f1a27f542274a25e\",\"calibration\":{\"available\":true,\"data\":{\"d2c_transform\":{\"rot\":[0.99999582767486572,-0.0020730311516672373,-0.0020040997769683599,0.0020756705198436975,0.99999696016311646,0.0013158367946743965,0.0020013658795505762,-0.0013199911918491125,0.99999713897705078],\"trans_mm\":[0.0,0.0,0.0]},\"depth_distortion\":{\"k1\":0.0,\"k2\":0.0,\"k3\":0.0,\"k4\":0.0,\"k5\":0.0,\"k6\":0.0,\"p1\":0.0,\"p2\":0.0},\"depth_intrinsic\":{\"cx\":157.875,\"cy\":88.25,\"fx\":156.09931945800781,\"fy\":156.09931945800781,\"height\":180,\"width\":320},\"is_mirrored\":false,\"rgb_distortion\":{\"k1\":-0.97390884160995483,\"k2\":0.39236590266227722,\"k3\":-0.02711593359708786,\"k4\":-0.95518505573272705,\"k5\":0.36657875776290894,\"k6\":-0.017303004860877991,\"p1\":0.00044757890282198787,\"p2\":0.00036729854764416814},\"rgb_intrinsic\":{\"cx\":632.705322265625,\"cy\":399.10415649414062,\"fx\":612.7913818359375,\"fy\":612.69964599609375,\"height\":800,\"width\":1280}},\"profile_aware\":true,\"source\":\"orbbec_sdk\",\"source_detail\":\"pipeline_config_calibration\"},\"camera_id\":\"cam02\",\"depth_profile\":{\"compression\":\"zlib\",\"depth_scale\":0.10000000149011612,\"fps\":30,\"height\":180,\"pixel_format\":\"uint16\",\"width\":320},\"device\":{\"configured_model\":\"\",\"configured_serial_number\":\"CV275610004S\",\"configured_uid\":\"\",\"connection_type\":\"USB3.2\",\"firmware_version\":\"1.0.70\",\"model\":\"Orbbec Gemini 305\",\"paired_rgb_serial\":\"\",\"serial_number\":\"CV275610004S\",\"uid\":\"4-1-2\",\"vendor\":\"orbbec\"},\"device_date\":\"2026-09-25\",\"device_info_version\":1,\"device_system_time_us\":1790305376943219,\"device_time\":\"2026-09-25T11:02:56+08:00\",\"host_name\":\"lubancat\",\"mac_is_permanent\":true,\"mac_source\":\"ethtool_perm_addr\",\"message_type\":\"camera_announce\",\"orbbec_sdk_version\":\"2.8.6\",\"orbbec_sdk_version_number\":20806,\"protocol_version\":\"3.0\",\"rgb_profile\":{\"codec\":\"h264\",\"fps\":30,\"height\":800,\"pixel_format\":\"encoded_video\",\"width\":1280},\"sender_id\":\"lubancat-0282f88a\",\"timestamp_us\":1790305376943341,\"timezone\":\"Etc/UTC\",\"web_rgb_preview\":{\"bitrate_bps\":500000,\"enabled\":true,\"fps\":30,\"height\":360,\"max_height\":360,\"max_width\":640,\"on_demand\":true,\"width\":576},\"wifi_interface\":\"wlan0\",\"wifi_permanent_mac\":\"14:0a:02:82:f8:8a\"}"
+}

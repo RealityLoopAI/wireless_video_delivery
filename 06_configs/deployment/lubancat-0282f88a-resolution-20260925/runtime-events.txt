@@ -1,0 +1,72 @@
+2026-09-25 10:57:00 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-0282f88a receiver=192.168.1.196:50012
+2026-09-25 10:57:00 [WARN] media send stages camera_id=cam02 stream=depth frame=9489 queue_ms=26279.269825 send_total_ms=16.580981 sent=1 tcp_send_queue_bytes=576561 tcp_rtt_us=21302 tcp_rto_us=400000 tcp_unacked=372 tcp_total_retrans=67
+2026-09-25 10:57:01 [WARN] media send stages camera_id=cam02 stream=depth frame=9499 queue_ms=26867.432966 send_total_ms=100.146602 sent=0 tcp_send_queue_bytes=296840 tcp_rtt_us=124307 tcp_rto_us=504000 tcp_unacked=115 tcp_total_retrans=67
+2026-09-25 10:57:02 [WARN] media send stages camera_id=cam02 stream=depth frame=9509 queue_ms=27607.026898 send_total_ms=100.185342 sent=0 tcp_send_queue_bytes=282360 tcp_rtt_us=79941 tcp_rto_us=288000 tcp_unacked=150 tcp_total_retrans=67
+2026-09-25 10:57:02 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=9509; backpressure has not dropped this packet
+2026-09-25 10:57:03 [WARN] media send stages camera_id=cam02 stream=depth frame=9526 queue_ms=28044.750402 send_total_ms=100.199499 sent=0 tcp_send_queue_bytes=340280 tcp_rtt_us=106906 tcp_rto_us=308000 tcp_unacked=145 tcp_total_retrans=67
+2026-09-25 10:57:04 [WARN] media send stages camera_id=cam02 stream=depth frame=9539 queue_ms=28591.616329 send_total_ms=220.454087 sent=0 tcp_send_queue_bytes=348968 tcp_rtt_us=156874 tcp_rto_us=420000 tcp_unacked=151 tcp_total_retrans=67
+2026-09-25 10:57:04 [WARN] media TCP retaining pending packet camera_id=cam02 stream=rgb frame=10413; backpressure has not dropped this packet
+2026-09-25 10:57:05 [WARN] media send stages camera_id=cam02 stream=rgb frame=10413 queue_ms=0.327064 send_total_ms=341.092800 sent=0 tcp_send_queue_bytes=81088 tcp_rtt_us=661811 tcp_rto_us=2060000 tcp_unacked=15 tcp_total_retrans=40
+2026-09-25 10:57:05 [WARN] media send stages camera_id=cam02 stream=depth frame=9544 queue_ms=29628.374700 send_total_ms=54.118451 sent=1 tcp_send_queue_bytes=372103 tcp_rtt_us=67059 tcp_rto_us=492000 tcp_unacked=180 tcp_total_retrans=67
+2026-09-25 10:57:06 [WARN] media send stages camera_id=cam02 stream=depth frame=9576 queue_ms=29510.195392 send_total_ms=120.463500 sent=1 tcp_send_queue_bytes=418751 tcp_rtt_us=60530 tcp_rto_us=264000 tcp_unacked=227 tcp_total_retrans=67
+2026-09-25 10:57:07 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=9610; backpressure has not dropped this packet
+2026-09-25 10:57:07 [WARN] media send stages camera_id=cam02 stream=depth frame=9610 queue_ms=29395.520929 send_total_ms=120.861297 sent=1 tcp_send_queue_bytes=214827 tcp_rtt_us=63686 tcp_rto_us=276000 tcp_unacked=135 tcp_total_retrans=67
+2026-09-25 10:57:08 [WARN] media send stages camera_id=cam02 stream=depth frame=9644 queue_ms=29237.568787 send_total_ms=220.466156 sent=0 tcp_send_queue_bytes=557480 tcp_rtt_us=118897 tcp_rto_us=412000 tcp_unacked=295 tcp_total_retrans=67
+2026-09-25 10:57:09 [WARN] media send stages camera_id=cam02 stream=depth frame=9678 queue_ms=29117.013173 send_total_ms=220.391447 sent=0 tcp_send_queue_bytes=411232 tcp_rtt_us=125601 tcp_rto_us=416000 tcp_unacked=194 tcp_total_retrans=67
+2026-09-25 10:57:10 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-0282f88a receiver=192.168.1.196:50012
+2026-09-25 10:57:10 [WARN] media send stages camera_id=cam02 stream=depth frame=9709 queue_ms=29045.662061 send_total_ms=322.151413 sent=1 tcp_send_queue_bytes=187412 tcp_rtt_us=251380 tcp_rto_us=464000 tcp_unacked=87 tcp_total_retrans=67
+2026-09-25 10:57:11 [WARN] media TCP retaining pending packet camera_id=cam02 stream=rgb frame=10595; backpressure has not dropped this packet
+2026-09-25 10:57:11 [WARN] media send stages camera_id=cam02 stream=rgb frame=10595 queue_ms=0.147426 send_total_ms=341.211932 sent=0 tcp_send_queue_bytes=99505 tcp_rtt_us=96765 tcp_rto_us=556000 tcp_unacked=15 tcp_total_retrans=41
+2026-09-25 10:57:11 [WARN] media send stages camera_id=cam02 stream=depth frame=9723 queue_ms=28923.538194 send_total_ms=1050.499655 sent=1 tcp_send_queue_bytes=282910 tcp_rtt_us=1021560 tcp_rto_us=1908000 tcp_unacked=166 tcp_total_retrans=67
+2026-09-25 10:57:12 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=9767; backpressure has not dropped this packet
+2026-09-25 10:57:12 [WARN] media send stages camera_id=cam02 stream=depth frame=9777 queue_ms=29077.080049 send_total_ms=100.112517 sent=0 tcp_send_queue_bytes=260640 tcp_rtt_us=170720 tcp_rto_us=408000 tcp_unacked=135 tcp_total_retrans=67
+2026-09-25 10:57:13 [WARN] media send stages camera_id=cam02 stream=depth frame=9807 queue_ms=29177.679487 send_total_ms=49.127895 sent=1 tcp_send_queue_bytes=499264 tcp_rtt_us=48782 tcp_rto_us=252000 tcp_unacked=265 tcp_total_retrans=67
+2026-09-25 10:57:14 [WARN] media send stages camera_id=cam02 stream=depth frame=9834 queue_ms=29245.978396 send_total_ms=100.346788 sent=0 tcp_send_queue_bytes=249056 tcp_rtt_us=87390 tcp_rto_us=288000 tcp_unacked=172 tcp_total_retrans=67
+2026-09-25 10:57:15 [WARN] media send stages camera_id=cam02 stream=depth frame=9864 queue_ms=29312.528663 send_total_ms=87.856198 sent=1 tcp_send_queue_bytes=491127 tcp_rtt_us=71056 tcp_rto_us=272000 tcp_unacked=260 tcp_total_retrans=67
+2026-09-25 10:57:16 [WARN] media send stages camera_id=cam02 stream=depth frame=9896 queue_ms=29330.583805 send_total_ms=13.256782 sent=1 tcp_send_queue_bytes=574853 tcp_rtt_us=31864 tcp_rto_us=232000 tcp_unacked=355 tcp_total_retrans=67
+2026-09-25 10:57:17 [WARN] media send stages camera_id=cam02 stream=depth frame=9932 queue_ms=29133.916533 send_total_ms=19.400900 sent=1 tcp_send_queue_bytes=605124 tcp_rtt_us=26872 tcp_rto_us=228000 tcp_unacked=362 tcp_total_retrans=67
+2026-09-25 10:57:18 [WARN] media send stages camera_id=cam02 stream=depth frame=9968 queue_ms=28913.617192 send_total_ms=53.353630 sent=1 tcp_send_queue_bytes=348841 tcp_rtt_us=42001 tcp_rto_us=244000 tcp_unacked=234 tcp_total_retrans=67
+2026-09-25 10:57:19 [WARN] media send stages camera_id=cam02 stream=depth frame=10001 queue_ms=28859.315717 send_total_ms=18.523990 sent=1 tcp_send_queue_bytes=409704 tcp_rtt_us=35490 tcp_rto_us=236000 tcp_unacked=267 tcp_total_retrans=67
+[09/25 10:57:20.661646][warning][1125950][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset!
+2026-09-25 10:57:20 [WARN] media send stages camera_id=cam02 stream=depth frame=10036 queue_ms=28684.051498 send_total_ms=32.946542 sent=1 tcp_send_queue_bytes=535219 tcp_rtt_us=35277 tcp_rto_us=236000 tcp_unacked=280 tcp_total_retrans=67
+2026-09-25 10:57:21 [WARN] media send stages camera_id=cam02 stream=depth frame=10073 queue_ms=28461.765168 send_total_ms=32.771901 sent=1 tcp_send_queue_bytes=391074 tcp_rtt_us=37532 tcp_rto_us=240000 tcp_unacked=253 tcp_total_retrans=67
+2026-09-25 10:57:22 [WARN] media send stages camera_id=cam02 stream=depth frame=10108 queue_ms=28316.078105 send_total_ms=23.217118 sent=1 tcp_send_queue_bytes=604309 tcp_rtt_us=29412 tcp_rto_us=232000 tcp_unacked=336 tcp_total_retrans=67
+2026-09-25 10:57:23 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=10126; backpressure has not dropped this packet
+[09/25 10:57:23.691661][warning][1125950][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset! [**91 logs in 3029ms**]
+2026-09-25 10:57:23 [WARN] media send stages camera_id=cam02 stream=depth frame=10154 queue_ms=27799.626850 send_total_ms=32.642070 sent=1 tcp_send_queue_bytes=698475 tcp_rtt_us=39551 tcp_rto_us=240000 tcp_unacked=420 tcp_total_retrans=67
+2026-09-25 10:57:24 [WARN] media send stages camera_id=cam02 stream=depth frame=10193 queue_ms=27406.860555 send_total_ms=123.257466 sent=1 tcp_send_queue_bytes=210869 tcp_rtt_us=117186 tcp_rto_us=324000 tcp_unacked=146 tcp_total_retrans=67
+2026-09-25 10:57:25 [WARN] media send stages camera_id=cam02 stream=depth frame=10250 queue_ms=26630.738471 send_total_ms=15.587024 sent=1 tcp_send_queue_bytes=584418 tcp_rtt_us=27468 tcp_rto_us=228000 tcp_unacked=395 tcp_total_retrans=67
+2026-09-25 10:57:26 [WARN] media send stages camera_id=cam02 stream=depth frame=10306 queue_ms=25758.477540 send_total_ms=27.104648 sent=1 tcp_send_queue_bytes=770311 tcp_rtt_us=34325 tcp_rto_us=236000 tcp_unacked=503 tcp_total_retrans=67
+2026-09-25 10:57:28 [WARN] media send stages camera_id=cam02 stream=depth frame=10350 queue_ms=25312.437312 send_total_ms=31.864110 sent=1 tcp_send_queue_bytes=518304 tcp_rtt_us=46120 tcp_rto_us=248000 tcp_unacked=355 tcp_total_retrans=67
+2026-09-25 10:57:28 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=10370; backpressure has not dropped this packet
+2026-09-25 10:57:29 [WARN] media send stages camera_id=cam02 stream=depth frame=10389 queue_ms=25016.706807 send_total_ms=49.230227 sent=1 tcp_send_queue_bytes=432234 tcp_rtt_us=45587 tcp_rto_us=248000 tcp_unacked=256 tcp_total_retrans=67
+[09/25 10:57:29.721184][warning][1125950][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset! [**181 logs in 6029ms**]
+2026-09-25 10:57:30 [WARN] media send stages camera_id=cam02 stream=depth frame=10425 queue_ms=24855.494568 send_total_ms=59.221716 sent=1 tcp_send_queue_bytes=366933 tcp_rtt_us=44013 tcp_rto_us=248000 tcp_unacked=209 tcp_total_retrans=67
+2026-09-25 10:57:30 [WARN] media sender queue drain timed out; remaining packets discarded
+2026-09-25 10:57:30 [INFO] camera summary camera_id=cam02 rgb_frames=10767 depth_frames=10767 hardware_encoder=true depth_scale=0.1 disconnects=0 last_error=rgb encoder output lag reset
+[09/25 10:57:31.054051][warning][1133543][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset! [**19 logs in 1332ms, last: 10:57:30.364744**]
+2026-09-25 10:57:46 [WARN] camera reconnect attempt camera_id=cam02 attempt=1
+[09/25 10:57:48.809991][warning][1134049][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=100
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+[09/25 10:57:51.911323][warning][1134106][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=100 [**4 logs in 3101ms, last: 10:57:49.211889**]
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+[09/25 10:57:52.057566][warning][1134111][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset!
+2026-09-25 10:57:53 [WARN] rgb encoder output lag reset camera_id=cam02 frame_id=75 lag_us=1443821 threshold_us=500000 system_timestamp_us=1790305071691176 encode_done_timestamp_us=1790305073134997 web_preview_suppressed_ms=10000
+2026-09-25 10:57:53 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=75 frame_id=109 missing=33 duplicate=false reset=false stage=capture_input
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+2026-09-25 10:57:53 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=116; backpressure has not dropped this packet
+[09/25 10:57:55.091682][warning][1134165][Pipeline.cpp:324] [CV275610004S] Output frameset queue is full, drop oldest frameset! [**32 logs in 3033ms, last: 10:57:53.123354**]
+2026-09-25 10:58:16 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=831; backpressure has not dropped this packet
+2026-09-25 10:58:17 [WARN] clock_sync probe timeout or invalid response sender_id=lubancat-0282f88a receiver=192.168.1.196:50012
+2026-09-25 10:58:17 [WARN] media send stages camera_id=cam02 stream=depth frame=835 queue_ms=271.000814 send_total_ms=100.213675 sent=0 tcp_send_queue_bytes=141904 tcp_rtt_us=160142 tcp_rto_us=628000 tcp_unacked=48 tcp_total_retrans=15
+2026-09-25 10:58:17 [WARN] media TCP retaining pending packet camera_id=cam02 stream=rgb frame=843; backpressure has not dropped this packet
+2026-09-25 10:58:17 [WARN] media send stages camera_id=cam02 stream=rgb frame=843 queue_ms=0.154155 send_total_ms=342.082298 sent=0 tcp_send_queue_bytes=78192 tcp_rtt_us=307742 tcp_rto_us=872000 tcp_unacked=23 tcp_total_retrans=12
+2026-09-25 10:58:34 [WARN] rgb jpeg trailer recovered camera_id=cam02 frame_id=1374 original_bytes=172344 jpeg_bytes=133602 recovered_total=1
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+mpp_info: mpp version: 48962a10 author: Hongjin Li    2024-09-19 fix[avsd]: Fix attach dev error issue
+2026-09-25 11:02:11 [WARN] media TCP retaining pending packet camera_id=cam02 stream=depth frame=7878; backpressure has not dropped this packet

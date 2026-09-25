@@ -1,0 +1,60 @@
+devices=1
+device index=0 sn=CV275610004S uid=4-1-2 conn=USB3.2
+exposure_api=156 max_exposure_api=50 max_range_cur=5000
+selected sn=CV275610004S name=Orbbec Gemini 305 fw=1.0.70 conn=USB3.2 uid=4-1-2
+property_support phase=before_start name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_range phase=before_start name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=before_start name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_range phase=before_start name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=before_start name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=before_start name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=1279 y1_bottom=799
+property_support phase=before_start name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=0
+property_range phase=before_start name=COLOR_DENOISING_LEVEL cur=0 min=0 max=8 step=1 def=0
+start streams=both aggregate=any color=1280x800@30 depth=320x180@30
+snapshot_policy color_limit=30 depth_limit=3 after_frames=90 every_frames=30 manifest=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_snapshots.csv
+property_support phase=after_config name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_REFERENCE cur=1
+property_range phase=after_config name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=after_config name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_STRATEGY cur=0
+property_range phase=after_config name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=after_config name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=after_config name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=1279 y1_bottom=799
+property_support phase=after_config name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=after_config name=COLOR_DENOISING_LEVEL cur=0
+property_range phase=after_config name=COLOR_DENOISING_LEVEL cur=0 min=0 max=8 step=1 def=0
+[09/25 10:57:33.462953][warning][1133584][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200
+sample framesets_fps=18.4232 color_fps=16.4839 depth_fps=18.4232 both=17 timeouts=2
+sample framesets_fps=30.0068 color_fps=30.0068 depth_fps=30.0068 both=48 timeouts=2
+sample framesets_fps=29.9498 color_fps=29.9498 depth_fps=29.9498 both=79 timeouts=2
+snapshot_metadata stream=depth sample=1 frame=90 ae=1 exposure_raw=5000 gain=35 nonzero=28423 pixels=57600 nonzero_ratio=0.493455 depth_scale_mm=0.100000 sdk_system_timestamp_us=1790305056657458
+saved depth snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample01_depth_frame90_320x180.y16 bytes=115200 format=y16
+[09/25 10:57:36.664066][warning][1133618][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200 [**1 logs in 3201ms, last: 10:57:33.663576**]
+snapshot_metadata stream=color sample=1 frame=90 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56346232471 sdk_system_timestamp_us=1790305056725064 host_receive_us=1790305056725441
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample01_frame90_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=30.1161 color_fps=30.1161 depth_fps=30.1161 both=110 timeouts=2
+snapshot_metadata stream=depth sample=2 frame=120 ae=1 exposure_raw=5000 gain=35 nonzero=27521 pixels=57600 nonzero_ratio=0.477795 depth_scale_mm=0.100000 sdk_system_timestamp_us=1790305057657028
+saved depth snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample02_depth_frame120_320x180.y16 bytes=115200 format=y16
+snapshot_metadata stream=color sample=2 frame=120 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56347231729 sdk_system_timestamp_us=1790305057724590 host_receive_us=1790305057724743
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample02_frame120_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=29.9969 color_fps=29.9969 depth_fps=29.9969 both=140 timeouts=2
+snapshot_metadata stream=depth sample=3 frame=150 ae=1 exposure_raw=5000 gain=35 nonzero=27511 pixels=57600 nonzero_ratio=0.477622 depth_scale_mm=0.100000 sdk_system_timestamp_us=1790305058656254
+saved depth snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample03_depth_frame150_320x180.y16 bytes=115200 format=y16
+snapshot_metadata stream=color sample=3 frame=150 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56348230987 sdk_system_timestamp_us=1790305058724043 host_receive_us=1790305058724560
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample03_frame150_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=30.0365 color_fps=30.0365 depth_fps=30.0365 both=171 timeouts=2
+snapshot_metadata stream=color sample=4 frame=180 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56349230245 sdk_system_timestamp_us=1790305059723785 host_receive_us=1790305059724648
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample04_frame180_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=29.6895 color_fps=29.6895 depth_fps=29.6895 both=201 timeouts=2
+snapshot_metadata stream=color sample=5 frame=210 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56350229503 sdk_system_timestamp_us=1790305060724022 host_receive_us=1790305060724548
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample05_frame210_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=30.3119 color_fps=30.3119 depth_fps=30.3119 both=232 timeouts=2
+snapshot_metadata stream=color sample=6 frame=240 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56351228761 sdk_system_timestamp_us=1790305061721146 host_receive_us=1790305061722402
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample06_frame240_1280x800.jpg bytes=139588 format=5
+sample framesets_fps=30.0891 color_fps=30.0891 depth_fps=30.0891 both=263 timeouts=2
+snapshot_metadata stream=color sample=7 frame=270 ae=1 exposure_raw=50 gain=35 device_timestamp_us=56352228019 sdk_system_timestamp_us=1790305062721164 host_receive_us=1790305062721803
+saved color snapshot path=/home/cat/wvd-highlight-20260925/res1280_depth320_probe_sample07_frame270_1280x800.jpg bytes=139588 format=5
+summary seconds=10.0249 framesets=289 color=287 depth=289 both=287 timeouts=2 color_fps=28.6288 depth_fps=28.8283 color_id_delta=286 depth_id_delta=288 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=7 depth_snapshots_saved=3 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested
