@@ -1,0 +1,455 @@
+{
+  "scope": "Only existing locally downloaded live-color50.jpg. No device or repo operations. motion-contact.jpg after camera moved is excluded from old ROI comparison.",
+  "provenance_from_main_task": "Formal sender-service photo captured at 2026-09-25 10:07:41 after service restart; helper had selected reference=1 before startup. This analysis independently verifies image appearance, not SDK/property persistence.",
+  "composition_check": {
+    "image_size_wh": [
+      640,
+      480
+    ],
+    "visual_check": "Same cups/window/chair/cabinet layout; ROI bounds still cover intended objects.",
+    "phase_correlation_static_edge_roi_xywh": [
+      180,
+      35,
+      440,
+      365
+    ],
+    "estimated_integer_translation_xy_px": [
+      0,
+      0
+    ],
+    "peak": 0.5498701552235181,
+    "no_registration_applied": true,
+    "limitation": "Integer global translation check and visual inspection; no guarantee of subpixel identity or invariant lighting."
+  },
+  "roi_specification": {
+    "baseline_image": "E:\\chat\\sender-comparison-20260925\\highlight\\scene-cup-native100.jpg",
+    "baseline_sha256": "1737ab8eaae150b153630dca7c537cbbc7ffa32185487b54619ed9bd193d7735",
+    "image_size_wh": [
+      640,
+      480
+    ],
+    "coordinate_convention": "zero-based x,y,width,height; right and bottom excluded; no registration or automatic rescaling",
+    "rois": {
+      "cup_near": {
+        "bbox_xywh": [
+          312,
+          418,
+          60,
+          62
+        ],
+        "label_zh": "近处大纸杯",
+        "purpose": "杯口和部分杯身/绿色印刷；下沿被图像边界截断。比较杯口边缘和绿色图案附近弱对比，纯白部分不直接视为剪裁。"
+      },
+      "cup_right": {
+        "bbox_xywh": [
+          470,
+          429,
+          52,
+          51
+        ],
+        "label_zh": "右侧小纸杯",
+        "purpose": "杯口、白色杯身和靠近底边的浅色印刷带；下沿被图像边界截断。关注固定图案/边缘是否恢复，不能把均匀白色当成应有纹理。"
+      },
+      "window": {
+        "bbox_xywh": [
+          86,
+          148,
+          66,
+          90
+        ],
+        "label_zh": "窗口亮区",
+        "purpose": "避开大部分窗框，观察高光平台及是否出现可辨认室外层次；单张无法确认窗外本来有哪些细节。"
+      },
+      "chair_dark": {
+        "bbox_xywh": [
+          385,
+          315,
+          15,
+          20
+        ],
+        "label_zh": "暗椅背",
+        "purpose": "椅背内侧暗部对照，避开外围桌面/纸箱；观察降曝光后暗部亮度和局部纹理。"
+      }
+    },
+    "comparison_cautions": [
+      "只在相机和场景固定的同分辨率图像复用；运动或重新取景后必须重新确认ROI。",
+      "两只杯子下部被图像裁切。纯白平滑杯面平台不是sensor clipping证据。",
+      "比较曝光降低后已知杯口边缘/印刷是否恢复，不能将噪声增多或整体变暗称为细节恢复。",
+      "曝光/AE/增益另由采集记录提供，文件名native100不是本脚本核实的实际曝光。"
+    ]
+  },
+  "comparisons_to_native100": {
+    "full": {
+      "y_p50": {
+        "baseline_7_frame_mean": 158.71364285714284,
+        "baseline_7_frame_min_max": [
+          158.673,
+          158.81849999999997
+        ],
+        "live": 128.163,
+        "delta": -30.550642857142833
+      },
+      "y_p95": {
+        "baseline_7_frame_mean": 234.86899999999997,
+        "baseline_7_frame_min_max": [
+          234.869,
+          234.869
+        ],
+        "live": 216.995,
+        "delta": -17.873999999999967
+      },
+      "y_p99": {
+        "baseline_7_frame_mean": 235.94900714285714,
+        "baseline_7_frame_min_max": [
+          235.92601999999997,
+          235.98299999999998
+        ],
+        "live": 234.983,
+        "delta": -0.9660071428571371
+      },
+      "y_ge230_pct": {
+        "baseline_7_frame_mean": 8.432198660714286,
+        "baseline_7_frame_min_max": [
+          8.418619791666666,
+          8.444986979166668
+        ],
+        "live": 3.281575520833333,
+        "delta": -5.150623139880953
+      },
+      "y_ge235_pct": {
+        "baseline_7_frame_mean": 2.1804315476190474,
+        "baseline_7_frame_min_max": [
+          2.1305338541666665,
+          2.2418619791666665
+        ],
+        "live": 0.5403645833333334,
+        "delta": -1.640066964285714
+      },
+      "y_ge245_pct": {
+        "baseline_7_frame_mean": 0.022042410714285716,
+        "baseline_7_frame_min_max": [
+          0.017252604166666668,
+          0.0244140625
+        ],
+        "live": 0.00390625,
+        "delta": -0.018136160714285716
+      },
+      "high_mode_pct": {
+        "baseline_7_frame_mean": 5.429408482142857,
+        "baseline_7_frame_min_max": [
+          5.408528645833333,
+          5.446940104166666
+        ],
+        "live": 2.284830729166667,
+        "delta": -3.14457775297619
+      },
+      "std5_p50": {
+        "baseline_7_frame_mean": 3.9700401196573103,
+        "baseline_7_frame_min_max": [
+          3.9573361041843986,
+          3.9842758906140068
+        ],
+        "live": 3.574892332484123,
+        "delta": -0.3951477871731872
+      }
+    },
+    "cup_near": {
+      "y_p50": {
+        "baseline_7_frame_mean": 234.86899999999997,
+        "baseline_7_frame_min_max": [
+          234.869,
+          234.869
+        ],
+        "live": 206.75,
+        "delta": -28.11899999999997
+      },
+      "y_p95": {
+        "baseline_7_frame_mean": 236.30468571428568,
+        "baseline_7_frame_min_max": [
+          236.15724999999998,
+          236.68999999999997
+        ],
+        "live": 220.99499999999998,
+        "delta": -15.309685714285706
+      },
+      "y_p99": {
+        "baseline_7_frame_mean": 240.42650714285713,
+        "baseline_7_frame_min_max": [
+          239.92773000000003,
+          240.88161999999997
+        ],
+        "live": 228.97799999999995,
+        "delta": -11.448507142857181
+      },
+      "y_ge230_pct": {
+        "baseline_7_frame_mean": 89.43164362519202,
+        "baseline_7_frame_min_max": [
+          89.13978494623656,
+          89.75806451612904
+        ],
+        "live": 0.6451612903225806,
+        "delta": -88.78648233486945
+      },
+      "y_ge235_pct": {
+        "baseline_7_frame_mean": 19.36635944700461,
+        "baseline_7_frame_min_max": [
+          16.102150537634408,
+          22.58064516129032
+        ],
+        "live": 0.24193548387096775,
+        "delta": -19.12442396313364
+      },
+      "y_ge245_pct": {
+        "baseline_7_frame_mean": 0.15745007680491555,
+        "baseline_7_frame_min_max": [
+          0.08064516129032258,
+          0.21505376344086022
+        ],
+        "live": 0.0,
+        "delta": -0.15745007680491555
+      },
+      "high_mode_pct": {
+        "baseline_7_frame_mean": 68.14900153609831,
+        "baseline_7_frame_min_max": [
+          67.31182795698925,
+          69.75806451612904
+        ],
+        "live": 1.8548387096774193,
+        "delta": -66.29416282642089
+      },
+      "std5_p50": {
+        "baseline_7_frame_mean": 0.1589694770010722,
+        "baseline_7_frame_min_max": [
+          0.14647948670426597,
+          0.1758733567060834
+        ],
+        "live": 1.6595208642401351,
+        "delta": 1.500551387239063
+      }
+    },
+    "cup_right": {
+      "y_p50": {
+        "baseline_7_frame_mean": 234.86899999999997,
+        "baseline_7_frame_min_max": [
+          234.869,
+          234.869
+        ],
+        "live": 199.071,
+        "delta": -35.79799999999997
+      },
+      "y_p95": {
+        "baseline_7_frame_mean": 237.2194357142857,
+        "baseline_7_frame_min_max": [
+          237.19499999999996,
+          237.228
+        ],
+        "live": 230.67299999999997,
+        "delta": -6.546435714285735
+      },
+      "y_p99": {
+        "baseline_7_frame_mean": 240.4972571428571,
+        "baseline_7_frame_min_max": [
+          240.11874999999998,
+          240.93694
+        ],
+        "live": 233.96106999999998,
+        "delta": -6.5361871428571305
+      },
+      "y_ge230_pct": {
+        "baseline_7_frame_mean": 76.95539754363283,
+        "baseline_7_frame_min_max": [
+          76.39517345399697,
+          77.4132730015083
+        ],
+        "live": 7.579185520361991,
+        "delta": -69.37621202327084
+      },
+      "y_ge235_pct": {
+        "baseline_7_frame_mean": 20.09265244559362,
+        "baseline_7_frame_min_max": [
+          19.41930618401207,
+          21.229260935143287
+        ],
+        "live": 0.641025641025641,
+        "delta": -19.45162680456798
+      },
+      "y_ge245_pct": {
+        "baseline_7_frame_mean": 0.1400560224089636,
+        "baseline_7_frame_min_max": [
+          0.037707390648567124,
+          0.3393665158371041
+        ],
+        "live": 0.037707390648567124,
+        "delta": -0.10234863176039646
+      },
+      "high_mode_pct": {
+        "baseline_7_frame_mean": 51.26050420168067,
+        "baseline_7_frame_min_max": [
+          50.113122171945705,
+          52.14932126696833
+        ],
+        "live": 8.672699849170437,
+        "delta": -42.58780435251023
+      },
+      "std5_p50": {
+        "baseline_7_frame_mean": 1.2059112722163599,
+        "baseline_7_frame_min_max": [
+          1.1716034629681435,
+          1.2523507154298503
+        ],
+        "live": 4.38926090875925,
+        "delta": 3.18334963654289
+      }
+    },
+    "window": {
+      "y_p50": {
+        "baseline_7_frame_mean": 234.86899999999997,
+        "baseline_7_frame_min_max": [
+          234.869,
+          234.869
+        ],
+        "live": 234.983,
+        "delta": 0.11400000000003274
+      },
+      "y_p95": {
+        "baseline_7_frame_mean": 235.21785714285716,
+        "baseline_7_frame_min_max": [
+          235.179,
+          235.22799999999998
+        ],
+        "live": 235.22799999999998,
+        "delta": 0.010142857142824369
+      },
+      "y_p99": {
+        "baseline_7_frame_mean": 236.52179999999998,
+        "baseline_7_frame_min_max": [
+          236.20459999999997,
+          236.98299999999998
+        ],
+        "live": 237.695,
+        "delta": 1.1732000000000085
+      },
+      "y_ge230_pct": {
+        "baseline_7_frame_mean": 98.83838383838385,
+        "baseline_7_frame_min_max": [
+          98.8047138047138,
+          98.88888888888889
+        ],
+        "live": 98.0976430976431,
+        "delta": -0.7407407407407476
+      },
+      "y_ge235_pct": {
+        "baseline_7_frame_mean": 9.098124098124098,
+        "baseline_7_frame_min_max": [
+          7.356902356902357,
+          13.400673400673401
+        ],
+        "live": 8.24915824915825,
+        "delta": -0.8489658489658485
+      },
+      "y_ge245_pct": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      },
+      "high_mode_pct": {
+        "baseline_7_frame_mean": 95.4064454064454,
+        "baseline_7_frame_min_max": [
+          95.13468013468014,
+          95.57239057239057
+        ],
+        "live": 90.03367003367003,
+        "delta": -5.372775372775365
+      },
+      "std5_p50": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      }
+    },
+    "chair_dark": {
+      "y_p50": {
+        "baseline_7_frame_mean": 51.96578571428572,
+        "baseline_7_frame_min_max": [
+          51.590999999999994,
+          52.335
+        ],
+        "live": 52.18899999999999,
+        "delta": 0.2232142857142705
+      },
+      "y_p95": {
+        "baseline_7_frame_mean": 58.69371428571429,
+        "baseline_7_frame_min_max": [
+          57.87945000000001,
+          59.84085
+        ],
+        "live": 57.107,
+        "delta": -1.5867142857142937
+      },
+      "y_p99": {
+        "baseline_7_frame_mean": 70.31740428571426,
+        "baseline_7_frame_min_max": [
+          67.83910999999999,
+          73.84999999999998
+        ],
+        "live": 61.41912,
+        "delta": -8.898284285714261
+      },
+      "y_ge230_pct": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      },
+      "y_ge235_pct": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      },
+      "y_ge245_pct": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      },
+      "high_mode_pct": {
+        "baseline_7_frame_mean": 0.0,
+        "baseline_7_frame_min_max": [
+          0.0,
+          0.0
+        ],
+        "live": 0.0,
+        "delta": 0.0
+      },
+      "std5_p50": {
+        "baseline_7_frame_mean": 2.171251768369318,
+        "baseline_7_frame_min_max": [
+          1.9913043636946122,
+          2.348086252237336
+        ],
+        "live": 1.5341944786851731,
+        "delta": -0.6370572896841451
+      }
+    }
+  },
+  "conclusion": "Live JPEG retains clearly visible cup rims/interior shadow separation and strongly reduced cup high-end plateau compared with native100; supports the same output improvement in this post-restart formal-service sample. Does not prove sensor clipping mechanism or indefinite setting persistence.",
+  "full_local_report_sha256": "f430775735a4b3d59faa6908f95cf355e4caeef88e37dfd7cbbd6a5aa7f92993"
+}

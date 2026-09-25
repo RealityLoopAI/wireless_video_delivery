@@ -71,6 +71,7 @@
 | `export_orbbec_delivery.py` | 导出下游兼容目录 |
 | `audit_silent_audio_archive.py` | 区分静音音频与无数据缺失 |
 | `depth_compression_bench.cpp` | 离线比较 Depth 压缩模式 |
+| `orbbec_ae_reference_setup.cpp` | 按明确序列号设置原生 AE 的 Depth/Color 测光依据，检查范围并读回；不开流，需独占设备。现场构建、启动配置与回退见 [cam02 高亮修复](../04_docs/lubancat-0282f88a-highlight-20260925.md) |
 
 这些工具不会替代 `recording_ready.json` 完整性门槛。涉及重写或导出的命令应先输出到新目录，避免覆盖唯一原始数据。
 

@@ -1,0 +1,36 @@
+devices=1
+device index=0 sn=CV275610004S uid=4-1-2 conn=USB3.2
+exposure_api=156 max_exposure_api=100 max_range_cur=10000
+selected sn=CV275610004S name=Orbbec Gemini 305 fw=1.0.70 conn=USB3.2 uid=4-1-2
+property_support phase=before_start name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_REFERENCE cur=1
+property_range phase=before_start name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=before_start name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=before_start name=DEVICE_AE_STRATEGY cur=0
+property_range phase=before_start name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=before_start name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=before_start name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=639 y1_bottom=479
+property_support phase=before_start name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=before_start name=COLOR_DENOISING_LEVEL cur=0
+property_range phase=before_start name=COLOR_DENOISING_LEVEL cur=0 min=0 max=8 step=1 def=0
+start streams=both aggregate=any color=640x480@30 depth=848x530@30
+snapshot_policy color_limit=1 depth_limit=0 after_frames=30 every_frames=0 manifest=/home/cat/wvd-highlight-20260925/helper-reopen_snapshots.csv
+property_support phase=after_config name=DEVICE_AE_REFERENCE readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_REFERENCE cur=1
+property_range phase=after_config name=DEVICE_AE_REFERENCE cur=1 min=0 max=1 step=1 def=0
+property_support phase=after_config name=DEVICE_AE_STRATEGY readable=1 writable=1
+property_current phase=after_config name=DEVICE_AE_STRATEGY cur=0
+property_range phase=after_config name=DEVICE_AE_STRATEGY cur=0 min=0 max=1 step=1 def=0
+property_support phase=after_config name=COLOR_AE_ROI readable=1 writable=1
+property_roi phase=after_config name=COLOR_AE_ROI bytes=8 x0_left=0 y0_top=0 x1_right=639 y1_bottom=479
+property_support phase=after_config name=COLOR_DENOISING_LEVEL readable=1 writable=1
+property_current phase=after_config name=COLOR_DENOISING_LEVEL cur=0
+property_range phase=after_config name=COLOR_DENOISING_LEVEL cur=0 min=0 max=8 step=1 def=0
+[09/25 10:05:25.510538][warning][1069226][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200
+sample framesets_fps=17.8993 color_fps=15.9104 depth_fps=17.8993 both=16 timeouts=2
+snapshot_metadata stream=color sample=1 frame=30 ae=1 exposure_raw=66 gain=20 device_timestamp_us=53216298490 sdk_system_timestamp_us=1790301926776532 host_receive_us=1790301926782401
+saved color snapshot path=/home/cat/wvd-highlight-20260925/helper-reopen_frame30_640x480.jpg bytes=77908 format=5
+sample framesets_fps=30.0179 color_fps=30.0179 depth_fps=30.0179 both=47 timeouts=2
+sample framesets_fps=29.9573 color_fps=29.9573 depth_fps=29.9573 both=77 timeouts=2
+[09/25 10:05:28.711800][warning][1069257][Pipeline.cpp:335] [CV275610004S] Wait for frame timeout, you can try to increase the wait time! current timeout=200 [**1 logs in 3201ms, last: 10:05:25.711062**]
+summary seconds=4.00363 framesets=108 color=106 depth=108 both=106 timeouts=2 color_fps=26.476 depth_fps=26.9756 color_id_delta=105 depth_id_delta=107 color_source_missing=0 color_duplicates=0 color_resets=0 depth_source_missing=0 rejected_jpeg=0 audit_payloads_saved=0 color_snapshots_saved=1 depth_snapshots_saved=0 ae_reference_write_status=not_requested ae_strategy_write_status=not_requested

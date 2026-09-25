@@ -1,0 +1,30 @@
+{
+  "camera_key": "lubancat-0282f88a_cam02",
+  "serial": "CV275610004S",
+  "sender_ip": "192.168.1.91",
+  "receiver_ip": "192.168.1.196",
+  "reference": 1,
+  "max_exposure_raw": 50,
+  "exposure_unit_us": 100,
+  "backup": "/var/backups/gwv3-highlight-20260925/sender.before.json",
+  "helper_binary_sha256": "088722fab8122281e51dd58cb806505f8dcad5e5410cd78b323c83c4f61788bb",
+  "sender_binary_sha256": "fc59625a9cda00941c4532ccd6703077986b836f275339d290441a2b64084d18",
+  "mpp_plugin_sha256": "640637d13e82de03ca386fd15c03a84ed036babd1415e9bfc6d6934a76002a0d",
+  "files": {
+    "70-color-ae-reference.conf": "43857456bc729a08610ab9d3ba51a7e05db8f82775da22ce2d5f0e24a2dc43d6",
+    "comparison-rois.json": "0075cd7e7b42b60729534ea42943441275f12ed7f00373bb178cb12dd57b493c",
+    "comparison.json": "67b22ee4be485a95cfeb7a25afed89621cde017b5325745b6cc9a95aa605c52b",
+    "helper-cli-checks.json": "70103e59cc772c34bc4eca5af6bce324582a305e03b29836421b152e8023b448",
+    "helper-reopen.txt": "e69cbde3c1451d4c8a615e12b5a71143b966e5a5327232e50b1b2de110d583df",
+    "helper-set1.txt": "98a5667f797ac6dad9fdc8463940f94c362ac99fe13eed3b5a4076a4e778fcd0",
+    "live-verification.json": "bec36916f3ad445fb3bbc4845408f7eddafc0d772d8978c3d4f2c68dd28ff38d",
+    "recording-acceptance.json": "77b1d5dd582049a9997a11d8ace9e069f239cbdadd54a8781e8a7c2dbfd28b3b",
+    "recording-exposure-check.json": "63496bb23b61ad705e59f78a90f6ddd22f17837f2e5078e30fdf1d455c034e7f",
+    "recording_ready.json": "69dd807f44da4b949ed9be85e85cc706e3b9709a8ae122d9825a890d8c6cdef3",
+    "runtime-events.txt": "4bb18fa65d3ef09730a58056142eb3356c32fd9a25add19ee0b3c3aacff92972",
+    "runtime-summary.json": "1bd884b2797f22096a441c7e0a57966cad2a7a9f1747a6010c74b0b8e87f60d9",
+    "sender.before.json": "fef0c34f6906d530921e66de084bd2ba7a46e3817d50ab1571548b9f07649204",
+    "sender.json": "efa93d0eed9cd3cdeeb47668156d276336ba388ee3c87a3534c4e1ea29cc2394"
+  },
+  "file_hash_basis": "SHA256 of archived Git blob bytes; Git normalizes text line endings. Device binary hashes are separate fields."
+}

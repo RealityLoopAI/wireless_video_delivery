@@ -1,0 +1,15 @@
+{
+  "count": 9364,
+  "max_exposure_raw": 50,
+  "min_exposure_raw": 50,
+  "exposure_raw_over50": 0,
+  "nonpositive_exposure": 0,
+  "auto_exposure_values": [
+    1
+  ],
+  "gain_range": [
+    31,
+    42
+  ],
+  "passed": true
+}

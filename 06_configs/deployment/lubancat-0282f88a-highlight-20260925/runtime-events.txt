@@ -1,0 +1,14 @@
+2026-09-25 10:06:54 [INFO] camera summary camera_id=cam02 rgb_frames=2346 depth_frames=2346 hardware_encoder=true depth_scale=0.1 disconnects=0 last_error=rgb encoder output lag reset
+serial=CV275610004S requested_reference=1
+DEVICE_AE_REFERENCE support_read=1 support_write=1
+DEVICE_AE_REFERENCE current=1
+DEVICE_AE_REFERENCE range_min=0 range_max=1 range_step=1 range_default=0 range_current=1
+DEVICE_AE_REFERENCE writing=1
+DEVICE_AE_REFERENCE before=1 requested=1 readback=1 verified=1
+2026-09-25 10:07:02 [INFO] camera started camera_id=cam02 color=640x480@30 format=mjpg depth=848x530@30 format=y16 configured_model= device_model=Orbbec Gemini 305 configured_serial=CV275610004S configured_uid= device_serial=CV275610004S device_uid=4-1-2 paired_rgb_serial= connection=USB3.2 aggregate_mode=disable publish_warmup_ms=3000 exposure_verification=not_required adaptive_exposure=disabled
+2026-09-25 10:07:07 [WARN] rgb encoder output lag reset camera_id=cam02 frame_id=76 lag_us=1510660 threshold_us=500000 system_timestamp_us=1790302025786354 encode_done_timestamp_us=1790302027297014 web_preview_suppressed_ms=10000
+2026-09-25 10:07:07 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=76 frame_id=112 missing=35 duplicate=false reset=false stage=capture_input
+2026-09-25 10:10:48 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=6749 frame_id=6751 missing=1 duplicate=false reset=false stage=capture_input
+2026-09-25 10:11:41 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=8366 frame_id=8368 missing=1 duplicate=false reset=false stage=capture_input
+2026-09-25 10:11:55 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=8781 frame_id=8783 missing=1 duplicate=false reset=false stage=capture_input
+2026-09-25 10:12:07 [WARN] rgb input sequence discontinuity camera_id=cam02 previous_frame_id=9125 frame_id=9127 missing=1 duplicate=false reset=false stage=capture_input

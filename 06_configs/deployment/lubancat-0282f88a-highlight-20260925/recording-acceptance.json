@@ -1,0 +1,296 @@
+{
+  "directory": "\\\\REALITYLOOP\\video_database\\lubancat-0282f88a_cam02\\2026-09-25\\100811",
+  "duration_seconds": 312.057602,
+  "thresholds": {
+    "coverage_min": 0.98,
+    "edge_lag_max_us": 500000,
+    "frame_gap_max_us": 500000,
+    "rgb_depth_span_delta_max_us": 500000,
+    "g305_color_exposure_raw_max": 100,
+    "g305_color_exposure_raw_unit_us": 100
+  },
+  "passed": false,
+  "failed_checks": [
+    "rgb.source_ids_contiguous"
+  ],
+  "rgb_depth_capture_span_delta_us": 728,
+  "rgb_pts_mapping": {
+    "recorded_csv_rows": 9364,
+    "decoded_frames": 9364,
+    "indices_zero_based_contiguous_in_csv_order": true,
+    "frame_count_identical": true,
+    "pts_origin_global_us": 1790302091849221,
+    "initial_muxer_offset_us": -985.0,
+    "all_pts_offsets_us": {
+      "count": 9364,
+      "min": -985.0,
+      "p50": -985.0,
+      "p95": -985.0,
+      "p99": -985.0,
+      "max": -985.0,
+      "mean": -985.0
+    },
+    "relative_pts_residual_us": {
+      "count": 9364,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0,
+      "mean": 0.0
+    },
+    "initial_offset_tolerance_us": 1000,
+    "relative_pts_tolerance_us": 1,
+    "note": "PTS tolerances reflect MP4 start edit-list rounding and 1-us video timebase; quality thresholds remain 500ms.",
+    "passed": true
+  },
+  "streams": {
+    "rgb": {
+      "quality": {
+        "valid_frames": 9364,
+        "nominal_fps": 30.0,
+        "coverage_ratio": 1.0002426838277547,
+        "first_frame_lag_us": 22985,
+        "end_frame_lag_us": 32429,
+        "capture_span_us": 312002188,
+        "max_frame_gap_us": 66906,
+        "timestamp_out_of_order_count": 0
+      },
+      "checks": {
+        "coverage_ge_98_percent": {
+          "passed": true,
+          "details": null
+        },
+        "first_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "tail_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "max_gap_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "no_global_timestamp_backwards": {
+          "passed": true,
+          "details": null
+        },
+        "clock_valid_all_rows": {
+          "passed": true,
+          "details": null
+        },
+        "global_timestamps_present": {
+          "passed": true,
+          "details": null
+        },
+        "source_ids_contiguous": {
+          "passed": false,
+          "details": null
+        },
+        "valid_rows_inside_window": {
+          "passed": true,
+          "details": []
+        },
+        "csv_metrics_match_meta": {
+          "passed": true,
+          "details": {}
+        }
+      },
+      "source_ids": {
+        "missing_values": 0,
+        "duplicate_count": 0,
+        "backward_count": 0,
+        "missing_frame_id_count": 4,
+        "gaps": [
+          {
+            "previous": {
+              "csv_line": 9381,
+              "frame_id": 6749,
+              "global_timestamp_us": 1790302248056041,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 4689
+            },
+            "current": {
+              "csv_line": 9383,
+              "frame_id": 6751,
+              "global_timestamp_us": 1790302248122879,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 4690
+            },
+            "delta": 2,
+            "missing_first_id": 6750,
+            "missing_last_id": 6750,
+            "missing_count": 1
+          },
+          {
+            "previous": {
+              "csv_line": 12614,
+              "frame_id": 8366,
+              "global_timestamp_us": 1790302301916315,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 6305
+            },
+            "current": {
+              "csv_line": 12615,
+              "frame_id": 8368,
+              "global_timestamp_us": 1790302301983221,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 6306
+            },
+            "delta": 2,
+            "missing_first_id": 8367,
+            "missing_last_id": 8367,
+            "missing_count": 1
+          },
+          {
+            "previous": {
+              "csv_line": 13443,
+              "frame_id": 8781,
+              "global_timestamp_us": 1790302315739497,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 6719
+            },
+            "current": {
+              "csv_line": 13445,
+              "frame_id": 8783,
+              "global_timestamp_us": 1790302315806018,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 6720
+            },
+            "delta": 2,
+            "missing_first_id": 8782,
+            "missing_last_id": 8782,
+            "missing_count": 1
+          },
+          {
+            "previous": {
+              "csv_line": 14130,
+              "frame_id": 9125,
+              "global_timestamp_us": 1790302327197647,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 7062
+            },
+            "current": {
+              "csv_line": 14132,
+              "frame_id": 9127,
+              "global_timestamp_us": 1790302327264299,
+              "recording_window_valid": 1,
+              "rgb_video_frame_index": 7063
+            },
+            "delta": 2,
+            "missing_first_id": 9126,
+            "missing_last_id": 9126,
+            "missing_count": 1
+          }
+        ],
+        "duplicates": [],
+        "backwards": []
+      }
+    },
+    "depth": {
+      "quality": {
+        "valid_frames": 9368,
+        "nominal_fps": 30.0,
+        "coverage_ratio": 1.000669955371466,
+        "first_frame_lag_us": 25380,
+        "end_frame_lag_us": 30762,
+        "capture_span_us": 312001460,
+        "max_frame_gap_us": 49171,
+        "timestamp_out_of_order_count": 0
+      },
+      "checks": {
+        "coverage_ge_98_percent": {
+          "passed": true,
+          "details": null
+        },
+        "first_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "tail_lag_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "max_gap_le_500ms": {
+          "passed": true,
+          "details": null
+        },
+        "no_global_timestamp_backwards": {
+          "passed": true,
+          "details": null
+        },
+        "clock_valid_all_rows": {
+          "passed": true,
+          "details": null
+        },
+        "global_timestamps_present": {
+          "passed": true,
+          "details": null
+        },
+        "source_ids_contiguous": {
+          "passed": true,
+          "details": null
+        },
+        "valid_rows_inside_window": {
+          "passed": true,
+          "details": []
+        },
+        "csv_metrics_match_meta": {
+          "passed": true,
+          "details": {}
+        }
+      },
+      "source_ids": {
+        "missing_values": 0,
+        "duplicate_count": 0,
+        "backward_count": 0,
+        "missing_frame_id_count": 0,
+        "gaps": [],
+        "duplicates": [],
+        "backwards": []
+      }
+    }
+  },
+  "media": {
+    "rgb": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 9364,
+      "packet_count": 9364,
+      "decode_error_bytes": 0,
+      "probe_error_bytes": 0
+    },
+    "depth": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 9368,
+      "packet_count": 9368,
+      "decode_error_bytes": 0,
+      "probe_error_bytes": 0
+    },
+    "audio": {
+      "full_decode_passed": true,
+      "decoded_frame_count": 15603,
+      "packet_count": 15603,
+      "decode_error_bytes": 0,
+      "probe_error_bytes": 0
+    }
+  },
+  "audio_passed": true,
+  "exposure_5ms": {
+    "count": 9364,
+    "max_exposure_raw": 50,
+    "min_exposure_raw": 50,
+    "exposure_raw_over50": 0,
+    "nonpositive_exposure": 0,
+    "auto_exposure_values": [
+      1
+    ],
+    "gain_range": [
+      31,
+      42
+    ],
+    "passed": true
+  },
+  "read_only_validation_date_root_note": "Original validator restricted 2026-09-24; imported with NAS_ROOT set to 2026-09-25 and ROOT set to current evidence directory. Original quality gates unchanged; additional 5 ms gate recorded separately."
+}

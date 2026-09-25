@@ -1,0 +1,57 @@
+{
+  "baseline_image": "E:\\chat\\sender-comparison-20260925\\highlight\\scene-cup-native100.jpg",
+  "baseline_sha256": "1737ab8eaae150b153630dca7c537cbbc7ffa32185487b54619ed9bd193d7735",
+  "image_size_wh": [
+    640,
+    480
+  ],
+  "coordinate_convention": "zero-based x,y,width,height; right and bottom excluded; no registration or automatic rescaling",
+  "rois": {
+    "cup_near": {
+      "bbox_xywh": [
+        312,
+        418,
+        60,
+        62
+      ],
+      "label_zh": "近处大纸杯",
+      "purpose": "杯口和部分杯身/绿色印刷；下沿被图像边界截断。比较杯口边缘和绿色图案附近弱对比，纯白部分不直接视为剪裁。"
+    },
+    "cup_right": {
+      "bbox_xywh": [
+        470,
+        429,
+        52,
+        51
+      ],
+      "label_zh": "右侧小纸杯",
+      "purpose": "杯口、白色杯身和靠近底边的浅色印刷带；下沿被图像边界截断。关注固定图案/边缘是否恢复，不能把均匀白色当成应有纹理。"
+    },
+    "window": {
+      "bbox_xywh": [
+        86,
+        148,
+        66,
+        90
+      ],
+      "label_zh": "窗口亮区",
+      "purpose": "避开大部分窗框，观察高光平台及是否出现可辨认室外层次；单张无法确认窗外本来有哪些细节。"
+    },
+    "chair_dark": {
+      "bbox_xywh": [
+        385,
+        315,
+        15,
+        20
+      ],
+      "label_zh": "暗椅背",
+      "purpose": "椅背内侧暗部对照，避开外围桌面/纸箱；观察降曝光后暗部亮度和局部纹理。"
+    }
+  },
+  "comparison_cautions": [
+    "只在相机和场景固定的同分辨率图像复用；运动或重新取景后必须重新确认ROI。",
+    "两只杯子下部被图像裁切。纯白平滑杯面平台不是sensor clipping证据。",
+    "比较曝光降低后已知杯口边缘/印刷是否恢复，不能将噪声增多或整体变暗称为细节恢复。",
+    "曝光/AE/增益另由采集记录提供，文件名native100不是本脚本核实的实际曝光。"
+  ]
+}

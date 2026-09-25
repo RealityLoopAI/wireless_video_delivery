@@ -1,0 +1,54 @@
+[
+  {
+    "args": [],
+    "expected": 2,
+    "rc": 2,
+    "passed": true,
+    "output": "Usage: /home/cat/wvd-highlight-20260925/ae_reference_setup --serial SN --reference 0|1\n       /home/cat/wvd-highlight-20260925/ae_reference_setup --help\n\nExplicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n  0 = depth based (also the explicit rollback command)\n  1 = color based\nPrint support, current value and range; write and verify readback.\nNo default serial/value, streaming, retries or automatic restoration.\nNo arguments or invalid arguments fail before SDK initialization.\nExit: 0 verified; 2 usage; 3 precondition; 4 readback mismatch;\n      5 SDK or other runtime exception.\n"
+  },
+  {
+    "args": [
+      "--help"
+    ],
+    "expected": 0,
+    "rc": 0,
+    "passed": true,
+    "output": "Usage: /home/cat/wvd-highlight-20260925/ae_reference_setup --serial SN --reference 0|1\n       /home/cat/wvd-highlight-20260925/ae_reference_setup --help\n\nExplicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n  0 = depth based (also the explicit rollback command)\n  1 = color based\nPrint support, current value and range; write and verify readback.\nNo default serial/value, streaming, retries or automatic restoration.\nNo arguments or invalid arguments fail before SDK initialization.\nExit: 0 verified; 2 usage; 3 precondition; 4 readback mismatch;\n      5 SDK or other runtime exception.\n"
+  },
+  {
+    "args": [
+      "--serial",
+      "CV275610004S"
+    ],
+    "expected": 2,
+    "rc": 2,
+    "passed": true,
+    "output": "ERROR: both --serial and --reference are required\nUsage: /home/cat/wvd-highlight-20260925/ae_reference_setup --serial SN --reference 0|1\n       /home/cat/wvd-highlight-20260925/ae_reference_setup --help\n\nExplicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n  0 = depth based (also the explicit rollback command)\n  1 = color based\nPrint support, current value and range; write and verify readback.\nNo default serial/value, streaming, retries or automatic restoration.\nNo arguments or invalid arguments fail before SDK initialization.\nExit: 0 verified; 2 usage; 3 precondition; 4 readback mismatch;\n      5 SDK or other runtime exception.\n"
+  },
+  {
+    "args": [
+      "--serial",
+      "CV275610004S",
+      "--reference",
+      "2"
+    ],
+    "expected": 2,
+    "rc": 2,
+    "passed": true,
+    "output": "ERROR: --reference must be exactly 0 or 1\nUsage: /home/cat/wvd-highlight-20260925/ae_reference_setup --serial SN --reference 0|1\n       /home/cat/wvd-highlight-20260925/ae_reference_setup --help\n\nExplicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n  0 = depth based (also the explicit rollback command)\n  1 = color based\nPrint support, current value and range; write and verify readback.\nNo default serial/value, streaming, retries or automatic restoration.\nNo arguments or invalid arguments fail before SDK initialization.\nExit: 0 verified; 2 usage; 3 precondition; 4 readback mismatch;\n      5 SDK or other runtime exception.\n"
+  },
+  {
+    "args": [
+      "--serial",
+      "CV275610004S",
+      "--reference",
+      "1",
+      "--reference",
+      "0"
+    ],
+    "expected": 2,
+    "rc": 2,
+    "passed": true,
+    "output": "ERROR: duplicate --reference\nUsage: /home/cat/wvd-highlight-20260925/ae_reference_setup --serial SN --reference 0|1\n       /home/cat/wvd-highlight-20260925/ae_reference_setup --help\n\nExplicitly set DEVICE_AE_REFERENCE on exactly one serial-number match.\n  0 = depth based (also the explicit rollback command)\n  1 = color based\nPrint support, current value and range; write and verify readback.\nNo default serial/value, streaming, retries or automatic restoration.\nNo arguments or invalid arguments fail before SDK initialization.\nExit: 0 verified; 2 usage; 3 precondition; 4 readback mismatch;\n      5 SDK or other runtime exception.\n"
+  }
+]
